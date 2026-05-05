@@ -28,7 +28,14 @@ import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndP
 import { getFirestore, collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
 
 
-const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const firebaseConfig = {
+  apiKey: "AIzaSyAtVRPZ-nprU-JyahuAhmMjXiqaKzO-0kM",
+  authDomain: "escuela-musica-app.firebaseapp.com",
+  projectId: "escuela-musica-app",
+  storageBucket: "escuela-musica-app.firebasestorage.app",
+  messagingSenderId: "303855837130",
+  appId: "1:303855837130:web:c662eefe0cc718bde37933"
+};
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);

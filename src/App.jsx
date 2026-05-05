@@ -57,7 +57,7 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 // --- URL DE APPS SCRIPT ---
 const APPS_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbxr1wyWi2Rh3sLNExMNtblqma0uSrYLHlJ90pmBNS4FJsaLK90t_ttlqzI0G4XNMAoS/exec';
+  'https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec';
 
 // --- HELPERS ---
 const getDayOfWeek = (dateString) => {
@@ -342,7 +342,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       observaciones: buildObservations(report),
       enviadoDesde: 'App profesores Escuela Los Mitos'
     };
-
+    
+console.log("URL Apps Script:", APPS_SCRIPT_URL);
+console.log("Payload enviado:", payload);
+    
     try {
       await fetch(APPS_SCRIPT_URL, {
         method: 'POST',

@@ -343,9 +343,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       enviadoDesde: 'App profesores Escuela Los Mitos'
     };
     
-console.log("URL Apps Script:", APPS_SCRIPT_URL);
-console.log("Payload enviado:", payload);
-    
     try {
       await fetch(APPS_SCRIPT_URL, {
         method: 'POST',

@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
-npm install firebase import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
 
 const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');

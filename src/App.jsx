@@ -372,7 +372,7 @@ export default function App() {
             <div className="bg-indigo-100 p-3 rounded-full mb-4">
               <Music className="w-8 h-8 text-indigo-600" />
             </div>
-            <h1 className="text-2xl font-bold text-slate-800">TempoList</h1>
+            <h1 className="text-2xl font-bold text-slate-800">Escuela Los Mitos</h1>
             <p className="text-slate-500 mt-1">Acceso para Profesores</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
@@ -412,7 +412,7 @@ export default function App() {
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Music className="w-6 h-6" />
-            <h1 className="text-xl font-bold hidden sm:block">TempoList</h1>
+            <h1 className="text-xl font-bold hidden sm:block">Escuela Los Mitos</h1>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-indigo-100 text-sm flex items-center gap-2 bg-indigo-700/50 px-3 py-1.5 rounded-full">

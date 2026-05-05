@@ -25,8 +25,8 @@ import {
 // --- CONFIGURACIÓN DE FIREBASE ---
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithCustomToken, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
-
+// ¡AÑADIDO deleteDoc a las herramientas de Firebase!
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyAtVRPZ-nprU-JyahuAhmMjXiqaKzO-0kM",
@@ -72,7 +72,7 @@ export default function App() {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [currentSession, setCurrentSession] = useState(null);
 
-  // ESTADO DEL FORMULARIO DIARIO (Añadido hoursTaught)
+  // ESTADO DEL FORMULARIO DIARIO
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
     incidents: '',
@@ -295,6 +295,21 @@ export default function App() {
     }
   };
 
+  // ¡AÑADIDA NUEVA FUNCIÓN PARA BORRAR CLASE!
+  const deleteRecurringClass = async (classId) => {
+    if (!user) return;
+    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario?');
+    if (!isConfirmed) return;
+
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classId));
+      showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
+    } catch (error) {
+      console.error(error);
+      showNotification({ type: 'error', text: 'Error al borrar la clase.' });
+    }
+  };
+
   // --- LOGICA DEL DIARIO ---
   const saveDailyReport = async () => {
     if (!user) return;
@@ -452,11 +467,15 @@ export default function App() {
                           </p>
                           <p className="text-sm text-slate-500 mt-1 flex items-center gap-1"><User className="w-3 h-3" /> Prof: {item.data.teacher} <span className="mx-1">•</span> {item.data.students.length} alumnos</p>
                         </div>
-                        <div className="w-full sm:w-auto text-right">
+                        {/* AQUI HEMOS AÑADIDO EL BOTÓN DE BORRAR */}
+                        <div className="w-full sm:w-auto text-right mt-3 sm:mt-0 flex items-center justify-end gap-2">
                           {item.type === 'completed' ? (
                              <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1.5 rounded-md font-medium border border-emerald-200"><Check className="w-3 h-3" /> Lista Pasada</span>
                           ) : (
-                            <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-indigo-50 hover:bg-indigo-600 hover:text-white text-indigo-600 font-medium py-2 px-4 rounded-lg inline-flex items-center justify-center gap-2 transition-all"><Play className="w-4 h-4" /> Pasar Lista</button>
+                            <>
+                              <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-indigo-50 hover:bg-indigo-600 hover:text-white text-indigo-600 font-medium py-2 px-4 rounded-lg inline-flex items-center justify-center gap-2 transition-all"><Play className="w-4 h-4" /> Pasar Lista</button>
+                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar clase de forma permanente"><Trash2 className="w-5 h-5" /></button>
+                            </>
                           )}
                         </div>
                       </div>

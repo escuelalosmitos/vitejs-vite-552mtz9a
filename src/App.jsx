@@ -197,7 +197,8 @@ export default function App() {
     setShowReportModal(true);
     setGeneratedReport('');
 
-    const apiKey = "AIzaSyDb9fIdZ6Kyg9APcqPL0rhqx5q46pR62nw";
+    // AQUÍ ESTÁ EL CAMBIO: La clave ahora viene de Vercel
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
     const prompt = `Eres un asistente para profesores de una escuela de música.
     Basado en las estadísticas de asistencia de los alumnos y en los reportes diarios escritos por el profesor, redacta un informe completo en forma de email dirigido al director de la escuela.
     
@@ -218,7 +219,8 @@ export default function App() {
 
     while (retries > 0 && !success) {
       try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        // AQUÍ ESTÁ EL CAMBIO: Usamos la versión oficial y estable gemini-1.5-flash
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
@@ -295,7 +297,7 @@ export default function App() {
     }
   };
 
-  // ¡AÑADIDA NUEVA FUNCIÓN PARA BORRAR CLASE!
+  // FUNCIÓN PARA BORRAR CLASE
   const deleteRecurringClass = async (classId) => {
     if (!user) return;
     const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario?');

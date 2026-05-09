@@ -793,6 +793,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         <input
                           type="text"
                           list="global-students"
+                          autoComplete="off"
                           placeholder="Empieza a escribir el nombre..."
                           value={currentSession.newStudentName}
                           onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}

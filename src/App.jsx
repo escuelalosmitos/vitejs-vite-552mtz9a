@@ -786,7 +786,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <UserPlus className="w-4 h-4 text-indigo-500" />
                       Añadir Alumno
                     </h3>
-                    
+                    {/* --- AQUÍ EMPIEZA EL CHIVATO --- */}
+                    <p className="text-[12px] font-bold text-red-600 mb-2">
+                      DEBUG: Alumnos cargados desde Firebase: {globalStudents.length}
+                    </p>
+                    {/* --- AQUÍ TERMINA EL CHIVATO --- */}
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
                       <div className="w-full sm:flex-1 relative">
                         {/* LISTA DESPLEGABLE INVISIBLE DE HTML5 */}

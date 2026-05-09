@@ -57,7 +57,7 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 // --- URL DE APPS SCRIPT ---
 const APPS_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec';
+  'https://script.googleusercontent.com/macros/echo?user_content_key=AUkAhnTdw_SPRAss0T8IqR0EtrG6_wEjiamRp3vsIWsRZeCFilpoFKLlDIJ3z8M1ks1v7U1cPiUQ865Kqqyk3XypZtKCn37miqNlrr0VheB-sqDGGoY4dzzHNP_wLZrJQjIeSQMeQp40fyr175oGvsg7EDDvIaCSY3IIdwU2ncVNcQ99wheAriLIrsketiOYScTmzwngRCFEUjiVW8v2owQsNCh7z7R8tGIlFPIGx7tD4ugmKl9yfkGZKNgORuFAp07jw20NwfDw1EosKCcEdimFw3J3m0V7KQ&lib=MgjqRxlwoqXf5d2LrJo7pDlcMwZyZOfWI';
 
 // --- HELPERS ---
 const getDayOfWeek = (dateString) => {
@@ -342,7 +342,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       observaciones: buildObservations(report),
       enviadoDesde: 'App profesores Escuela Los Mitos'
     };
-    
+
     try {
       await fetch(APPS_SCRIPT_URL, {
         method: 'POST',
@@ -431,6 +431,35 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       ...currentSession,
       students: currentSession.students.filter(s => s.id !== id)
     });
+  };
+
+  // --- NUEVA FUNCIÓN: Guarda la clase en el horario sin registrar asistencia ---
+  const saveClassOnly = async () => {
+    if (!user) return;
+
+    if (!currentSession.subject) {
+      showNotification({ type: 'error', text: 'Por favor, rellena la asignatura.' });
+      return;
+    }
+
+    try {
+      const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
+      const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
+
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
+        dayOfWeek: dayToSave,
+        time: currentSession.time,
+        teacher: currentSession.teacher,
+        subject: currentSession.subject,
+        students: currentSession.students.map(s => ({ id: s.id, name: s.name }))
+      });
+
+      showNotification({ type: 'success', text: 'Clase programada en el horario con éxito.' });
+      setCurrentSession(null);
+    } catch (error) {
+      console.error(error);
+      showNotification({ type: 'error', text: 'Hubo un error al crear la clase.' });
+    }
   };
 
   const saveRecord = async () => {
@@ -1007,10 +1036,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     ))}
                   </div>
 
-                  <div className="mt-8">
+                  {/* NUEVA ZONA DE BOTONES DIVIDIDA */}
+                  <div className="mt-8 flex flex-col sm:flex-row gap-3">
+                    <button
+                      onClick={saveClassOnly}
+                      className="w-full sm:w-1/2 bg-white border-2 border-indigo-100 hover:bg-indigo-50 text-indigo-700 font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm"
+                    >
+                      <Calendar className="w-5 h-5" />
+                      {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos'}
+                    </button>
+
                     <button
                       onClick={saveRecord}
-                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md"
+                      className="w-full sm:w-1/2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md"
                     >
                       <Save className="w-5 h-5" />
                       Guardar Asistencia

@@ -28,7 +28,8 @@ import {
   Snowflake,
   Timer,
   Palmtree,
-  PartyPopper
+  PartyPopper,
+  Coffee
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -321,18 +322,18 @@ export default function App() {
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
-  // CÁLCULO DE NÓMINA CON VACACIONES
+  // CÁLCULO DE NÓMINA (MODIFICADO PARA IGNORAR HORAS RENUNCIADAS)
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); 
     const prevMonth = getPreviousMonthStr(currentMonth);
 
-    // Horas reales actuales
-    const currentRecords = records.filter(r => r.date && r.date.startsWith(currentMonth));
+    // Horas reales actuales: Excluimos explicitamente las que tienen isRenounced === true
+    const currentRecords = records.filter(r => r.date && r.date.startsWith(currentMonth) && !r.isRenounced);
     const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const currentHours = currentMinutes / 60;
 
-    // Media mes anterior
-    const prevRecords = records.filter(r => r.date && r.date.startsWith(prevMonth));
+    // Media mes anterior: También excluimos las renunciadas para ser justos en la proyección
+    const prevRecords = records.filter(r => r.date && r.date.startsWith(prevMonth) && !r.isRenounced);
     const prevTotalMinutes = prevRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const prevUniqueDays = new Set(prevRecords.map(r => r.date)).size;
     const avgDailyMins = prevUniqueDays > 0 ? (prevTotalMinutes / prevUniqueDays) : 0;
@@ -379,7 +380,7 @@ export default function App() {
         .join('\n') || '- Ninguno';
 
       return `
-CLASE: ${record.time} - ${record.subject}
+CLASE: ${record.time} - ${record.subject} ${record.isRenounced ? '(HORA RENUNCIADA)' : ''}
 Profesor: ${record.teacher}
 Total alumnos: ${students.length}
 Anotaciones: ${record.notes || 'Ninguna'}
@@ -469,7 +470,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         notes: scheduledClass.notes || '',
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
-        exceptions: scheduledClass.exceptions || {}, // Mantenemos la memoria de excepciones
+        exceptions: scheduledClass.exceptions || {}, 
         students: scheduledClass.students.map(s => {
           let currentStatus = s.isPaused ? 'paused' : 'present';
           // Si hay una excepción guardada para este alumno hoy, la aplicamos
@@ -503,7 +504,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const assumeSubstitution = (sub) => {
-    setDate(sub.date);
+    setDate(sub.date); 
     setCurrentSession({
       isNew: false, 
       classId: `sub-${sub.originalClassId}`,
@@ -655,7 +656,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         const exceptionsForDate = {};
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
-              exceptionsForDate[s.id] = s.status; // Guardamos que "Avisó" o "Faltó" para ese día
+              exceptionsForDate[s.id] = s.status; 
            }
         });
         finalExceptions[date] = exceptionsForDate;
@@ -681,6 +682,30 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       showNotification({ type: 'error', text: 'Hubo un error al guardar la plantilla.' });
     }
   };
+
+  const dashboardItems = useMemo(() => {
+    const selectedDayOfWeek = getDayOfWeek(date);
+    const items = [];
+    const recordsToday = records.filter(r => r.date === date);
+    
+    const scheduledToday = recurringClasses.filter(rc => 
+      rc.dayOfWeek === selectedDayOfWeek && 
+      !(rc.cancelledDates && rc.cancelledDates.includes(date))
+    );
+
+    scheduledToday.forEach(rc => {
+      const recordExists = recordsToday.find(r => r.classId === rc.id);
+      if (recordExists) items.push({ type: 'completed', data: recordExists });
+      else items.push({ type: 'pending', data: rc });
+    });
+
+    recordsToday.forEach(r => {
+      const isScheduled = scheduledToday.find(rc => rc.id === r.classId);
+      if (!isScheduled) items.push({ type: 'completed', data: r });
+    });
+
+    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
+  }, [date, records, recurringClasses]);
 
   const checkDeadHourAndSave = () => {
     if (!currentSession.subject || !currentSession.capacity) {
@@ -712,8 +737,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
-      const myClassesToday = dashboardItems.map(i => i.data.time).sort();
-      const isLastClass = currentSession.time === myClassesToday[myClassesToday.length - 1];
+      // BÚSQUEDA CORREGIDA: ¿Es realmente la última clase del día para este profesor?
+      const scheduledTimesToday = dashboardItems.map(i => i.data.time).sort();
+      const lastTimeScheduled = scheduledTimesToday[scheduledTimesToday.length - 1];
+      const isLastClass = currentSession.time === lastTimeScheduled;
 
       if (isLastClass) {
         showNotification({ type: 'success', text: "¡Clase vacía y última hora! Puedes irte a casa. Guardando..." });
@@ -730,17 +757,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  const executeSaveRecord = async (deadHourNote = null) => {
+  const executeSaveRecord = async (deadHourNote = null, isRenounced = false) => {
     try {
       const recordId = Date.now().toString();
       const currentMonth = date.substring(0, 7);
       
-      const finalNotes = deadHourNote 
+      let finalNotes = deadHourNote 
         ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
         : currentSession.notes;
 
+      if (isRenounced) {
+        finalNotes = `[RENUNCIA VOLUNTARIA]: El profesor ha decidido no cobrar esta hora. ${currentSession.notes || ''}`;
+      }
+
       const targetUid = user.uid;
 
+      // Generar los tickets para los alumnos que avisaron, INCLUSO si el profe renuncia a la hora.
       const ticketPromises = currentSession.students.map(async (s) => {
         if (s.status === 'notified' && !s.isRecovery && !s.isPaused) {
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
@@ -769,6 +801,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       });
       await Promise.all(ticketPromises);
 
+      // Guardamos la asistencia, inyectando el flag isRenounced
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), {
         classId: currentSession.classId,
         date,
@@ -778,6 +811,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: currentSession.capacity,
         duration: currentSession.duration || 60,
         notes: finalNotes,
+        isRenounced: isRenounced, 
         students: currentSession.students.map(s => ({ ...s }))
       });
 
@@ -804,7 +838,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', currentSession.substitutionId));
       }
 
-      showNotification({ type: 'success', text: 'Lista guardada correctamente.' });
+      showNotification({ type: 'success', text: isRenounced ? 'Renuncia registrada con éxito.' : 'Lista guardada correctamente.' });
       setCurrentSession(null);
       setDeadHourModal(null);
     } catch (error) {
@@ -898,30 +932,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
-  const dashboardItems = useMemo(() => {
-    const selectedDayOfWeek = getDayOfWeek(date);
-    const items = [];
-    const recordsToday = records.filter(r => r.date === date);
-    
-    const scheduledToday = recurringClasses.filter(rc => 
-      rc.dayOfWeek === selectedDayOfWeek && 
-      !(rc.cancelledDates && rc.cancelledDates.includes(date))
-    );
-
-    scheduledToday.forEach(rc => {
-      const recordExists = recordsToday.find(r => r.classId === rc.id);
-      if (recordExists) items.push({ type: 'completed', data: recordExists });
-      else items.push({ type: 'pending', data: rc });
-    });
-
-    recordsToday.forEach(r => {
-      const isScheduled = scheduledToday.find(rc => rc.id === r.classId);
-      if (!isScheduled) items.push({ type: 'completed', data: r });
-    });
-
-    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
-  }, [date, records, recurringClasses]);
-
   const stats = useMemo(() => {
     const studentStats = {};
     records.forEach(record => {
@@ -949,12 +959,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-        <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl">
+        <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl animate-in zoom-in-95 duration-200">
           <div className="flex items-center gap-3 text-red-600 mb-4">
             <AlertCircle className="w-8 h-8" />
             <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
           </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para este tiempo:</p>
+          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para realizar en este tiempo o renuncia a esta hora si prefieres descansar.</p>
           
           <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
             {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
@@ -968,17 +978,33 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <textarea 
             placeholder="Escribe brevemente qué has hecho..."
             value={note} onChange={e => setNote(e.target.value)}
-            className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[100px]"
+            className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[80px]"
           />
 
-          <div className="flex gap-3">
-            <button onClick={() => setDeadHourModal(null)} className="w-1/3 bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase">Cancelar</button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button onClick={() => setDeadHourModal(null)} className="w-full bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">
+              Cancelar
+            </button>
+            
+            {/* NUEVO BOTÓN: RENUNCIAR */}
+            <button 
+              onClick={() => {
+                const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
+                if (isConfirmed) {
+                  executeSaveRecord(null, true);
+                }
+              }}
+              className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1"
+            >
+              <Coffee className="w-4 h-4" /> Renunciar
+            </button>
+
             <button 
               disabled={!selectedTask || !note}
-              onClick={() => executeSaveRecord(`${selectedTask}: ${note}`)}
-              className="w-2/3 bg-black text-white font-bold py-4 rounded-xl uppercase tracking-widest disabled:opacity-30 transition-all"
+              onClick={() => executeSaveRecord(`${selectedTask}: ${note}`, false)}
+              className="w-full bg-black text-white font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-30 transition-all hover:bg-zinc-800"
             >
-              Confirmar
+              Confirmar Tarea
             </button>
           </div>
         </div>
@@ -1058,12 +1084,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <p className="text-zinc-500 mb-6 text-sm">Estas opciones aparecerán cuando un profesor tenga una hora libre entre clases.</p>
           
           <div className="flex flex-col sm:flex-row gap-2 mb-6">
-            <input type="text" value={newTask} onChange={e => setNewTask(e.target.value)} placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
+            <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
             <button 
-              onClick={() => { 
-                if(newTask) { 
-                  const s = {...settings, generalTasks: [...(settings.generalTasks||[]), newTask]}; 
-                  setSettings(s); saveSettings(s); setNewTask(''); 
+              onClick={async () => { 
+                const val = document.getElementById('adminTaskInput').value;
+                if(val) { 
+                  const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; 
+                  setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); 
+                  document.getElementById('adminTaskInput').value = ''; 
                 } 
               }} 
               className="bg-black text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-2 hover:bg-zinc-800"
@@ -1077,7 +1105,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             {settings.generalTasks?.map((t, i) => (
               <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl">
                 <span className="font-medium text-slate-700">{t}</span>
-                <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveSettings(s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
+                <button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
               </div>
             ))}
           </div>
@@ -1296,7 +1324,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                              <Clock className="w-3 h-3" /> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
                               {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
@@ -1353,7 +1381,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
 
-                  {/* NUEVO: AVISO MODO PREVISIÓN (FUTURO) */}
+                  {/* AVISO MODO PREVISIÓN (FUTURO) */}
                   {isFutureDate && !currentSession.isNew && !currentSession.isSubstitution && (
                     <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
                       <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
@@ -1720,10 +1748,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               </div>
             ) : (
               records.map((record) => (
-                <div key={record.id} className="bg-white rounded-3xl shadow-sm border border-zinc-200 p-6 md:p-8">
+                <div key={record.id} className={`bg-white rounded-3xl shadow-sm border p-6 md:p-8 ${record.isRenounced ? 'border-amber-200 opacity-80' : 'border-zinc-200'}`}>
                   <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-zinc-100 gap-4">
                     <div>
-                      <h3 className="font-black uppercase tracking-wide text-black text-xl">{record.subject}</h3>
+                      <h3 className="font-black uppercase tracking-wide text-black text-xl">
+                        {record.subject}
+                        {record.isRenounced && <span className="text-amber-600 text-xs font-black uppercase tracking-widest ml-3 bg-amber-50 px-2 py-1 rounded-lg">(RENUNCIADA)</span>}
+                      </h3>
                       <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5 mt-2">
                         <User className="w-4 h-4" /> {record.teacher}
                       </p>

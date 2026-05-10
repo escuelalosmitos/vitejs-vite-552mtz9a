@@ -24,11 +24,12 @@ import {
   CalendarOff,
   Settings,
   Plus,
-  Timer
+  Ticket,
+  Snowflake
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   onAuthStateChanged,
@@ -55,8 +56,7 @@ const firebaseConfig = {
   appId: "1:303855837130:web:c662eefe0cc718bde37933"
 };
 
-// PREVENCIÓN DE CRASH (Hot-Reloading en React)
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -68,7 +68,6 @@ const APPS_SCRIPT_URL = 'https://script.googleusercontent.com/macros/echo?user_c
 
 // --- HELPERS ---
 const getDayOfWeek = (dateString) => {
-  if (!dateString) return 0;
   const [year, month, day] = dateString.split('-');
   return new Date(year, month - 1, day).getDay();
 };
@@ -88,6 +87,22 @@ const normalizeNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+// NUEVO HELPER: Generador de fechas para los Tickets (Mes + 1)
+const generateTicketDates = (dateString) => {
+  if (!dateString) return { validFrom: '', validUntil: '' };
+  const [y, m] = dateString.split('-').map(Number);
+  let nextY = y;
+  let nextM = m + 1;
+  if (nextM > 12) {
+    nextM = 1;
+    nextY++;
+  }
+  const validFrom = `${nextY}-${String(nextM).padStart(2, '0')}-01`;
+  const lastDay = new Date(nextY, nextM, 0).getDate();
+  const validUntil = `${nextY}-${String(nextM).padStart(2, '0')}-${lastDay}`;
+  return { validFrom, validUntil };
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -100,8 +115,8 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
+  const [tickets, setTickets] = useState([]); // NUEVO: Estado para los tickets
   
-  // Estado para los Ajustes Globales (Admin)
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
@@ -114,14 +129,14 @@ export default function App() {
   const [currentSession, setCurrentSession] = useState(null);
   const [isSendingReport, setIsSendingReport] = useState(false);
   
-  // Estado para el Modal de Hora Muerta
   const [deadHourModal, setDeadHourModal] = useState(null);
 
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
     incidents: '',
     newStudents: '',
-    materialIssues: ''
+    materialIssues: '',
+    hoursTaught: ''
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
@@ -157,14 +172,16 @@ export default function App() {
     const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
     const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
+    const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets'); // NUEVO: Referencia a tickets
 
     let recordsLoaded = false;
     let recurringLoaded = false;
     let dailyLoaded = false;
     let studentsLoaded = false;
+    let ticketsLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded) setLoadingData(false);
     };
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
@@ -175,8 +192,7 @@ export default function App() {
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
       const recs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // PROTECCIÓN ANTI-CRASH: Por si hay registros antiguos sin fecha/hora
-      recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
+      recs.sort((a, b) => new Date(`${b.date}T${b.time}`) - new Date(`${a.date}T${a.time}`));
       setRecords(recs);
       recordsLoaded = true;
       checkLoading();
@@ -200,12 +216,21 @@ export default function App() {
       }
     });
 
+    // NUEVO: Escuchador de Tickets
+    const unsubTickets = onSnapshot(ticketsRef, (snapshot) => {
+      const tks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setTickets(tks);
+      ticketsLoaded = true;
+      checkLoading();
+    });
+
     return () => {
       unsubRecurring();
       unsubRecords();
       unsubDaily();
       unsubStudents();
       unsubSettings();
+      unsubTickets();
     };
   }, [user]);
 
@@ -216,14 +241,16 @@ export default function App() {
         generalFeedback: reportForDate.generalFeedback || '',
         incidents: reportForDate.incidents || '',
         newStudents: reportForDate.newStudents || '',
-        materialIssues: reportForDate.materialIssues || ''
+        materialIssues: reportForDate.materialIssues || '',
+        hoursTaught: reportForDate.hoursTaught || ''
       });
     } else {
       setDailyForm({
         generalFeedback: '',
         incidents: '',
         newStudents: '',
-        materialIssues: ''
+        materialIssues: '',
+        hoursTaught: ''
       });
     }
   }, [date, dailyReports]);
@@ -258,22 +285,20 @@ export default function App() {
   const recordsForSelectedDate = useMemo(() => {
     return records
       .filter(record => record.date === date)
-      .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+      .sort((a, b) => String(a.time).localeCompare(String(b.time)));
   }, [records, date]);
 
   const selectedDailyReport = useMemo(() => {
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
-  // NÓMINA AUTOMATIZADA BÁSADA EN LA DURACIÓN DE LAS LISTAS
   const monthlyPayroll = useMemo(() => {
-    const currentMonth = date.substring(0, 7); // "YYYY-MM"
-    const monthRecords = records.filter(r => r.date && r.date.startsWith(currentMonth));
-    const totalMinutes = monthRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
-    const totalHours = totalMinutes / 60;
+    const currentMonth = date.substring(0, 7); 
+    const monthDaily = dailyReports.filter(r => r.id.startsWith(currentMonth));
+    const totalHours = monthDaily.reduce((acc, r) => acc + normalizeNumber(r.hoursTaught), 0);
     const earnings = totalHours * (settings.hourlyRate || 0);
-    return { totalHours: totalHours.toFixed(2), earnings: earnings.toFixed(2) };
-  }, [records, date, settings.hourlyRate]);
+    return { totalHours, earnings };
+  }, [dailyReports, date, settings.hourlyRate]);
 
   const buildAttendanceDetails = () => {
     if (recordsForSelectedDate.length === 0) {
@@ -299,7 +324,7 @@ export default function App() {
         .join('\n') || '- Ninguno';
 
       return `
-CLASE: ${record.time} (${record.duration || 60}min) - ${record.subject}
+CLASE: ${record.time} - ${record.subject}
 Profesor: ${record.teacher}
 Total alumnos: ${students.length}
 Anotaciones: ${record.notes || 'Ninguna'}
@@ -336,12 +361,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     const report = formData || selectedDailyReport || dailyForm;
-    
-    // Calcula las horas del día a partir de las listas
-    const hours = (recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2);
-    
+    const hours = normalizeNumber(report?.hoursTaught);
     const hasAttendance = recordsForSelectedDate.length > 0;
-    const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim());
+    const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim()) || Boolean(report?.hoursTaught);
 
     if (!hasAttendance && !hasDailyReport) {
       showNotification({ type: 'error', text: 'No hay datos para enviar en esta fecha.' });
@@ -385,11 +407,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: scheduledClass.teacher,
         subject: scheduledClass.subject,
         capacity: scheduledClass.capacity || '',
-        duration: scheduledClass.duration || 60,
         notes: scheduledClass.notes || '',
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
-        students: scheduledClass.students.map(s => ({ ...s, status: 'present' })),
+        // Al iniciar sesión, si está congelado forzamos su status visual
+        students: scheduledClass.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
         newStudentName: '',
         isAddingRecovery: false,
         cancelledDates: scheduledClass.cancelledDates || []
@@ -402,7 +424,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: getTeacherName(),
         subject: '',
         capacity: '',
-        duration: 60,
         notes: '',
         isRecurring: true,
         students: [],
@@ -423,6 +444,20 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       students: currentSession.students.map(s =>
         s.id === id ? { ...s, status: newStatus } : s
       )
+    });
+  };
+
+  // NUEVO: Función para congelar/descongelar alumno
+  const togglePauseStudent = (id) => {
+    setCurrentSession({
+      ...currentSession,
+      students: currentSession.students.map(s => {
+        if (s.id === id) {
+          const newlyPaused = !s.isPaused;
+          return { ...s, isPaused: newlyPaused, status: newlyPaused ? 'paused' : 'present' };
+        }
+        return s;
+      })
     });
   };
 
@@ -460,7 +495,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           id: studentId,
           name: studentName,
           status: 'present',
-          isRecovery: currentSession.isAddingRecovery || false
+          isRecovery: currentSession.isAddingRecovery || false,
+          isPaused: false // Alumno nuevo siempre entra activo
         }
       ],
       newStudentName: '',
@@ -477,8 +513,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveClassOnly = async () => {
     if (!user) return;
-    if (!currentSession.subject || !currentSession.capacity || !currentSession.duration) {
-      showNotification({ type: 'error', text: 'El instrumento, capacidad y duración son obligatorios.' });
+    if (!currentSession.subject || !currentSession.capacity) {
+      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
       return;
     }
     if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
@@ -503,7 +539,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     try {
       const templateStudents = currentSession.students
         .filter(s => !s.isRecovery)
-        .map(s => ({ id: s.id, name: s.name }));
+        // AHORA GUARDAMOS EL isPaused EN LA PLANTILLA
+        .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
 
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
         dayOfWeek: dayToSave,
@@ -511,7 +548,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
-        duration: currentSession.duration,
         notes: currentSession.notes,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents
@@ -526,8 +562,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const checkDeadHourAndSave = () => {
-    if (!currentSession.subject || !currentSession.capacity || !currentSession.duration) {
-      showNotification({ type: 'error', text: 'El instrumento, capacidad y duración son obligatorios.' });
+    if (!currentSession.subject || !currentSession.capacity) {
+      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
       return;
     }
     if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
@@ -549,8 +585,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    // PROTOCOLO HORA MUERTA
-    const allAbsent = currentSession.students.length > 0 && currentSession.students.every(s => s.status === 'absent' || s.status === 'notified');
+    // PROTOCOLO HORA MUERTA (Excluimos de la ecuación a los alumnos "En Mantenimiento")
+    const activeStudents = currentSession.students.filter(s => !s.isPaused);
+    const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
       const myClassesToday = dashboardItems.map(i => i.data.time).sort();
@@ -579,6 +616,25 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
         : currentSession.notes;
 
+      // NUEVO: Generar Tickets en la Bolsa (Solo para los que 'Avisó' y no están en Pausa)
+      const ticketPromises = currentSession.students.map(async (s) => {
+        if (s.status === 'notified' && !s.isRecovery && !s.isPaused) {
+          const { validFrom, validUntil } = generateTicketDates(date);
+          const ticketId = Date.now().toString() + '-' + s.id;
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), {
+            studentId: s.id,
+            studentName: s.name,
+            subject: currentSession.subject,
+            originalDate: date,
+            validFrom,
+            validUntil,
+            isUsed: false,
+            createdAt: new Date().toISOString()
+          });
+        }
+      });
+      await Promise.all(ticketPromises);
+
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), {
         classId: currentSession.classId,
         date,
@@ -586,7 +642,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
-        duration: currentSession.duration,
         notes: finalNotes,
         students: currentSession.students.map(s => ({ ...s }))
       });
@@ -594,7 +649,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       if (currentSession.isRecurring) {
         const templateStudents = currentSession.students
           .filter(s => !s.isRecovery)
-          .map(s => ({ id: s.id, name: s.name }));
+          .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
 
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId), {
           dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
@@ -602,19 +657,29 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           teacher: currentSession.teacher,
           subject: currentSession.subject,
           capacity: currentSession.capacity,
-          duration: currentSession.duration,
           notes: currentSession.notes,
           cancelledDates: currentSession.cancelledDates || [],
           students: templateStudents
         });
       }
 
-      showNotification({ type: 'success', text: 'Lista guardada correctamente.' });
+      showNotification({ type: 'success', text: 'Lista guardada y Bolsa actualizada.' });
       setCurrentSession(null);
       setDeadHourModal(null);
     } catch (error) {
       console.error(error);
       showNotification({ type: 'error', text: 'Hubo un error al guardar los datos.' });
+    }
+  };
+
+  // NUEVA FUNCIÓN: Marcar Ticket como usado desde la Bolsa
+  const markTicketAsUsed = async (ticketId) => {
+    if (!user) return;
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), { isUsed: true }, { merge: true });
+      showNotification({ type: 'success', text: 'Ticket marcado como recuperado.' });
+    } catch (e) {
+      showNotification({ type: 'error', text: 'Error al actualizar el ticket.' });
     }
   };
 
@@ -652,13 +717,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveDailyReport = async (silent = false) => {
     if (!user) return false;
-    
-    // REGLA: Campo 1 Obligatorio
-    if (!dailyForm.generalFeedback.trim()) {
-      showNotification({ type: 'error', text: 'El campo "Cómo han ido las clases" es obligatorio.' });
-      return false;
-    }
-
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), {
         ...dailyForm,
@@ -700,7 +758,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       if (!isScheduled) items.push({ type: 'completed', data: r });
     });
 
-    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
+    return items.sort((a, b) => a.data.time.localeCompare(b.data.time));
   }, [date, records, recurringClasses]);
 
   const stats = useMemo(() => {
@@ -735,7 +793,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <AlertCircle className="w-8 h-8" />
             <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
           </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos han faltado en una hora intermedia. Por favor, selecciona una tarea productiva para realizar en este tiempo:</p>
+          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para este tiempo:</p>
           
           <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
             {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
@@ -920,6 +978,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
+            { id: 'tickets', label: 'Bolsa', icon: Ticket }, // NUEVA PESTAÑA BOLSA
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
             { id: 'reports', label: 'Reportes', icon: BarChart3 }
@@ -975,9 +1034,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <Clock className="w-3 h-3" /> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
-                              {(item.data.students || []).length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
+                              {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
                           </div>
                         </div>
@@ -1023,7 +1082,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
                       <input 
@@ -1053,20 +1112,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         placeholder="Ej: 4" 
                         value={currentSession.capacity} 
                         onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
-                      />
-                    </div>
-                    {/* NUEVO CAMPO: DURACIÓN */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Timer className="w-3 h-3" /> Duración (min)</label>
-                      <input 
-                        type="number" 
-                        min="15" 
-                        step="5"
-                        placeholder="Ej: 60" 
-                        value={currentSession.duration} 
-                        onChange={(e) => handleSessionFieldChange('duration', e.target.value)} 
                         disabled={!currentSession.isNew}
                         className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
                       />
@@ -1169,37 +1214,60 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                   <div className="space-y-4">
                     {currentSession.students.map((student) => (
-                      <div key={student.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 bg-zinc-50 border-2 border-zinc-100 rounded-2xl gap-4 hover:border-zinc-300 transition-colors">
+                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
                           <div className="flex flex-col">
-                            <span className="font-bold text-slate-800 text-lg">
+                            <span className={`font-bold text-lg ${student.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
                               {student.name}
                             </span>
-                            {student.isRecovery && (
+                            {student.isRecovery && !student.isPaused && (
                               <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
                                 <CornerDownRight className="w-3 h-3" /> Recuperación
                               </span>
                             )}
                           </div>
-                          <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-red-500 sm:hidden p-2">
+                          
+                          {/* BOTONES MÓVIL: CONGELAR Y BORRAR */}
+                          <div className="flex gap-2 sm:hidden">
+                            <button onClick={() => togglePauseStudent(student.id)} className={`p-2 rounded-lg transition-colors ${student.isPaused ? 'bg-blue-100 text-blue-600' : 'text-zinc-400 hover:text-blue-500 hover:bg-blue-50'}`} title="Congelar Plaza">
+                              <Snowflake className="w-5 h-5" />
+                            </button>
+                            <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-red-500 p-2">
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* BOTONERA ASISTENCIA / MANTENIMIENTO */}
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                          {student.isPaused ? (
+                            <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
+                              <Snowflake className="w-4 h-4"/> En Mantenimiento
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-3 sm:flex w-full bg-white p-1.5 rounded-xl border border-zinc-200">
+                              <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
+                                <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
+                              </button>
+                              <button onClick={() => handleStatusChange(student.id, 'notified')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'notified' ? 'bg-amber-400 text-amber-900 shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
+                                <AlertCircle className="w-4 h-4" /> <span className="hidden md:inline">Avisó</span>
+                              </button>
+                              <button onClick={() => handleStatusChange(student.id, 'absent')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'absent' ? 'bg-rose-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
+                                <X className="w-4 h-4" /> <span className="hidden md:inline">Faltó</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* BOTONES PC: CONGELAR Y BORRAR */}
+                        <div className="hidden sm:flex items-center gap-2">
+                          <button onClick={() => togglePauseStudent(student.id)} className={`p-3 rounded-xl transition-colors ${student.isPaused ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-zinc-300 hover:text-blue-500 hover:bg-blue-50'}`} title="Congelar Plaza (Mantenimiento)">
+                            <Snowflake className="w-5 h-5" />
+                          </button>
+                          <button onClick={() => removeStudent(student.id)} className="text-zinc-300 hover:text-rose-600 hover:bg-rose-50 p-3 rounded-xl transition-colors" title="Borrar alumno">
                             <Trash2 className="w-5 h-5" />
                           </button>
                         </div>
-
-                        <div className="flex items-center gap-2 w-full sm:w-auto grid grid-cols-3 sm:flex bg-white p-1.5 rounded-xl border border-zinc-200">
-                          <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                            <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
-                          </button>
-                          <button onClick={() => handleStatusChange(student.id, 'notified')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'notified' ? 'bg-amber-400 text-amber-900 shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                            <AlertCircle className="w-4 h-4" /> <span className="hidden md:inline">Avisó</span>
-                          </button>
-                          <button onClick={() => handleStatusChange(student.id, 'absent')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'absent' ? 'bg-rose-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                            <X className="w-4 h-4" /> <span className="hidden md:inline">Faltó</span>
-                          </button>
-                        </div>
-                        <button onClick={() => removeStudent(student.id)} className="text-zinc-300 hover:text-rose-600 hover:bg-rose-50 hidden sm:block p-3 rounded-xl transition-colors">
-                          <Trash2 className="w-5 h-5" />
-                        </button>
                       </div>
                     ))}
                   </div>
@@ -1216,9 +1284,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                   <div className="mt-10 flex flex-col sm:flex-row gap-4 pt-8 border-t border-zinc-100">
                     <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
-                      <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos / Notas'}
+                      <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Plantilla'}
                     </button>
-                    {/* BOTÓN CON DETECCIÓN HORA MUERTA */}
                     <button onClick={checkDeadHourAndSave} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${isOverCapacity ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
@@ -1229,7 +1296,68 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           </div>
         )}
 
-        {/* --- PESTAÑA 2: DIARIO DEL PROFESOR --- */}
+        {/* --- PESTAÑA BOLSA DE RECUPERACIONES --- */}
+        {activeTab === 'tickets' && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+              <div>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bolsa de Recuperaciones</h2>
+                <p className="text-sm font-medium text-zinc-500 mt-1">Tickets generados automáticamente para los alumnos que avisaron.</p>
+              </div>
+            </div>
+
+            {tickets.filter(t => !t.isUsed).length === 0 ? (
+              <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
+                <Ticket className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
+                <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay tickets pendientes</h3>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {tickets.filter(t => !t.isUsed)
+                  .sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom))
+                  .map(ticket => {
+                    const today = new Date().toISOString().split('T')[0];
+                    const isExpired = today > ticket.validUntil;
+                    const isValidNow = today >= ticket.validFrom && today <= ticket.validUntil;
+
+                    return (
+                      <div key={ticket.id} className={`p-6 rounded-3xl border-2 shadow-sm flex flex-col justify-between ${isExpired ? 'bg-zinc-50 border-zinc-200 opacity-60' : isValidNow ? 'bg-white border-emerald-200' : 'bg-white border-amber-200'}`}>
+                        <div className="flex justify-between items-start mb-4">
+                          <div>
+                            <h3 className="font-black text-xl text-slate-800">{ticket.studentName}</h3>
+                            <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 mt-1">{ticket.subject}</p>
+                          </div>
+                          <div className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${isExpired ? 'bg-zinc-200 text-zinc-500' : isValidNow ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                            {isExpired ? 'Caducado' : isValidNow ? 'Activo' : 'Próximo Mes'}
+                          </div>
+                        </div>
+                        
+                        <div className="space-y-2 mb-6">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-zinc-500">Falta original:</span>
+                            <span className="font-bold text-slate-700">{formatDateSpanish(ticket.originalDate)}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-zinc-500">Mes de uso:</span>
+                            <span className="font-bold text-slate-700">{formatDateSpanish(ticket.validFrom)} - {formatDateSpanish(ticket.validUntil)}</span>
+                          </div>
+                        </div>
+
+                        <button 
+                          onClick={() => markTicketAsUsed(ticket.id)}
+                          className="w-full py-4 rounded-xl font-black uppercase text-xs tracking-widest bg-black text-white hover:bg-zinc-800 transition-colors shadow-md"
+                        >
+                          Marcar como Recuperada
+                        </button>
+                      </div>
+                    );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* --- PESTAÑA DIARIO DEL PROFESOR --- */}
         {activeTab === 'daily' && (
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
             <div className="p-6 md:p-8 border-b border-zinc-100 bg-zinc-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1264,7 +1392,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <label className="block text-sm font-black uppercase tracking-wide text-slate-800">4. Estado del material</label>
                   <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Atriles rotos, cables fallando..." />
                 </div>
-                {/* CAMPO DE HORAS ELIMINADO - SE CALCULA AUTOMÁTICAMENTE */}
               </div>
 
               <div className="pt-8 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-zinc-100">
@@ -1279,7 +1406,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           </div>
         )}
 
-        {/* --- PESTAÑA 3: HISTORIAL --- */}
+        {/* --- PESTAÑA HISTORIAL --- */}
         {activeTab === 'history' && (
           <div className="space-y-6">
             <h2 className="text-2xl font-black text-slate-800 mb-8 uppercase tracking-tight">Historial de Clases</h2>
@@ -1331,10 +1458,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           </div>
         )}
 
-        {/* --- PESTAÑA 4: REPORTES Y NÓMINA --- */}
+        {/* --- PESTAÑA REPORTES Y NÓMINA --- */}
         {activeTab === 'reports' && (
           <div className="space-y-8">
-            {/* PANEL DE NÓMINA: MI MES */}
             <div className="bg-black text-white p-8 md:p-10 rounded-3xl shadow-2xl relative overflow-hidden">
                <div className="relative z-10">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
@@ -1351,7 +1477,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                     <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:bg-zinc-800 transition-colors">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Reales (Mes)</p>
+                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Declaradas</p>
                       <p className="text-5xl font-black tracking-tighter">{monthlyPayroll.totalHours}<span className="text-xl text-zinc-600 ml-1 font-bold">h</span></p>
                     </div>
                     <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:border-emerald-500/30 transition-colors">
@@ -1381,7 +1507,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <p className="text-3xl font-black text-slate-800 mt-1">{recordsForSelectedDate.length}</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas Registradas</p>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas</p>
                   <p className="text-3xl font-black text-slate-800 mt-1">{(recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2)}h</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
@@ -1406,34 +1532,44 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
         {/* --- PESTAÑA SECRETA ADMIN --- */}
         {activeTab === 'admin' && isAdmin && (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="bg-white p-8 rounded-3xl border border-zinc-200 shadow-sm">
-              <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Lock className="w-5 h-5"/> Tarifa por Hora</h2>
-              <p className="text-zinc-500 mb-6 text-sm">Este valor actualiza las calculadoras de todos los profesores.</p>
-              <div className="flex items-center gap-6 bg-zinc-50 p-6 rounded-2xl border border-zinc-100">
-                <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-4xl font-black w-40 bg-transparent border-b-4 border-black outline-none" />
-                <span className="text-3xl font-black text-zinc-300">€/h</span>
-                <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification({ type: 'success', text: 'Tarifa actualizada' }); }} className="ml-auto bg-black text-white px-8 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-xl">Guardar Tarifa</button>
+          <div className="space-y-8 animate-in fade-in duration-500">
+            <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Lock className="w-5 h-5"/> Coste de Hora (Convenio)</h2>
+              <p className="text-zinc-500 mb-6 text-sm">Este valor se usará para calcular la nómina de todos los profesores.</p>
+              <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
+                <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
+                <span className="text-2xl font-bold">€ / hora</span>
+                <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification({ type: 'success', text: 'Tarifa actualizada' }); }} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar</button>
               </div>
             </div>
-            <div className="bg-white p-8 rounded-3xl border border-zinc-200 shadow-sm">
-              <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Settings className="w-5 h-5"/> Tareas Hora Muerta</h2>
-              <p className="text-zinc-500 mb-8 text-sm">Tareas disponibles cuando fallan todos los alumnos de una clase.</p>
-              <div className="flex gap-3 mb-8">
-                <input id="adminTaskInput" type="text" placeholder="Nueva tarea..." className="flex-1 p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold" />
-                <button onClick={async () => { 
-                  const val = document.getElementById('adminTaskInput').value;
-                  if(val) {
-                    const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]};
-                    setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
-                    document.getElementById('adminTaskInput').value = '';
-                  }
-                }} className="bg-black text-white p-4 rounded-2xl shadow-lg"><Plus/></button>
+
+            <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Settings className="w-5 h-5"/> Tareas Generales (Hora Muerta)</h2>
+              <p className="text-zinc-500 mb-6 text-sm">Opciones para rellenar en horas libres.</p>
+              
+              <div className="flex flex-col sm:flex-row gap-2 mb-6">
+                <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
+                <button 
+                  onClick={async () => { 
+                    const val = document.getElementById('adminTaskInput').value;
+                    if(val) { 
+                      const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; 
+                      setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); 
+                      document.getElementById('adminTaskInput').value = ''; 
+                    } 
+                  }} 
+                  className="bg-black text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-2 hover:bg-zinc-800"
+                >
+                  <Plus className="w-4 h-4"/> Añadir
+                </button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              
+              <div className="space-y-3">
+                {settings.generalTasks?.length === 0 && <p className="text-zinc-400 italic text-sm p-4 text-center bg-zinc-50 rounded-xl">No hay tareas configuradas.</p>}
                 {settings.generalTasks?.map((t, i) => (
-                  <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl font-bold text-sm">
-                    {t}<button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-300 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
+                  <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <span className="font-medium text-slate-700">{t}</span>
+                    <button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
                   </div>
                 ))}
               </div>
@@ -1449,22 +1585,27 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <ClipboardList className="w-6 h-6 mb-1" />
             <span className="text-[10px] uppercase tracking-widest">Listas</span>
           </button>
+          <button onClick={() => setActiveTab('tickets')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'tickets' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
+            <Ticket className="w-6 h-6 mb-1" />
+            <span className="text-[10px] uppercase tracking-widest">Bolsa</span>
+          </button>
           <button onClick={() => setActiveTab('daily')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'daily' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
             <MessageSquare className="w-6 h-6 mb-1" />
             <span className="text-[10px] uppercase tracking-widest">Diario</span>
           </button>
           <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'history' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
             <History className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Historial</span>
+            <span className="text-[10px] uppercase tracking-widest">Histórico</span>
           </button>
-          <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'reports' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <BarChart3 className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Mi Mes</span>
-          </button>
-          {isAdmin && (
+          {isAdmin ? (
             <button onClick={() => setActiveTab('admin')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'admin' ? 'text-red-600 font-black bg-red-50' : 'text-zinc-400 font-bold'}`}>
               <Settings className="w-6 h-6 mb-1" />
               <span className="text-[10px] uppercase tracking-widest">Admin</span>
+            </button>
+          ) : (
+            <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'reports' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
+              <BarChart3 className="w-6 h-6 mb-1" />
+              <span className="text-[10px] uppercase tracking-widest">Mi Mes</span>
             </button>
           )}
         </div>
@@ -1474,6 +1615,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-6 flex-col gap-4 z-40">
         <button onClick={() => setActiveTab('attendance')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'attendance' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Pasar Lista">
           <ClipboardList className="w-6 h-6" />
+        </button>
+        <button onClick={() => setActiveTab('tickets')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'tickets' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Bolsa de Recuperaciones">
+          <Ticket className="w-6 h-6" />
         </button>
         <button onClick={() => setActiveTab('daily')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'daily' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Resumen Diario">
           <MessageSquare className="w-6 h-6" />

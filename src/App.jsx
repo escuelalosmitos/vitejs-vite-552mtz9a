@@ -23,11 +23,12 @@ import {
   BookOpen,
   CalendarOff,
   Settings,
-  Plus
+  Plus,
+  Timer
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   onAuthStateChanged,
@@ -54,7 +55,8 @@ const firebaseConfig = {
   appId: "1:303855837130:web:c662eefe0cc718bde37933"
 };
 
-const app = initializeApp(firebaseConfig);
+// PREVENCIÓN DE CRASH (Hot-Reloading en React)
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -66,6 +68,7 @@ const APPS_SCRIPT_URL = 'https://script.googleusercontent.com/macros/echo?user_c
 
 // --- HELPERS ---
 const getDayOfWeek = (dateString) => {
+  if (!dateString) return 0;
   const [year, month, day] = dateString.split('-');
   return new Date(year, month - 1, day).getDay();
 };
@@ -98,7 +101,7 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
   
-  // NUEVO: Estado para los Ajustes Globales (Admin)
+  // Estado para los Ajustes Globales (Admin)
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
@@ -111,15 +114,14 @@ export default function App() {
   const [currentSession, setCurrentSession] = useState(null);
   const [isSendingReport, setIsSendingReport] = useState(false);
   
-  // NUEVO: Estado para el Modal de Hora Muerta
+  // Estado para el Modal de Hora Muerta
   const [deadHourModal, setDeadHourModal] = useState(null);
 
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
     incidents: '',
     newStudents: '',
-    materialIssues: '',
-    hoursTaught: ''
+    materialIssues: ''
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
@@ -173,7 +175,8 @@ export default function App() {
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
       const recs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      recs.sort((a, b) => new Date(`${b.date}T${b.time}`) - new Date(`${a.date}T${a.time}`));
+      // PROTECCIÓN ANTI-CRASH: Por si hay registros antiguos sin fecha/hora
+      recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);
       recordsLoaded = true;
       checkLoading();
@@ -213,16 +216,14 @@ export default function App() {
         generalFeedback: reportForDate.generalFeedback || '',
         incidents: reportForDate.incidents || '',
         newStudents: reportForDate.newStudents || '',
-        materialIssues: reportForDate.materialIssues || '',
-        hoursTaught: reportForDate.hoursTaught || ''
+        materialIssues: reportForDate.materialIssues || ''
       });
     } else {
       setDailyForm({
         generalFeedback: '',
         incidents: '',
         newStudents: '',
-        materialIssues: '',
-        hoursTaught: ''
+        materialIssues: ''
       });
     }
   }, [date, dailyReports]);
@@ -257,21 +258,22 @@ export default function App() {
   const recordsForSelectedDate = useMemo(() => {
     return records
       .filter(record => record.date === date)
-      .sort((a, b) => String(a.time).localeCompare(String(b.time)));
+      .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
   }, [records, date]);
 
   const selectedDailyReport = useMemo(() => {
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
-  // NUEVO: Cálculo de nómina mensual
+  // NÓMINA AUTOMATIZADA BÁSADA EN LA DURACIÓN DE LAS LISTAS
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); // "YYYY-MM"
-    const monthDaily = dailyReports.filter(r => r.id.startsWith(currentMonth));
-    const totalHours = monthDaily.reduce((acc, r) => acc + normalizeNumber(r.hoursTaught), 0);
+    const monthRecords = records.filter(r => r.date && r.date.startsWith(currentMonth));
+    const totalMinutes = monthRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
+    const totalHours = totalMinutes / 60;
     const earnings = totalHours * (settings.hourlyRate || 0);
-    return { totalHours, earnings };
-  }, [dailyReports, date, settings.hourlyRate]);
+    return { totalHours: totalHours.toFixed(2), earnings: earnings.toFixed(2) };
+  }, [records, date, settings.hourlyRate]);
 
   const buildAttendanceDetails = () => {
     if (recordsForSelectedDate.length === 0) {
@@ -297,7 +299,7 @@ export default function App() {
         .join('\n') || '- Ninguno';
 
       return `
-CLASE: ${record.time} - ${record.subject}
+CLASE: ${record.time} (${record.duration || 60}min) - ${record.subject}
 Profesor: ${record.teacher}
 Total alumnos: ${students.length}
 Anotaciones: ${record.notes || 'Ninguna'}
@@ -334,9 +336,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     const report = formData || selectedDailyReport || dailyForm;
-    const hours = normalizeNumber(report?.hoursTaught);
+    
+    // Calcula las horas del día a partir de las listas
+    const hours = (recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2);
+    
     const hasAttendance = recordsForSelectedDate.length > 0;
-    const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim()) || Boolean(report?.hoursTaught);
+    const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim());
 
     if (!hasAttendance && !hasDailyReport) {
       showNotification({ type: 'error', text: 'No hay datos para enviar en esta fecha.' });
@@ -380,6 +385,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: scheduledClass.teacher,
         subject: scheduledClass.subject,
         capacity: scheduledClass.capacity || '',
+        duration: scheduledClass.duration || 60,
         notes: scheduledClass.notes || '',
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
@@ -396,6 +402,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: getTeacherName(),
         subject: '',
         capacity: '',
+        duration: 60,
         notes: '',
         isRecurring: true,
         students: [],
@@ -470,8 +477,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveClassOnly = async () => {
     if (!user) return;
-    if (!currentSession.subject || !currentSession.capacity) {
-      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
+    if (!currentSession.subject || !currentSession.capacity || !currentSession.duration) {
+      showNotification({ type: 'error', text: 'El instrumento, capacidad y duración son obligatorios.' });
       return;
     }
     if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
@@ -504,6 +511,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
+        duration: currentSession.duration,
         notes: currentSession.notes,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents
@@ -518,8 +526,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const checkDeadHourAndSave = () => {
-    if (!currentSession.subject || !currentSession.capacity) {
-      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
+    if (!currentSession.subject || !currentSession.capacity || !currentSession.duration) {
+      showNotification({ type: 'error', text: 'El instrumento, capacidad y duración son obligatorios.' });
       return;
     }
     if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
@@ -541,11 +549,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    // --- PROTOCOLO HORA MUERTA ---
+    // PROTOCOLO HORA MUERTA
     const allAbsent = currentSession.students.length > 0 && currentSession.students.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
-      // Mirar si es la última hora
       const myClassesToday = dashboardItems.map(i => i.data.time).sort();
       const isLastClass = currentSession.time === myClassesToday[myClassesToday.length - 1];
 
@@ -553,7 +560,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         showNotification({ type: 'success', text: "¡Clase vacía y última hora! Puedes irte a casa. Guardando..." });
         executeSaveRecord();
       } else {
-        // Levantar el Modal de Hora Muerta
         const combinedTasks = [
           ...(settings.generalTasks || []),
           ...(settings.instrumentTasks?.[currentSession.subject] || [])
@@ -580,6 +586,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
+        duration: currentSession.duration,
         notes: finalNotes,
         students: currentSession.students.map(s => ({ ...s }))
       });
@@ -595,6 +602,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           teacher: currentSession.teacher,
           subject: currentSession.subject,
           capacity: currentSession.capacity,
+          duration: currentSession.duration,
           notes: currentSession.notes,
           cancelledDates: currentSession.cancelledDates || [],
           students: templateStudents
@@ -644,6 +652,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveDailyReport = async (silent = false) => {
     if (!user) return false;
+    
+    // REGLA: Campo 1 Obligatorio
+    if (!dailyForm.generalFeedback.trim()) {
+      showNotification({ type: 'error', text: 'El campo "Cómo han ido las clases" es obligatorio.' });
+      return false;
+    }
+
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), {
         ...dailyForm,
@@ -685,7 +700,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       if (!isScheduled) items.push({ type: 'completed', data: r });
     });
 
-    return items.sort((a, b) => a.data.time.localeCompare(b.data.time));
+    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
   }, [date, records, recurringClasses]);
 
   const stats = useMemo(() => {
@@ -960,9 +975,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                              <Clock className="w-3 h-3" /> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
-                              {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
+                              {(item.data.students || []).length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
                           </div>
                         </div>
@@ -1008,7 +1023,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
                       <input 
@@ -1038,6 +1053,20 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         placeholder="Ej: 4" 
                         value={currentSession.capacity} 
                         onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} 
+                        disabled={!currentSession.isNew}
+                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
+                      />
+                    </div>
+                    {/* NUEVO CAMPO: DURACIÓN */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Timer className="w-3 h-3" /> Duración (min)</label>
+                      <input 
+                        type="number" 
+                        min="15" 
+                        step="5"
+                        placeholder="Ej: 60" 
+                        value={currentSession.duration} 
+                        onChange={(e) => handleSessionFieldChange('duration', e.target.value)} 
                         disabled={!currentSession.isNew}
                         className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
                       />
@@ -1152,7 +1181,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               </span>
                             )}
                           </div>
-                          <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg sm:hidden p-2">
+                          <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-red-500 sm:hidden p-2">
                             <Trash2 className="w-5 h-5" />
                           </button>
                         </div>
@@ -1220,8 +1249,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
               <div className="space-y-6">
                 <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">1. ¿Cómo han ido las clases hoy?</label>
-                  <textarea value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-slate-700 font-medium transition-colors" placeholder="Comentarios generales..." />
+                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">1. ¿Cómo han ido las clases hoy? <span className="text-red-500">*</span></label>
+                  <textarea required value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-slate-700 font-medium transition-colors" placeholder="Ej: Muy bien, hemos trabajado las escalas..." />
                 </div>
                 <div className="space-y-3">
                   <label className="block text-sm font-black uppercase tracking-wide text-slate-800">2. Incidencias o fuera de lo común</label>
@@ -1229,16 +1258,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 </div>
                 <div className="space-y-3">
                   <label className="block text-sm font-black uppercase tracking-wide text-slate-800">3. Alumnos nuevos</label>
-                  <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Nombres de altas nuevas..." />
+                  <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Nombres de altas nuevas, primeras impresiones del alumno..." />
                 </div>
                 <div className="space-y-3">
                   <label className="block text-sm font-black uppercase tracking-wide text-slate-800">4. Estado del material</label>
                   <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Atriles rotos, cables fallando..." />
                 </div>
-                <div className="space-y-3 pt-6 border-t border-zinc-100">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">5. Horas impartidas hoy</label>
-                  <input type="number" min="0" step="0.5" value={dailyForm.hoursTaught} onChange={(e) => setDailyForm({ ...dailyForm, hoursTaught: e.target.value })} className="w-full sm:w-1/3 p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none text-slate-800 font-black text-xl transition-colors" placeholder="Ej: 4.5" />
-                </div>
+                {/* CAMPO DE HORAS ELIMINADO - SE CALCULA AUTOMÁTICAMENTE */}
               </div>
 
               <div className="pt-8 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-zinc-100">
@@ -1325,12 +1351,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                     <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:bg-zinc-800 transition-colors">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Declaradas</p>
+                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Reales (Mes)</p>
                       <p className="text-5xl font-black tracking-tighter">{monthlyPayroll.totalHours}<span className="text-xl text-zinc-600 ml-1 font-bold">h</span></p>
                     </div>
                     <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:border-emerald-500/30 transition-colors">
                       <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-widest mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Acumulado Mes</p>
-                      <p className="text-5xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings.toFixed(2)}<span className="text-xl ml-1 font-bold">€</span></p>
+                      <p className="text-5xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings}<span className="text-xl ml-1 font-bold">€</span></p>
                     </div>
                   </div>
                </div>
@@ -1355,8 +1381,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <p className="text-3xl font-black text-slate-800 mt-1">{recordsForSelectedDate.length}</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas</p>
-                  <p className="text-3xl font-black text-slate-800 mt-1">{normalizeNumber((selectedDailyReport || dailyForm)?.hoursTaught)}</p>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas Registradas</p>
+                  <p className="text-3xl font-black text-slate-800 mt-1">{(recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2)}h</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
                   <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Profesor</p>
@@ -1379,7 +1405,41 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         )}
 
         {/* --- PESTAÑA SECRETA ADMIN --- */}
-        {activeTab === 'admin' && isAdmin && <AdminPanel />}
+        {activeTab === 'admin' && isAdmin && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-white p-8 rounded-3xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Lock className="w-5 h-5"/> Tarifa por Hora</h2>
+              <p className="text-zinc-500 mb-6 text-sm">Este valor actualiza las calculadoras de todos los profesores.</p>
+              <div className="flex items-center gap-6 bg-zinc-50 p-6 rounded-2xl border border-zinc-100">
+                <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-4xl font-black w-40 bg-transparent border-b-4 border-black outline-none" />
+                <span className="text-3xl font-black text-zinc-300">€/h</span>
+                <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification({ type: 'success', text: 'Tarifa actualizada' }); }} className="ml-auto bg-black text-white px-8 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-xl">Guardar Tarifa</button>
+              </div>
+            </div>
+            <div className="bg-white p-8 rounded-3xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Settings className="w-5 h-5"/> Tareas Hora Muerta</h2>
+              <p className="text-zinc-500 mb-8 text-sm">Tareas disponibles cuando fallan todos los alumnos de una clase.</p>
+              <div className="flex gap-3 mb-8">
+                <input id="adminTaskInput" type="text" placeholder="Nueva tarea..." className="flex-1 p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold" />
+                <button onClick={async () => { 
+                  const val = document.getElementById('adminTaskInput').value;
+                  if(val) {
+                    const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]};
+                    setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
+                    document.getElementById('adminTaskInput').value = '';
+                  }
+                }} className="bg-black text-white p-4 rounded-2xl shadow-lg"><Plus/></button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {settings.generalTasks?.map((t, i) => (
+                  <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl font-bold text-sm">
+                    {t}<button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-300 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* TABS INFERIORES (MÓVIL) */}
@@ -1425,7 +1485,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <BarChart3 className="w-6 h-6" />
         </button>
         {isAdmin && (
-          <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'admin' ? 'bg-red-600 text-white scale-110 shadow-xl' : 'bg-white text-red-300 hover:text-red-600 hover:bg-red-50 border-2 border-red-100 mt-4'}`} title="Panel de Administración">
+          <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all mt-4 ${activeTab === 'admin' ? 'bg-red-600 text-white scale-110 shadow-xl' : 'bg-white text-red-300 hover:text-red-600 hover:bg-red-50 border-2 border-red-100'}`} title="Panel de Administración">
             <Settings className="w-6 h-6" />
           </button>
         )}

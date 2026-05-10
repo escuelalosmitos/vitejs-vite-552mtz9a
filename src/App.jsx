@@ -23,7 +23,8 @@ import {
   BookOpen,
   CalendarOff,
   Settings,
-  Plus
+  Plus,
+  Timer
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -69,17 +70,8 @@ const getDayOfWeek = (dateString) => {
   const [year, month, day] = dateString.split('-');
   return new Date(year, month - 1, day).getDay();
 };
-
-const getDayName = (dayIndex) => {
-  const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-  return days[dayIndex];
-};
-
-const formatDateSpanish = (dateString) => {
-  if (!dateString) return '';
-  return dateString.split('-').reverse().join('/');
-};
-
+const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
+const formatDateSpanish = (dateString) => dateString ? dateString.split('-').reverse().join('/') : '';
 const normalizeNumber = (value) => {
   const number = Number(String(value).replace(',', '.'));
   return Number.isFinite(number) ? number : 0;
@@ -98,7 +90,6 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
   
-  // NUEVO: Estado para los Ajustes Globales (Admin)
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
@@ -110,1325 +101,536 @@ export default function App() {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [currentSession, setCurrentSession] = useState(null);
   const [isSendingReport, setIsSendingReport] = useState(false);
-  
-  // NUEVO: Estado para el Modal de Hora Muerta
   const [deadHourModal, setDeadHourModal] = useState(null);
 
   const [dailyForm, setDailyForm] = useState({
-    generalFeedback: '',
-    incidents: '',
-    newStudents: '',
-    materialIssues: '',
-    hoursTaught: ''
+    generalFeedback: '', incidents: '', newStudents: '', materialIssues: ''
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
 
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        }
-      } catch (error) {
-        console.error("Error de inicialización de auth:", error);
-      }
-    };
-
-    initAuth();
-
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
       setIsAuthLoading(false);
     });
-
     return () => unsubscribe();
   }, []);
 
   useEffect(() => {
     if (!user) return;
-
     setLoadingData(true);
 
-    const recurringRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses');
-    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
-    const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
-    const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
-    const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
-
-    let recordsLoaded = false;
-    let recurringLoaded = false;
-    let dailyLoaded = false;
-    let studentsLoaded = false;
-
-    const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded) setLoadingData(false);
-    };
-
-    const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
-      setRecurringClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      recurringLoaded = true;
-      checkLoading();
+    const unsubRecurring = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses'), s => setRecurringClasses(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubRecords = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'records'), s => setRecords(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubDaily = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports'), s => setDailyReports(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubStudents = onSnapshot(collection(db, 'artifacts', appId, 'students'), s => setGlobalStudents(s.docs.map(d => ({id: d.id, ...d.data()}))));
+    const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), d => {
+      if (d.exists()) setSettings(d.data());
     });
 
-    const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
-      const recs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      recs.sort((a, b) => new Date(`${b.date}T${b.time}`) - new Date(`${a.date}T${a.time}`));
-      setRecords(recs);
-      recordsLoaded = true;
-      checkLoading();
-    });
-
-    const unsubDaily = onSnapshot(dailyRef, (snapshot) => {
-      setDailyReports(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      dailyLoaded = true;
-      checkLoading();
-    });
-
-    const unsubStudents = onSnapshot(globalStudentsRef, (snapshot) => {
-      setGlobalStudents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      studentsLoaded = true;
-      checkLoading();
-    });
-
-    const unsubSettings = onSnapshot(settingsRef, (doc) => {
-      if (doc.exists()) {
-        setSettings(doc.data());
-      }
-    });
-
-    return () => {
-      unsubRecurring();
-      unsubRecords();
-      unsubDaily();
-      unsubStudents();
-      unsubSettings();
-    };
+    setLoadingData(false);
+    return () => { unsubRecurring(); unsubRecords(); unsubDaily(); unsubStudents(); unsubSettings(); };
   }, [user]);
 
   useEffect(() => {
-    const reportForDate = dailyReports.find(r => r.id === date);
-    if (reportForDate) {
-      setDailyForm({
-        generalFeedback: reportForDate.generalFeedback || '',
-        incidents: reportForDate.incidents || '',
-        newStudents: reportForDate.newStudents || '',
-        materialIssues: reportForDate.materialIssues || '',
-        hoursTaught: reportForDate.hoursTaught || ''
-      });
-    } else {
-      setDailyForm({
-        generalFeedback: '',
-        incidents: '',
-        newStudents: '',
-        materialIssues: '',
-        hoursTaught: ''
-      });
-    }
+    const r = dailyReports.find(report => report.id === date);
+    setDailyForm(r ? { ...r } : { generalFeedback: '', incidents: '', newStudents: '', materialIssues: '' });
   }, [date, dailyReports]);
 
-  const getTeacherName = () => {
-    if (!user || !user.email) return 'Profesor';
-    return user.email.split('@')[0];
-  };
-
-  const showNotification = (msg) => {
-    setNotification(msg);
+  const getTeacherName = () => user?.email?.split('@')[0] || 'Profesor';
+  const showNotification = (text, type = 'success') => {
+    setNotification({ text, type });
     setTimeout(() => setNotification(null), 3000);
   };
 
+  const handleLogout = () => signOut(auth);
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
     setIsAuthLoading(true);
-
-    try {
-      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
-    } catch (error) {
-      setLoginError('Credenciales incorrectas. Verifica tu email y contraseña.');
-      setIsAuthLoading(false);
-    }
+    try { await signInWithEmailAndPassword(auth, loginEmail, loginPassword); } 
+    catch (error) { setLoginError('Error de acceso.'); setIsAuthLoading(false); }
   };
 
-  const handleLogout = () => {
-    signOut(auth);
-  };
-
-  const recordsForSelectedDate = useMemo(() => {
-    return records
-      .filter(record => record.date === date)
-      .sort((a, b) => String(a.time).localeCompare(String(b.time)));
-  }, [records, date]);
-
-  const selectedDailyReport = useMemo(() => {
-    return dailyReports.find(report => report.id === date);
-  }, [dailyReports, date]);
-
-  // NUEVO: Cálculo de nómina mensual
+  // --- NUEVA LÓGICA DE NÓMINA AUTOMATIZADA ---
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); // "YYYY-MM"
-    const monthDaily = dailyReports.filter(r => r.id.startsWith(currentMonth));
-    const totalHours = monthDaily.reduce((acc, r) => acc + normalizeNumber(r.hoursTaught), 0);
+    // Sumamos la duración de todas las listas pasadas en este mes
+    const monthRecords = records.filter(r => r.date.startsWith(currentMonth));
+    const totalMinutes = monthRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
+    const totalHours = totalMinutes / 60;
     const earnings = totalHours * (settings.hourlyRate || 0);
-    return { totalHours, earnings };
-  }, [dailyReports, date, settings.hourlyRate]);
+    return { totalHours: totalHours.toFixed(2), earnings: earnings.toFixed(2), totalMinutes };
+  }, [records, date, settings.hourlyRate]);
 
-  const buildAttendanceDetails = () => {
-    if (recordsForSelectedDate.length === 0) {
-      return 'No hay registros de asistencia guardados para esta fecha.';
-    }
-
-    return recordsForSelectedDate.map(record => {
-      const students = record.students || [];
-
-      const present = students
-        .filter(s => s.status === 'present')
-        .map(s => `- ${s.name}${s.isRecovery ? ' (Recuperación)' : ''}`)
-        .join('\n') || '- Ninguno';
-
-      const notified = students
-        .filter(s => s.status === 'notified')
-        .map(s => `- ${s.name}`)
-        .join('\n') || '- Ninguno';
-
-      const absent = students
-        .filter(s => s.status === 'absent')
-        .map(s => `- ${s.name}`)
-        .join('\n') || '- Ninguno';
-
-      return `
-CLASE: ${record.time} - ${record.subject}
-Profesor: ${record.teacher}
-Total alumnos: ${students.length}
-Anotaciones: ${record.notes || 'Ninguna'}
-
-Presentes:
-${present}
-
-Avisaron falta:
-${notified}
-
-Faltaron sin aviso:
-${absent}
-      `.trim();
-    }).join('\n\n---------------------------------\n\n');
-  };
-
-  const buildObservations = (formData = null) => {
-    const report = formData || selectedDailyReport || dailyForm;
-    return `
-¿Cómo han ido las clases?
-${report?.generalFeedback?.trim() || 'Sin observaciones.'}
-
-Incidencias o algo fuera de lo habitual:
-${report?.incidents?.trim() || 'Sin incidencias.'}
-
-Alumnos nuevos:
-${report?.newStudents?.trim() || 'No se han indicado alumnos nuevos.'}
-
-Material roto o cosas a mejorar:
-${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
-    `.trim();
-  };
-
-  const sendReportByEmail = async (formData = null) => {
-    if (!user) return;
-    const report = formData || selectedDailyReport || dailyForm;
-    const hours = normalizeNumber(report?.hoursTaught);
-    const hasAttendance = recordsForSelectedDate.length > 0;
-    const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim()) || Boolean(report?.hoursTaught);
-
-    if (!hasAttendance && !hasDailyReport) {
-      showNotification({ type: 'error', text: 'No hay datos para enviar en esta fecha.' });
-      return;
-    }
-
-    setIsSendingReport(true);
-    const payload = {
-      profesor: getTeacherName(),
-      profesorEmail: user.email,
-      fecha: formatDateSpanish(date),
-      fechaISO: date,
-      horas: hours,
-      asistenciaDetallada: buildAttendanceDetails(),
-      observaciones: buildObservations(report),
-      enviadoDesde: 'App profesores Escuela Los Mitos'
+  // --- LÓGICA DE SESIÓN ---
+  const startSession = (sc = null) => {
+    const base = sc ? {
+      isNew: false, classId: sc.id, time: sc.time, teacher: sc.teacher, subject: sc.subject,
+      capacity: sc.capacity || '', duration: sc.duration || 60, notes: sc.notes || '', 
+      dayOfWeek: sc.dayOfWeek, isRecurring: true, students: sc.students.map(s => ({ ...s, status: 'present' })),
+      cancelledDates: sc.cancelledDates || []
+    } : {
+      isNew: true, classId: Date.now().toString(), time: '17:00', teacher: getTeacherName(),
+      subject: '', capacity: '', duration: 60, notes: '', isRecurring: true, students: [],
+      cancelledDates: []
     };
-
-    try {
-      await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload)
-      });
-      showNotification({ type: 'success', text: 'Informe enviado por email.' });
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'No se pudo enviar el informe.' });
-    } finally {
-      setIsSendingReport(false);
-    }
-  };
-
-  const startSession = (scheduledClass = null) => {
-    if (scheduledClass) {
-      setCurrentSession({
-        isNew: false,
-        classId: scheduledClass.id,
-        time: scheduledClass.time,
-        teacher: scheduledClass.teacher,
-        subject: scheduledClass.subject,
-        capacity: scheduledClass.capacity || '',
-        notes: scheduledClass.notes || '',
-        dayOfWeek: scheduledClass.dayOfWeek,
-        isRecurring: true,
-        students: scheduledClass.students.map(s => ({ ...s, status: 'present' })),
-        newStudentName: '',
-        isAddingRecovery: false,
-        cancelledDates: scheduledClass.cancelledDates || []
-      });
-    } else {
-      setCurrentSession({
-        isNew: true,
-        classId: Date.now().toString(),
-        time: '17:00',
-        teacher: getTeacherName(),
-        subject: '',
-        capacity: '',
-        notes: '',
-        isRecurring: true,
-        students: [],
-        newStudentName: '',
-        isAddingRecovery: false,
-        cancelledDates: []
-      });
-    }
+    setCurrentSession({ ...base, newStudentName: '', isAddingRecovery: false });
   };
 
   const handleSessionFieldChange = (field, value) => {
     setCurrentSession({ ...currentSession, [field]: value });
   };
 
-  const handleStatusChange = (id, newStatus) => {
-    setCurrentSession({
-      ...currentSession,
-      students: currentSession.students.map(s =>
-        s.id === id ? { ...s, status: newStatus } : s
-      )
+  const dashboardItems = useMemo(() => {
+    const selectedDayOfWeek = getDayOfWeek(date);
+    const items = [];
+    const recordsToday = records.filter(r => r.date === date);
+    const scheduledToday = recurringClasses.filter(rc => rc.dayOfWeek === selectedDayOfWeek && !(rc.cancelledDates && rc.cancelledDates.includes(date)));
+    scheduledToday.forEach(rc => {
+      const recordExists = recordsToday.find(r => r.classId === rc.id);
+      items.push(recordExists ? { type: 'completed', data: recordExists } : { type: 'pending', data: rc });
     });
-  };
+    recordsToday.forEach(r => {
+      if (!scheduledToday.find(rc => rc.id === r.classId)) items.push({ type: 'completed', data: r });
+    });
+    return items.sort((a, b) => a.data.time.localeCompare(b.data.time));
+  }, [date, records, recurringClasses]);
 
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     if (!studentName) return;
-
     if (currentSession.capacity) {
       const maxCapacity = parseInt(currentSession.capacity, 10);
       if (currentSession.students.length >= maxCapacity) {
-        showNotification({ type: 'error', text: `Aforo completo. El límite es de ${maxCapacity} alumnos.` });
+        showNotification(`Aforo completo (${maxCapacity})`, 'error');
         return;
       }
     }
-
     let studentId;
     let existingStudent = globalStudents.find(s => s.name.toLowerCase() === studentName.toLowerCase());
-
-    if (existingStudent) {
-      studentId = existingStudent.id;
-    } else {
+    if (existingStudent) { studentId = existingStudent.id; } 
+    else {
       studentId = Date.now().toString();
-      try {
-        await setDoc(doc(db, 'artifacts', appId, 'students', studentId), { name: studentName });
-      } catch (error) {
-        console.error("Error creando alumno global:", error);
-      }
+      try { await setDoc(doc(db, 'artifacts', appId, 'students', studentId), { name: studentName }); } 
+      catch (e) { console.error(e); }
     }
-
     setCurrentSession({
       ...currentSession,
-      students: [
-        ...currentSession.students,
-        {
-          id: studentId,
-          name: studentName,
-          status: 'present',
-          isRecovery: currentSession.isAddingRecovery || false
-        }
-      ],
-      newStudentName: '',
-      isAddingRecovery: false
-    });
-  };
-
-  const removeStudent = (id) => {
-    setCurrentSession({
-      ...currentSession,
-      students: currentSession.students.filter(s => s.id !== id)
+      students: [...currentSession.students, { id: studentId, name: studentName, status: 'present', isRecovery: currentSession.isAddingRecovery || false }],
+      newStudentName: '', isAddingRecovery: false
     });
   };
 
   const saveClassOnly = async () => {
     if (!user) return;
-    if (!currentSession.subject || !currentSession.capacity) {
-      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
-      return;
-    }
-    if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
-      showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
-      return;
-    }
-
+    if (!currentSession.subject || !currentSession.capacity || !currentSession.duration) return showNotification('Asignatura, Capacidad y Duración son obligatorios.', 'error');
+    
     const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
     const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
-
-    const hasCollision = recurringClasses.some(rc => 
-      rc.dayOfWeek === dayToSave && 
-      rc.time === currentSession.time &&
-      rc.id !== classIdToSave
-    );
-
-    if (hasCollision) {
-      showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
-      return;
+    if (recurringClasses.some(rc => rc.dayOfWeek === dayToSave && rc.time === currentSession.time && rc.id !== classIdToSave)) {
+      return showNotification('Ya tienes una clase a esta hora.', 'error');
     }
 
     try {
-      const templateStudents = currentSession.students
-        .filter(s => !s.isRecovery)
-        .map(s => ({ id: s.id, name: s.name }));
-
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
-        dayOfWeek: dayToSave,
-        time: currentSession.time,
-        teacher: currentSession.teacher,
-        subject: currentSession.subject,
-        capacity: currentSession.capacity,
-        notes: currentSession.notes,
+        dayOfWeek: dayToSave, time: currentSession.time, teacher: currentSession.teacher, subject: currentSession.subject,
+        capacity: currentSession.capacity, duration: currentSession.duration, notes: currentSession.notes,
         cancelledDates: currentSession.cancelledDates || [],
-        students: templateStudents
+        students: currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name }))
       });
-
-      showNotification({ type: 'success', text: 'Clase programada en el horario con éxito.' });
+      showNotification('Clase programada');
       setCurrentSession(null);
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Hubo un error al crear la clase.' });
-    }
+    } catch (e) { showNotification('Error al crear', 'error'); }
   };
 
   const checkDeadHourAndSave = () => {
-    if (!currentSession.subject || !currentSession.capacity) {
-      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
-      return;
-    }
-    if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
-      showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
-      return;
-    }
-
+    if (!currentSession.subject || !currentSession.capacity || !currentSession.duration) return showNotification('Faltan campos obligatorios', 'error');
     const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
     const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
-
-    const hasCollision = recurringClasses.some(rc => 
-      rc.dayOfWeek === dayToSave && 
-      rc.time === currentSession.time &&
-      rc.id !== classIdToSave
-    );
-
-    if (hasCollision) {
-      showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
-      return;
+    if (recurringClasses.some(rc => rc.dayOfWeek === dayToSave && rc.time === currentSession.time && rc.id !== classIdToSave)) {
+      return showNotification('Solapamiento de horario', 'error');
     }
-
-    // --- PROTOCOLO HORA MUERTA ---
     const allAbsent = currentSession.students.length > 0 && currentSession.students.every(s => s.status === 'absent' || s.status === 'notified');
-    
     if (allAbsent) {
-      // Mirar si es la última hora
       const myClassesToday = dashboardItems.map(i => i.data.time).sort();
       const isLastClass = currentSession.time === myClassesToday[myClassesToday.length - 1];
-
       if (isLastClass) {
-        showNotification({ type: 'success', text: "¡Clase vacía y última hora! Puedes irte a casa. Guardando..." });
+        showNotification("Última hora libre. ¡A casa!", "success");
         executeSaveRecord();
       } else {
-        // Levantar el Modal de Hora Muerta
-        const combinedTasks = [
-          ...(settings.generalTasks || []),
-          ...(settings.instrumentTasks?.[currentSession.subject] || [])
-        ];
+        const combinedTasks = [...(settings.generalTasks || []), ...(settings.instrumentTasks?.[currentSession.subject] || [])];
         setDeadHourModal({ tasks: combinedTasks, subject: currentSession.subject });
       }
-    } else {
-      executeSaveRecord();
-    }
+    } else { executeSaveRecord(); }
   };
 
   const executeSaveRecord = async (deadHourNote = null) => {
     try {
       const recordId = Date.now().toString();
-      
-      const finalNotes = deadHourNote 
-        ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
-        : currentSession.notes;
-
+      const finalNotes = deadHourNote ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` : currentSession.notes;
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), {
-        classId: currentSession.classId,
-        date,
-        time: currentSession.time,
-        teacher: currentSession.teacher,
-        subject: currentSession.subject,
-        capacity: currentSession.capacity,
-        notes: finalNotes,
-        students: currentSession.students.map(s => ({ ...s }))
+        classId: currentSession.classId, date, time: currentSession.time, teacher: currentSession.teacher,
+        subject: currentSession.subject, capacity: currentSession.capacity, duration: currentSession.duration,
+        notes: finalNotes, students: currentSession.students.map(s => ({ ...s }))
       });
-
       if (currentSession.isRecurring) {
-        const templateStudents = currentSession.students
-          .filter(s => !s.isRecovery)
-          .map(s => ({ id: s.id, name: s.name }));
-
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId), {
           dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
-          time: currentSession.time,
-          teacher: currentSession.teacher,
-          subject: currentSession.subject,
-          capacity: currentSession.capacity,
-          notes: currentSession.notes,
+          time: currentSession.time, teacher: currentSession.teacher, subject: currentSession.subject,
+          capacity: currentSession.capacity, duration: currentSession.duration, notes: currentSession.notes,
           cancelledDates: currentSession.cancelledDates || [],
-          students: templateStudents
+          students: currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name }))
         });
       }
-
-      showNotification({ type: 'success', text: 'Lista guardada correctamente.' });
+      showNotification('Asistencia guardada');
       setCurrentSession(null);
       setDeadHourModal(null);
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Hubo un error al guardar los datos.' });
-    }
-  };
-
-  const cancelClassForToday = async (classData) => {
-    if (!user) return;
-    const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
-    if (!isConfirmed) return;
-
-    try {
-      const updatedCancelledDates = [...(classData.cancelledDates || []), date];
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classData.id), {
-        ...classData,
-        cancelledDates: updatedCancelledDates
-      });
-      showNotification({ type: 'success', text: 'Clase cancelada para el día de hoy.' });
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Error al cancelar la clase temporalmente.' });
-    }
-  };
-
-  const deleteRecurringClass = async (classId) => {
-    if (!user) return;
-    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario permanentemente?');
-    if (!isConfirmed) return;
-
-    try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classId));
-      showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Error al borrar la clase.' });
-    }
+    } catch (e) { showNotification('Error al guardar', 'error'); }
   };
 
   const saveDailyReport = async (silent = false) => {
     if (!user) return false;
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), {
-        ...dailyForm,
-        date
-      });
-      if (!silent) showNotification({ type: 'success', text: 'Resumen del día guardado con éxito.' });
-      return true;
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Error al guardar el resumen diario.' });
+    // REGLA: El campo 1 es obligatorio
+    if (!dailyForm.generalFeedback.trim()) {
+      showNotification('El campo "Cómo han ido las clases" es obligatorio.', 'error');
       return false;
     }
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), { ...dailyForm, date });
+      if (!silent) showNotification('Resumen guardado');
+      return true;
+    } catch (e) { showNotification('Error al guardar reporte', 'error'); return false; }
   };
 
   const saveAndSendDailyReport = async () => {
     const saved = await saveDailyReport(true);
     if (!saved) return;
-    await sendReportByEmail(dailyForm);
-  };
-
-  const dashboardItems = useMemo(() => {
-    const selectedDayOfWeek = getDayOfWeek(date);
-    const items = [];
-    const recordsToday = records.filter(r => r.date === date);
-    
-    const scheduledToday = recurringClasses.filter(rc => 
-      rc.dayOfWeek === selectedDayOfWeek && 
-      !(rc.cancelledDates && rc.cancelledDates.includes(date))
-    );
-
-    scheduledToday.forEach(rc => {
-      const recordExists = recordsToday.find(r => r.classId === rc.id);
-      if (recordExists) items.push({ type: 'completed', data: recordExists });
-      else items.push({ type: 'pending', data: rc });
-    });
-
-    recordsToday.forEach(r => {
-      const isScheduled = scheduledToday.find(rc => rc.id === r.classId);
-      if (!isScheduled) items.push({ type: 'completed', data: r });
-    });
-
-    return items.sort((a, b) => a.data.time.localeCompare(b.data.time));
-  }, [date, records, recurringClasses]);
-
-  const stats = useMemo(() => {
-    const studentStats = {};
-    records.forEach(record => {
-      record.students.forEach(student => {
-        if (!studentStats[student.name]) {
-          studentStats[student.name] = { present: 0, absent: 0, notified: 0, total: 0 };
-        }
-        studentStats[student.name].total++;
-        if (student.status === 'present') studentStats[student.name].present++;
-        if (student.status === 'absent') studentStats[student.name].absent++;
-        if (student.status === 'notified') studentStats[student.name].notified++;
-      });
-    });
-    return Object.entries(studentStats)
-      .map(([name, counts]) => ({ name, ...counts }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [records]);
-
-
-  // --- COMPONENTES AUXILIARES ---
-
-  const DeadHourOverlay = () => {
-    const [note, setNote] = useState('');
-    const [selectedTask, setSelectedTask] = useState('');
-
-    return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-        <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl">
-          <div className="flex items-center gap-3 text-red-600 mb-4">
-            <AlertCircle className="w-8 h-8" />
-            <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
-          </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos han faltado en una hora intermedia. Por favor, selecciona una tarea productiva para realizar en este tiempo:</p>
-          
-          <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
-            {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
-            {deadHourModal.tasks.map((t, i) => (
-              <button key={i} onClick={() => setSelectedTask(t)} className={`w-full text-left p-3 rounded-xl border-2 transition-all ${selectedTask === t ? 'border-black bg-zinc-50 font-bold' : 'border-zinc-100 text-zinc-500 hover:border-zinc-300'}`}>
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <textarea 
-            placeholder="Escribe brevemente qué has hecho..."
-            value={note} onChange={e => setNote(e.target.value)}
-            className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[100px]"
-          />
-
-          <div className="flex gap-3">
-            <button onClick={() => setDeadHourModal(null)} className="w-1/3 bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase">Cancelar</button>
-            <button 
-              disabled={!selectedTask || !note}
-              onClick={() => executeSaveRecord(`${selectedTask}: ${note}`)}
-              className="w-2/3 bg-black text-white font-bold py-4 rounded-xl uppercase tracking-widest disabled:opacity-30 transition-all"
-            >
-              Confirmar
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const AdminPanel = () => {
-    const [newTask, setNewTask] = useState('');
-
-    const saveSettings = async (newSet) => {
-      await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSet);
-      showNotification({ type: 'success', text: 'Ajustes guardados globalmente.' });
+    setIsSendingReport(true);
+    const payload = {
+      profesor: getTeacherName(), profesorEmail: user.email, fecha: formatDateSpanish(date), fechaISO: date,
+      horas: (records.filter(r => r.date === date).reduce((acc, r) => acc + (r.duration || 60), 0) / 60).toFixed(2),
+      asistenciaDetallada: records.filter(r => r.date === date).map(r => `CLASE: ${r.time} (${r.duration}min) - ${r.subject}\nNotas: ${r.notes}\nAlumnos: ${r.students.length}`).join('\n\n'),
+      observaciones: `Feedback: ${dailyForm.generalFeedback}\nIncidencias: ${dailyForm.incidents}\nAlumnos Nuevos: ${dailyForm.newStudents}\nMaterial: ${dailyForm.materialIssues}`,
+      enviadoDesde: 'App Los Mitos v3.5'
     };
-
-    return (
-      <div className="space-y-8 animate-in fade-in duration-500">
-        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
-          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Lock className="w-5 h-5"/> Coste de Hora (Convenio)</h2>
-          <p className="text-zinc-500 mb-6 text-sm">Este valor se usará para calcular la nómina de todos los profesores.</p>
-          <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
-            <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
-            <span className="text-2xl font-bold">€ / hora</span>
-            <button onClick={() => saveSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar Valor</button>
-          </div>
-        </div>
-
-        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
-          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Settings className="w-5 h-5"/> Tareas Generales (Hora Muerta)</h2>
-          <p className="text-zinc-500 mb-6 text-sm">Estas opciones aparecerán cuando un profesor tenga una hora libre entre clases.</p>
-          
-          <div className="flex flex-col sm:flex-row gap-2 mb-6">
-            <input type="text" value={newTask} onChange={e => setNewTask(e.target.value)} placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
-            <button 
-              onClick={() => { 
-                if(newTask) { 
-                  const s = {...settings, generalTasks: [...(settings.generalTasks||[]), newTask]}; 
-                  setSettings(s); saveSettings(s); setNewTask(''); 
-                } 
-              }} 
-              className="bg-black text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-2 hover:bg-zinc-800"
-            >
-              <Plus className="w-4 h-4"/> Añadir
-            </button>
-          </div>
-          
-          <div className="space-y-3">
-            {settings.generalTasks?.length === 0 && <p className="text-zinc-400 italic text-sm p-4 text-center bg-zinc-50 rounded-xl">No hay tareas configuradas.</p>}
-            {settings.generalTasks?.map((t, i) => (
-              <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl">
-                <span className="font-medium text-slate-700">{t}</span>
-                <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveSettings(s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
+    try {
+      await fetch(APPS_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+      showNotification('Informe enviado a coordinación');
+    } catch (e) { showNotification('Error al enviar email', 'error'); }
+    setIsSendingReport(false);
   };
 
+  const deleteRecurringClass = async (id) => {
+    if (window.confirm('¿Borrar esta clase permanentemente?')) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', id));
+      showNotification('Clase eliminada');
+    }
+  };
 
   // --- RENDER ---
-  if (isAuthLoading) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
-        <RefreshCw className="w-10 h-10 text-black animate-spin" />
+  if (isAuthLoading || loadingData) return <div className="min-h-screen flex items-center justify-center"><RefreshCw className="animate-spin" /></div>;
+
+  if (!user) return (
+    <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
+      <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md border border-zinc-100 text-center">
+        <div className="bg-black text-white p-4 rounded-2xl inline-block mb-6 shadow-lg rotate-3"><Music className="w-8 h-8" /></div>
+        <h1 className="text-3xl font-black uppercase tracking-tighter mb-8">Escuela Los Mitos</h1>
+        <form onSubmit={handleLogin} className="space-y-4">
+          {loginError && <div className="p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100">{loginError}</div>}
+          <input type="email" required value={loginEmail} onChange={e => setLoginEmail(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-medium" placeholder="Email" />
+          <input type="password" required value={loginPassword} onChange={e => setLoginPassword(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-medium" placeholder="Contraseña" />
+          <button className="w-full bg-black text-white py-4 rounded-2xl font-black uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-xl active:scale-95">Entrar</button>
+        </form>
       </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans p-4">
-        <div className="bg-white p-8 md:p-10 rounded-3xl shadow-xl border border-zinc-100 w-full max-w-md">
-          <div className="flex flex-col items-center mb-8 text-center">
-            <div className="bg-black text-white p-4 rounded-2xl mb-4 shadow-lg rotate-3">
-              <Music className="w-8 h-8" />
-            </div>
-            <h1 className="text-3xl font-black text-slate-800 uppercase tracking-tighter">Los Mitos</h1>
-            <p className="text-zinc-400 mt-1 font-bold uppercase tracking-widest text-xs">Escuela de Música</p>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            {loginError && (
-              <div className="p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100 text-center">
-                {loginError}
-              </div>
-            )}
-            <div>
-              <input type="email" required value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none transition-colors font-medium" placeholder="Email del profesor" />
-            </div>
-            <div>
-              <input type="password" required value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none transition-colors font-medium" placeholder="Contraseña" />
-            </div>
-            <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 transition-all mt-6 shadow-xl uppercase tracking-widest text-sm active:scale-95">
-              <Lock className="w-5 h-5" /> Entrar
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  if (loadingData) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
-        <div className="flex flex-col items-center gap-4 p-8 bg-white rounded-3xl shadow-lg border border-zinc-100">
-          <RefreshCw className="w-10 h-10 text-black animate-spin" />
-          <h2 className="text-xl font-black text-slate-800 uppercase tracking-wide">Cargando datos</h2>
-          <p className="text-zinc-400 font-medium">Sincronizando con la nube...</p>
-        </div>
-      </div>
-    );
-  }
-
-  const isCapacityMissing = !currentSession?.capacity;
-  const maxCap = parseInt(currentSession?.capacity, 10) || 0;
-  const currentCount = currentSession?.students?.length || 0;
-  const isCapacityReached = !isCapacityMissing && currentCount >= maxCap;
-  const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
-  const isDisabledAdd = isCapacityMissing || isCapacityReached;
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
-      {deadHourModal && <DeadHourOverlay />}
+    <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-8">
+      {deadHourModal && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl">
+            <div className="flex items-center gap-3 text-red-600 mb-4"><AlertCircle className="w-8 h-8" /><h2 className="text-xl font-bold uppercase">Protocolo Hora Muerta</h2></div>
+            <p className="text-zinc-600 mb-6 font-medium">Clase vacía detectada. Selecciona una tarea productiva:</p>
+            <div className="space-y-2 mb-6 max-h-40 overflow-y-auto pr-2">
+              {deadHourModal.tasks.map((t, i) => (
+                <button key={i} onClick={() => setDeadHourModal({...deadHourModal, selected: t})} className={`w-full text-left p-3 rounded-xl border-2 transition-all ${deadHourModal.selected === t ? 'border-black bg-zinc-50 font-bold' : 'border-zinc-100 text-zinc-500'}`}>{t}</button>
+              ))}
+            </div>
+            <textarea placeholder="Justifica qué has hecho..." className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[80px]" onChange={e => setDeadHourModal({...deadHourModal, note: e.target.value})} />
+            <div className="flex gap-3">
+              <button onClick={() => setDeadHourModal(null)} className="w-1/3 py-4 font-bold text-zinc-400">Cancelar</button>
+              <button disabled={!deadHourModal.selected || !deadHourModal.note} onClick={() => executeSaveRecord(`${deadHourModal.selected}: ${deadHourModal.note}`)} className="w-2/3 bg-black text-white font-bold py-4 rounded-xl uppercase tracking-widest disabled:opacity-30">Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <header className="bg-black text-white p-5 sticky top-0 z-50 shadow-md border-b border-zinc-800">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-white p-1.5 rounded-lg">
-              <Music className="w-5 h-5 text-black" />
-            </div>
-            <h1 className="text-xl font-black hidden sm:block uppercase tracking-tighter">Escuela Los Mitos</h1>
-          </div>
+          <div className="flex items-center gap-3"><div className="bg-white p-1.5 rounded-lg"><Music className="w-5 h-5 text-black" /></div><h1 className="text-xl font-black uppercase tracking-tighter">Escuela Los Mitos</h1></div>
           <div className="flex items-center gap-4">
-            <span className="text-zinc-300 text-sm flex items-center gap-2 bg-zinc-800 px-4 py-2 rounded-xl font-medium">
-              <User className="w-4 h-4" />
-              <span className="max-w-[100px] sm:max-w-xs truncate">{user.email}</span>
-            </span>
-            <button onClick={handleLogout} className="text-zinc-400 hover:text-white transition-colors" title="Cerrar Sesión">
-              <LogOut className="w-6 h-6" />
-            </button>
+            <span className="text-zinc-300 text-sm hidden sm:block bg-zinc-800 px-4 py-2 rounded-xl font-medium">{user.email}</span>
+            <button onClick={handleLogout} className="text-zinc-400 hover:text-white"><LogOut className="w-6 h-6" /></button>
           </div>
         </div>
       </header>
 
       {notification && (
-        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300">
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] animate-in slide-in-from-top-4">
           <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>
-            {notification.type === 'error' ? <X className="w-5 h-5" /> : <Check className="w-5 h-5" />}
-            {notification.text}
+            {notification.type === 'error' ? <X className="w-5 h-5" /> : <Check className="w-5 h-5" />} {notification.text}
           </div>
         </div>
       )}
 
-      <main className="max-w-5xl mx-auto p-4 md:p-8 mt-2">
-        {/* TABS (MENÚ SUPERIOR) */}
+      <main className="max-w-5xl mx-auto p-4 md:p-8">
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
-            { id: 'reports', label: 'Reportes', icon: BarChart3 }
+            { id: 'reports', label: 'Mi Mes', icon: BarChart3 }
           ].map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-[10px] tracking-widest transition-all ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black'}`}>
               <tab.icon className="w-4 h-4"/> {tab.label}
             </button>
           ))}
-          {isAdmin && (
-            <button onClick={() => setActiveTab('admin')} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-md' : 'text-red-400 hover:bg-red-50 hover:text-red-600'}`}>
-              <Settings className="w-4 h-4"/> Admin
-            </button>
-          )}
+          {isAdmin && <button onClick={() => setActiveTab('admin')} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-[10px] tracking-widest transition-all ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-md' : 'text-red-400 hover:text-red-600'}`}><Settings className="w-4 h-4"/> Admin</button>}
         </div>
 
-        {/* --- PESTAÑA 1: LISTAS --- */}
+        {/* --- PESTAÑA LISTAS --- */}
         {activeTab === 'attendance' && (
-          <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
-            {!currentSession && (
-              <div className="p-6 md:p-8 border-b border-zinc-100 bg-zinc-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div className="space-y-1 w-full sm:w-auto">
-                  <label className="text-xs font-black text-zinc-400 flex items-center gap-1 uppercase tracking-widest">
-                    <Calendar className="w-3 h-3" /> Agenda del día
-                  </label>
-                  <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
-                </div>
-                <button onClick={() => startSession(null)} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest">
-                  <ClipboardList className="w-5 h-5" /> Nueva Clase
-                </button>
-              </div>
-            )}
-
+          <div className="space-y-6">
             {!currentSession ? (
-              <div className="p-6 md:p-8">
-                <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2 uppercase tracking-wide">
-                  {getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}
-                </h3>
-                {dashboardItems.length === 0 ? (
-                  <div className="text-center py-16 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
-                    <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay clases en agenda.</p>
+              <div className="bg-white rounded-3xl p-8 border border-zinc-200 shadow-sm">
+                <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-8">
+                  <div><h2 className="text-2xl font-black uppercase tracking-tight">Agenda Docente</h2><p className="text-zinc-400 font-medium">{getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}</p></div>
+                  <div className="flex gap-2 w-full sm:w-auto">
+                    <input type="date" value={date} onChange={e => setDate(e.target.value)} className="p-3 bg-zinc-50 border-2 border-zinc-100 rounded-xl font-bold outline-none focus:border-black" />
+                    <button onClick={() => startSession()} className="bg-black text-white p-3 rounded-xl shadow-lg hover:scale-105 transition-transform"><Plus/></button>
                   </div>
-                ) : (
-                  <div className="space-y-4">
-                    {dashboardItems.map((item, idx) => (
-                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
-                        <div className="flex items-center gap-4">
-                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
-                            <span className="text-sm leading-none">{item.data.time.split(':')[0]}</span>
-                            <span className="text-[10px] opacity-70">{item.data.time.split(':')[1]}</span>
-                          </div>
-                          <div>
-                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' ? 'text-zinc-500' : 'text-slate-800'}`}>
-                              {item.data.subject}
-                            </p>
-                            <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
-                              <span className="mx-1">•</span> 
-                              {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
-                            </p>
-                          </div>
+                </div>
+                <div className="space-y-4">
+                  {dashboardItems.length === 0 ? <p className="text-center py-10 text-zinc-300 font-bold uppercase tracking-widest">Agenda vacía</p> : 
+                  dashboardItems.map((item, i) => (
+                    <div key={i} className={`flex items-center justify-between p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' ? 'bg-zinc-50 border-zinc-100 opacity-60' : 'bg-white border-zinc-100 hover:border-black'}`}>
+                      <div className="flex items-center gap-4">
+                        <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' ? 'bg-zinc-200 text-zinc-400' : 'bg-black text-white'}`}>
+                          <span className="text-sm leading-none">{item.data.time.split(':')[0]}</span>
+                          <span className="text-[10px] opacity-60">{item.data.time.split(':')[1]}</span>
                         </div>
-                        <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
-                          {item.type === 'completed' ? (
-                            <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-4 py-2 rounded-lg font-black border border-emerald-200 uppercase tracking-widest">
-                              <Check className="w-4 h-4" /> Completado
-                            </span>
-                          ) : (
-                            <>
-                              <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-zinc-100 hover:bg-black hover:text-white text-black font-bold py-2.5 px-5 rounded-xl inline-flex items-center justify-center gap-2 transition-all text-xs uppercase tracking-widest">
-                                <Play className="w-4 h-4" /> Pasar Lista
-                              </button>
-                              
-                              <button onClick={() => cancelClassForToday(item.data)} className="p-2.5 text-zinc-400 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors shrink-0" title="Cancelar solo por hoy (Sustitución)">
-                                <CalendarOff className="w-5 h-5" />
-                              </button>
-
-                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors shrink-0" title="Eliminar plantilla permanentemente">
-                                <Trash2 className="w-5 h-5" />
-                              </button>
-                            </>
-                          )}
-                        </div>
+                        <div><h3 className="font-black uppercase text-sm tracking-tight">{item.data.subject}</h3><p className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3"/> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3"/> {item.data.students?.length || 0} alumnos</p></div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      <div className="flex gap-2">
+                        {item.type === 'completed' ? <Check className="text-emerald-500 w-6 h-6"/> : 
+                        <button onClick={() => startSession(item.data)} className="bg-zinc-100 p-2.5 rounded-xl hover:bg-black hover:text-white transition-all"><Play className="w-5 h-5"/></button>}
+                        {!item.type === 'completed' && <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2.5 text-zinc-300 hover:text-red-500 transition-colors"><Trash2 className="w-5 h-5" /></button>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : (
-              <>
-                {/* CABECERA DENTRO DE LA CLASE */}
-                <div className="p-6 md:p-8 border-b border-zinc-100 bg-white relative">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
-                    <div className="flex flex-col">
-                      <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">{currentSession.isNew ? 'Nueva Clase' : 'Pasando lista'}</h2>
-                      <span className="text-sm font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase tracking-widest">
-                        <Calendar className="w-4 h-4" /> {getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}
-                      </span>
-                    </div>
-                    <button onClick={() => setCurrentSession(null)} className="text-zinc-500 hover:text-black hover:bg-zinc-100 text-xs font-black uppercase tracking-widest px-5 py-2.5 rounded-xl border-2 border-zinc-200 transition-colors w-full sm:w-auto text-center">
-                      Cerrar Vista
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
-                      <input 
-                        type="time" 
-                        value={currentSession.time} 
-                        onChange={(e) => handleSessionFieldChange('time', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
-                      <input 
-                        type="text" 
-                        placeholder="Ej: Piano..." 
-                        value={currentSession.subject} 
-                        onChange={(e) => handleSessionFieldChange('subject', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><User className="w-3 h-3" /> Aforo Máximo</label>
-                      <input 
-                        type="number" 
-                        min="1" 
-                        placeholder="Ej: 4" 
-                        value={currentSession.capacity} 
-                        onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 mt-2">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><BookOpen className="w-3 h-3" /> Cuaderno de Bitácora (Pasa a la sig. semana)</label>
-                    <textarea 
-                      placeholder="Ejercicios, tareas, estado de los alumnos..." 
-                      value={currentSession.notes} 
-                      onChange={(e) => handleSessionFieldChange('notes', e.target.value)} 
-                      className="w-full p-4 bg-amber-50/40 border-2 border-amber-100 rounded-xl focus:border-amber-400 outline-none text-slate-800 font-medium text-sm min-h-[100px] resize-y transition-colors" 
-                    />
-                  </div>
-
-                  {currentSession.isNew && (
-                    <div className="mt-6 flex items-center gap-2 p-4 bg-zinc-50 rounded-xl border-2 border-zinc-100">
-                      <input type="checkbox" id="recurring" checked={currentSession.isRecurring} onChange={(e) => handleSessionFieldChange('isRecurring', e.target.checked)} className="w-5 h-5 text-black rounded focus:ring-black accent-black cursor-pointer" />
-                      <label htmlFor="recurring" className="text-xs font-black uppercase tracking-widest text-slate-700 flex items-center gap-1.5 cursor-pointer">
-                        <RefreshCw className="w-4 h-4" /> Repetir clase cada semana
-                      </label>
-                    </div>
-                  )}
+              <div className="bg-white rounded-3xl overflow-hidden border border-zinc-200 shadow-2xl animate-in zoom-in-95 duration-300">
+                <div className="bg-black text-white p-6 flex justify-between items-center">
+                  <div><h2 className="text-xl font-black uppercase tracking-tight">{currentSession.subject || 'Configurar Clase'}</h2><p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">{currentSession.time} • {getDayName(getDayOfWeek(date))}</p></div>
+                  <button onClick={() => setCurrentSession(null)} className="bg-zinc-800 p-2 rounded-xl"><X/></button>
                 </div>
-
-                {/* ZONA DE ALUMNOS */}
-                <div className="p-6 md:p-8">
-                  <div className={`flex flex-col mb-8 p-6 rounded-2xl border-2 transition-colors ${isCapacityMissing ? 'bg-amber-50/50 border-amber-200' : isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-zinc-50 border-zinc-200'}`}>
-                    <h3 className="text-sm uppercase tracking-widest font-black text-slate-800 mb-4 flex items-center gap-2">
-                      <UserPlus className="w-5 h-5 text-black" />
-                      Añadir Alumno
-                      {currentSession.capacity && (
-                        <span className={`ml-2 px-3 py-1 rounded-lg text-[10px] ${isOverCapacity ? 'bg-red-600 text-white shadow-sm' : isCapacityReached ? 'bg-red-200 text-red-900' : 'bg-zinc-200 text-zinc-600'}`}>
-                          ({currentCount} / {currentSession.capacity})
-                        </span>
-                      )}
-                    </h3>
-                    
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
-                      <div className="w-full sm:flex-1 relative">
-                        <input
-                          type="text"
-                          name="custom_search_field_no_chrome"
-                          autoComplete="new-password"
-                          placeholder={isCapacityMissing ? "Escribe la capacidad arriba primero..." : isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
-                          value={currentSession.newStudentName}
-                          onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && addStudent()}
-                          disabled={isDisabledAdd}
-                          className={`w-full p-4 text-sm font-bold rounded-xl outline-none relative z-10 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                        />
-                        {!isDisabledAdd && currentSession.newStudentName.length >= 2 && (
-                          <div className="absolute left-0 right-0 top-full mt-2 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-56 overflow-y-auto overflow-x-hidden">
-                            {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
-                              <div className="p-4 text-sm font-bold text-zinc-500 bg-zinc-50">
-                                No hay coincidencias. Se guardará como alumno nuevo.
-                              </div>
-                            ) : (
-                              globalStudents
-                                .filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase()))
-                                .map(student => (
-                                  <div
-                                    key={student.id}
-                                    onClick={() => handleSessionFieldChange('newStudentName', student.name)}
-                                    className="p-4 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 last:border-0 transition-colors flex items-center gap-3"
-                                  >
-                                    <User className="w-4 h-4 opacity-50" />
-                                    {student.name}
-                                  </div>
-                                ))
-                            )}
+                <div className="p-8">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div className="space-y-2"><label className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Instrumento</label><input disabled={!currentSession.isNew} value={currentSession.subject} onChange={e => handleSessionFieldChange('subject', e.target.value)} className="w-full p-4 bg-zinc-50 rounded-xl border-2 border-zinc-100 outline-none font-bold focus:border-black disabled:opacity-50" placeholder="Ej: Piano" /></div>
+                    <div className="space-y-2"><label className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Capacidad</label><input disabled={!currentSession.isNew} type="number" value={currentSession.capacity} onChange={e => handleSessionFieldChange('capacity', e.target.value)} className="w-full p-4 bg-zinc-50 rounded-xl border-2 border-zinc-100 outline-none font-bold focus:border-black disabled:opacity-50" placeholder="Ej: 4" /></div>
+                    <div className="space-y-2"><label className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Duración (min)</label><input disabled={!currentSession.isNew} type="number" value={currentSession.duration} onChange={e => handleSessionFieldChange('duration', e.target.value)} className="w-full p-4 bg-zinc-50 rounded-xl border-2 border-zinc-100 outline-none font-bold focus:border-black disabled:opacity-50" placeholder="60" /></div>
+                  </div>
+                  <div className="space-y-2 mb-8"><label className="text-[10px] font-black uppercase text-zinc-400 tracking-widest">Cuaderno de Bitácora</label><textarea value={currentSession.notes} onChange={e => handleSessionFieldChange('notes', e.target.value)} className="w-full p-4 bg-amber-50/20 rounded-xl border-2 border-amber-100 outline-none font-medium text-sm focus:border-amber-400 min-h-[80px]" placeholder="Ejercicios, progresos..." /></div>
+                  
+                  {/* Buscador de alumnos */}
+                  <div className={`p-6 rounded-2xl border-2 mb-8 transition-all ${isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-zinc-50 border-zinc-200'}`}>
+                    <div className="flex justify-between items-center mb-4"><h3 className="text-xs font-black uppercase tracking-widest flex items-center gap-2"><UserPlus className="w-4 h-4"/> Añadir Alumno</h3>{currentSession.capacity && <span className={`text-[10px] font-bold px-2 py-1 rounded-lg ${isOverCapacity ? 'bg-red-600 text-white' : 'bg-zinc-200 text-zinc-600'}`}>{currentSession.students.length} / {currentSession.capacity}</span>}</div>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <div className="flex-1 relative">
+                        <input autoComplete="new-password" disabled={isDisabledAdd} value={currentSession.newStudentName} onChange={e => handleSessionFieldChange('newStudentName', e.target.value)} onKeyDown={e => e.key === 'Enter' && addStudent()} className="w-full p-4 bg-white border-2 border-zinc-100 rounded-xl outline-none font-bold focus:border-black disabled:bg-zinc-100" placeholder={isCapacityMissing ? "Escribe la capacidad arriba..." : isCapacityReached ? "Aforo completo" : "Buscar nombre..."} />
+                        {currentSession.newStudentName.length >= 2 && !isDisabledAdd && (
+                          <div className="absolute top-full left-0 right-0 bg-white border-2 border-black rounded-xl z-50 mt-2 max-h-48 overflow-y-auto shadow-2xl">
+                            {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.toLowerCase())).map(s => (
+                              <div key={s.id} onClick={() => handleSessionFieldChange('newStudentName', s.name)} className="p-4 hover:bg-zinc-100 cursor-pointer font-bold text-sm border-b border-zinc-50 last:border-0">{s.name}</div>
+                            ))}
                           </div>
                         )}
                       </div>
-
-                      <div className={`flex items-center gap-3 w-full sm:w-auto px-4 py-4 rounded-xl border-2 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-zinc-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
-                        <input
-                          type="checkbox"
-                          id="isRecovery"
-                          checked={currentSession.isAddingRecovery || false}
-                          onChange={(e) => handleSessionFieldChange('isAddingRecovery', e.target.checked)}
-                          disabled={isDisabledAdd}
-                          className="w-5 h-5 accent-amber-600 rounded cursor-pointer disabled:cursor-not-allowed"
-                        />
-                        <label htmlFor="isRecovery" className="text-xs font-black text-amber-900 uppercase tracking-widest cursor-pointer whitespace-nowrap">
-                          Viene a recuperar
-                        </label>
-                      </div>
-
-                      <button
-                        onClick={addStudent}
-                        disabled={isDisabledAdd}
-                        className={`w-full sm:w-auto px-8 py-4 font-black text-xs tracking-widest uppercase rounded-xl transition-all shadow-sm flex justify-center ${isDisabledAdd ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
-                      >
-                        Añadir
-                      </button>
+                      <div className="flex items-center gap-2 bg-amber-50 px-4 rounded-xl border-2 border-amber-100"><input type="checkbox" checked={currentSession.isAddingRecovery} onChange={e => handleSessionFieldChange('isAddingRecovery', e.target.checked)} className="w-5 h-5 accent-amber-600" /><span className="text-[10px] font-black uppercase text-amber-900 tracking-widest">Recupera</span></div>
+                      <button onClick={addStudent} disabled={isDisabledAdd} className="bg-black text-white px-8 py-4 rounded-xl font-black uppercase text-xs tracking-widest disabled:opacity-30">Añadir</button>
                     </div>
                   </div>
 
-                  <div className="space-y-4">
-                    {currentSession.students.map((student) => (
-                      <div key={student.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 bg-zinc-50 border-2 border-zinc-100 rounded-2xl gap-4 hover:border-zinc-300 transition-colors">
-                        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
-                          <div className="flex flex-col">
-                            <span className="font-bold text-slate-800 text-lg">
-                              {student.name}
-                            </span>
-                            {student.isRecovery && (
-                              <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
-                                <CornerDownRight className="w-3 h-3" /> Recuperación
-                              </span>
-                            )}
-                          </div>
-                          <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg sm:hidden p-2">
-                            <Trash2 className="w-5 h-5" />
-                          </button>
+                  <div className="space-y-3">
+                    {currentSession.students.map(s => (
+                      <div key={s.id} className="flex flex-col sm:flex-row items-center justify-between p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl gap-4 group hover:border-black transition-all">
+                        <div className="flex flex-col"><span className="font-black text-slate-800">{s.name}</span>{s.isRecovery && <span className="text-[8px] font-black uppercase text-amber-600 tracking-widest flex items-center gap-1 mt-1"><CornerDownRight className="w-2 h-2"/> Recuperación</span>}</div>
+                        <div className="flex gap-2 bg-white p-1.5 rounded-xl border border-zinc-200">
+                          {['present', 'notified', 'absent'].map(status => (
+                            <button key={status} onClick={() => handleStatusChange(s.id, status)} className={`px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${s.status === status ? (status === 'present' ? 'bg-emerald-500 text-white' : status === 'notified' ? 'bg-amber-400 text-amber-900' : 'bg-red-500 text-white') : 'text-zinc-400 hover:bg-zinc-50'}`}>{status === 'present' ? 'Vino' : status === 'notified' ? 'Avisó' : 'Faltó'}</button>
+                          ))}
                         </div>
-
-                        <div className="flex items-center gap-2 w-full sm:w-auto grid grid-cols-3 sm:flex bg-white p-1.5 rounded-xl border border-zinc-200">
-                          <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                            <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
-                          </button>
-                          <button onClick={() => handleStatusChange(student.id, 'notified')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'notified' ? 'bg-amber-400 text-amber-900 shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                            <AlertCircle className="w-4 h-4" /> <span className="hidden md:inline">Avisó</span>
-                          </button>
-                          <button onClick={() => handleStatusChange(student.id, 'absent')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'absent' ? 'bg-rose-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                            <X className="w-4 h-4" /> <span className="hidden md:inline">Faltó</span>
-                          </button>
-                        </div>
-                        <button onClick={() => removeStudent(student.id)} className="text-zinc-300 hover:text-rose-600 hover:bg-rose-50 hidden sm:block p-3 rounded-xl transition-colors">
-                          <Trash2 className="w-5 h-5" />
-                        </button>
+                        <button onClick={() => setCurrentSession({...currentSession, students: currentSession.students.filter(st => st.id !== s.id)})} className="text-zinc-300 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
                       </div>
                     ))}
                   </div>
 
-                  {isOverCapacity && (
-                    <div className="mt-8 p-5 bg-red-50 border-2 border-red-200 rounded-2xl flex items-start gap-4">
-                      <AlertCircle className="w-8 h-8 text-red-500 shrink-0" />
-                      <div>
-                        <h4 className="font-black text-red-800 uppercase tracking-widest text-sm">Aforo superado</h4>
-                        <p className="text-red-700 text-sm mt-1 font-medium leading-relaxed">El límite es de {currentSession.capacity} pero hay {currentCount} alumnos. Elimina alumnos o crea otra clase con más capacidad para poder guardar.</p>
-                      </div>
-                    </div>
-                  )}
+                  {isOverCapacity && <div className="mt-6 p-4 bg-red-50 border-2 border-red-200 rounded-2xl flex gap-3 text-red-700 font-bold text-xs"><AlertCircle/> Aforo superado. Elimina alumnos para guardar.</div>}
 
-                  <div className="mt-10 flex flex-col sm:flex-row gap-4 pt-8 border-t border-zinc-100">
-                    <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
-                      <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos / Notas'}
-                    </button>
-                    {/* BOTÓN CON DETECCIÓN HORA MUERTA */}
-                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${isOverCapacity ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
-                      <Save className="w-5 h-5" /> Guardar Asistencia
-                    </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-10">
+                    <button onClick={saveClassOnly} disabled={isOverCapacity} className="p-5 border-2 border-zinc-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-zinc-50 disabled:opacity-30"><Calendar className="w-4 h-4 inline mr-2"/> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Plantilla'}</button>
+                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity} className="p-5 bg-black text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl hover:bg-zinc-800 disabled:opacity-30"><Save className="w-4 h-4 inline mr-2"/> Guardar Asistencia</button>
                   </div>
                 </div>
-              </>
+              </div>
             )}
           </div>
         )}
 
-        {/* --- PESTAÑA 2: DIARIO DEL PROFESOR --- */}
+        {/* --- PESTAÑA DIARIO --- */}
         {activeTab === 'daily' && (
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
-            <div className="p-6 md:p-8 border-b border-zinc-100 bg-zinc-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <div className="space-y-1 w-full sm:w-auto">
-                <label className="text-xs font-black text-zinc-400 flex items-center gap-1 uppercase tracking-widest">
-                  <Calendar className="w-3 h-3" /> Fecha del reporte
-                </label>
-                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
-              </div>
+            <div className="p-8 border-b border-zinc-100 bg-zinc-50 flex justify-between items-center">
+              <div><h2 className="text-2xl font-black uppercase tracking-tight">Diario de Trabajo</h2><p className="text-sm font-medium text-zinc-500">Documenta tu jornada para coordinación.</p></div>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} className="p-3 bg-white border-2 border-zinc-100 rounded-xl font-bold focus:border-black outline-none" />
             </div>
-
-            <div className="p-6 md:p-8 space-y-8">
-              <div>
-                <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Diario de Trabajo</h2>
-                <p className="text-sm font-medium text-zinc-500">Documenta tu jornada para enviarla a coordinación.</p>
+            <div className="p-8 space-y-8">
+              <div className="space-y-4">
+                <div className="space-y-2"><label className="block text-sm font-black uppercase tracking-wide">1. ¿Cómo han ido las clases hoy? (Obligatorio)</label><textarea required value={dailyForm.generalFeedback} onChange={e => setDailyForm({...dailyForm, generalFeedback: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none min-h-[120px]" placeholder="Ej: Muy bien, hemos trabajado las escalas..." /></div>
+                <div className="space-y-2"><label className="block text-sm font-black uppercase tracking-wide">2. Incidencias o fuera de lo común</label><textarea value={dailyForm.incidents} onChange={e => setDailyForm({...dailyForm, incidents: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none min-h-[80px]" placeholder="Ej: Un alumno llegó tarde..." /></div>
+                <div className="space-y-2"><label className="block text-sm font-black uppercase tracking-wide">3. Alumnos nuevos</label><textarea value={dailyForm.newStudents} onChange={e => setDailyForm({...dailyForm, newStudents: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none min-h-[80px]" placeholder="Nombres de altas nuevas, primeras impresiones del alumno..." /></div>
+                <div className="space-y-2"><label className="block text-sm font-black uppercase tracking-wide">4. Estado del material</label><textarea value={dailyForm.materialIssues} onChange={e => setDailyForm({...dailyForm, materialIssues: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none min-h-[80px]" placeholder="¿Falta algo? ¿Algo roto?" /></div>
               </div>
-
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">1. ¿Cómo han ido las clases hoy?</label>
-                  <textarea value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-slate-700 font-medium transition-colors" placeholder="Comentarios generales..." />
-                </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">2. Incidencias o fuera de lo común</label>
-                  <textarea value={dailyForm.incidents} onChange={(e) => setDailyForm({ ...dailyForm, incidents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Llegadas tarde, interrupciones..." />
-                </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">3. Alumnos nuevos</label>
-                  <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Nombres de altas nuevas..." />
-                </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">4. Estado del material</label>
-                  <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Atriles rotos, cables fallando..." />
-                </div>
-                <div className="space-y-3 pt-6 border-t border-zinc-100">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">5. Horas impartidas hoy</label>
-                  <input type="number" min="0" step="0.5" value={dailyForm.hoursTaught} onChange={(e) => setDailyForm({ ...dailyForm, hoursTaught: e.target.value })} className="w-full sm:w-1/3 p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none text-slate-800 font-black text-xl transition-colors" placeholder="Ej: 4.5" />
-                </div>
-              </div>
-
-              <div className="pt-8 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-zinc-100">
-                <button onClick={() => saveDailyReport(false)} className="w-full bg-white border-2 border-zinc-200 text-black hover:bg-zinc-50 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
-                  <Save className="w-5 h-5" /> Guardar Borrador
-                </button>
-                <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-black hover:bg-zinc-800 text-white font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xl disabled:opacity-60">
-                  {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Enviar a Coordinación
-                </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-8 border-t border-zinc-100">
+                <button onClick={() => saveDailyReport(false)} className="py-4 border-2 border-zinc-200 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-zinc-50">Guardar Borrador</button>
+                <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="py-4 bg-black text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl disabled:opacity-50">{isSendingReport ? <RefreshCw className="animate-spin inline" /> : <Mail className="w-4 h-4 inline mr-2" />} Enviar a Coordinación</button>
               </div>
             </div>
           </div>
         )}
 
-        {/* --- PESTAÑA 3: HISTORIAL --- */}
+        {/* --- PESTAÑA HISTORIAL --- */}
         {activeTab === 'history' && (
           <div className="space-y-6">
-            <h2 className="text-2xl font-black text-slate-800 mb-8 uppercase tracking-tight">Historial de Clases</h2>
-            {records.length === 0 ? (
-              <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
-                <History className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
-                <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay registros aún</h3>
-              </div>
-            ) : (
-              records.map((record) => (
-                <div key={record.id} className="bg-white rounded-3xl shadow-sm border border-zinc-200 p-6 md:p-8">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-zinc-100 gap-4">
-                    <div>
-                      <h3 className="font-black uppercase tracking-wide text-black text-xl">{record.subject}</h3>
-                      <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5 mt-2">
-                        <User className="w-4 h-4" /> {record.teacher}
-                      </p>
-                    </div>
-                    <div className="text-left md:text-right">
-                      <p className="font-black text-slate-800 flex items-center md:justify-end gap-1.5">
-                        <Calendar className="w-4 h-4 text-zinc-400" /> {formatDateSpanish(record.date)}
-                      </p>
-                      <p className="text-sm font-bold uppercase tracking-widest text-zinc-500 flex items-center md:justify-end gap-1.5 mt-1">
-                        <Clock className="w-4 h-4" /> {record.time}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                    {record.students.map(student => (
-                      <div key={student.id} className="flex flex-col gap-1 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
-                        <div className="flex items-center gap-2.5">
-                          {student.status === 'present' && <Check className="w-5 h-5 text-emerald-500 bg-emerald-100 rounded-md p-0.5" />}
-                          {student.status === 'absent' && <X className="w-5 h-5 text-rose-500 bg-rose-100 rounded-md p-0.5" />}
-                          {student.status === 'notified' && <AlertCircle className="w-5 h-5 text-amber-500 bg-amber-100 rounded-md p-0.5" />}
-                          <span className={`text-sm ${student.status === 'present' ? 'text-slate-700 font-bold' : student.status === 'absent' ? 'text-rose-600 font-black' : 'text-amber-700 font-black'}`}>
-                            {student.name}
-                          </span>
-                        </div>
-                        {student.isRecovery && (
-                          <span className="text-[10px] text-amber-600 font-black uppercase tracking-widest ml-8">Recuperación</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+            <h2 className="text-2xl font-black uppercase tracking-tight mb-8">Historial de Clases</h2>
+            {records.length === 0 ? <div className="p-20 text-center text-zinc-300 font-bold uppercase border-4 border-dashed rounded-3xl">Sin registros aún</div> : 
+            records.map(r => (
+              <div key={r.id} className="bg-white rounded-3xl p-8 border border-zinc-200 shadow-sm">
+                <div className="flex justify-between items-start border-b border-zinc-100 pb-6 mb-6">
+                  <div><h3 className="text-xl font-black uppercase">{r.subject}</h3><p className="text-xs font-bold text-zinc-400 mt-2 uppercase tracking-widest">{r.teacher} • {r.duration || 60} min</p></div>
+                  <div className="text-right"><p className="font-black text-slate-800">{formatDateSpanish(r.date)}</p><p className="text-sm font-bold text-zinc-400 mt-1">{r.time}</p></div>
                 </div>
-              ))
-            )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  {r.students.map(st => (
+                    <div key={st.id} className="flex items-center gap-3 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+                      {st.status === 'present' ? <Check className="text-emerald-500 w-4 h-4"/> : <X className="text-red-500 w-4 h-4"/>}
+                      <span className="text-sm font-bold truncate">{st.name}</span>
+                    </div>
+                  ))}
+                </div>
+                {r.notes && <div className="mt-6 p-4 bg-amber-50/50 rounded-xl border-l-4 border-amber-400 text-xs font-medium text-amber-900 leading-relaxed">{r.notes}</div>}
+              </div>
+            ))}
           </div>
         )}
 
-        {/* --- PESTAÑA 4: REPORTES Y NÓMINA --- */}
+        {/* --- PESTAÑA MI MES (NÓMINA) --- */}
         {activeTab === 'reports' && (
           <div className="space-y-8">
-            {/* PANEL DE NÓMINA: MI MES */}
-            <div className="bg-black text-white p-8 md:p-10 rounded-3xl shadow-2xl relative overflow-hidden">
-               <div className="relative z-10">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
-                    <div>
-                      <h2 className="text-3xl font-black uppercase tracking-tighter">Mi Nómina</h2>
-                      <p className="text-zinc-400 font-bold uppercase text-xs tracking-widest mt-1">
-                        {new Date().toLocaleString('es-ES', { month: 'long', year: 'numeric' })}
-                      </p>
-                    </div>
-                    <div className="bg-zinc-800/80 backdrop-blur border border-zinc-700 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest text-zinc-300 shadow-inner">
-                      Tarifa Convenio: <span className="text-white">{settings.hourlyRate}€/h</span>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:bg-zinc-800 transition-colors">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Declaradas</p>
-                      <p className="text-5xl font-black tracking-tighter">{monthlyPayroll.totalHours}<span className="text-xl text-zinc-600 ml-1 font-bold">h</span></p>
-                    </div>
-                    <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:border-emerald-500/30 transition-colors">
-                      <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-widest mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Acumulado Mes</p>
-                      <p className="text-5xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings.toFixed(2)}<span className="text-xl ml-1 font-bold">€</span></p>
-                    </div>
-                  </div>
-               </div>
-               <Music className="absolute -bottom-12 -right-12 w-80 h-80 text-zinc-900/40 rotate-12 pointer-events-none" />
+            <div className="bg-black text-white p-10 rounded-3xl shadow-2xl relative overflow-hidden">
+              <div className="relative z-10">
+                <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-10">
+                  <div><h2 className="text-3xl font-black uppercase tracking-tighter">Mi Nómina</h2><p className="text-zinc-400 font-bold uppercase text-xs tracking-widest mt-1">{new Date().toLocaleString('es-ES', { month: 'long', year: 'numeric' })}</p></div>
+                  <div className="bg-zinc-800 border border-zinc-700 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest">Tarifa: {settings.hourlyRate}€/h</div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur"><p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Registradas</p><p className="text-5xl font-black tracking-tighter">{monthlyPayroll.totalHours}<span className="text-xl text-zinc-600 ml-1">h</span></p></div>
+                  <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur border-emerald-500/30"><p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-widest mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Acumulado Mes</p><p className="text-5xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings}<span className="text-xl ml-1">€</span></p></div>
+                </div>
+                <p className="mt-8 text-[10px] font-bold text-zinc-600 uppercase tracking-widest text-center">* Calculado automáticamente según la duración de tus clases guardadas.</p>
+              </div>
+              <Music className="absolute -bottom-16 -right-16 w-80 h-80 text-zinc-900/40 rotate-12 pointer-events-none" />
             </div>
 
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Reporte Diario</h2>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Previsualiza los datos que enviarás de la jornada.</p>
-              </div>
-              <div className="flex gap-2 w-full sm:w-auto">
-                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700" />
-              </div>
-            </div>
-
-            <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 p-6 md:p-8">
-              <h3 className="font-black text-slate-800 mb-6 uppercase tracking-widest text-xs">Datos de {formatDateSpanish(date)}</h3>
+            <div className="bg-white rounded-3xl p-8 border border-zinc-200 shadow-sm">
+              <h3 className="font-black text-slate-800 mb-8 uppercase tracking-widest text-xs">Resumen Diario: {formatDateSpanish(date)}</h3>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Clases</p>
-                  <p className="text-3xl font-black text-slate-800 mt-1">{recordsForSelectedDate.length}</p>
-                </div>
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas</p>
-                  <p className="text-3xl font-black text-slate-800 mt-1">{normalizeNumber((selectedDailyReport || dailyForm)?.hoursTaught)}</p>
-                </div>
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Profesor</p>
-                  <p className="text-xl font-black text-slate-800 mt-1 truncate">{getTeacherName()}</p>
-                </div>
+                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5"><p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Sesiones</p><p className="text-3xl font-black mt-1">{records.filter(r => r.date === date).length}</p></div>
+                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5"><p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Minutos</p><p className="text-3xl font-black mt-1">{records.filter(r => r.date === date).reduce((acc, r) => acc + (r.duration || 60), 0)}'</p></div>
+                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5"><p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Generado</p><p className="text-3xl font-black mt-1 text-emerald-600">{(records.filter(r => r.date === date).reduce((acc, r) => acc + (r.duration || 60), 0) / 60 * settings.hourlyRate).toFixed(2)}€</p></div>
               </div>
-
               <div className="space-y-6">
-                <div>
-                  <h4 className="font-black text-slate-800 mb-3 uppercase tracking-widest text-[10px]">Registro de Asistencia</h4>
-                  <pre className="whitespace-pre-wrap text-sm bg-zinc-900 text-zinc-300 rounded-2xl p-6 font-mono leading-relaxed overflow-x-auto shadow-inner">{buildAttendanceDetails()}</pre>
-                </div>
-                <div>
-                  <h4 className="font-black text-slate-800 mb-3 uppercase tracking-widest text-[10px]">Observaciones del Profesor</h4>
-                  <pre className="whitespace-pre-wrap text-sm bg-zinc-50 border-2 border-zinc-100 rounded-2xl p-6 font-sans font-medium text-slate-700 leading-relaxed">{buildObservations()}</pre>
-                </div>
+                <div><h4 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest mb-3">Asistencia Detallada</h4><pre className="whitespace-pre-wrap text-sm bg-zinc-900 text-zinc-300 rounded-2xl p-6 font-mono shadow-inner">{buildAttendanceDetails()}</pre></div>
+                <div><h4 className="text-[10px] font-black uppercase text-zinc-400 tracking-widest mb-3">Reporte de Texto</h4><pre className="whitespace-pre-wrap text-sm bg-zinc-50 border-2 border-zinc-100 rounded-2xl p-6 font-sans font-medium text-zinc-700">{buildObservations()}</pre></div>
               </div>
             </div>
           </div>
         )}
 
-        {/* --- PESTAÑA SECRETA ADMIN --- */}
-        {activeTab === 'admin' && isAdmin && <AdminPanel />}
+        {/* --- PESTAÑA ADMIN --- */}
+        {activeTab === 'admin' && isAdmin && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-white p-8 rounded-3xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Lock className="w-5 h-5"/> Tarifa por Hora</h2>
+              <p className="text-zinc-500 mb-6 text-sm">Este valor actualiza las calculadoras de todos los profesores.</p>
+              <div className="flex items-center gap-6 bg-zinc-50 p-6 rounded-2xl border border-zinc-100">
+                <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-4xl font-black w-40 bg-transparent border-b-4 border-black outline-none" />
+                <span className="text-3xl font-black text-zinc-300">€/h</span>
+                <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification('Tarifa actualizada'); }} className="ml-auto bg-black text-white px-8 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-xl">Guardar Tarifa</button>
+              </div>
+            </div>
+            <div className="bg-white p-8 rounded-3xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-black uppercase mb-2 flex items-center gap-2"><Settings className="w-5 h-5"/> Tareas Hora Muerta</h2>
+              <p className="text-zinc-500 mb-8 text-sm">Tareas disponibles cuando fallan todos los alumnos de una clase.</p>
+              <div className="flex gap-3 mb-8">
+                <input id="adminTaskInput" type="text" placeholder="Nueva tarea..." className="flex-1 p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold" />
+                <button onClick={async () => { 
+                  const val = document.getElementById('adminTaskInput').value;
+                  if(val) {
+                    const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]};
+                    setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
+                    document.getElementById('adminTaskInput').value = '';
+                  }
+                }} className="bg-black text-white p-4 rounded-2xl shadow-lg"><Plus/></button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {settings.generalTasks?.map((t, i) => (
+                  <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl font-bold text-sm">
+                    {t}<button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-300 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
-      {/* TABS INFERIORES (MÓVIL) */}
+      {/* NAVEGACIÓN MÓVIL */}
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
-        <div className="flex justify-around p-2">
-          <button onClick={() => setActiveTab('attendance')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'attendance' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <ClipboardList className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Listas</span>
-          </button>
-          <button onClick={() => setActiveTab('daily')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'daily' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <MessageSquare className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Diario</span>
-          </button>
-          <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'history' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <History className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Historial</span>
-          </button>
-          <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'reports' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <BarChart3 className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Mi Mes</span>
-          </button>
-          {isAdmin && (
-            <button onClick={() => setActiveTab('admin')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'admin' ? 'text-red-600 font-black bg-red-50' : 'text-zinc-400 font-bold'}`}>
-              <Settings className="w-6 h-6 mb-1" />
-              <span className="text-[10px] uppercase tracking-widest">Admin</span>
-            </button>
-          )}
+        <div className="flex justify-around p-3">
+          {[{id:'attendance', icon:ClipboardList}, {id:'daily', icon:MessageSquare}, {id:'history', icon:History}, {id:'reports', icon:BarChart3}].map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-2xl transition-all ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}><t.icon className="w-6 h-6"/></button>
+          ))}
+          {isAdmin && <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-2xl transition-all ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-lg' : 'text-red-300'}`}><Settings className="w-6 h-6"/></button>}
         </div>
       </nav>
 
-      {/* TABS LATERALES (PC) */}
+      {/* NAVEGACIÓN PC */}
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-6 flex-col gap-4 z-40">
-        <button onClick={() => setActiveTab('attendance')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'attendance' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Pasar Lista">
-          <ClipboardList className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('daily')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'daily' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Resumen Diario">
-          <MessageSquare className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('history')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'history' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Historial">
-          <History className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('reports')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'reports' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Reportes y Nómina">
-          <BarChart3 className="w-6 h-6" />
-        </button>
-        {isAdmin && (
-          <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'admin' ? 'bg-red-600 text-white scale-110 shadow-xl' : 'bg-white text-red-300 hover:text-red-600 hover:bg-red-50 border-2 border-red-100 mt-4'}`} title="Panel de Administración">
-            <Settings className="w-6 h-6" />
-          </button>
-        )}
+        {[
+          {id:'attendance', icon:ClipboardList, title:'Listas'}, 
+          {id:'daily', icon:MessageSquare, title:'Diario'}, 
+          {id:'history', icon:History, title:'Historial'}, 
+          {id:'reports', icon:BarChart3, title:'Mi Mes'}
+        ].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 border-2 border-zinc-100 hover:text-black'}`} title={t.title}><t.icon/></button>
+        ))}
+        {isAdmin && <button onClick={() => setActiveTab('admin')} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all mt-4 ${activeTab === 'admin' ? 'bg-red-600 text-white scale-110 shadow-xl' : 'bg-white text-red-300 border-2 border-red-50 hover:text-red-600'}`} title="Admin"><Settings/></button>}
       </nav>
     </div>
   );

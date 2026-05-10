@@ -94,7 +94,7 @@ export default function App() {
   const [recurringClasses, setRecurringClasses] = useState([]);
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
-  const [globalStudents, setGlobalStudents] = useState([]); // Nueva tabla maestra
+  const [globalStudents, setGlobalStudents] = useState([]); // Tabla maestra
 
   // ESTADO DE LA UI
   const [activeTab, setActiveTab] = useState('attendance');
@@ -142,7 +142,7 @@ export default function App() {
     const recurringRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses');
     const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
     const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
-    const globalStudentsRef = collection(db, 'artifacts', appId, 'students'); // Referencia global
+    const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -394,13 +394,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     if (!studentName) return;
 
     let studentId;
-    // Buscamos si ya existe en la lista global (ignorando mayúsculas/minúsculas)
     let existingStudent = globalStudents.find(s => s.name.toLowerCase() === studentName.toLowerCase());
 
     if (existingStudent) {
-      studentId = existingStudent.id; // Ya lo conocemos
+      studentId = existingStudent.id;
     } else {
-      // Creamos un ID nuevo y lo guardamos silenciosamente en la base global
       studentId = Date.now().toString();
       try {
         await setDoc(doc(db, 'artifacts', appId, 'students', studentId), { name: studentName });
@@ -417,11 +415,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           id: studentId,
           name: studentName,
           status: 'present',
-          isRecovery: currentSession.isAddingRecovery || false // Guardamos si es de recuperación
+          isRecovery: currentSession.isAddingRecovery || false
         }
       ],
       newStudentName: '',
-      isAddingRecovery: false // Reseteamos la casilla
+      isAddingRecovery: false
     });
   };
 
@@ -436,7 +434,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const saveClassOnly = async () => {
     if (!user) return;
     if (!currentSession.subject) {
-      showNotification({ type: 'error', text: 'Por favor, rellena la asignatura.' });
+      showNotification({ type: 'error', text: 'Por favor, rellena el instrumento.' });
       return;
     }
 
@@ -444,7 +442,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
       const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
 
-      // FILTRO MÁGICO: Guardamos la clase, pero quitamos a los que vinieron a recuperar
       const templateStudents = currentSession.students
         .filter(s => !s.isRecovery)
         .map(s => ({ id: s.id, name: s.name }));
@@ -468,14 +465,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const saveRecord = async () => {
     if (!user) return;
     if (!currentSession.subject) {
-      showNotification({ type: 'error', text: 'Por favor, rellena la asignatura.' });
+      showNotification({ type: 'error', text: 'Por favor, rellena el instrumento.' });
       return;
     }
 
     try {
       const recordId = Date.now().toString();
 
-      // Guardamos la FOTO DEL DÍA (Aquí SÍ entran los de recuperación porque vinieron hoy)
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), {
         classId: currentSession.classId,
         date,
@@ -485,7 +481,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      // Si es una clase fija, actualizamos su plantilla para futuras semanas (excluyendo recuperaciones)
       if (currentSession.isRecurring) {
         const templateStudents = currentSession.students
           .filter(s => !s.isRecovery)
@@ -588,7 +583,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center font-sans">
-        <RefreshCw className="w-10 h-10 text-indigo-600 animate-spin" />
+        <RefreshCw className="w-10 h-10 text-black animate-spin" />
       </div>
     );
   }
@@ -598,10 +593,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       <div className="min-h-screen bg-slate-50 flex items-center justify-center font-sans p-4">
         <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-100 w-full max-w-md">
           <div className="flex flex-col items-center mb-8 text-center">
-            <div className="bg-indigo-100 p-3 rounded-full mb-4">
-              <Music className="w-8 h-8 text-indigo-600" />
+            <div className="bg-zinc-100 p-3 rounded-full mb-4">
+              <Music className="w-8 h-8 text-black" />
             </div>
-            <h1 className="text-2xl font-bold text-slate-800">Escuela Los Mitos</h1>
+            <h1 className="text-2xl font-bold text-slate-800 uppercase tracking-wide">Escuela Los Mitos</h1>
             <p className="text-slate-500 mt-1">Acceso para Profesores</p>
           </div>
 
@@ -618,7 +613,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 required
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none"
                 placeholder="profesor@escuela.com"
               />
             </div>
@@ -629,11 +624,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 required
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none"
                 placeholder="••••••••"
               />
             </div>
-            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all mt-6 shadow-md">
+            <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all mt-6 shadow-md uppercase tracking-wider text-sm">
               <Lock className="w-5 h-5" /> Entrar
             </button>
           </form>
@@ -646,7 +641,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center font-sans">
         <div className="flex flex-col items-center gap-4 p-8 bg-white rounded-2xl shadow-sm border border-slate-100">
-          <RefreshCw className="w-10 h-10 text-indigo-600 animate-spin" />
+          <RefreshCw className="w-10 h-10 text-black animate-spin" />
           <h2 className="text-xl font-bold text-slate-800">Cargando datos...</h2>
           <p className="text-slate-500 text-sm">Sincronizando con la nube</p>
         </div>
@@ -656,18 +651,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20 md:pb-0">
-      <header className="bg-indigo-600 text-white p-4 shadow-md sticky top-0 z-10">
+      {/* HEADER B&W */}
+      <header className="bg-black text-white p-4 shadow-md sticky top-0 z-10 border-b border-zinc-800">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Music className="w-6 h-6" />
-            <h1 className="text-xl font-bold hidden sm:block">Escuela Los Mitos</h1>
+          <div className="flex items-center gap-3">
+            <div className="bg-white p-1.5 rounded-lg">
+              <Music className="w-5 h-5 text-black" />
+            </div>
+            <h1 className="text-xl font-bold hidden sm:block uppercase tracking-wide">Escuela Los Mitos</h1>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-indigo-100 text-sm flex items-center gap-2 bg-indigo-700/50 px-3 py-1.5 rounded-full">
+            <span className="text-zinc-300 text-sm flex items-center gap-2 bg-zinc-800 px-3 py-1.5 rounded-full">
               <User className="w-4 h-4" />
               <span className="max-w-[100px] sm:max-w-xs truncate">{user.email}</span>
             </span>
-            <button onClick={handleLogout} className="text-indigo-200 hover:text-white transition-colors" title="Cerrar Sesión">
+            <button onClick={handleLogout} className="text-zinc-400 hover:text-white transition-colors" title="Cerrar Sesión">
               <LogOut className="w-5 h-5" />
             </button>
           </div>
@@ -690,12 +688,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             {!currentSession && (
               <div className="p-4 md:p-6 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div className="space-y-1 w-full sm:w-auto">
-                  <label className="text-xs font-medium text-slate-500 flex items-center gap-1">
+                  <label className="text-xs font-medium text-slate-500 flex items-center gap-1 uppercase tracking-wider">
                     <Calendar className="w-3 h-3" /> Fecha seleccionada ({getDayName(getDayOfWeek(date))})
                   </label>
-                  <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-slate-700" />
+                  <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none font-medium text-slate-700" />
                 </div>
-                <button onClick={() => startSession(null)} className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95">
+                <button onClick={() => startSession(null)} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-medium py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95 uppercase text-sm tracking-wide">
                   <ClipboardList className="w-5 h-5" /> Nueva Clase
                 </button>
               </div>
@@ -703,20 +701,20 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
             {!currentSession ? (
               <div className="p-6">
-                <h3 className="text-md font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                <h3 className="text-md font-semibold text-slate-700 mb-4 flex items-center gap-2 uppercase tracking-wide">
                   Clases del {getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}
                 </h3>
                 {dashboardItems.length === 0 ? (
                   <div className="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                    <p className="text-slate-500 mb-4">No hay clases programadas.</p>
+                    <p className="text-slate-500 mb-4 font-medium">No hay clases programadas.</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
                     {dashboardItems.map((item, idx) => (
-                      <div key={idx} className={`flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 border rounded-xl gap-3 transition-colors ${item.type === 'completed' ? 'bg-slate-50 border-slate-100' : 'bg-white border-indigo-100 hover:border-indigo-300 shadow-sm'}`}>
+                      <div key={idx} className={`flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 border rounded-xl gap-3 transition-colors ${item.type === 'completed' ? 'bg-slate-50 border-slate-100' : 'bg-white border-zinc-200 hover:border-zinc-400 shadow-sm'}`}>
                         <div>
-                          <p className={`font-bold flex items-center gap-2 ${item.type === 'completed' ? 'text-slate-700' : 'text-indigo-900'}`}>
-                            <Clock className={`w-4 h-4 ${item.type === 'completed' ? 'text-slate-400' : 'text-indigo-500'}`} />
+                          <p className={`font-bold flex items-center gap-2 ${item.type === 'completed' ? 'text-slate-500' : 'text-black'}`}>
+                            <Clock className={`w-4 h-4 ${item.type === 'completed' ? 'text-slate-400' : 'text-zinc-600'}`} />
                             {item.data.time} - {item.data.subject}
                           </p>
                           <p className="text-sm text-slate-500 mt-1 flex items-center gap-1">
@@ -725,12 +723,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         </div>
                         <div className="w-full sm:w-auto text-right mt-3 sm:mt-0 flex items-center justify-end gap-2">
                           {item.type === 'completed' ? (
-                            <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1.5 rounded-md font-medium border border-emerald-200">
+                            <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-2.5 py-1.5 rounded-md font-bold border border-emerald-200 uppercase tracking-wide">
                               <Check className="w-3 h-3" /> Lista Pasada
                             </span>
                           ) : (
                             <>
-                              <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-indigo-50 hover:bg-indigo-600 hover:text-white text-indigo-600 font-medium py-2 px-4 rounded-lg inline-flex items-center justify-center gap-2 transition-all">
+                              <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-zinc-100 hover:bg-black hover:text-white text-black font-medium py-2 px-4 rounded-lg inline-flex items-center justify-center gap-2 transition-all text-sm uppercase tracking-wide">
                                 <Play className="w-4 h-4" /> Pasar Lista
                               </button>
                               <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar clase de forma permanente">
@@ -749,31 +747,31 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <div className="p-6 border-b border-slate-100 bg-white relative">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-2">
                     <div className="flex flex-col">
-                      <h2 className="text-lg font-bold text-slate-800">{currentSession.isNew ? 'Detalles de la Nueva Clase' : 'Pasando lista'}</h2>
-                      <span className="text-sm font-medium text-indigo-600 flex items-center gap-1 mt-1">
+                      <h2 className="text-lg font-bold text-slate-800 uppercase tracking-wide">{currentSession.isNew ? 'Detalles de la Nueva Clase' : 'Pasando lista'}</h2>
+                      <span className="text-sm font-medium text-zinc-500 flex items-center gap-1 mt-1">
                         <Calendar className="w-4 h-4" /> {getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}
                       </span>
                     </div>
-                    <button onClick={() => setCurrentSession(null)} className="text-slate-500 hover:text-slate-700 text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors w-full sm:w-auto text-center">
+                    <button onClick={() => setCurrentSession(null)} className="text-slate-500 hover:text-black text-sm font-bold uppercase tracking-wider px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors w-full sm:w-auto text-center">
                       Volver / Cancelar
                     </button>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-500 flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
-                      <input type="time" value={currentSession.time} onChange={(e) => handleSessionFieldChange('time', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" />
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
+                      <input type="time" value={currentSession.time} onChange={(e) => handleSessionFieldChange('time', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-500 flex items-center gap-1"><Music className="w-3 h-3" /> Asignatura</label>
-                      <input type="text" placeholder="Ej: Piano..." value={currentSession.subject} onChange={(e) => handleSessionFieldChange('subject', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition-all" />
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
+                      <input type="text" placeholder="Ej: Piano, Guitarra..." value={currentSession.subject} onChange={(e) => handleSessionFieldChange('subject', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
                     </div>
                   </div>
 
                   {currentSession.isNew && (
-                    <div className="mt-4 flex items-center gap-2 p-3 bg-indigo-50/50 rounded-lg border border-indigo-100">
-                      <input type="checkbox" id="recurring" checked={currentSession.isRecurring} onChange={(e) => handleSessionFieldChange('isRecurring', e.target.checked)} className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" />
-                      <label htmlFor="recurring" className="text-sm font-medium text-indigo-900 flex items-center gap-1.5 cursor-pointer">
+                    <div className="mt-4 flex items-center gap-2 p-3 bg-zinc-50 rounded-lg border border-zinc-200">
+                      <input type="checkbox" id="recurring" checked={currentSession.isRecurring} onChange={(e) => handleSessionFieldChange('isRecurring', e.target.checked)} className="w-4 h-4 text-black rounded focus:ring-black" />
+                      <label htmlFor="recurring" className="text-sm font-bold uppercase tracking-wide text-zinc-700 flex items-center gap-1.5 cursor-pointer">
                         <RefreshCw className="w-4 h-4" /> Repetir esta clase cada semana
                       </label>
                     </div>
@@ -782,30 +780,47 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                 <div className="p-6">
                   <div className="flex flex-col mb-6 bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-inner">
-                    <h3 className="text-md font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                      <UserPlus className="w-4 h-4 text-indigo-500" />
+                    <h3 className="text-sm uppercase tracking-wide font-bold text-slate-800 mb-3 flex items-center gap-2">
+                      <UserPlus className="w-4 h-4 text-black" />
                       Añadir Alumno
                     </h3>
                     
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
+                      
+                      {/* --- BUSCADOR PERSONALIZADO --- */}
                       <div className="w-full sm:flex-1 relative">
-                        {/* LISTA DESPLEGABLE INVISIBLE DE HTML5 */}
-                         <input
+                        <input
                           type="text"
-                          name="fake_student_search_99" 
-                          list="global-students"
+                          name="custom_search_field_no_chrome"
                           autoComplete="new-password"
-                          placeholder="Empieza a escribir el nombre..."
+                          placeholder="Escribe 2 letras para buscar..."
                           value={currentSession.newStudentName}
                           onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
                           onKeyDown={(e) => e.key === 'Enter' && addStudent()}
-                          className="w-full p-2.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white shadow-sm"
+                          className="w-full p-2.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-black outline-none bg-white relative z-10"
                         />
-                        <datalist id="global-students">
-                          {globalStudents.map(student => (
-                            <option key={student.id} value={student.name} />
-                          ))}
-                        </datalist>
+                        {currentSession.newStudentName.length >= 2 && (
+                          <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-zinc-300 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto overflow-x-hidden">
+                            {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
+                              <div className="p-3 text-sm text-slate-500 italic bg-slate-50">
+                                No hay coincidencias. Se guardará como alumno nuevo.
+                              </div>
+                            ) : (
+                              globalStudents
+                                .filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase()))
+                                .map(student => (
+                                  <div
+                                    key={student.id}
+                                    onClick={() => handleSessionFieldChange('newStudentName', student.name)}
+                                    className="p-3 text-sm text-slate-700 hover:bg-zinc-100 hover:text-black cursor-pointer border-b border-slate-50 last:border-0 transition-colors flex items-center gap-2"
+                                  >
+                                    <User className="w-4 h-4 text-zinc-400" />
+                                    <span className="font-medium">{student.name}</span>
+                                  </div>
+                                ))
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-3 w-full sm:w-auto bg-amber-50 px-3 py-2 rounded-lg border border-amber-200">
@@ -823,7 +838,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                       <button
                         onClick={addStudent}
-                        className="w-full sm:w-auto px-4 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors shadow-sm active:scale-95 flex justify-center"
+                        className="w-full sm:w-auto px-6 py-2.5 bg-black text-white font-bold text-sm tracking-wide uppercase rounded-lg hover:bg-zinc-800 transition-colors shadow-sm active:scale-95 flex justify-center"
                       >
                         Añadir
                       </button>
@@ -835,10 +850,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                   <div className="space-y-3">
                     {currentSession.students.map((student) => (
-                      <div key={student.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 md:p-4 bg-slate-50 border border-slate-100 rounded-xl gap-3">
+                      <div key={student.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 md:p-4 bg-slate-50 border border-slate-100 rounded-xl gap-3 hover:border-slate-300 transition-colors">
                         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
                           <div className="flex flex-col">
-                            <span className="font-medium text-slate-800">
+                            <span className="font-semibold text-slate-800">
                               {student.name}
                             </span>
                             {student.isRecovery && (
@@ -852,6 +867,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </button>
                         </div>
 
+                        {/* Botones de semántica - Mantienen sus colores universales */}
                         <div className="flex items-center gap-2 w-full sm:w-auto grid grid-cols-3 sm:flex">
                           <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-sm ring-2 ring-emerald-200 ring-offset-1' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'}`}>
                             <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
@@ -863,7 +879,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             <X className="w-4 h-4" /> <span className="hidden md:inline">Faltó</span>
                           </button>
                         </div>
-                        <button onClick={() => removeStudent(student.id)} className="text-slate-400 hover:text-red-500 hidden sm:block p-2">
+                        <button onClick={() => removeStudent(student.id)} className="text-slate-400 hover:text-red-500 hidden sm:block p-2 transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
@@ -871,10 +887,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </div>
 
                   <div className="mt-8 flex flex-col sm:flex-row gap-3">
-                    <button onClick={saveClassOnly} className="w-full sm:w-1/2 bg-white border-2 border-indigo-100 hover:bg-indigo-50 text-indigo-700 font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
+                    <button onClick={saveClassOnly} className="w-full sm:w-1/2 bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
                       <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos'}
                     </button>
-                    <button onClick={saveRecord} className="w-full sm:w-1/2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md">
+                    <button onClick={saveRecord} className="w-full sm:w-1/2 bg-black hover:bg-zinc-800 text-white font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md">
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
                   </div>
@@ -889,48 +905,48 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="p-4 md:p-6 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div className="space-y-1 w-full sm:w-auto">
-                <label className="text-xs font-medium text-slate-500 flex items-center gap-1">
+                <label className="text-xs font-bold text-slate-500 flex items-center gap-1 uppercase tracking-wider">
                   <Calendar className="w-3 h-3" /> Fecha del reporte ({getDayName(getDayOfWeek(date))})
                 </label>
-                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-slate-700" />
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none font-medium text-slate-700" />
               </div>
             </div>
 
             <div className="p-6 space-y-6">
               <div>
-                <h2 className="text-xl font-bold text-slate-800 mb-1">Resumen del Día</h2>
+                <h2 className="text-xl font-bold text-slate-800 mb-1 uppercase tracking-wide">Resumen del Día</h2>
                 <p className="text-sm text-slate-500 mb-6">Completa este breve formulario al finalizar tus clases.</p>
               </div>
 
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-700">1. ¿Cómo han ido las clases en el día de hoy?</label>
-                  <textarea value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none min-h-[100px] resize-y text-slate-700" placeholder="Escribe aquí tus comentarios generales..." />
+                  <label className="block text-sm font-bold text-slate-700">1. ¿Cómo han ido las clases en el día de hoy?</label>
+                  <textarea value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-black outline-none min-h-[100px] resize-y text-slate-700" placeholder="Escribe aquí tus comentarios generales..." />
                 </div>
                 <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-700">2. ¿Ha habido alguna incidencia o algo fuera de lo habitual?</label>
-                  <textarea value={dailyForm.incidents} onChange={(e) => setDailyForm({ ...dailyForm, incidents: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none min-h-[80px] resize-y text-slate-700" placeholder="Ej: Un alumno llegó muy tarde, hubo interrupciones..." />
+                  <label className="block text-sm font-bold text-slate-700">2. ¿Ha habido alguna incidencia o algo fuera de lo habitual?</label>
+                  <textarea value={dailyForm.incidents} onChange={(e) => setDailyForm({ ...dailyForm, incidents: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-black outline-none min-h-[80px] resize-y text-slate-700" placeholder="Ej: Un alumno llegó muy tarde, hubo interrupciones..." />
                 </div>
                 <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-700">3. ¿Ha empezado hoy algún alumno nuevo? ¿Quién?</label>
-                  <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none min-h-[80px] resize-y text-slate-700" placeholder="Menciona si hubo altas nuevas hoy..." />
+                  <label className="block text-sm font-bold text-slate-700">3. ¿Ha empezado hoy algún alumno nuevo? ¿Quién?</label>
+                  <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-black outline-none min-h-[80px] resize-y text-slate-700" placeholder="Menciona si hubo altas nuevas hoy..." />
                 </div>
                 <div className="space-y-2">
-                  <label className="block text-sm font-semibold text-slate-700">4. Señala si se ha roto algo o hay algo material que mejorar</label>
-                  <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none min-h-[80px] resize-y text-slate-700" placeholder="Ej: Faltan atriles, un cable de piano falla..." />
+                  <label className="block text-sm font-bold text-slate-700">4. Señala si se ha roto algo o hay algo material que mejorar</label>
+                  <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-black outline-none min-h-[80px] resize-y text-slate-700" placeholder="Ej: Faltan atriles, un cable de piano falla..." />
                 </div>
                 <div className="space-y-2 pt-2 border-t border-slate-100">
-                  <label className="block text-sm font-semibold text-slate-700">5. ¿Cuántas horas de clase has impartido hoy?</label>
-                  <input type="number" min="0" step="0.5" value={dailyForm.hoursTaught} onChange={(e) => setDailyForm({ ...dailyForm, hoursTaught: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-slate-700" placeholder="Ej: 4.5" />
+                  <label className="block text-sm font-bold text-slate-700">5. ¿Cuántas horas de clase has impartido hoy?</label>
+                  <input type="number" min="0" step="0.5" value={dailyForm.hoursTaught} onChange={(e) => setDailyForm({ ...dailyForm, hoursTaught: e.target.value })} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-black outline-none text-slate-700" placeholder="Ej: 4.5" />
                 </div>
               </div>
 
               <div className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                <button onClick={() => saveDailyReport(false)} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md">
-                  <Save className="w-5 h-5" /> Guardar Resumen Diario
+                <button onClick={() => saveDailyReport(false)} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md">
+                  <Save className="w-5 h-5" /> Guardar Resumen
                 </button>
-                <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md disabled:opacity-60">
-                  {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Guardar y enviar informe
+                <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-black hover:bg-zinc-800 text-white font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md disabled:opacity-60">
+                  {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Enviar a Coordinación
                 </button>
               </div>
             </div>
@@ -940,7 +956,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {/* PESTAÑA 3: HISTORIAL */}
         {activeTab === 'history' && (
           <div className="space-y-4">
-            <h2 className="text-xl font-bold text-slate-800 mb-6">Historial de Clases</h2>
+            <h2 className="text-xl font-bold text-slate-800 mb-6 uppercase tracking-wide">Historial de Clases</h2>
             {records.length === 0 ? (
               <div className="text-center py-12 bg-white rounded-2xl border border-slate-100 shadow-sm">
                 <History className="w-12 h-12 text-slate-300 mx-auto mb-3" />
@@ -951,16 +967,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <div key={record.id} className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
                   <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 pb-4 border-b border-slate-50 gap-2">
                     <div>
-                      <h3 className="font-bold text-slate-800 text-lg">{record.subject}</h3>
+                      <h3 className="font-bold text-black text-lg">{record.subject}</h3>
                       <p className="text-sm text-slate-500 flex items-center gap-2 mt-1">
                         <User className="w-3 h-3" /> {record.teacher}
                       </p>
                     </div>
                     <div className="text-left md:text-right">
-                      <p className="font-medium text-indigo-600 flex items-center md:justify-end gap-1">
-                        <Calendar className="w-4 h-4" /> {formatDateSpanish(record.date)}
+                      <p className="font-bold text-black flex items-center md:justify-end gap-1">
+                        <Calendar className="w-4 h-4 text-zinc-400" /> {formatDateSpanish(record.date)}
                       </p>
-                      <p className="text-sm text-slate-500 flex items-center md:justify-end gap-1 mt-1">
+                      <p className="text-sm text-slate-500 flex items-center md:justify-end gap-1 mt-1 font-medium">
                         <Clock className="w-3 h-3" /> {record.time}
                       </p>
                     </div>
@@ -973,12 +989,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           {student.status === 'present' && <Check className="w-4 h-4 text-emerald-500" />}
                           {student.status === 'absent' && <X className="w-4 h-4 text-rose-500" />}
                           {student.status === 'notified' && <AlertCircle className="w-4 h-4 text-amber-500" />}
-                          <span className={student.status === 'present' ? 'text-slate-700' : student.status === 'absent' ? 'text-rose-600 font-medium' : 'text-amber-600'}>
+                          <span className={student.status === 'present' ? 'text-slate-700 font-medium' : student.status === 'absent' ? 'text-rose-600 font-bold' : 'text-amber-600 font-bold'}>
                             {student.name}
                           </span>
                         </div>
                         {student.isRecovery && (
-                          <span className="text-[10px] text-amber-500 font-medium ml-6">Recuperación</span>
+                          <span className="text-[10px] text-amber-600 font-bold uppercase tracking-wider ml-6">Recuperación</span>
                         )}
                       </div>
                     ))}
@@ -994,74 +1010,74 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <h2 className="text-xl font-bold text-slate-800">Reportes</h2>
+                <h2 className="text-xl font-bold text-slate-800 uppercase tracking-wide">Reportes</h2>
                 <p className="text-sm text-slate-500 mt-1">Envía por email el informe de la fecha seleccionada.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-slate-700" />
-                <button onClick={() => sendReportByEmail()} disabled={isSendingReport} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2 transition-colors shadow-sm disabled:opacity-60">
-                  {isSendingReport ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />} Enviar informe
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none font-medium text-slate-700" />
+                <button onClick={() => sendReportByEmail()} disabled={isSendingReport} className="bg-white border-2 border-black hover:bg-black text-black hover:text-white px-6 py-2.5 rounded-lg font-bold uppercase text-sm tracking-wide flex items-center justify-center gap-2 transition-all shadow-sm disabled:opacity-60">
+                  {isSendingReport ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />} Enviar a Gmail
                 </button>
               </div>
             </div>
 
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
-              <h3 className="font-bold text-slate-800 mb-3">Vista previa del informe de {formatDateSpanish(date)}</h3>
+              <h3 className="font-bold text-slate-800 mb-3 uppercase tracking-wider text-sm">Vista previa del informe de {formatDateSpanish(date)}</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-                  <p className="text-xs uppercase font-semibold text-slate-400">Clases registradas</p>
+                  <p className="text-xs uppercase font-bold text-slate-400">Clases registradas</p>
                   <p className="text-2xl font-bold text-slate-800">{recordsForSelectedDate.length}</p>
                 </div>
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-                  <p className="text-xs uppercase font-semibold text-slate-400">Horas declaradas</p>
+                  <p className="text-xs uppercase font-bold text-slate-400">Horas declaradas</p>
                   <p className="text-2xl font-bold text-slate-800">{normalizeNumber((selectedDailyReport || dailyForm)?.hoursTaught)}</p>
                 </div>
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-4">
-                  <p className="text-xs uppercase font-semibold text-slate-400">Profesor</p>
+                  <p className="text-xs uppercase font-bold text-slate-400">Profesor</p>
                   <p className="text-lg font-bold text-slate-800 truncate">{getTeacherName()}</p>
                 </div>
               </div>
 
               <div className="space-y-5">
                 <div>
-                  <h4 className="font-semibold text-slate-700 mb-2">Asistencia</h4>
-                  <pre className="whitespace-pre-wrap text-sm bg-slate-50 border border-slate-100 rounded-xl p-4 text-slate-700">{buildAttendanceDetails()}</pre>
+                  <h4 className="font-bold text-slate-700 mb-2 uppercase text-sm tracking-wider">Asistencia</h4>
+                  <pre className="whitespace-pre-wrap text-sm bg-slate-50 border border-slate-100 rounded-xl p-4 text-slate-700 font-sans leading-relaxed">{buildAttendanceDetails()}</pre>
                 </div>
                 <div>
-                  <h4 className="font-semibold text-slate-700 mb-2">Observaciones</h4>
-                  <pre className="whitespace-pre-wrap text-sm bg-slate-50 border border-slate-100 rounded-xl p-4 text-slate-700">{buildObservations()}</pre>
+                  <h4 className="font-bold text-slate-700 mb-2 uppercase text-sm tracking-wider">Observaciones</h4>
+                  <pre className="whitespace-pre-wrap text-sm bg-slate-50 border border-slate-100 rounded-xl p-4 text-slate-700 font-sans leading-relaxed">{buildObservations()}</pre>
                 </div>
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-6">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm text-slate-600">
-                  <thead className="bg-slate-50 text-slate-800 uppercase text-xs font-semibold border-b border-slate-200">
+                  <thead className="bg-black text-white uppercase text-xs font-bold">
                     <tr>
                       <th className="px-6 py-4">Alumno</th>
                       <th className="px-6 py-4 text-center">Clases Totales</th>
                       <th className="px-6 py-4 text-center">Asistencias</th>
-                      <th className="px-6 py-4 text-center text-amber-600">Faltas Avisadas</th>
-                      <th className="px-6 py-4 text-center text-rose-600">Faltas Injustificadas</th>
+                      <th className="px-6 py-4 text-center text-amber-400">Faltas Avisadas</th>
+                      <th className="px-6 py-4 text-center text-rose-400">Faltas Injustificadas</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {stats.length === 0 ? (
-                      <tr><td colSpan="5" className="px-6 py-8 text-center text-slate-400">Aún no hay datos.</td></tr>
+                      <tr><td colSpan="5" className="px-6 py-8 text-center text-slate-400 font-medium">Aún no hay datos.</td></tr>
                     ) : (
                       stats.map((student, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 font-medium text-slate-800">{student.name}</td>
-                          <td className="px-6 py-4 text-center font-semibold">{student.total}</td>
+                        <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-6 py-4 font-bold text-slate-800">{student.name}</td>
+                          <td className="px-6 py-4 text-center font-bold text-slate-500">{student.total}</td>
                           <td className="px-6 py-4 text-center">
-                            <span className="inline-flex items-center justify-center bg-emerald-100 text-emerald-700 px-2.5 py-0.5 rounded-full text-xs font-medium">{student.present}</span>
+                            <span className="inline-flex items-center justify-center bg-emerald-100 text-emerald-700 px-2.5 py-0.5 rounded-full text-xs font-bold">{student.present}</span>
                           </td>
                           <td className="px-6 py-4 text-center">
-                            {student.notified > 0 ? <span className="inline-flex items-center justify-center bg-amber-100 text-amber-700 px-2.5 py-0.5 rounded-full text-xs font-medium">{student.notified}</span> : '-'}
+                            {student.notified > 0 ? <span className="inline-flex items-center justify-center bg-amber-100 text-amber-700 px-2.5 py-0.5 rounded-full text-xs font-bold">{student.notified}</span> : <span className="text-slate-300">-</span>}
                           </td>
                           <td className="px-6 py-4 text-center">
-                            {student.absent > 0 ? <span className="inline-flex items-center justify-center bg-rose-100 text-rose-700 px-2.5 py-0.5 rounded-full text-xs font-medium">{student.absent}</span> : '-'}
+                            {student.absent > 0 ? <span className="inline-flex items-center justify-center bg-rose-100 text-rose-700 px-2.5 py-0.5 rounded-full text-xs font-bold">{student.absent}</span> : <span className="text-slate-300">-</span>}
                           </td>
                         </tr>
                       ))
@@ -1075,35 +1091,35 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       </main>
 
       <nav className="fixed bottom-0 w-full bg-white border-t border-slate-200 flex justify-around p-2 md:hidden z-20 pb-safe">
-        <button onClick={() => setActiveTab('attendance')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'attendance' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('attendance')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'attendance' ? 'text-black font-bold' : 'text-slate-400'}`}>
           <ClipboardList className="w-6 h-6 mb-1" />
-          <span className="text-[10px] font-medium">Listas</span>
+          <span className="text-[10px] uppercase tracking-wide">Listas</span>
         </button>
-        <button onClick={() => setActiveTab('daily')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'daily' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('daily')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'daily' ? 'text-black font-bold' : 'text-slate-400'}`}>
           <MessageSquare className="w-6 h-6 mb-1" />
-          <span className="text-[10px] font-medium">Diario</span>
+          <span className="text-[10px] uppercase tracking-wide">Diario</span>
         </button>
-        <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'history' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'history' ? 'text-black font-bold' : 'text-slate-400'}`}>
           <History className="w-6 h-6 mb-1" />
-          <span className="text-[10px] font-medium">Historial</span>
+          <span className="text-[10px] uppercase tracking-wide">Historial</span>
         </button>
-        <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'reports' ? 'text-indigo-600' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center p-2 rounded-lg flex-1 ${activeTab === 'reports' ? 'text-black font-bold' : 'text-slate-400'}`}>
           <BarChart3 className="w-6 h-6 mb-1" />
-          <span className="text-[10px] font-medium">Reportes</span>
+          <span className="text-[10px] uppercase tracking-wide">Reportes</span>
         </button>
       </nav>
 
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-4 flex-col gap-4 z-20">
-        <button onClick={() => setActiveTab('attendance')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'attendance' ? 'bg-indigo-600 text-white scale-110' : 'bg-white text-slate-400 hover:text-indigo-500 hover:bg-slate-50'}`} title="Pasar Lista">
+        <button onClick={() => setActiveTab('attendance')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'attendance' ? 'bg-black text-white scale-110' : 'bg-white text-slate-400 hover:text-black hover:bg-slate-50 border border-slate-100'}`} title="Pasar Lista">
           <ClipboardList className="w-6 h-6" />
         </button>
-        <button onClick={() => setActiveTab('daily')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'daily' ? 'bg-indigo-600 text-white scale-110' : 'bg-white text-slate-400 hover:text-indigo-500 hover:bg-slate-50'}`} title="Resumen Diario">
+        <button onClick={() => setActiveTab('daily')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'daily' ? 'bg-black text-white scale-110' : 'bg-white text-slate-400 hover:text-black hover:bg-slate-50 border border-slate-100'}`} title="Resumen Diario">
           <MessageSquare className="w-6 h-6" />
         </button>
-        <button onClick={() => setActiveTab('history')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'history' ? 'bg-indigo-600 text-white scale-110' : 'bg-white text-slate-400 hover:text-indigo-500 hover:bg-slate-50'}`} title="Historial">
+        <button onClick={() => setActiveTab('history')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'history' ? 'bg-black text-white scale-110' : 'bg-white text-slate-400 hover:text-black hover:bg-slate-50 border border-slate-100'}`} title="Historial">
           <History className="w-6 h-6" />
         </button>
-        <button onClick={() => setActiveTab('reports')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'reports' ? 'bg-indigo-600 text-white scale-110' : 'bg-white text-slate-400 hover:text-indigo-500 hover:bg-slate-50'}`} title="Reportes">
+        <button onClick={() => setActiveTab('reports')} className={`p-3 rounded-xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'reports' ? 'bg-black text-white scale-110' : 'bg-white text-slate-400 hover:text-black hover:bg-slate-50 border border-slate-100'}`} title="Reportes">
           <BarChart3 className="w-6 h-6" />
         </button>
       </nav>

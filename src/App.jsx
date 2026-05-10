@@ -84,28 +84,24 @@ const normalizeNumber = (value) => {
 };
 
 export default function App() {
-  // ESTADOS DE AUTENTICACIÓN
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // ESTADO DE DATOS
   const [loadingData, setLoadingData] = useState(true);
   const [recurringClasses, setRecurringClasses] = useState([]);
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
 
-  // ESTADO DE LA UI
   const [activeTab, setActiveTab] = useState('attendance');
   const [notification, setNotification] = useState(null);
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [currentSession, setCurrentSession] = useState(null);
   const [isSendingReport, setIsSendingReport] = useState(false);
 
-  // ESTADO DEL FORMULARIO DIARIO
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
     incidents: '',
@@ -114,7 +110,6 @@ export default function App() {
     hoursTaught: ''
   });
 
-  // --- EFECTOS DE FIREBASE ---
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -122,23 +117,19 @@ export default function App() {
           await signInWithCustomToken(auth, __initial_auth_token);
         }
       } catch (error) {
-        console.error("Error de inicialización de auth:", error);
+        console.error("Error auth:", error);
       }
     };
-
     initAuth();
-
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setIsAuthLoading(false);
     });
-
     return () => unsubscribe();
   }, []);
 
   useEffect(() => {
     if (!user) return;
-
     setLoadingData(true);
 
     const recurringRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses');
@@ -224,7 +215,6 @@ export default function App() {
     e.preventDefault();
     setLoginError('');
     setIsAuthLoading(true);
-
     try {
       await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
     } catch (error) {
@@ -248,27 +238,12 @@ export default function App() {
   }, [dailyReports, date]);
 
   const buildAttendanceDetails = () => {
-    if (recordsForSelectedDate.length === 0) {
-      return 'No hay registros de asistencia guardados para esta fecha.';
-    }
-
+    if (recordsForSelectedDate.length === 0) return 'No hay registros de asistencia guardados para esta fecha.';
     return recordsForSelectedDate.map(record => {
       const students = record.students || [];
-
-      const present = students
-        .filter(s => s.status === 'present')
-        .map(s => `- ${s.name}${s.isRecovery ? ' (Recuperación)' : ''}`)
-        .join('\n') || '- Ninguno';
-
-      const notified = students
-        .filter(s => s.status === 'notified')
-        .map(s => `- ${s.name}`)
-        .join('\n') || '- Ninguno';
-
-      const absent = students
-        .filter(s => s.status === 'absent')
-        .map(s => `- ${s.name}`)
-        .join('\n') || '- Ninguno';
+      const present = students.filter(s => s.status === 'present').map(s => `- ${s.name}${s.isRecovery ? ' (Recuperación)' : ''}`).join('\n') || '- Ninguno';
+      const notified = students.filter(s => s.status === 'notified').map(s => `- ${s.name}`).join('\n') || '- Ninguno';
+      const absent = students.filter(s => s.status === 'absent').map(s => `- ${s.name}`).join('\n') || '- Ninguno';
 
       return `
 CLASE: ${record.time} - ${record.subject}
@@ -393,12 +368,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  // --- LÓGICA REVISADA: AÑADIR ALUMNO (CON CONTROL DE AFORO) ---
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     if (!studentName) return;
 
-    // Verificación de capacidad máxima
     if (currentSession.capacity) {
       const maxCapacity = parseInt(currentSession.capacity, 10);
       if (currentSession.students.length >= maxCapacity) {
@@ -446,8 +419,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveClassOnly = async () => {
     if (!user) return;
-    if (!currentSession.subject) {
-      showNotification({ type: 'error', text: 'Por favor, rellena el instrumento.' });
+    if (!currentSession.subject || !currentSession.capacity) {
+      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
+      return;
+    }
+    if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
+      showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
       return;
     }
 
@@ -480,8 +457,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveRecord = async () => {
     if (!user) return;
-    if (!currentSession.subject) {
-      showNotification({ type: 'error', text: 'Por favor, rellena el instrumento.' });
+    if (!currentSession.subject || !currentSession.capacity) {
+      showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
+      return;
+    }
+    if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
+      showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
       return;
     }
 
@@ -648,25 +629,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-              <input
-                type="email"
-                required
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none"
-                placeholder="profesor@escuela.com"
-              />
+              <input type="email" required value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none" placeholder="profesor@escuela.com" />
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña</label>
-              <input
-                type="password"
-                required
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none"
-                placeholder="••••••••"
-              />
+              <input type="password" required value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none" placeholder="••••••••" />
             </div>
             <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-semibold py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all mt-6 shadow-md uppercase tracking-wider text-sm">
               <Lock className="w-5 h-5" /> Entrar
@@ -689,8 +656,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   }
 
-  // Comprobación de si la clase está llena para bloquear la UI
-  const isCapacityReached = currentSession?.capacity && currentSession.students.length >= parseInt(currentSession.capacity, 10);
+  // LÓGICA DE AFORO (Las 3 reglas de integridad)
+  const isCapacityMissing = !currentSession?.capacity;
+  const maxCap = parseInt(currentSession?.capacity, 10) || 0;
+  const currentCount = currentSession?.students?.length || 0;
+  
+  const isCapacityReached = !isCapacityMissing && currentCount >= maxCap;
+  const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
+  
+  const isDisabledAdd = isCapacityMissing || isCapacityReached;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20 md:pb-0">
@@ -779,7 +753,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                                 <CalendarOff className="w-5 h-5" />
                               </button>
 
-                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar plantilla de clase">
+                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar plantilla de clase permanentemente">
                                 <Trash2 className="w-5 h-5" />
                               </button>
                             </>
@@ -805,18 +779,40 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
+                  {/* BLOQUEO READ-ONLY PARA CLASES RECURRENTES */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
-                      <input type="time" value={currentSession.time} onChange={(e) => handleSessionFieldChange('time', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
+                      <input 
+                        type="time" 
+                        value={currentSession.time} 
+                        onChange={(e) => handleSessionFieldChange('time', e.target.value)} 
+                        disabled={!currentSession.isNew}
+                        className={`w-full p-2.5 rounded-lg outline-none transition-all ${!currentSession.isNew ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed' : 'bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-black'}`} 
+                      />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
-                      <input type="text" placeholder="Ej: Piano..." value={currentSession.subject} onChange={(e) => handleSessionFieldChange('subject', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
+                      <input 
+                        type="text" 
+                        placeholder="Ej: Piano..." 
+                        value={currentSession.subject} 
+                        onChange={(e) => handleSessionFieldChange('subject', e.target.value)} 
+                        disabled={!currentSession.isNew}
+                        className={`w-full p-2.5 rounded-lg outline-none transition-all ${!currentSession.isNew ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed' : 'bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-black'}`} 
+                      />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><User className="w-3 h-3" /> Capacidad Max.</label>
-                      <input type="number" min="1" placeholder="Nº Alumnos" value={currentSession.capacity} onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
+                      <input 
+                        type="number" 
+                        min="1" 
+                        placeholder="Ej: 4" 
+                        value={currentSession.capacity} 
+                        onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} 
+                        disabled={!currentSession.isNew}
+                        className={`w-full p-2.5 rounded-lg outline-none transition-all ${!currentSession.isNew ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed' : 'bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-black'}`} 
+                      />
                     </div>
                   </div>
 
@@ -841,13 +837,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 </div>
 
                 <div className="p-6">
-                  <div className={`flex flex-col mb-6 p-4 rounded-xl border shadow-inner transition-colors ${isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
+                  <div className={`flex flex-col mb-6 p-4 rounded-xl border shadow-inner transition-colors ${isCapacityMissing ? 'bg-amber-50 border-amber-200' : isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
                     <h3 className="text-sm uppercase tracking-wide font-bold text-slate-800 mb-3 flex items-center gap-2">
                       <UserPlus className="w-4 h-4 text-black" />
                       Añadir Alumno
                       {currentSession.capacity && (
-                        <span className={`ml-2 px-2.5 py-0.5 rounded-full text-xs normal-case ${isCapacityReached ? 'bg-red-200 text-red-800' : 'bg-slate-200 text-slate-700'}`}>
-                          ({currentSession.students.length} / {currentSession.capacity})
+                        <span className={`ml-2 px-2.5 py-0.5 rounded-full text-xs normal-case ${isOverCapacity ? 'bg-red-600 text-white' : isCapacityReached ? 'bg-red-200 text-red-800' : 'bg-slate-200 text-slate-700'}`}>
+                          ({currentCount} / {currentSession.capacity})
                         </span>
                       )}
                     </h3>
@@ -858,14 +854,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           type="text"
                           name="custom_search_field_no_chrome"
                           autoComplete="new-password"
-                          placeholder={isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
+                          placeholder={isCapacityMissing ? "Indica la capacidad máxima arriba primero..." : isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
                           value={currentSession.newStudentName}
                           onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
                           onKeyDown={(e) => e.key === 'Enter' && addStudent()}
-                          disabled={isCapacityReached}
-                          className={`w-full p-2.5 text-sm rounded-lg outline-none relative z-10 transition-colors ${isCapacityReached ? 'bg-red-50 border border-red-200 cursor-not-allowed text-red-500' : 'bg-white border border-slate-300 focus:ring-2 focus:ring-black'}`}
+                          disabled={isDisabledAdd}
+                          className={`w-full p-2.5 text-sm rounded-lg outline-none relative z-10 transition-colors ${isDisabledAdd ? 'bg-slate-100 border border-slate-200 cursor-not-allowed text-slate-400' : 'bg-white border border-slate-300 focus:ring-2 focus:ring-black'}`}
                         />
-                        {!isCapacityReached && currentSession.newStudentName.length >= 2 && (
+                        {!isDisabledAdd && currentSession.newStudentName.length >= 2 && (
                           <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-zinc-300 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto overflow-x-hidden">
                             {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
                               <div className="p-3 text-sm text-slate-500 italic bg-slate-50">
@@ -889,13 +885,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         )}
                       </div>
 
-                      <div className={`flex items-center gap-3 w-full sm:w-auto px-3 py-2 rounded-lg border transition-colors ${isCapacityReached ? 'bg-red-50 border-red-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
+                      <div className={`flex items-center gap-3 w-full sm:w-auto px-3 py-2 rounded-lg border transition-colors ${isDisabledAdd ? 'bg-slate-50 border-slate-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
                         <input
                           type="checkbox"
                           id="isRecovery"
                           checked={currentSession.isAddingRecovery || false}
                           onChange={(e) => handleSessionFieldChange('isAddingRecovery', e.target.checked)}
-                          disabled={isCapacityReached}
+                          disabled={isDisabledAdd}
                           className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500 cursor-pointer disabled:cursor-not-allowed"
                         />
                         <label htmlFor="isRecovery" className="text-sm font-medium text-amber-900 cursor-pointer whitespace-nowrap">
@@ -905,8 +901,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                       <button
                         onClick={addStudent}
-                        disabled={isCapacityReached}
-                        className={`w-full sm:w-auto px-6 py-2.5 font-bold text-sm tracking-wide uppercase rounded-lg transition-all shadow-sm flex justify-center ${isCapacityReached ? 'bg-red-200 text-red-500 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
+                        disabled={isDisabledAdd}
+                        className={`w-full sm:w-auto px-6 py-2.5 font-bold text-sm tracking-wide uppercase rounded-lg transition-all shadow-sm flex justify-center ${isDisabledAdd ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
                       >
                         Añadir
                       </button>
@@ -950,11 +946,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     ))}
                   </div>
 
+                  {/* ALERTA DE ERROR SI HAY MÁS ALUMNOS QUE CAPACIDAD (4/1) */}
+                  {isOverCapacity && (
+                    <div className="mt-8 p-4 bg-red-50 border-2 border-red-200 rounded-xl flex items-start gap-3">
+                      <AlertCircle className="w-6 h-6 text-red-500 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="font-bold text-red-800 uppercase tracking-wide text-sm">Aforo superado</h4>
+                        <p className="text-red-600 text-sm mt-1">La capacidad máxima es de {currentSession.capacity} pero tienes a {currentCount} alumnos en lista. Debes eliminar alumnos de la lista o borrar la clase y crear una nueva con mayor capacidad para poder guardar.</p>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="mt-8 flex flex-col sm:flex-row gap-3">
-                    <button onClick={saveClassOnly} className="w-full sm:w-1/2 bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
+                    <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-slate-100 text-slate-400 border-2 border-slate-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
                       <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos / Notas'}
                     </button>
-                    <button onClick={saveRecord} className="w-full sm:w-1/2 bg-black hover:bg-zinc-800 text-white font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md">
+                    <button onClick={saveRecord} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md ${isOverCapacity ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
                   </div>

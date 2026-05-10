@@ -25,11 +25,14 @@ import {
   Settings,
   Plus,
   Ticket,
-  Snowflake
+  Snowflake,
+  Timer,
+  Palmtree,
+  PartyPopper
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   onAuthStateChanged,
@@ -56,7 +59,8 @@ const firebaseConfig = {
   appId: "1:303855837130:web:c662eefe0cc718bde37933"
 };
 
-const app = initializeApp(firebaseConfig);
+// Prevención de Crash por Hot-Reload
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -68,6 +72,7 @@ const APPS_SCRIPT_URL = 'https://script.googleusercontent.com/macros/echo?user_c
 
 // --- HELPERS ---
 const getDayOfWeek = (dateString) => {
+  if (!dateString) return 0;
   const [year, month, day] = dateString.split('-');
   return new Date(year, month - 1, day).getDay();
 };
@@ -87,7 +92,7 @@ const normalizeNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
-// NUEVO HELPER: Generador de fechas para los Tickets (Mes + 1)
+// Generador de fechas para los Tickets (Mes + 1)
 const generateTicketDates = (dateString) => {
   if (!dateString) return { validFrom: '', validUntil: '' };
   const [y, m] = dateString.split('-').map(Number);
@@ -103,6 +108,18 @@ const generateTicketDates = (dateString) => {
   return { validFrom, validUntil };
 };
 
+// Helper para sacar el mes anterior (para calcular vacaciones)
+const getPreviousMonthStr = (currentMonthStr) => { 
+  const [y, m] = currentMonthStr.split('-').map(Number);
+  let prevM = m - 1;
+  let prevY = y;
+  if (prevM === 0) {
+    prevM = 12;
+    prevY--;
+  }
+  return `${prevY}-${String(prevM).padStart(2, '0')}`;
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -115,12 +132,15 @@ export default function App() {
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
-  const [tickets, setTickets] = useState([]); // NUEVO: Estado para los tickets
+  const [tickets, setTickets] = useState([]); 
   
+  // Estado para los Ajustes Globales (Admin) actualizado
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
-    instrumentTasks: {} 
+    instrumentTasks: {},
+    festivos: [],
+    vacaciones: []
   });
 
   const [activeTab, setActiveTab] = useState('attendance');
@@ -172,7 +192,7 @@ export default function App() {
     const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
     const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
-    const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets'); // NUEVO: Referencia a tickets
+    const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets');
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -192,7 +212,7 @@ export default function App() {
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
       const recs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      recs.sort((a, b) => new Date(`${b.date}T${b.time}`) - new Date(`${a.date}T${a.time}`));
+      recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);
       recordsLoaded = true;
       checkLoading();
@@ -216,7 +236,6 @@ export default function App() {
       }
     });
 
-    // NUEVO: Escuchador de Tickets
     const unsubTickets = onSnapshot(ticketsRef, (snapshot) => {
       const tks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTickets(tks);
@@ -292,13 +311,39 @@ export default function App() {
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
+  // CÁLCULO DE NÓMINA CON VACACIONES
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); 
-    const monthDaily = dailyReports.filter(r => r.id.startsWith(currentMonth));
-    const totalHours = monthDaily.reduce((acc, r) => acc + normalizeNumber(r.hoursTaught), 0);
+    const prevMonth = getPreviousMonthStr(currentMonth);
+
+    // Horas reales actuales
+    const currentRecords = records.filter(r => r.date && r.date.startsWith(currentMonth));
+    const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
+    const currentHours = currentMinutes / 60;
+
+    // Media mes anterior
+    const prevRecords = records.filter(r => r.date && r.date.startsWith(prevMonth));
+    const prevTotalMinutes = prevRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
+    const prevUniqueDays = new Set(prevRecords.map(r => r.date)).size;
+    const avgDailyMins = prevUniqueDays > 0 ? (prevTotalMinutes / prevUniqueDays) : 0;
+
+    // Proyección de vacaciones
+    const vacationsThisMonth = (settings.vacaciones || []).filter(d => d.startsWith(currentMonth)).length;
+    const projectedMinutes = vacationsThisMonth * avgDailyMins;
+    const projectedHours = projectedMinutes / 60;
+
+    // Totales
+    const totalHours = currentHours + projectedHours;
     const earnings = totalHours * (settings.hourlyRate || 0);
-    return { totalHours, earnings };
-  }, [dailyReports, date, settings.hourlyRate]);
+
+    return { 
+      realHours: currentHours.toFixed(2),
+      projectedHours: projectedHours.toFixed(2),
+      vacationDays: vacationsThisMonth,
+      totalHours: totalHours.toFixed(2), 
+      earnings: earnings.toFixed(2) 
+    };
+  }, [records, date, settings]);
 
   const buildAttendanceDetails = () => {
     if (recordsForSelectedDate.length === 0) {
@@ -407,10 +452,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: scheduledClass.teacher,
         subject: scheduledClass.subject,
         capacity: scheduledClass.capacity || '',
+        duration: scheduledClass.duration || 60,
         notes: scheduledClass.notes || '',
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
-        // Al iniciar sesión, si está congelado forzamos su status visual
         students: scheduledClass.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
         newStudentName: '',
         isAddingRecovery: false,
@@ -424,6 +469,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: getTeacherName(),
         subject: '',
         capacity: '',
+        duration: 60,
         notes: '',
         isRecurring: true,
         students: [],
@@ -447,7 +493,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  // NUEVO: Función para congelar/descongelar alumno
   const togglePauseStudent = (id) => {
     setCurrentSession({
       ...currentSession,
@@ -461,6 +506,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
+  // NUEVA LÓGICA DE VALIDACIÓN AL AÑADIR ESTUDIANTE
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     if (!studentName) return;
@@ -487,6 +533,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       }
     }
 
+    // --- BLOQUEO DE PUERTA: VALIDAR TICKETS DE RECUPERACIÓN ---
+    if (currentSession.isAddingRecovery) {
+      const today = new Date().toISOString().split('T')[0];
+      const hasValidTicket = tickets.some(t => 
+        t.studentId === studentId && 
+        !t.isUsed && 
+        today >= t.validFrom && 
+        today <= t.validUntil
+      );
+      
+      if (!hasValidTicket) {
+        showNotification({ type: 'error', text: 'Este alumno no tiene recuperaciones pendientes válidas para hoy.' });
+        return; // Rompemos la ejecución, no se añade a la lista
+      }
+    }
+
     setCurrentSession({
       ...currentSession,
       students: [
@@ -496,7 +558,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           name: studentName,
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
-          isPaused: false // Alumno nuevo siempre entra activo
+          isPaused: false
         }
       ],
       newStudentName: '',
@@ -539,7 +601,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     try {
       const templateStudents = currentSession.students
         .filter(s => !s.isRecovery)
-        // AHORA GUARDAMOS EL isPaused EN LA PLANTILLA
         .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
 
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
@@ -548,6 +609,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
+        duration: currentSession.duration || 60,
         notes: currentSession.notes,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents
@@ -585,7 +647,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    // PROTOCOLO HORA MUERTA (Excluimos de la ecuación a los alumnos "En Mantenimiento")
     const activeStudents = currentSession.students.filter(s => !s.isPaused);
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
@@ -611,26 +672,36 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const executeSaveRecord = async (deadHourNote = null) => {
     try {
       const recordId = Date.now().toString();
+      const currentMonth = date.substring(0, 7);
       
       const finalNotes = deadHourNote 
         ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
         : currentSession.notes;
 
-      // NUEVO: Generar Tickets en la Bolsa (Solo para los que 'Avisó' y no están en Pausa)
       const ticketPromises = currentSession.students.map(async (s) => {
         if (s.status === 'notified' && !s.isRecovery && !s.isPaused) {
-          const { validFrom, validUntil } = generateTicketDates(date);
-          const ticketId = Date.now().toString() + '-' + s.id;
-          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), {
-            studentId: s.id,
-            studentName: s.name,
-            subject: currentSession.subject,
-            originalDate: date,
-            validFrom,
-            validUntil,
-            isUsed: false,
-            createdAt: new Date().toISOString()
-          });
+          const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
+          if (monthTickets.length < 2) {
+            const { validFrom, validUntil } = generateTicketDates(date);
+            const ticketId = Date.now().toString() + '-' + s.id;
+            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), {
+              studentId: s.id,
+              studentName: s.name,
+              subject: currentSession.subject,
+              originalDate: date,
+              validFrom,
+              validUntil,
+              isUsed: false,
+              createdAt: new Date().toISOString()
+            });
+          }
+        }
+        
+        if (s.isRecovery && s.status === 'present') {
+          const pending = tickets.filter(t => t.studentId === s.id && !t.isUsed).sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom));
+          if (pending.length > 0) {
+            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', pending[0].id), { isUsed: true }, { merge: true });
+          }
         }
       });
       await Promise.all(ticketPromises);
@@ -642,6 +713,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
+        duration: currentSession.duration || 60,
         notes: finalNotes,
         students: currentSession.students.map(s => ({ ...s }))
       });
@@ -657,29 +729,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           teacher: currentSession.teacher,
           subject: currentSession.subject,
           capacity: currentSession.capacity,
+          duration: currentSession.duration || 60,
           notes: currentSession.notes,
           cancelledDates: currentSession.cancelledDates || [],
           students: templateStudents
         });
       }
 
-      showNotification({ type: 'success', text: 'Lista guardada y Bolsa actualizada.' });
+      showNotification({ type: 'success', text: 'Lista guardada correctamente.' });
       setCurrentSession(null);
       setDeadHourModal(null);
     } catch (error) {
       console.error(error);
       showNotification({ type: 'error', text: 'Hubo un error al guardar los datos.' });
-    }
-  };
-
-  // NUEVA FUNCIÓN: Marcar Ticket como usado desde la Bolsa
-  const markTicketAsUsed = async (ticketId) => {
-    if (!user) return;
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), { isUsed: true }, { merge: true });
-      showNotification({ type: 'success', text: 'Ticket marcado como recuperado.' });
-    } catch (e) {
-      showNotification({ type: 'error', text: 'Error al actualizar el ticket.' });
     }
   };
 
@@ -758,7 +820,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       if (!isScheduled) items.push({ type: 'completed', data: r });
     });
 
-    return items.sort((a, b) => a.data.time.localeCompare(b.data.time));
+    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
   }, [date, records, recurringClasses]);
 
   const stats = useMemo(() => {
@@ -793,7 +855,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <AlertCircle className="w-8 h-8" />
             <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
           </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para este tiempo:</p>
+          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos han faltado en una hora intermedia. Por favor, selecciona una tarea productiva para realizar en este tiempo:</p>
           
           <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
             {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
@@ -842,6 +904,53 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
             <span className="text-2xl font-bold">€ / hora</span>
             <button onClick={() => saveSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar Valor</button>
+          </div>
+        </div>
+
+        {/* NUEVO PANEL: CALENDARIO ESCOLAR */}
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
+          <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
+          
+          <div className="flex flex-col sm:flex-row gap-3 mb-8">
+            <input id="adminDateInput" type="date" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold flex-1" />
+            <select id="adminDateType" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold uppercase text-xs">
+              <option value="festivo">Festivo</option>
+              <option value="vacacion">Vacaciones</option>
+            </select>
+            <button onClick={async () => { 
+              const d = document.getElementById('adminDateInput').value;
+              const t = document.getElementById('adminDateType').value;
+              if(d) {
+                const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]);
+                if(!arr.includes(d)) {
+                  const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]};
+                  setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
+                  showNotification({ type: 'success', text: `Día añadido al calendario`});
+                }
+              }
+            }} className="bg-black text-white px-8 py-4 rounded-2xl shadow-lg font-black uppercase text-[10px]"><Plus/></button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Días Festivos</h4>
+              <div className="space-y-2">
+                {(!settings.festivos || settings.festivos.length === 0) && <p className="text-xs text-zinc-400 italic">No hay festivos.</p>}
+                {settings.festivos?.sort().map(f => (
+                  <div key={f} className="flex justify-between p-3 bg-amber-50 rounded-xl text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={async () => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones</h4>
+              <div className="space-y-2">
+                {(!settings.vacaciones || settings.vacaciones.length === 0) && <p className="text-xs text-zinc-400 italic">No hay vacaciones.</p>}
+                {settings.vacaciones?.sort().map(v => (
+                  <div key={v} className="flex justify-between p-3 bg-emerald-50 rounded-xl text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={async () => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -933,12 +1042,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   }
 
+  // Comprobaciones Generales y de Calendario
   const isCapacityMissing = !currentSession?.capacity;
   const maxCap = parseInt(currentSession?.capacity, 10) || 0;
   const currentCount = currentSession?.students?.length || 0;
   const isCapacityReached = !isCapacityMissing && currentCount >= maxCap;
   const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
   const isDisabledAdd = isCapacityMissing || isCapacityReached;
+
+  const isFestivo = settings.festivos?.includes(date);
+  const isVacacion = settings.vacaciones?.includes(date);
+  const isSpecialDay = isFestivo || isVacacion;
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
@@ -981,10 +1095,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             { id: 'tickets', label: 'Bolsa', icon: Ticket }, // NUEVA PESTAÑA BOLSA
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
-            { id: 'reports', label: 'Reportes', icon: BarChart3 }
+            { id: 'reports', label: 'Mi Mes', icon: BarChart3 }
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
-              <tab.icon className="w-4 h-4"/> {tab.label}
+              <tab.icon className="w-4 h-4"/> <span className="hidden sm:inline">{tab.label}</span>
             </button>
           ))}
           {isAdmin && (
@@ -1005,7 +1119,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </label>
                   <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
                 </div>
-                <button onClick={() => startSession(null)} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest">
+                <button onClick={() => startSession(null)} disabled={isSpecialDay} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest disabled:opacity-30 disabled:cursor-not-allowed">
                   <ClipboardList className="w-5 h-5" /> Nueva Clase
                 </button>
               </div>
@@ -1016,6 +1130,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <h3 className="text-lg font-black text-slate-800 mb-6 flex items-center gap-2 uppercase tracking-wide">
                   {getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}
                 </h3>
+
+                {isSpecialDay && (
+                  <div className={`p-6 rounded-2xl mb-8 flex items-center gap-4 ${isFestivo ? 'bg-amber-100 text-amber-900 border-2 border-amber-200' : 'bg-emerald-100 text-emerald-900 border-2 border-emerald-200'}`}>
+                    {isFestivo ? <PartyPopper className="w-10 h-10 shrink-0"/> : <Palmtree className="w-10 h-10 shrink-0"/>}
+                    <div>
+                      <h4 className="font-black uppercase tracking-widest text-lg">{isFestivo ? 'Día Festivo' : 'Día de Vacaciones'}</h4>
+                      <p className="text-sm font-medium mt-1">El centro está cerrado hoy. No es necesario pasar lista ni enviar el reporte diario.</p>
+                    </div>
+                  </div>
+                )}
+
                 {dashboardItems.length === 0 ? (
                   <div className="text-center py-16 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
                     <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay clases en agenda.</p>
@@ -1023,14 +1148,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 ) : (
                   <div className="space-y-4">
                     {dashboardItems.map((item, idx) => (
-                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
+                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
                         <div className="flex items-center gap-4">
-                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
+                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
                             <span className="text-sm leading-none">{item.data.time.split(':')[0]}</span>
                             <span className="text-[10px] opacity-70">{item.data.time.split(':')[1]}</span>
                           </div>
                           <div>
-                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' ? 'text-zinc-500' : 'text-slate-800'}`}>
+                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' || isSpecialDay ? 'text-zinc-500' : 'text-slate-800'}`}>
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
@@ -1041,7 +1166,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </div>
                         </div>
                         <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
-                          {item.type === 'completed' ? (
+                          {isSpecialDay ? (
+                            <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">No Laborable</span>
+                          ) : item.type === 'completed' ? (
                             <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-4 py-2 rounded-lg font-black border border-emerald-200 uppercase tracking-widest">
                               <Check className="w-4 h-4" /> Completado
                             </span>
@@ -1082,7 +1209,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
                       <input 
@@ -1112,6 +1239,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         placeholder="Ej: 4" 
                         value={currentSession.capacity} 
                         onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} 
+                        disabled={!currentSession.isNew}
+                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Timer className="w-3 h-3" /> Duración (min)</label>
+                      <input 
+                        type="number" 
+                        min="15" 
+                        step="5"
+                        placeholder="Ej: 60" 
+                        value={currentSession.duration} 
+                        onChange={(e) => handleSessionFieldChange('duration', e.target.value)} 
                         disabled={!currentSession.isNew}
                         className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
                       />
@@ -1369,40 +1509,48 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               </div>
             </div>
 
-            <div className="p-6 md:p-8 space-y-8">
-              <div>
-                <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Diario de Trabajo</h2>
-                <p className="text-sm font-medium text-zinc-500">Documenta tu jornada para enviarla a coordinación.</p>
+            {isSpecialDay ? (
+              <div className="p-16 text-center">
+                {isFestivo ? <PartyPopper className="w-20 h-20 text-amber-300 mx-auto mb-6"/> : <Palmtree className="w-20 h-20 text-emerald-300 mx-auto mb-6"/>}
+                <h3 className="text-2xl font-black uppercase tracking-widest text-slate-800">Día No Laborable</h3>
+                <p className="text-zinc-500 font-bold mt-2">Hoy es un día especial marcado en el calendario de la escuela. <br/>No es necesario que rellenes ni envíes el reporte diario.</p>
               </div>
+            ) : (
+              <div className="p-6 md:p-8 space-y-8">
+                <div>
+                  <h2 className="text-2xl font-black text-slate-800 mb-2 uppercase tracking-tight">Diario de Trabajo</h2>
+                  <p className="text-sm font-medium text-zinc-500">Documenta tu jornada para enviarla a coordinación.</p>
+                </div>
 
-              <div className="space-y-6">
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">1. ¿Cómo han ido las clases hoy? <span className="text-red-500">*</span></label>
-                  <textarea required value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-slate-700 font-medium transition-colors" placeholder="Ej: Muy bien, hemos trabajado las escalas..." />
+                <div className="space-y-6">
+                  <div className="space-y-3">
+                    <label className="block text-sm font-black uppercase tracking-wide text-slate-800">1. ¿Cómo han ido las clases hoy? <span className="text-red-500">*</span></label>
+                    <textarea required value={dailyForm.generalFeedback} onChange={(e) => setDailyForm({ ...dailyForm, generalFeedback: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-slate-700 font-medium transition-colors" placeholder="Ej: Muy bien, hemos trabajado las escalas..." />
+                  </div>
+                  <div className="space-y-3">
+                    <label className="block text-sm font-black uppercase tracking-wide text-slate-800">2. Incidencias o fuera de lo común</label>
+                    <textarea value={dailyForm.incidents} onChange={(e) => setDailyForm({ ...dailyForm, incidents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Llegadas tarde, interrupciones..." />
+                  </div>
+                  <div className="space-y-3">
+                    <label className="block text-sm font-black uppercase tracking-wide text-slate-800">3. Alumnos nuevos</label>
+                    <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Nombres de altas nuevas, primeras impresiones del alumno..." />
+                  </div>
+                  <div className="space-y-3">
+                    <label className="block text-sm font-black uppercase tracking-wide text-slate-800">4. Estado del material</label>
+                    <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Atriles rotos, cables fallando..." />
+                  </div>
                 </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">2. Incidencias o fuera de lo común</label>
-                  <textarea value={dailyForm.incidents} onChange={(e) => setDailyForm({ ...dailyForm, incidents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Llegadas tarde, interrupciones..." />
-                </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">3. Alumnos nuevos</label>
-                  <textarea value={dailyForm.newStudents} onChange={(e) => setDailyForm({ ...dailyForm, newStudents: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Nombres de altas nuevas, primeras impresiones del alumno..." />
-                </div>
-                <div className="space-y-3">
-                  <label className="block text-sm font-black uppercase tracking-wide text-slate-800">4. Estado del material</label>
-                  <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Atriles rotos, cables fallando..." />
-                </div>
-              </div>
 
-              <div className="pt-8 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-zinc-100">
-                <button onClick={() => saveDailyReport(false)} className="w-full bg-white border-2 border-zinc-200 text-black hover:bg-zinc-50 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
-                  <Save className="w-5 h-5" /> Guardar Borrador
-                </button>
-                <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-black hover:bg-zinc-800 text-white font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xl disabled:opacity-60">
-                  {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Enviar a Coordinación
-                </button>
+                <div className="pt-8 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-zinc-100">
+                  <button onClick={() => saveDailyReport(false)} className="w-full bg-white border-2 border-zinc-200 text-black hover:bg-zinc-50 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
+                    <Save className="w-5 h-5" /> Guardar Borrador
+                  </button>
+                  <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-black hover:bg-zinc-800 text-white font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xl disabled:opacity-60">
+                    {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Enviar a Coordinación
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -1475,16 +1623,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:bg-zinc-800 transition-colors">
-                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Declaradas</p>
-                      <p className="text-5xl font-black tracking-tighter">{monthlyPayroll.totalHours}<span className="text-xl text-zinc-600 ml-1 font-bold">h</span></p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                    <div className="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 backdrop-blur hover:bg-zinc-800 transition-colors">
+                      <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Reales</p>
+                      <p className="text-4xl font-black tracking-tighter">{monthlyPayroll.realHours}<span className="text-lg text-zinc-600 ml-1 font-bold">h</span></p>
                     </div>
-                    <div className="bg-zinc-900/80 p-8 rounded-3xl border border-zinc-800 backdrop-blur hover:border-emerald-500/30 transition-colors">
+                    <div className="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 backdrop-blur hover:border-blue-500/30 transition-colors">
+                      <p className="text-[10px] font-black text-blue-500/80 uppercase tracking-widest mb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones ({monthlyPayroll.vacationDays}d)</p>
+                      <p className="text-4xl font-black tracking-tighter text-blue-400">{monthlyPayroll.projectedHours}<span className="text-lg text-zinc-600 ml-1 font-bold">h</span></p>
+                    </div>
+                    <div className="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 backdrop-blur hover:border-emerald-500/30 transition-colors">
                       <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-widest mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Acumulado Mes</p>
-                      <p className="text-5xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings}<span className="text-xl ml-1 font-bold">€</span></p>
+                      <p className="text-4xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings}<span className="text-lg ml-1 font-bold">€</span></p>
                     </div>
                   </div>
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-center mt-6">* La proyección de vacaciones se calcula matemáticamente en base a la media diaria de tu mes anterior.</p>
                </div>
                <Music className="absolute -bottom-12 -right-12 w-80 h-80 text-zinc-900/40 rotate-12 pointer-events-none" />
             </div>
@@ -1507,7 +1660,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <p className="text-3xl font-black text-slate-800 mt-1">{recordsForSelectedDate.length}</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas</p>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas Reales</p>
                   <p className="text-3xl font-black text-slate-800 mt-1">{(recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2)}h</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
@@ -1533,6 +1686,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {/* --- PESTAÑA SECRETA ADMIN --- */}
         {activeTab === 'admin' && isAdmin && (
           <div className="space-y-8 animate-in fade-in duration-500">
+            {/* TARIFA */}
             <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
               <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Lock className="w-5 h-5"/> Coste de Hora (Convenio)</h2>
               <p className="text-zinc-500 mb-6 text-sm">Este valor se usará para calcular la nómina de todos los profesores.</p>
@@ -1540,6 +1694,53 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
                 <span className="text-2xl font-bold">€ / hora</span>
                 <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification({ type: 'success', text: 'Tarifa actualizada' }); }} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar</button>
+              </div>
+            </div>
+
+            {/* NUEVO: CALENDARIO ESCOLAR */}
+            <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
+              <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
+              
+              <div className="flex flex-col sm:flex-row gap-3 mb-8">
+                <input id="adminDateInput" type="date" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold flex-1" />
+                <select id="adminDateType" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold uppercase text-xs">
+                  <option value="festivo">Festivo</option>
+                  <option value="vacacion">Vacaciones</option>
+                </select>
+                <button onClick={async () => { 
+                  const d = document.getElementById('adminDateInput').value;
+                  const t = document.getElementById('adminDateType').value;
+                  if(d) {
+                    const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]);
+                    if(!arr.includes(d)) {
+                      const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]};
+                      setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
+                      showNotification({ type: 'success', text: `Día añadido al calendario`});
+                    }
+                  }
+                }} className="bg-black text-white px-8 py-4 rounded-2xl shadow-lg font-black uppercase text-[10px]"><Plus/></button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Días Festivos</h4>
+                  <div className="space-y-2">
+                    {(!settings.festivos || settings.festivos.length === 0) && <p className="text-xs text-zinc-400 italic">No hay festivos.</p>}
+                    {settings.festivos?.sort().map(f => (
+                      <div key={f} className="flex justify-between p-3 bg-amber-50 rounded-xl text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={async () => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones</h4>
+                  <div className="space-y-2">
+                    {(!settings.vacaciones || settings.vacaciones.length === 0) && <p className="text-xs text-zinc-400 italic">No hay vacaciones.</p>}
+                    {settings.vacaciones?.sort().map(v => (
+                      <div key={v} className="flex justify-between p-3 bg-emerald-50 rounded-xl text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={async () => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1578,61 +1779,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         )}
       </main>
 
-      {/* TABS INFERIORES (MÓVIL) */}
+      {/* NAVEGACIÓN MÓVIL Y PC... */}
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
         <div className="flex justify-around p-2">
-          <button onClick={() => setActiveTab('attendance')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'attendance' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <ClipboardList className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Listas</span>
-          </button>
-          <button onClick={() => setActiveTab('tickets')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'tickets' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <Ticket className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Bolsa</span>
-          </button>
-          <button onClick={() => setActiveTab('daily')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'daily' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <MessageSquare className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Diario</span>
-          </button>
-          <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'history' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-            <History className="w-6 h-6 mb-1" />
-            <span className="text-[10px] uppercase tracking-widest">Histórico</span>
-          </button>
-          {isAdmin ? (
-            <button onClick={() => setActiveTab('admin')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'admin' ? 'text-red-600 font-black bg-red-50' : 'text-zinc-400 font-bold'}`}>
-              <Settings className="w-6 h-6 mb-1" />
-              <span className="text-[10px] uppercase tracking-widest">Admin</span>
-            </button>
-          ) : (
-            <button onClick={() => setActiveTab('reports')} className={`flex flex-col items-center p-2 rounded-xl flex-1 transition-all ${activeTab === 'reports' ? 'text-black font-black bg-zinc-100' : 'text-zinc-400 font-bold'}`}>
-              <BarChart3 className="w-6 h-6 mb-1" />
-              <span className="text-[10px] uppercase tracking-widest">Mi Mes</span>
-            </button>
-          )}
+          {[{id:'attendance', i:ClipboardList}, {id:'tickets', i:Ticket}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-xl transition-all ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}><t.i className="w-6 h-6"/></button>
+          ))}
+          {isAdmin && <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-xl transition-all ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-lg' : 'text-zinc-400'}`}><Settings className="w-6 h-6"/></button>}
         </div>
       </nav>
 
-      {/* TABS LATERALES (PC) */}
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-6 flex-col gap-4 z-40">
-        <button onClick={() => setActiveTab('attendance')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'attendance' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Pasar Lista">
-          <ClipboardList className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('tickets')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'tickets' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Bolsa de Recuperaciones">
-          <Ticket className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('daily')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'daily' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Resumen Diario">
-          <MessageSquare className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('history')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'history' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Historial">
-          <History className="w-6 h-6" />
-        </button>
-        <button onClick={() => setActiveTab('reports')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === 'reports' ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black hover:bg-zinc-50 border-2 border-zinc-100'}`} title="Reportes y Nómina">
-          <BarChart3 className="w-6 h-6" />
-        </button>
-        {isAdmin && (
-          <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-2xl shadow-sm flex items-center justify-center transition-all mt-4 ${activeTab === 'admin' ? 'bg-red-600 text-white scale-110 shadow-xl' : 'bg-white text-red-300 hover:text-red-600 hover:bg-red-50 border-2 border-red-100'}`} title="Panel de Administración">
-            <Settings className="w-6 h-6" />
-          </button>
-        )}
+        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'tickets', i:Ticket, t:'Bolsa'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black border-2'}`} title={t.t}><t.i/></button>
+        ))}
+        {isAdmin && <button onClick={() => setActiveTab('admin')} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all mt-4 ${activeTab === 'admin' ? 'bg-red-600 text-white' : 'bg-white text-red-300 border-2'}`} title="Admin"><Settings/></button>}
       </nav>
     </div>
   );

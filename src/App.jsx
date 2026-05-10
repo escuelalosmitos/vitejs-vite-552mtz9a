@@ -345,7 +345,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // --- LÓGICA DE SESIÓN AMPLIADA (CAPACIDAD Y NOTAS) ---
   const startSession = (scheduledClass = null) => {
     if (scheduledClass) {
       setCurrentSession({
@@ -394,9 +393,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
+  // --- LÓGICA REVISADA: AÑADIR ALUMNO (CON CONTROL DE AFORO) ---
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     if (!studentName) return;
+
+    // Verificación de capacidad máxima
+    if (currentSession.capacity) {
+      const maxCapacity = parseInt(currentSession.capacity, 10);
+      if (currentSession.students.length >= maxCapacity) {
+        showNotification({ type: 'error', text: `Aforo completo. El límite es de ${maxCapacity} alumnos.` });
+        return;
+      }
+    }
 
     let studentId;
     let existingStudent = globalStudents.find(s => s.name.toLowerCase() === studentName.toLowerCase());
@@ -515,7 +524,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // --- FUNCIÓN DE CANCELACIÓN DE CLASE POR HOY ---
   const cancelClassForToday = async (classData) => {
     if (!user) return;
     const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
@@ -570,13 +578,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
-  // --- DASHBOARD (FILTRADO DE CANCELACIONES) ---
   const dashboardItems = useMemo(() => {
     const selectedDayOfWeek = getDayOfWeek(date);
     const items = [];
     const recordsToday = records.filter(r => r.date === date);
     
-    // Ignoramos las clases que tengan el día de hoy en su "lista negra" (cancelledDates)
     const scheduledToday = recurringClasses.filter(rc => 
       rc.dayOfWeek === selectedDayOfWeek && 
       !(rc.cancelledDates && rc.cancelledDates.includes(date))
@@ -614,7 +620,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [records]);
 
-  // --- RENDER ---
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center font-sans">
@@ -683,6 +688,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       </div>
     );
   }
+
+  // Comprobación de si la clase está llena para bloquear la UI
+  const isCapacityReached = currentSession?.capacity && currentSession.students.length >= parseInt(currentSession.capacity, 10);
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20 md:pb-0">
@@ -767,12 +775,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                                 <Play className="w-4 h-4" /> Pasar Lista
                               </button>
                               
-                              {/* BOTÓN CANCELAR POR HOY */}
                               <button onClick={() => cancelClassForToday(item.data)} className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded-lg transition-colors shrink-0" title="Cancelar solo por hoy (Sustitución)">
                                 <CalendarOff className="w-5 h-5" />
                               </button>
 
-                              {/* BOTÓN BORRAR PERMANENTEMENTE */}
                               <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar plantilla de clase">
                                 <Trash2 className="w-5 h-5" />
                               </button>
@@ -808,14 +814,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
                       <input type="text" placeholder="Ej: Piano..." value={currentSession.subject} onChange={(e) => handleSessionFieldChange('subject', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
                     </div>
-                    {/* CAMPO DE CAPACIDAD MÁXIMA NUMÉRICO */}
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><User className="w-3 h-3" /> Capacidad Max.</label>
                       <input type="number" min="1" placeholder="Nº Alumnos" value={currentSession.capacity} onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
                     </div>
                   </div>
 
-                  {/* CUADERNO DE BITÁCORA */}
                   <div className="space-y-1 mt-4">
                     <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><BookOpen className="w-3 h-3" /> Anotaciones de la plantilla</label>
                     <textarea 
@@ -837,10 +841,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 </div>
 
                 <div className="p-6">
-                  <div className="flex flex-col mb-6 bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-inner">
+                  <div className={`flex flex-col mb-6 p-4 rounded-xl border shadow-inner transition-colors ${isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
                     <h3 className="text-sm uppercase tracking-wide font-bold text-slate-800 mb-3 flex items-center gap-2">
                       <UserPlus className="w-4 h-4 text-black" />
                       Añadir Alumno
+                      {currentSession.capacity && (
+                        <span className={`ml-2 px-2.5 py-0.5 rounded-full text-xs normal-case ${isCapacityReached ? 'bg-red-200 text-red-800' : 'bg-slate-200 text-slate-700'}`}>
+                          ({currentSession.students.length} / {currentSession.capacity})
+                        </span>
+                      )}
                     </h3>
                     
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
@@ -849,13 +858,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           type="text"
                           name="custom_search_field_no_chrome"
                           autoComplete="new-password"
-                          placeholder="Escribe 2 letras para buscar..."
+                          placeholder={isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
                           value={currentSession.newStudentName}
                           onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
                           onKeyDown={(e) => e.key === 'Enter' && addStudent()}
-                          className="w-full p-2.5 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-black outline-none bg-white relative z-10"
+                          disabled={isCapacityReached}
+                          className={`w-full p-2.5 text-sm rounded-lg outline-none relative z-10 transition-colors ${isCapacityReached ? 'bg-red-50 border border-red-200 cursor-not-allowed text-red-500' : 'bg-white border border-slate-300 focus:ring-2 focus:ring-black'}`}
                         />
-                        {currentSession.newStudentName.length >= 2 && (
+                        {!isCapacityReached && currentSession.newStudentName.length >= 2 && (
                           <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-zinc-300 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto overflow-x-hidden">
                             {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
                               <div className="p-3 text-sm text-slate-500 italic bg-slate-50">
@@ -879,13 +889,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         )}
                       </div>
 
-                      <div className="flex items-center gap-3 w-full sm:w-auto bg-amber-50 px-3 py-2 rounded-lg border border-amber-200">
+                      <div className={`flex items-center gap-3 w-full sm:w-auto px-3 py-2 rounded-lg border transition-colors ${isCapacityReached ? 'bg-red-50 border-red-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
                         <input
                           type="checkbox"
                           id="isRecovery"
                           checked={currentSession.isAddingRecovery || false}
                           onChange={(e) => handleSessionFieldChange('isAddingRecovery', e.target.checked)}
-                          className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500 cursor-pointer"
+                          disabled={isCapacityReached}
+                          className="w-4 h-4 text-amber-600 rounded focus:ring-amber-500 cursor-pointer disabled:cursor-not-allowed"
                         />
                         <label htmlFor="isRecovery" className="text-sm font-medium text-amber-900 cursor-pointer whitespace-nowrap">
                           Viene a recuperar
@@ -894,7 +905,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                       <button
                         onClick={addStudent}
-                        className="w-full sm:w-auto px-6 py-2.5 bg-black text-white font-bold text-sm tracking-wide uppercase rounded-lg hover:bg-zinc-800 transition-colors shadow-sm active:scale-95 flex justify-center"
+                        disabled={isCapacityReached}
+                        className={`w-full sm:w-auto px-6 py-2.5 font-bold text-sm tracking-wide uppercase rounded-lg transition-all shadow-sm flex justify-center ${isCapacityReached ? 'bg-red-200 text-red-500 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
                       >
                         Añadir
                       </button>

@@ -490,11 +490,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // NUEVO: Función para clonar la sustitución al apretar "Asumir Clase"
+  // Función para clonar la sustitución al apretar "Asumir Clase"
   const assumeSubstitution = (sub) => {
     setDate(sub.date); // Nos movemos automáticamente al día de la sustitución
     setCurrentSession({
-      isNew: true, // Forzamos a que sea nueva para no machacar la plantilla del otro profesor
+      isNew: false, // ¡CORRECCIÓN! Lo marcamos como false para bloquear la cabecera (Horario, Asignatura...)
       classId: `sub-${sub.originalClassId}`,
       time: sub.time,
       teacher: getTeacherName(), // Ponemos al sustituto como profesor del día
@@ -503,12 +503,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       duration: sub.duration,
       notes: sub.notes,
       dayOfWeek: getDayOfWeek(sub.date),
-      isRecurring: false, // ¡CRÍTICO! Bloqueamos la recurrencia para que no se le guarde en su agenda base
+      isRecurring: false, // Bloqueamos la recurrencia para que no se le guarde en su agenda base
       students: sub.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
       newStudentName: '',
       isAddingRecovery: false,
       cancelledDates: [],
-      isSubstitution: true, // Marca de agua para limpiarla de la bolsa al guardar
+      isSubstitution: true, // Marca de agua para limpiarla de la bolsa al guardar y ocultar botones extra
       substitutionId: sub.id
     });
   };
@@ -927,7 +927,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <AlertCircle className="w-8 h-8" />
             <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
           </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para este tiempo:</p>
+          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para realizar en este tiempo:</p>
           
           <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
             {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
@@ -1121,6 +1121,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
   const isDisabledAdd = isCapacityMissing || isCapacityReached;
 
+  // VERIFICACIÓN DÍAS FESTIVOS Y VACACIONES
   const isFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isFestivo || isVacacion;
@@ -1537,10 +1538,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   )}
 
                   <div className="mt-10 flex flex-col sm:flex-row gap-4 pt-8 border-t border-zinc-100">
-                    <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
-                      <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Plantilla'}
-                    </button>
-                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${isOverCapacity ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
+                    {!currentSession.isSubstitution && (
+                      <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
+                        <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Plantilla'}
+                      </button>
+                    )}
+                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity} className={`${currentSession.isSubstitution ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${isOverCapacity ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
                   </div>

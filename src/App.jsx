@@ -455,6 +455,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const startSession = (scheduledClass = null) => {
     if (scheduledClass) {
+      // PREVISIONES: Leemos si para la fecha de hoy hay excepciones guardadas
+      const exceptionsToday = scheduledClass.exceptions?.[date] || {};
+
       setCurrentSession({
         isNew: false,
         classId: scheduledClass.id,
@@ -466,7 +469,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         notes: scheduledClass.notes || '',
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
-        students: scheduledClass.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
+        exceptions: scheduledClass.exceptions || {}, // Mantenemos la memoria de excepciones
+        students: scheduledClass.students.map(s => {
+          let currentStatus = s.isPaused ? 'paused' : 'present';
+          // Si hay una excepción guardada para este alumno hoy, la aplicamos
+          if (exceptionsToday[s.id]) {
+            currentStatus = exceptionsToday[s.id];
+          }
+          return { ...s, status: currentStatus };
+        }),
         newStudentName: '',
         isAddingRecovery: false,
         cancelledDates: scheduledClass.cancelledDates || []
@@ -482,6 +493,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         duration: 60,
         notes: '',
         isRecurring: true,
+        exceptions: {},
         students: [],
         newStudentName: '',
         isAddingRecovery: false,
@@ -490,25 +502,25 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // Función para clonar la sustitución al apretar "Asumir Clase"
   const assumeSubstitution = (sub) => {
-    setDate(sub.date); // Nos movemos automáticamente al día de la sustitución
+    setDate(sub.date);
     setCurrentSession({
-      isNew: false, // ¡CORRECCIÓN! Lo marcamos como false para bloquear la cabecera (Horario, Asignatura...)
+      isNew: false, 
       classId: `sub-${sub.originalClassId}`,
       time: sub.time,
-      teacher: getTeacherName(), // Ponemos al sustituto como profesor del día
+      teacher: getTeacherName(), 
       subject: sub.subject,
       capacity: sub.capacity,
       duration: sub.duration,
       notes: sub.notes,
       dayOfWeek: getDayOfWeek(sub.date),
-      isRecurring: false, // Bloqueamos la recurrencia para que no se le guarde en su agenda base
+      isRecurring: false, 
+      exceptions: {},
       students: sub.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
       newStudentName: '',
       isAddingRecovery: false,
       cancelledDates: [],
-      isSubstitution: true, // Marca de agua para limpiarla de la bolsa al guardar y ocultar botones extra
+      isSubstitution: true, 
       substitutionId: sub.id
     });
   };
@@ -634,6 +646,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         .filter(s => !s.isRecovery)
         .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
 
+      // CÁLCULO DE EXCEPCIONES PARA FECHAS FUTURAS (Modo Previsión)
+      const todayISO = new Date().toISOString().split('T')[0];
+      const isFutureDate = date > todayISO;
+      let finalExceptions = currentSession.exceptions || {};
+
+      if (isFutureDate && !currentSession.isNew && !currentSession.isSubstitution) {
+        const exceptionsForDate = {};
+        currentSession.students.forEach(s => {
+           if (s.status !== 'present' && s.status !== 'paused') {
+              exceptionsForDate[s.id] = s.status; // Guardamos que "Avisó" o "Faltó" para ese día
+           }
+        });
+        finalExceptions[date] = exceptionsForDate;
+      }
+
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
         dayOfWeek: dayToSave,
         time: currentSession.time,
@@ -643,14 +670,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         duration: currentSession.duration || 60,
         notes: currentSession.notes,
         cancelledDates: currentSession.cancelledDates || [],
-        students: templateStudents
+        students: templateStudents,
+        exceptions: finalExceptions
       });
 
-      showNotification({ type: 'success', text: 'Clase programada en el horario con éxito.' });
+      showNotification({ type: 'success', text: isFutureDate ? 'Previsión guardada para esta fecha.' : 'Plantilla actualizada con éxito.' });
       setCurrentSession(null);
     } catch (error) {
       console.error(error);
-      showNotification({ type: 'error', text: 'Hubo un error al crear la clase.' });
+      showNotification({ type: 'error', text: 'Hubo un error al guardar la plantilla.' });
     }
   };
 
@@ -767,11 +795,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           duration: currentSession.duration || 60,
           notes: currentSession.notes,
           cancelledDates: currentSession.cancelledDates || [],
-          students: templateStudents
+          students: templateStudents,
+          exceptions: currentSession.exceptions || {}
         });
       }
 
-      // Limpiamos la sustitución global si era una clase asumida
       if (currentSession.isSubstitution && currentSession.substitutionId) {
         await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', currentSession.substitutionId));
       }
@@ -807,7 +835,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         cancelledDates: updatedCancelledDates
       });
 
-      // Inyectar la clase cancelada en la Bolsa Global de Sustituciones
       const subId = `${classData.id}-${date}`;
       await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
         originalClassId: classData.id,
@@ -927,7 +954,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <AlertCircle className="w-8 h-8" />
             <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
           </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para realizar en este tiempo:</p>
+          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para este tiempo:</p>
           
           <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
             {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
@@ -1121,13 +1148,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
   const isDisabledAdd = isCapacityMissing || isCapacityReached;
 
-  // VERIFICACIÓN DÍAS FESTIVOS Y VACACIONES
+  // LÓGICA DE DÍAS FUTUROS Y FESTIVOS
+  const todayISO = new Date().toISOString().split('T')[0];
+  const isFutureDate = date > todayISO;
+  
   const isFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isFestivo || isVacacion;
 
-  // TABLÓN DE SUSTITUCIONES GLOBAL: Filtra las clases canceladas desde "hoy" en adelante
-  const todayISO = new Date().toISOString().split('T')[0];
+  // TABLÓN DE SUSTITUCIONES GLOBAL
   const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   return (
@@ -1267,7 +1296,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <Clock className="w-3 h-3" /> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
                               {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
@@ -1320,7 +1349,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   {currentSession.isSubstitution && (
                     <div className="mb-6 p-4 bg-zinc-100 border-2 border-zinc-300 rounded-xl flex items-center gap-3">
                       <AlertCircle className="text-black w-6 h-6 shrink-0"/>
-                      <p className="text-xs font-bold text-slate-800">Estás pasando lista como profesor sustituto. Esta clase solo se guardará en tu agenda para el día de hoy, y cobrarás la hora correspondiente.</p>
+                      <p className="text-xs font-bold text-slate-800">Estás pasando lista como profesor sustituto. Esta clase solo se guardará en tu agenda para el día de hoy.</p>
+                    </div>
+                  )}
+
+                  {/* NUEVO: AVISO MODO PREVISIÓN (FUTURO) */}
+                  {isFutureDate && !currentSession.isNew && !currentSession.isSubstitution && (
+                    <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
+                      <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
+                      <p className="text-xs font-bold text-purple-900">Estás viendo una fecha futura. El botón de pasar lista está bloqueado, pero puedes marcar alumnos que ya te han avisado y darle a <b>"Guardar Previsión"</b>.</p>
                     </div>
                   )}
 
@@ -1540,10 +1577,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <div className="mt-10 flex flex-col sm:flex-row gap-4 pt-8 border-t border-zinc-100">
                     {!currentSession.isSubstitution && (
                       <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
-                        <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Plantilla'}
+                        <Calendar className="w-5 h-5" /> 
+                        {currentSession.isNew ? 'Solo Crear Clase' : (isFutureDate ? 'Guardar Previsión' : 'Actualizar Plantilla')}
                       </button>
                     )}
-                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity} className={`${currentSession.isSubstitution ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${isOverCapacity ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
+                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate} className={`${currentSession.isSubstitution ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
                   </div>

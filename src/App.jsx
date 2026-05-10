@@ -133,8 +133,8 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
   const [tickets, setTickets] = useState([]); 
+  const [substitutions, setSubstitutions] = useState([]); // NUEVO: Estado para la bolsa global de sustituciones
   
-  // Estado para los Ajustes Globales (Admin) actualizado
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
@@ -193,15 +193,17 @@ export default function App() {
     const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
     const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets');
+    const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions'); // NUEVO: Listener de sustituciones
 
     let recordsLoaded = false;
     let recurringLoaded = false;
     let dailyLoaded = false;
     let studentsLoaded = false;
     let ticketsLoaded = false;
+    let subsLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded) setLoadingData(false);
     };
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
@@ -243,6 +245,12 @@ export default function App() {
       checkLoading();
     });
 
+    const unsubSubs = onSnapshot(substitutionsRef, (snapshot) => {
+      setSubstitutions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      subsLoaded = true;
+      checkLoading();
+    });
+
     return () => {
       unsubRecurring();
       unsubRecords();
@@ -250,6 +258,7 @@ export default function App() {
       unsubStudents();
       unsubSettings();
       unsubTickets();
+      unsubSubs();
     };
   }, [user]);
 
@@ -480,6 +489,28 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
+  // NUEVO: Función para clonar la sustitución al apretar "Asumir Clase"
+  const assumeSubstitution = (sub) => {
+    setCurrentSession({
+      isNew: true, // Forzamos a que sea nueva para no machacar la plantilla del otro profesor
+      classId: `sub-${sub.originalClassId}`,
+      time: sub.time,
+      teacher: getTeacherName(), // Ponemos al sustituto como profesor del día
+      subject: sub.subject,
+      capacity: sub.capacity,
+      duration: sub.duration,
+      notes: sub.notes,
+      dayOfWeek: getDayOfWeek(sub.date),
+      isRecurring: false, // ¡CRÍTICO! Bloqueamos la recurrencia para que no se le guarde en su agenda base
+      students: sub.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
+      newStudentName: '',
+      isAddingRecovery: false,
+      cancelledDates: [],
+      isSubstitution: true, // Marca de agua para limpiarla de la bolsa al guardar
+      substitutionId: sub.id
+    });
+  };
+
   const handleSessionFieldChange = (field, value) => {
     setCurrentSession({ ...currentSession, [field]: value });
   };
@@ -532,9 +563,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       }
     }
 
-    // --- CORRECCIÓN: COMPROBAR CONTRA LA FECHA SELECCIONADA EN EL CALENDARIO ---
     if (currentSession.isAddingRecovery) {
-      const selectedClassDate = date; // La fecha que el profe ha elegido arriba
+      const selectedClassDate = date; 
       const hasValidTicket = tickets.some(t => 
         t.studentId === studentId && 
         !t.isUsed && 
@@ -544,7 +574,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       
       if (!hasValidTicket) {
         showNotification({ type: 'error', text: 'Este alumno no tiene recuperaciones pendientes válidas para la fecha seleccionada.' });
-        return; // Rompemos la ejecución, no se añade a la lista
+        return; 
       }
     }
 
@@ -635,15 +665,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
     const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
 
-    const hasCollision = recurringClasses.some(rc => 
-      rc.dayOfWeek === dayToSave && 
-      rc.time === currentSession.time &&
-      rc.id !== classIdToSave
-    );
+    // Desactivamos la colisión si es una sustitución, ya que le hemos forzado isRecurring a false y un classId especial
+    if (!currentSession.isSubstitution) {
+      const hasCollision = recurringClasses.some(rc => 
+        rc.dayOfWeek === dayToSave && 
+        rc.time === currentSession.time &&
+        rc.id !== classIdToSave
+      );
 
-    if (hasCollision) {
-      showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
-      return;
+      if (hasCollision) {
+        showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
+        return;
+      }
     }
 
     const activeStudents = currentSession.students.filter(s => !s.isPaused);
@@ -677,13 +710,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
         : currentSession.notes;
 
+      // El generador de tickets respeta el contexto del profesor sustituto o el original
+      const targetUid = user.uid;
+
       const ticketPromises = currentSession.students.map(async (s) => {
         if (s.status === 'notified' && !s.isRecovery && !s.isPaused) {
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
           if (monthTickets.length < 2) {
             const { validFrom, validUntil } = generateTicketDates(date);
             const ticketId = Date.now().toString() + '-' + s.id;
-            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), {
+            await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
               studentId: s.id,
               studentName: s.name,
               subject: currentSession.subject,
@@ -699,7 +735,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         if (s.isRecovery && s.status === 'present') {
           const pending = tickets.filter(t => t.studentId === s.id && !t.isUsed).sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom));
           if (pending.length > 0) {
-            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', pending[0].id), { isUsed: true }, { merge: true });
+            await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', pending[0].id), { isUsed: true }, { merge: true });
           }
         }
       });
@@ -717,7 +753,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      if (currentSession.isRecurring) {
+      // Solo actualiza la plantilla semanal si NO es una sustitución y está marcado el checkbox
+      if (currentSession.isRecurring && !currentSession.isSubstitution) {
         const templateStudents = currentSession.students
           .filter(s => !s.isRecovery)
           .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
@@ -733,6 +770,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           cancelledDates: currentSession.cancelledDates || [],
           students: templateStudents
         });
+      }
+
+      // NUEVO: Limpiamos la sustitución global si era una clase asumida
+      if (currentSession.isSubstitution && currentSession.substitutionId) {
+        await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', currentSession.substitutionId));
       }
 
       showNotification({ type: 'success', text: 'Lista guardada correctamente.' });
@@ -765,7 +807,23 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         ...classData,
         cancelledDates: updatedCancelledDates
       });
-      showNotification({ type: 'success', text: 'Clase cancelada para el día de hoy.' });
+
+      // NUEVO: Inyectar la clase cancelada en la Bolsa Global de Sustituciones
+      const subId = `${classData.id}-${date}`;
+      await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
+        originalClassId: classData.id,
+        originalTeacherUid: user.uid,
+        originalTeacherName: classData.teacher || getTeacherName(),
+        date: date,
+        time: classData.time,
+        subject: classData.subject,
+        capacity: classData.capacity || '',
+        duration: classData.duration || 60,
+        notes: classData.notes || '',
+        students: classData.students || []
+      });
+
+      showNotification({ type: 'success', text: 'Clase enviada a la Bolsa de Sustituciones.' });
     } catch (error) {
       console.error(error);
       showNotification({ type: 'error', text: 'Error al cancelar la clase temporalmente.' });
@@ -1110,14 +1168,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             { id: 'tickets', label: 'Bolsa', icon: Ticket },
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
-            { id: 'reports', label: 'Reportes', icon: BarChart3 }
+            { id: 'reports', label: 'Mi Mes', icon: BarChart3 }
           ].map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
-              <tab.icon className="w-4 h-4"/> {tab.label}
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-[10px] sm:text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+              <tab.icon className="w-4 h-4"/> <span className="hidden sm:inline">{tab.label}</span>
             </button>
           ))}
           {isAdmin && (
-            <button onClick={() => setActiveTab('admin')} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-md' : 'text-red-400 hover:bg-red-50 hover:text-red-600'}`}>
+            <button onClick={() => setActiveTab('admin')} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-[10px] sm:text-xs tracking-wider transition-all bg-red-50 text-red-500 border border-red-100 ${activeTab === 'admin' ? 'bg-red-600 text-white' : ''}`}>
               <Settings className="w-4 h-4"/> Admin
             </button>
           )}
@@ -1156,6 +1214,33 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </div>
                 )}
 
+                {/* NUEVO PANEL: SUSTITUCIONES DISPONIBLES */}
+                {substitutions.filter(s => s.date === date).length > 0 && !isSpecialDay && (
+                  <div className="mb-8 p-6 bg-zinc-100 border-2 border-zinc-300 rounded-2xl">
+                    <h4 className="font-black text-slate-800 uppercase tracking-widest text-sm mb-4 flex items-center gap-2">
+                      <AlertCircle className="w-5 h-5"/> Sustituciones Disponibles
+                    </h4>
+                    <div className="space-y-3">
+                      {substitutions.filter(s => s.date === date).map(sub => (
+                        <div key={sub.id} className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 bg-white rounded-xl border-2 border-zinc-200 shadow-sm hover:border-black transition-colors">
+                          <div>
+                            <p className="font-black uppercase text-sm text-slate-800">{sub.time} - {sub.subject}</p>
+                            <p className="text-xs font-bold text-zinc-500 mt-1 uppercase tracking-widest">
+                              Prof Original: {sub.originalTeacherName} • {sub.students.length} alumnos
+                            </p>
+                          </div>
+                          <button 
+                            onClick={() => assumeSubstitution(sub)} 
+                            className="mt-3 sm:mt-0 w-full sm:w-auto bg-black text-white font-bold py-2.5 px-5 rounded-xl text-[10px] uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-md active:scale-95"
+                          >
+                            Asumir Clase
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {dashboardItems.length === 0 ? (
                   <div className="text-center py-16 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
                     <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay clases en agenda.</p>
@@ -1174,7 +1259,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                              <Clock className="w-3 h-3" /> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
                               {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
@@ -1223,6 +1308,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       Cerrar Vista
                     </button>
                   </div>
+
+                  {currentSession.isSubstitution && (
+                    <div className="mb-6 p-4 bg-zinc-100 border-2 border-zinc-300 rounded-xl flex items-center gap-3">
+                      <AlertCircle className="text-black w-6 h-6 shrink-0"/>
+                      <p className="text-xs font-bold text-slate-800">Estás pasando lista como profesor sustituto. Esta clase solo se guardará en tu agenda para el día de hoy, y cobrarás la hora correspondiente.</p>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
@@ -1283,7 +1375,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     />
                   </div>
 
-                  {currentSession.isNew && (
+                  {currentSession.isNew && !currentSession.isSubstitution && (
                     <div className="mt-6 flex items-center gap-2 p-4 bg-zinc-50 rounded-xl border-2 border-zinc-100">
                       <input type="checkbox" id="recurring" checked={currentSession.isRecurring} onChange={(e) => handleSessionFieldChange('isRecurring', e.target.checked)} className="w-5 h-5 text-black rounded focus:ring-black accent-black cursor-pointer" />
                       <label htmlFor="recurring" className="text-xs font-black uppercase tracking-widest text-slate-700 flex items-center gap-1.5 cursor-pointer">
@@ -1708,7 +1800,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
                 <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
                 <span className="text-2xl font-bold">€ / hora</span>
-                <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification({ type: 'success', text: 'Tarifa actualizada' }); }} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar</button>
+                <button onClick={async () => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), settings); showNotification({ type: 'success', text: 'Tarifa actualizada' }); }} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar Valor</button>
               </div>
             </div>
 

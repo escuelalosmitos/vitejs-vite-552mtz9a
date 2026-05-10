@@ -506,7 +506,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  // NUEVA LÓGICA DE VALIDACIÓN AL AÑADIR ESTUDIANTE
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     if (!studentName) return;
@@ -533,18 +532,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       }
     }
 
-    // --- BLOQUEO DE PUERTA: VALIDAR TICKETS DE RECUPERACIÓN ---
+    // --- CORRECCIÓN: COMPROBAR CONTRA LA FECHA SELECCIONADA EN EL CALENDARIO ---
     if (currentSession.isAddingRecovery) {
-      const today = new Date().toISOString().split('T')[0];
+      const selectedClassDate = date; // La fecha que el profe ha elegido arriba
       const hasValidTicket = tickets.some(t => 
         t.studentId === studentId && 
         !t.isUsed && 
-        today >= t.validFrom && 
-        today <= t.validUntil
+        selectedClassDate >= t.validFrom && 
+        selectedClassDate <= t.validUntil
       );
       
       if (!hasValidTicket) {
-        showNotification({ type: 'error', text: 'Este alumno no tiene recuperaciones pendientes válidas para hoy.' });
+        showNotification({ type: 'error', text: 'Este alumno no tiene recuperaciones pendientes válidas para la fecha seleccionada.' });
         return; // Rompemos la ejecución, no se añade a la lista
       }
     }
@@ -745,6 +744,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
+  const markTicketAsUsed = async (ticketId) => {
+    if (!user) return;
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), { isUsed: true }, { merge: true });
+      showNotification({ type: 'success', text: 'Ticket marcado como recuperado.' });
+    } catch (e) {
+      showNotification({ type: 'error', text: 'Error al actualizar el ticket.' });
+    }
+  };
+
   const cancelClassForToday = async (classData) => {
     if (!user) return;
     const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
@@ -779,6 +788,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const saveDailyReport = async (silent = false) => {
     if (!user) return false;
+    
+    if (!dailyForm.generalFeedback.trim()) {
+      showNotification({ type: 'error', text: 'El campo "Cómo han ido las clases" es obligatorio.' });
+      return false;
+    }
+
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), {
         ...dailyForm,
@@ -855,7 +870,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <AlertCircle className="w-8 h-8" />
             <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
           </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos han faltado en una hora intermedia. Por favor, selecciona una tarea productiva para realizar en este tiempo:</p>
+          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para este tiempo:</p>
           
           <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
             {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
@@ -907,7 +922,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           </div>
         </div>
 
-        {/* NUEVO PANEL: CALENDARIO ESCOLAR */}
+        {/* CALENDARIO ESCOLAR */}
         <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
           <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
           <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
@@ -988,7 +1003,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
 
-  // --- RENDER ---
+  // --- RENDER DE CARGA E INICIO DE SESIÓN ---
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
@@ -1042,7 +1057,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   }
 
-  // Comprobaciones Generales y de Calendario
   const isCapacityMissing = !currentSession?.capacity;
   const maxCap = parseInt(currentSession?.capacity, 10) || 0;
   const currentCount = currentSession?.students?.length || 0;
@@ -1050,6 +1064,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
   const isDisabledAdd = isCapacityMissing || isCapacityReached;
 
+  // VERIFICACIÓN DÍAS FESTIVOS Y VACACIONES
   const isFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isFestivo || isVacacion;
@@ -1092,13 +1107,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
-            { id: 'tickets', label: 'Bolsa', icon: Ticket }, // NUEVA PESTAÑA BOLSA
+            { id: 'tickets', label: 'Bolsa', icon: Ticket },
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
-            { id: 'reports', label: 'Mi Mes', icon: BarChart3 }
+            { id: 'reports', label: 'Reportes', icon: BarChart3 }
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
-              <tab.icon className="w-4 h-4"/> <span className="hidden sm:inline">{tab.label}</span>
+              <tab.icon className="w-4 h-4"/> {tab.label}
             </button>
           ))}
           {isAdmin && (
@@ -1660,7 +1675,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <p className="text-3xl font-black text-slate-800 mt-1">{recordsForSelectedDate.length}</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas Reales</p>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas Registradas</p>
                   <p className="text-3xl font-black text-slate-800 mt-1">{(recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2)}h</p>
                 </div>
                 <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
@@ -1697,7 +1712,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               </div>
             </div>
 
-            {/* NUEVO: CALENDARIO ESCOLAR */}
+            {/* CALENDARIO ESCOLAR */}
             <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
               <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
               <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
@@ -1746,7 +1761,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
             <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
               <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Settings className="w-5 h-5"/> Tareas Generales (Hora Muerta)</h2>
-              <p className="text-zinc-500 mb-6 text-sm">Opciones para rellenar en horas libres.</p>
+              <p className="text-zinc-500 mb-6 text-sm">Estas opciones aparecerán cuando un profesor tenga una hora libre entre clases.</p>
               
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />

@@ -427,12 +427,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
 
     setIsSendingReport(true);
+    // ETIQUETAS CORREGIDAS PARA MATCH CON APPS SCRIPT
     const payload = {
       profesor: getTeacherName(),
       profesorEmail: user.email,
       fecha: formatDateSpanish(date),
-      fechaISO: date,
-      horas: hours,
+      horas: monthlyPayroll.realHours,
       asistenciaDetallada: buildAttendanceDetails(),
       observaciones: buildObservations(report),
       enviadoDesde: 'App profesores Escuela Los Mitos'
@@ -504,7 +504,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const assumeSubstitution = (sub) => {
-    setDate(sub.date); 
+    setDate(sub.date);
     setCurrentSession({
       isNew: false, 
       classId: `sub-${sub.originalClassId}`,
@@ -656,7 +656,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         const exceptionsForDate = {};
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
-              exceptionsForDate[s.id] = s.status; 
+              exceptionsForDate[s.id] = s.status; // Guardamos que "Avisó" o "Faltó" para ese día
            }
         });
         finalExceptions[date] = exceptionsForDate;
@@ -707,6 +707,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
   }, [date, records, recurringClasses]);
 
+  // PROTOCOLO HORA MUERTA (CORRECCIÓN ÚLTIMA HORA)
   const checkDeadHourAndSave = () => {
     if (!currentSession.subject || !currentSession.capacity) {
       showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
@@ -737,14 +738,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
-      // BÚSQUEDA CORREGIDA: ¿Es realmente la última clase del día para este profesor?
-      const scheduledTimesToday = dashboardItems.map(i => i.data.time).sort();
+      // 1. Obtenemos todas las horas de las clases ya guardadas o programadas hoy
+      const scheduledTimesToday = dashboardItems.map(i => i.data.time);
+      
+      // 2. Añadimos la hora de la sesión que tenemos abierta actualmente para que se cuente a sí misma
+      scheduledTimesToday.push(currentSession.time);
+      
+      // 3. Ordenamos y sacamos la última
+      scheduledTimesToday.sort();
       const lastTimeScheduled = scheduledTimesToday[scheduledTimesToday.length - 1];
+      
+      // 4. Comparamos
       const isLastClass = currentSession.time === lastTimeScheduled;
 
       if (isLastClass) {
         showNotification({ type: 'success', text: "¡Clase vacía y última hora! Puedes irte a casa. Guardando..." });
-        executeSaveRecord();
+        executeSaveRecord(null, false);
       } else {
         const combinedTasks = [
           ...(settings.generalTasks || []),
@@ -753,7 +762,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         setDeadHourModal({ tasks: combinedTasks, subject: currentSession.subject });
       }
     } else {
-      executeSaveRecord();
+      executeSaveRecord(null, false);
     }
   };
 
@@ -772,7 +781,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       const targetUid = user.uid;
 
-      // Generar los tickets para los alumnos que avisaron, INCLUSO si el profe renuncia a la hora.
       const ticketPromises = currentSession.students.map(async (s) => {
         if (s.status === 'notified' && !s.isRecovery && !s.isPaused) {
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
@@ -801,7 +809,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       });
       await Promise.all(ticketPromises);
 
-      // Guardamos la asistencia, inyectando el flag isRenounced
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), {
         classId: currentSession.classId,
         date,
@@ -986,7 +993,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               Cancelar
             </button>
             
-            {/* NUEVO BOTÓN: RENUNCIAR */}
+            {/* BOTÓN: RENUNCIAR */}
             <button 
               onClick={() => {
                 const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
@@ -1324,7 +1331,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <Clock className="w-3 h-3" /> {item.data.duration || 60} min <span className="mx-1">•</span> <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
                               {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>

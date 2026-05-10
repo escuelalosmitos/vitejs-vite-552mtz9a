@@ -133,8 +133,9 @@ export default function App() {
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
   const [tickets, setTickets] = useState([]); 
-  const [substitutions, setSubstitutions] = useState([]); // NUEVO: Estado para la bolsa global de sustituciones
+  const [substitutions, setSubstitutions] = useState([]); 
   
+  // Estado para los Ajustes Globales (Admin)
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
@@ -193,7 +194,7 @@ export default function App() {
     const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
     const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets');
-    const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions'); // NUEVO: Listener de sustituciones
+    const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -491,6 +492,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   // NUEVO: Función para clonar la sustitución al apretar "Asumir Clase"
   const assumeSubstitution = (sub) => {
+    setDate(sub.date); // Nos movemos automáticamente al día de la sustitución
     setCurrentSession({
       isNew: true, // Forzamos a que sea nueva para no machacar la plantilla del otro profesor
       classId: `sub-${sub.originalClassId}`,
@@ -665,7 +667,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
     const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
 
-    // Desactivamos la colisión si es una sustitución, ya que le hemos forzado isRecurring a false y un classId especial
     if (!currentSession.isSubstitution) {
       const hasCollision = recurringClasses.some(rc => 
         rc.dayOfWeek === dayToSave && 
@@ -710,7 +711,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
         : currentSession.notes;
 
-      // El generador de tickets respeta el contexto del profesor sustituto o el original
       const targetUid = user.uid;
 
       const ticketPromises = currentSession.students.map(async (s) => {
@@ -753,7 +753,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      // Solo actualiza la plantilla semanal si NO es una sustitución y está marcado el checkbox
       if (currentSession.isRecurring && !currentSession.isSubstitution) {
         const templateStudents = currentSession.students
           .filter(s => !s.isRecovery)
@@ -772,7 +771,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         });
       }
 
-      // NUEVO: Limpiamos la sustitución global si era una clase asumida
+      // Limpiamos la sustitución global si era una clase asumida
       if (currentSession.isSubstitution && currentSession.substitutionId) {
         await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', currentSession.substitutionId));
       }
@@ -808,7 +807,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         cancelledDates: updatedCancelledDates
       });
 
-      // NUEVO: Inyectar la clase cancelada en la Bolsa Global de Sustituciones
+      // Inyectar la clase cancelada en la Bolsa Global de Sustituciones
       const subId = `${classData.id}-${date}`;
       await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
         originalClassId: classData.id,
@@ -1122,10 +1121,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
   const isDisabledAdd = isCapacityMissing || isCapacityReached;
 
-  // VERIFICACIÓN DÍAS FESTIVOS Y VACACIONES
   const isFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isFestivo || isVacacion;
+
+  // TABLÓN DE SUSTITUCIONES GLOBAL: Filtra las clases canceladas desde "hoy" en adelante
+  const todayISO = new Date().toISOString().split('T')[0];
+  const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
@@ -1168,14 +1170,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             { id: 'tickets', label: 'Bolsa', icon: Ticket },
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
-            { id: 'reports', label: 'Mi Mes', icon: BarChart3 }
+            { id: 'reports', label: 'Reportes', icon: BarChart3 }
           ].map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-[10px] sm:text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
-              <tab.icon className="w-4 h-4"/> <span className="hidden sm:inline">{tab.label}</span>
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+              <tab.icon className="w-4 h-4"/> {tab.label}
             </button>
           ))}
           {isAdmin && (
-            <button onClick={() => setActiveTab('admin')} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-[10px] sm:text-xs tracking-wider transition-all bg-red-50 text-red-500 border border-red-100 ${activeTab === 'admin' ? 'bg-red-600 text-white' : ''}`}>
+            <button onClick={() => setActiveTab('admin')} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-md' : 'text-red-400 hover:bg-red-50 hover:text-red-600'}`}>
               <Settings className="w-4 h-4"/> Admin
             </button>
           )}
@@ -1185,17 +1187,49 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {activeTab === 'attendance' && (
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
             {!currentSession && (
-              <div className="p-6 md:p-8 border-b border-zinc-100 bg-zinc-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div className="space-y-1 w-full sm:w-auto">
-                  <label className="text-xs font-black text-zinc-400 flex items-center gap-1 uppercase tracking-widest">
-                    <Calendar className="w-3 h-3" /> Agenda del día
-                  </label>
-                  <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
+              <>
+                {/* TABLÓN GLOBAL DE SUSTITUCIONES */}
+                {upcomingSubs.length > 0 && (
+                  <div className="m-6 md:m-8 p-6 md:p-8 bg-zinc-900 rounded-3xl shadow-xl relative overflow-hidden">
+                    <div className="relative z-10">
+                      <h4 className="font-black text-white uppercase tracking-widest text-sm mb-6 flex items-center gap-2">
+                        <AlertCircle className="w-5 h-5 text-amber-400"/> Tablón de Sustituciones
+                      </h4>
+                      <div className="space-y-3">
+                        {upcomingSubs.map(sub => (
+                          <div key={sub.id} className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 bg-zinc-800/80 backdrop-blur rounded-2xl border border-zinc-700 hover:border-amber-400 transition-colors">
+                            <div>
+                              <p className="font-black uppercase text-sm text-white">{sub.subject} <span className="text-zinc-400 font-bold ml-2">{formatDateSpanish(sub.date)} a las {sub.time}</span></p>
+                              <p className="text-xs font-bold text-zinc-400 mt-1 uppercase tracking-widest">
+                                Falta: {sub.originalTeacherName} • {sub.students.length} alumnos
+                              </p>
+                            </div>
+                            <button 
+                              onClick={() => assumeSubstitution(sub)} 
+                              className="mt-3 sm:mt-0 w-full sm:w-auto bg-amber-400 text-amber-950 font-black py-3 px-6 rounded-xl text-[10px] uppercase tracking-widest hover:bg-amber-300 transition-all shadow-md active:scale-95"
+                            >
+                              Asumir Clase
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <Music className="absolute -bottom-10 -right-10 w-48 h-48 text-zinc-800/50 rotate-12 pointer-events-none" />
+                  </div>
+                )}
+
+                <div className="p-6 md:p-8 border-b border-zinc-100 bg-zinc-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                  <div className="space-y-1 w-full sm:w-auto">
+                    <label className="text-xs font-black text-zinc-400 flex items-center gap-1 uppercase tracking-widest">
+                      <Calendar className="w-3 h-3" /> Agenda del día
+                    </label>
+                    <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
+                  </div>
+                  <button onClick={() => startSession(null)} disabled={isSpecialDay} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest disabled:opacity-30 disabled:cursor-not-allowed">
+                    <ClipboardList className="w-5 h-5" /> Nueva Clase
+                  </button>
                 </div>
-                <button onClick={() => startSession(null)} disabled={isSpecialDay} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest disabled:opacity-30 disabled:cursor-not-allowed">
-                  <ClipboardList className="w-5 h-5" /> Nueva Clase
-                </button>
-              </div>
+              </>
             )}
 
             {!currentSession ? (
@@ -1210,33 +1244,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     <div>
                       <h4 className="font-black uppercase tracking-widest text-lg">{isFestivo ? 'Día Festivo' : 'Día de Vacaciones'}</h4>
                       <p className="text-sm font-medium mt-1">El centro está cerrado hoy. No es necesario pasar lista ni enviar el reporte diario.</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* NUEVO PANEL: SUSTITUCIONES DISPONIBLES */}
-                {substitutions.filter(s => s.date === date).length > 0 && !isSpecialDay && (
-                  <div className="mb-8 p-6 bg-zinc-100 border-2 border-zinc-300 rounded-2xl">
-                    <h4 className="font-black text-slate-800 uppercase tracking-widest text-sm mb-4 flex items-center gap-2">
-                      <AlertCircle className="w-5 h-5"/> Sustituciones Disponibles
-                    </h4>
-                    <div className="space-y-3">
-                      {substitutions.filter(s => s.date === date).map(sub => (
-                        <div key={sub.id} className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 bg-white rounded-xl border-2 border-zinc-200 shadow-sm hover:border-black transition-colors">
-                          <div>
-                            <p className="font-black uppercase text-sm text-slate-800">{sub.time} - {sub.subject}</p>
-                            <p className="text-xs font-bold text-zinc-500 mt-1 uppercase tracking-widest">
-                              Prof Original: {sub.originalTeacherName} • {sub.students.length} alumnos
-                            </p>
-                          </div>
-                          <button 
-                            onClick={() => assumeSubstitution(sub)} 
-                            className="mt-3 sm:mt-0 w-full sm:w-auto bg-black text-white font-bold py-2.5 px-5 rounded-xl text-[10px] uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-md active:scale-95"
-                          >
-                            Asumir Clase
-                          </button>
-                        </div>
-                      ))}
                     </div>
                   </div>
                 )}

@@ -428,10 +428,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    try {
-      const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
-      const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
+    const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
+    const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
 
+    // --- REGLA ANTI-SOLAPAMIENTO DE HORARIOS ---
+    const hasCollision = recurringClasses.some(rc => 
+      rc.dayOfWeek === dayToSave && 
+      rc.time === currentSession.time &&
+      rc.id !== classIdToSave
+    );
+
+    if (hasCollision) {
+      showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
+      return;
+    }
+
+    try {
       const templateStudents = currentSession.students
         .filter(s => !s.isRecovery)
         .map(s => ({ id: s.id, name: s.name }));
@@ -466,6 +478,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
+    const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
+    const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
+
+    // --- REGLA ANTI-SOLAPAMIENTO DE HORARIOS ---
+    const hasCollision = recurringClasses.some(rc => 
+      rc.dayOfWeek === dayToSave && 
+      rc.time === currentSession.time &&
+      rc.id !== classIdToSave
+    );
+
+    if (hasCollision) {
+      showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
+      return;
+    }
+
     try {
       const recordId = Date.now().toString();
 
@@ -486,7 +513,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           .map(s => ({ id: s.id, name: s.name }));
 
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId), {
-          dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
+          dayOfWeek: dayToSave,
           time: currentSession.time,
           teacher: currentSession.teacher,
           subject: currentSession.subject,
@@ -656,7 +683,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   }
 
-  // LÓGICA DE AFORO (Las 3 reglas de integridad)
   const isCapacityMissing = !currentSession?.capacity;
   const maxCap = parseInt(currentSession?.capacity, 10) || 0;
   const currentCount = currentSession?.students?.length || 0;
@@ -779,7 +805,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
-                  {/* BLOQUEO READ-ONLY PARA CLASES RECURRENTES */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
@@ -946,7 +971,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     ))}
                   </div>
 
-                  {/* ALERTA DE ERROR SI HAY MÁS ALUMNOS QUE CAPACIDAD (4/1) */}
                   {isOverCapacity && (
                     <div className="mt-8 p-4 bg-red-50 border-2 border-red-200 rounded-xl flex items-start gap-3">
                       <AlertCircle className="w-6 h-6 text-red-500 shrink-0 mt-0.5" />

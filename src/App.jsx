@@ -19,7 +19,9 @@ import {
   MessageSquare,
   LogOut,
   Lock,
-  CornerDownRight
+  CornerDownRight,
+  BookOpen,
+  CalendarOff
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -94,7 +96,7 @@ export default function App() {
   const [recurringClasses, setRecurringClasses] = useState([]);
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
-  const [globalStudents, setGlobalStudents] = useState([]); // Tabla maestra
+  const [globalStudents, setGlobalStudents] = useState([]);
 
   // ESTADO DE LA UI
   const [activeTab, setActiveTab] = useState('attendance');
@@ -208,7 +210,6 @@ export default function App() {
     }
   }, [date, dailyReports]);
 
-  // --- FUNCIONES GENERALES ---
   const getTeacherName = () => {
     if (!user || !user.email) return 'Profesor';
     return user.email.split('@')[0];
@@ -219,7 +220,6 @@ export default function App() {
     setTimeout(() => setNotification(null), 3000);
   };
 
-  // --- FUNCIONES DE AUTENTICACIÓN ---
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
@@ -237,7 +237,6 @@ export default function App() {
     signOut(auth);
   };
 
-  // --- CONSTRUCCIÓN DEL INFORME POR EMAIL ---
   const recordsForSelectedDate = useMemo(() => {
     return records
       .filter(record => record.date === date)
@@ -275,6 +274,7 @@ export default function App() {
 CLASE: ${record.time} - ${record.subject}
 Profesor: ${record.teacher}
 Total alumnos: ${students.length}
+Notas: ${record.notes || 'Ninguna'}
 
 Presentes:
 ${present}
@@ -345,7 +345,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // --- LÓGICA DE SESIÓN ---
+  // --- LÓGICA DE SESIÓN AMPLIADA (CAPACIDAD Y NOTAS) ---
   const startSession = (scheduledClass = null) => {
     if (scheduledClass) {
       setCurrentSession({
@@ -354,11 +354,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         time: scheduledClass.time,
         teacher: scheduledClass.teacher,
         subject: scheduledClass.subject,
+        capacity: scheduledClass.capacity || '',
+        notes: scheduledClass.notes || '',
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
         students: scheduledClass.students.map(s => ({ ...s, status: 'present' })),
         newStudentName: '',
-        isAddingRecovery: false
+        isAddingRecovery: false,
+        cancelledDates: scheduledClass.cancelledDates || []
       });
     } else {
       setCurrentSession({
@@ -367,10 +370,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         time: '17:00',
         teacher: getTeacherName(),
         subject: '',
+        capacity: '',
+        notes: '',
         isRecurring: true,
         students: [],
         newStudentName: '',
-        isAddingRecovery: false
+        isAddingRecovery: false,
+        cancelledDates: []
       });
     }
   };
@@ -388,7 +394,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  // --- NUEVA LÓGICA: AÑADIR ALUMNO (CON TABLA MAESTRA INVISIBLE) ---
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     if (!studentName) return;
@@ -430,7 +435,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  // --- GUARDAR PLANTILLA (EXCLUYENDO RECUPERACIONES) ---
   const saveClassOnly = async () => {
     if (!user) return;
     if (!currentSession.subject) {
@@ -451,6 +455,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         time: currentSession.time,
         teacher: currentSession.teacher,
         subject: currentSession.subject,
+        capacity: currentSession.capacity,
+        notes: currentSession.notes,
+        cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents
       });
 
@@ -478,6 +485,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         time: currentSession.time,
         teacher: currentSession.teacher,
         subject: currentSession.subject,
+        capacity: currentSession.capacity,
+        notes: currentSession.notes,
         students: currentSession.students.map(s => ({ ...s }))
       });
 
@@ -491,6 +500,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           time: currentSession.time,
           teacher: currentSession.teacher,
           subject: currentSession.subject,
+          capacity: currentSession.capacity,
+          notes: currentSession.notes,
+          cancelledDates: currentSession.cancelledDates || [],
           students: templateStudents
         });
       }
@@ -503,9 +515,28 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
+  // --- FUNCIÓN DE CANCELACIÓN DE CLASE POR HOY ---
+  const cancelClassForToday = async (classData) => {
+    if (!user) return;
+    const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
+    if (!isConfirmed) return;
+
+    try {
+      const updatedCancelledDates = [...(classData.cancelledDates || []), date];
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classData.id), {
+        ...classData,
+        cancelledDates: updatedCancelledDates
+      });
+      showNotification({ type: 'success', text: 'Clase cancelada para el día de hoy.' });
+    } catch (error) {
+      console.error(error);
+      showNotification({ type: 'error', text: 'Error al cancelar la clase temporalmente.' });
+    }
+  };
+
   const deleteRecurringClass = async (classId) => {
     if (!user) return;
-    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario?');
+    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario permanentemente?');
     if (!isConfirmed) return;
 
     try {
@@ -517,7 +548,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // --- LÓGICA DEL DIARIO ---
   const saveDailyReport = async (silent = false) => {
     if (!user) return false;
     try {
@@ -540,12 +570,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
-  // --- DASHBOARD ---
+  // --- DASHBOARD (FILTRADO DE CANCELACIONES) ---
   const dashboardItems = useMemo(() => {
     const selectedDayOfWeek = getDayOfWeek(date);
     const items = [];
     const recordsToday = records.filter(r => r.date === date);
-    const scheduledToday = recurringClasses.filter(rc => rc.dayOfWeek === selectedDayOfWeek);
+    
+    // Ignoramos las clases que tengan el día de hoy en su "lista negra" (cancelledDates)
+    const scheduledToday = recurringClasses.filter(rc => 
+      rc.dayOfWeek === selectedDayOfWeek && 
+      !(rc.cancelledDates && rc.cancelledDates.includes(date))
+    );
 
     scheduledToday.forEach(rc => {
       const recordExists = recordsToday.find(r => r.classId === rc.id);
@@ -579,7 +614,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [records]);
 
-  // --- PANTALLAS DE CARGA Y LOGIN ---
+  // --- RENDER ---
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center font-sans">
@@ -651,7 +686,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20 md:pb-0">
-      {/* HEADER B&W */}
       <header className="bg-black text-white p-4 shadow-md sticky top-0 z-10 border-b border-zinc-800">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -682,7 +716,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       )}
 
       <main className="max-w-4xl mx-auto p-4 md:p-6 mt-4">
-        {/* PESTAÑA 1: PASAR LISTA */}
         {activeTab === 'attendance' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             {!currentSession && (
@@ -706,7 +739,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 </h3>
                 {dashboardItems.length === 0 ? (
                   <div className="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                    <p className="text-slate-500 mb-4 font-medium">No hay clases programadas.</p>
+                    <p className="text-slate-500 mb-4 font-medium">No hay clases programadas o han sido canceladas hoy.</p>
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -718,7 +751,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             {item.data.time} - {item.data.subject}
                           </p>
                           <p className="text-sm text-slate-500 mt-1 flex items-center gap-1">
-                            <User className="w-3 h-3" /> Prof: {item.data.teacher} <span className="mx-1">•</span> {item.data.students.length} alumnos
+                            <User className="w-3 h-3" /> Prof: {item.data.teacher} 
+                            <span className="mx-1">•</span> 
+                            {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                           </p>
                         </div>
                         <div className="w-full sm:w-auto text-right mt-3 sm:mt-0 flex items-center justify-end gap-2">
@@ -731,7 +766,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-zinc-100 hover:bg-black hover:text-white text-black font-medium py-2 px-4 rounded-lg inline-flex items-center justify-center gap-2 transition-all text-sm uppercase tracking-wide">
                                 <Play className="w-4 h-4" /> Pasar Lista
                               </button>
-                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar clase de forma permanente">
+                              
+                              {/* BOTÓN CANCELAR POR HOY */}
+                              <button onClick={() => cancelClassForToday(item.data)} className="p-2 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded-lg transition-colors shrink-0" title="Cancelar solo por hoy (Sustitución)">
+                                <CalendarOff className="w-5 h-5" />
+                              </button>
+
+                              {/* BOTÓN BORRAR PERMANENTEMENTE */}
+                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors shrink-0" title="Eliminar plantilla de clase">
                                 <Trash2 className="w-5 h-5" />
                               </button>
                             </>
@@ -757,15 +799,31 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
                       <input type="time" value={currentSession.time} onChange={(e) => handleSessionFieldChange('time', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
-                      <input type="text" placeholder="Ej: Piano, Guitarra..." value={currentSession.subject} onChange={(e) => handleSessionFieldChange('subject', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
+                      <input type="text" placeholder="Ej: Piano..." value={currentSession.subject} onChange={(e) => handleSessionFieldChange('subject', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
                     </div>
+                    {/* CAMPO DE CAPACIDAD MÁXIMA NUMÉRICO */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><User className="w-3 h-3" /> Capacidad Max.</label>
+                      <input type="number" min="1" placeholder="Nº Alumnos" value={currentSession.capacity} onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-black outline-none transition-all" />
+                    </div>
+                  </div>
+
+                  {/* CUADERNO DE BITÁCORA */}
+                  <div className="space-y-1 mt-4">
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><BookOpen className="w-3 h-3" /> Anotaciones de la plantilla</label>
+                    <textarea 
+                      placeholder="Escribe ejercicios, deberes, estado de los alumnos... Este texto viaja semana a semana." 
+                      value={currentSession.notes} 
+                      onChange={(e) => handleSessionFieldChange('notes', e.target.value)} 
+                      className="w-full p-3 bg-amber-50/50 border border-amber-200 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none text-slate-700 text-sm min-h-[80px] resize-y" 
+                    />
                   </div>
 
                   {currentSession.isNew && (
@@ -786,8 +844,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </h3>
                     
                     <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
-                      
-                      {/* --- BUSCADOR PERSONALIZADO --- */}
                       <div className="w-full sm:flex-1 relative">
                         <input
                           type="text"
@@ -843,9 +899,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         Añadir
                       </button>
                     </div>
-                    <p className="text-xs text-slate-400 mt-2">
-                      * Si el nombre no existe, se guardará automáticamente en la base de datos de la escuela.
-                    </p>
                   </div>
 
                   <div className="space-y-3">
@@ -867,7 +920,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </button>
                         </div>
 
-                        {/* Botones de semántica - Mantienen sus colores universales */}
                         <div className="flex items-center gap-2 w-full sm:w-auto grid grid-cols-3 sm:flex">
                           <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-sm ring-2 ring-emerald-200 ring-offset-1' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'}`}>
                             <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
@@ -888,7 +940,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                   <div className="mt-8 flex flex-col sm:flex-row gap-3">
                     <button onClick={saveClassOnly} className="w-full sm:w-1/2 bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
-                      <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos'}
+                      <Calendar className="w-5 h-5" /> {currentSession.isNew ? 'Solo Crear Clase' : 'Actualizar Alumnos / Notas'}
                     </button>
                     <button onClick={saveRecord} className="w-full sm:w-1/2 bg-black hover:bg-zinc-800 text-white font-bold uppercase text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-md">
                       <Save className="w-5 h-5" /> Guardar Asistencia

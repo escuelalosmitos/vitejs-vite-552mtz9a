@@ -29,10 +29,7 @@ import {
   Timer,
   Palmtree,
   PartyPopper,
-  Coffee,
-  MapPin,       // NUEVO
-  Video,        // NUEVO
-  LayoutGrid    // NUEVO
+  Coffee
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -69,13 +66,10 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-// --- CONSTANTES DE NEGOCIO (V2.0) ---
+// --- EMAIL DEL ADMINISTRADOR ---
 const ADMIN_EMAIL = 'paco@escuelalosmitos.com';
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec';
 
-const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
-const SEDES = ["Tarragona", "Reus"];
-const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec';
 
 // --- HELPERS ---
 const getDayOfWeek = (dateString) => {
@@ -99,6 +93,7 @@ const normalizeNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+// Generador de fechas para los Tickets (Mes + 1)
 const generateTicketDates = (dateString) => {
   if (!dateString) return { validFrom: '', validUntil: '' };
   const [y, m] = dateString.split('-').map(Number);
@@ -114,6 +109,7 @@ const generateTicketDates = (dateString) => {
   return { validFrom, validUntil };
 };
 
+// Helper para sacar el mes anterior (para calcular vacaciones)
 const getPreviousMonthStr = (currentMonthStr) => { 
   const [y, m] = currentMonthStr.split('-').map(Number);
   let prevM = m - 1;
@@ -125,112 +121,6 @@ const getPreviousMonthStr = (currentMonthStr) => {
   return `${prevY}-${String(prevM).padStart(2, '0')}`;
 };
 
-// ============================================================================
-// COMPONENTE: PORTAL DEL ALUMNO (V2.0)
-// ============================================================================
-const StudentPortal = ({ user, logout }) => {
-  const [activeTab, setActiveTab] = useState('home');
-
-  // MOCK DATA: Provisional hasta conectar base de alumnos real
-  const currentData = {
-    nextClass: { day: "Mañana", time: "18:00", room: "Sala 2", hq: "Reus", teacher: "Diego" },
-    tickets: 1, maxTickets: 2,
-    lastLog: "Ayer practicamos el cambio rápido entre Sol y Do. ¡Sigue así!"
-  };
-
-  return (
-    <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0 relative">
-      <header className="bg-white p-5 sticky top-0 z-50 shadow-sm border-b border-zinc-200">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-black p-2 rounded-xl text-white"><Music className="w-5 h-5"/></div>
-            <div>
-              <h1 className="text-lg font-black uppercase tracking-tighter leading-none">Mi Portal</h1>
-              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{user.email}</span>
-            </div>
-          </div>
-          <button onClick={logout} className="p-2 text-zinc-400 hover:text-rose-500 transition-all"><LogOut className="w-5 h-5" /></button>
-        </div>
-      </header>
-
-      <main className="max-w-3xl mx-auto p-4 md:p-8 space-y-6">
-        {activeTab === 'home' && (
-          <div className="space-y-6 animate-in fade-in duration-300">
-            <div className="bg-black text-white rounded-3xl p-6 shadow-xl relative overflow-hidden">
-              <div className="relative z-10">
-                <p className="text-zinc-400 font-bold uppercase text-[10px] tracking-widest mb-1 flex items-center gap-1.5"><Calendar className="w-3 h-3"/> Tu próxima clase</p>
-                <h2 className="text-3xl font-black uppercase tracking-tighter">{currentData.nextClass.day}</h2>
-                <p className="text-lg font-medium text-zinc-300 mb-6">{currentData.nextClass.time}h</p>
-                
-                <div className="flex items-center gap-4 text-sm font-medium text-zinc-300 mb-8 bg-zinc-800/50 p-4 rounded-2xl border border-zinc-700/50">
-                  <span>👤 Prof: {currentData.nextClass.teacher}</span> <span className="text-zinc-600">•</span> <span>🏢 {currentData.nextClass.hq} ({currentData.nextClass.room})</span>
-                </div>
-
-                <button onClick={() => alert("La función de avisar falta estará activa pronto.")} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 transition-all uppercase text-xs tracking-widest border border-zinc-700">
-                  <AlertCircle className="w-4 h-4 text-amber-400" /> No podré asistir
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg flex items-center gap-2"><Ticket className="w-5 h-5 text-amber-500"/> Recuperaciones</h3>
-                <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{currentData.tickets} / {currentData.maxTickets}</span>
-              </div>
-              <button className="w-full bg-amber-400 text-amber-950 hover:bg-amber-300 font-black py-4 rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm uppercase text-xs tracking-widest">
-                Canjear Ticket Libre
-              </button>
-            </div>
-
-            <div className="bg-zinc-50 rounded-3xl p-6 shadow-sm border border-zinc-200">
-              <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg flex items-center gap-2 mb-4"><BookOpen className="w-5 h-5 text-blue-500"/> Mi Bitácora</h3>
-              <div className="bg-white p-5 rounded-2xl border border-zinc-100 shadow-sm">
-                <p className="text-sm font-medium text-slate-700 italic">"{currentData.lastLog}"</p>
-              </div>
-            </div>
-
-            <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg px-2 mt-8 mb-4">Servicios Extra</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-white p-5 rounded-3xl border border-zinc-200 shadow-sm flex flex-col items-center text-center hover:border-black cursor-pointer group transition-colors">
-                <div className="bg-purple-100 p-4 rounded-2xl mb-3 group-hover:scale-110 transition-transform"><Video className="w-8 h-8 text-purple-600"/></div>
-                <h4 className="font-black uppercase tracking-tight text-sm text-slate-800">Mitoverso</h4>
-                <p className="text-[10px] text-zinc-500 font-medium mt-1">Campus Online</p>
-              </div>
-              <div className="bg-white p-5 rounded-3xl border border-zinc-200 shadow-sm flex flex-col items-center text-center hover:border-black cursor-pointer group transition-colors">
-                <div className="bg-emerald-100 p-4 rounded-2xl mb-3 group-hover:scale-110 transition-transform"><Music className="w-8 h-8 text-emerald-600"/></div>
-                <h4 className="font-black uppercase tracking-tight text-sm text-slate-800">Mitobox</h4>
-                <p className="text-[10px] text-zinc-500 font-medium mt-1">Reserva Salas</p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'news' && <div className="p-6 bg-white rounded-3xl border border-zinc-200 font-bold text-center">Tablón de avisos en construcción...</div>}
-        {activeTab === 'contact' && <div className="p-6 bg-white rounded-3xl border border-zinc-200 font-bold text-center">Trámites en construcción...</div>}
-      </main>
-
-      <nav className="fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
-        <div className="flex justify-around p-2">
-          {[
-            {id:'home', i:LayoutGrid, label:'Inicio'}, 
-            {id:'news', i:Info, label:'Avisos'}, 
-            {id:'contact', i:MessageSquare, label:'Gestiones'}
-          ].map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all ${activeTab === t.id ? 'text-black' : 'text-zinc-400'}`}>
-              <t.i className={`w-6 h-6 ${activeTab === t.id ? 'fill-black/10' : ''}`}/>
-              <span className={`text-[10px] font-bold ${activeTab === t.id ? 'opacity-100' : 'opacity-0 h-0'}`}>{t.label}</span>
-            </button>
-          ))}
-        </div>
-      </nav>
-    </div>
-  );
-};
-
-
-// ============================================================================
-// COMPONENTE PRINCIPAL: APP (Profesores y Admin)
-// ============================================================================
 export default function App() {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -246,6 +136,7 @@ export default function App() {
   const [tickets, setTickets] = useState([]); 
   const [substitutions, setSubstitutions] = useState([]); 
   
+  // Estado para los Ajustes Globales (Admin)
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: ['Ordenar el aula', 'Revisar material'],
@@ -271,8 +162,6 @@ export default function App() {
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
-  // RUTEO V2.0: Si el email incluye la palabra "alumno", es estudiante
-  const isStudent = user?.email?.includes('alumno');
 
   useEffect(() => {
     const initAuth = async () => {
@@ -296,7 +185,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!user || isStudent) return; // Si es alumno, no cargamos datos pesados de profe
+    if (!user) return;
 
     setLoadingData(true);
 
@@ -373,7 +262,7 @@ export default function App() {
       unsubTickets();
       unsubSubs();
     };
-  }, [user, isStudent]);
+  }, [user]);
 
   useEffect(() => {
     const reportForDate = dailyReports.find(r => r.id === date);
@@ -433,23 +322,28 @@ export default function App() {
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
+  // CÁLCULO DE NÓMINA (MODIFICADO PARA IGNORAR HORAS RENUNCIADAS)
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); 
     const prevMonth = getPreviousMonthStr(currentMonth);
 
+    // Horas reales actuales: Excluimos explicitamente las que tienen isRenounced === true
     const currentRecords = records.filter(r => r.date && r.date.startsWith(currentMonth) && !r.isRenounced);
     const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const currentHours = currentMinutes / 60;
 
+    // Media mes anterior: También excluimos las renunciadas para ser justos en la proyección
     const prevRecords = records.filter(r => r.date && r.date.startsWith(prevMonth) && !r.isRenounced);
     const prevTotalMinutes = prevRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const prevUniqueDays = new Set(prevRecords.map(r => r.date)).size;
     const avgDailyMins = prevUniqueDays > 0 ? (prevTotalMinutes / prevUniqueDays) : 0;
 
+    // Proyección de vacaciones
     const vacationsThisMonth = (settings.vacaciones || []).filter(d => d.startsWith(currentMonth)).length;
     const projectedMinutes = vacationsThisMonth * avgDailyMins;
     const projectedHours = projectedMinutes / 60;
 
+    // Totales
     const totalHours = currentHours + projectedHours;
     const earnings = totalHours * (settings.hourlyRate || 0);
 
@@ -487,7 +381,6 @@ export default function App() {
 
       return `
 CLASE: ${record.time} - ${record.subject} ${record.isRenounced ? '(HORA RENUNCIADA)' : ''}
-Sede: ${record.sede || 'Tarragona'} (${record.sala || 'Sala 1'})
 Profesor: ${record.teacher}
 Total alumnos: ${students.length}
 Anotaciones: ${record.notes || 'Ninguna'}
@@ -524,6 +417,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     const report = formData || selectedDailyReport || dailyForm;
+    const hours = normalizeNumber(report?.hoursTaught);
     const hasAttendance = recordsForSelectedDate.length > 0;
     const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim()) || Boolean(report?.hoursTaught);
 
@@ -533,6 +427,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
 
     setIsSendingReport(true);
+    // ETIQUETAS CORREGIDAS PARA MATCH CON APPS SCRIPT
     const payload = {
       profesor: getTeacherName(),
       profesorEmail: user.email,
@@ -561,14 +456,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const startSession = (scheduledClass = null) => {
     if (scheduledClass) {
+      // PREVISIONES: Leemos si para la fecha de hoy hay excepciones guardadas
       const exceptionsToday = scheduledClass.exceptions?.[date] || {};
 
       setCurrentSession({
         isNew: false,
         classId: scheduledClass.id,
         time: scheduledClass.time,
-        sede: scheduledClass.sede || 'Tarragona',
-        sala: scheduledClass.sala || 'Sala 1',
         teacher: scheduledClass.teacher,
         subject: scheduledClass.subject,
         capacity: scheduledClass.capacity || '',
@@ -579,6 +473,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         exceptions: scheduledClass.exceptions || {}, 
         students: scheduledClass.students.map(s => {
           let currentStatus = s.isPaused ? 'paused' : 'present';
+          // Si hay una excepción guardada para este alumno hoy, la aplicamos
           if (exceptionsToday[s.id]) {
             currentStatus = exceptionsToday[s.id];
           }
@@ -593,8 +488,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         isNew: true,
         classId: Date.now().toString(),
         time: '17:00',
-        sede: 'Tarragona',
-        sala: 'Sala 1',
         teacher: getTeacherName(),
         subject: '',
         capacity: '',
@@ -616,8 +509,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       isNew: false, 
       classId: `sub-${sub.originalClassId}`,
       time: sub.time,
-      sede: sub.sede || 'Tarragona',
-      sala: sub.sala || 'Sala 1',
       teacher: getTeacherName(), 
       subject: sub.subject,
       capacity: sub.capacity,
@@ -756,6 +647,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         .filter(s => !s.isRecovery)
         .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
 
+      // CÁLCULO DE EXCEPCIONES PARA FECHAS FUTURAS (Modo Previsión)
       const todayISO = new Date().toISOString().split('T')[0];
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
@@ -764,7 +656,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         const exceptionsForDate = {};
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
-              exceptionsForDate[s.id] = s.status; 
+              exceptionsForDate[s.id] = s.status; // Guardamos que "Avisó" o "Faltó" para ese día
            }
         });
         finalExceptions[date] = exceptionsForDate;
@@ -773,8 +665,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
         dayOfWeek: dayToSave,
         time: currentSession.time,
-        sede: currentSession.sede || 'Tarragona',
-        sala: currentSession.sala || 'Sala 1',
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
@@ -817,6 +707,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
   }, [date, records, recurringClasses]);
 
+  // PROTOCOLO HORA MUERTA (CORRECCIÓN ÚLTIMA HORA)
   const checkDeadHourAndSave = () => {
     if (!currentSession.subject || !currentSession.capacity) {
       showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
@@ -847,10 +738,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
+      // 1. Obtenemos todas las horas de las clases ya guardadas o programadas hoy
       const scheduledTimesToday = dashboardItems.map(i => i.data.time);
+      
+      // 2. Añadimos la hora de la sesión que tenemos abierta actualmente para que se cuente a sí misma
       scheduledTimesToday.push(currentSession.time);
+      
+      // 3. Ordenamos y sacamos la última
       scheduledTimesToday.sort();
       const lastTimeScheduled = scheduledTimesToday[scheduledTimesToday.length - 1];
+      
+      // 4. Comparamos
       const isLastClass = currentSession.time === lastTimeScheduled;
 
       if (isLastClass) {
@@ -915,8 +813,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         classId: currentSession.classId,
         date,
         time: currentSession.time,
-        sede: currentSession.sede || 'Tarragona',
-        sala: currentSession.sala || 'Sala 1',
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
@@ -934,8 +830,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId), {
           dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
           time: currentSession.time,
-          sede: currentSession.sede || 'Tarragona',
-          sala: currentSession.sala || 'Sala 1',
           teacher: currentSession.teacher,
           subject: currentSession.subject,
           capacity: currentSession.capacity,
@@ -989,8 +883,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         originalTeacherName: classData.teacher || getTeacherName(),
         date: date,
         time: classData.time,
-        sede: classData.sede || 'Tarragona',
-        sala: classData.sala || 'Sala 1',
         subject: classData.subject,
         capacity: classData.capacity || '',
         duration: classData.duration || 60,
@@ -1047,80 +939,26 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
-  // --- RENDER DE CARGA E INICIO DE SESIÓN ---
-  if (isAuthLoading) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
-        <RefreshCw className="w-10 h-10 text-black animate-spin" />
-      </div>
-    );
-  }
+  const stats = useMemo(() => {
+    const studentStats = {};
+    records.forEach(record => {
+      record.students.forEach(student => {
+        if (!studentStats[student.name]) {
+          studentStats[student.name] = { present: 0, absent: 0, notified: 0, total: 0 };
+        }
+        studentStats[student.name].total++;
+        if (student.status === 'present') studentStats[student.name].present++;
+        if (student.status === 'absent') studentStats[student.name].absent++;
+        if (student.status === 'notified') studentStats[student.name].notified++;
+      });
+    });
+    return Object.entries(studentStats)
+      .map(([name, counts]) => ({ name, ...counts }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [records]);
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans p-4">
-        <div className="bg-white p-8 md:p-10 rounded-3xl shadow-xl border border-zinc-100 w-full max-w-md">
-          <div className="flex flex-col items-center mb-8 text-center">
-            <div className="bg-black text-white p-4 rounded-2xl mb-4 shadow-lg rotate-3">
-              <Music className="w-8 h-8" />
-            </div>
-            <h1 className="text-3xl font-black text-slate-800 uppercase tracking-tighter">Los Mitos</h1>
-            <p className="text-zinc-400 mt-1 font-bold uppercase tracking-widest text-xs">Ecosistema Unificado</p>
-          </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            {loginError && (
-              <div className="p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100 text-center">
-                {loginError}
-              </div>
-            )}
-            <div>
-              <input type="email" required value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none transition-colors font-medium" placeholder="Tu Email" />
-            </div>
-            <div>
-              <input type="password" required value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none transition-colors font-medium" placeholder="Contraseña" />
-            </div>
-            <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 transition-all mt-6 shadow-xl uppercase tracking-widest text-sm active:scale-95">
-              <Lock className="w-5 h-5" /> Entrar al Portal
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  // --- RUTEO INTELIGENTE ---
-  if (isStudent) {
-    return <StudentPortal user={user} logout={handleLogout} />;
-  }
-
-  if (loadingData) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
-        <div className="flex flex-col items-center gap-4 p-8 bg-white rounded-3xl shadow-lg border border-zinc-100">
-          <RefreshCw className="w-10 h-10 text-black animate-spin" />
-          <h2 className="text-xl font-black text-slate-800 uppercase tracking-wide">Cargando datos</h2>
-          <p className="text-zinc-400 font-medium">Sincronizando con la nube...</p>
-        </div>
-      </div>
-    );
-  }
-
-  const isCapacityMissing = !currentSession?.capacity;
-  const maxCap = parseInt(currentSession?.capacity, 10) || 0;
-  const currentCount = currentSession?.students?.length || 0;
-  const isCapacityReached = !isCapacityMissing && currentCount >= maxCap;
-  const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
-  const isDisabledAdd = isCapacityMissing || isCapacityReached;
-
-  const todayISO = new Date().toISOString().split('T')[0];
-  const isFutureDate = date > todayISO;
-  
-  const isFestivo = settings.festivos?.includes(date);
-  const isVacacion = settings.vacaciones?.includes(date);
-  const isSpecialDay = isFestivo || isVacacion;
-
-  const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  // --- COMPONENTES AUXILIARES ---
 
   const DeadHourOverlay = () => {
     const [note, setNote] = useState('');
@@ -1155,6 +993,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               Cancelar
             </button>
             
+            {/* BOTÓN: RENUNCIAR */}
             <button 
               onClick={() => {
                 const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
@@ -1179,6 +1018,181 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       </div>
     );
   };
+
+  const AdminPanel = () => {
+    const [newTask, setNewTask] = useState('');
+
+    const saveSettings = async (newSet) => {
+      await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSet);
+      showNotification({ type: 'success', text: 'Ajustes guardados globalmente.' });
+    };
+
+    return (
+      <div className="space-y-8 animate-in fade-in duration-500">
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Lock className="w-5 h-5"/> Coste de Hora (Convenio)</h2>
+          <p className="text-zinc-500 mb-6 text-sm">Este valor se usará para calcular la nómina de todos los profesores.</p>
+          <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
+            <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
+            <span className="text-2xl font-bold">€ / hora</span>
+            <button onClick={() => saveSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar Valor</button>
+          </div>
+        </div>
+
+        {/* CALENDARIO ESCOLAR */}
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
+          <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
+          
+          <div className="flex flex-col sm:flex-row gap-3 mb-8">
+            <input id="adminDateInput" type="date" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold flex-1" />
+            <select id="adminDateType" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold uppercase text-xs">
+              <option value="festivo">Festivo</option>
+              <option value="vacacion">Vacaciones</option>
+            </select>
+            <button onClick={async () => { 
+              const d = document.getElementById('adminDateInput').value;
+              const t = document.getElementById('adminDateType').value;
+              if(d) {
+                const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]);
+                if(!arr.includes(d)) {
+                  const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]};
+                  setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
+                  showNotification({ type: 'success', text: `Día añadido al calendario`});
+                }
+              }
+            }} className="bg-black text-white px-8 py-4 rounded-2xl shadow-lg font-black uppercase text-[10px]"><Plus/></button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Días Festivos</h4>
+              <div className="space-y-2">
+                {(!settings.festivos || settings.festivos.length === 0) && <p className="text-xs text-zinc-400 italic">No hay festivos.</p>}
+                {settings.festivos?.sort().map(f => (
+                  <div key={f} className="flex justify-between p-3 bg-amber-50 rounded-xl text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={async () => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones</h4>
+              <div className="space-y-2">
+                {(!settings.vacaciones || settings.vacaciones.length === 0) && <p className="text-xs text-zinc-400 italic">No hay vacaciones.</p>}
+                {settings.vacaciones?.sort().map(v => (
+                  <div key={v} className="flex justify-between p-3 bg-emerald-50 rounded-xl text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={async () => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Settings className="w-5 h-5"/> Tareas Generales (Hora Muerta)</h2>
+          <p className="text-zinc-500 mb-6 text-sm">Estas opciones aparecerán cuando un profesor tenga una hora libre entre clases.</p>
+          
+          <div className="flex flex-col sm:flex-row gap-2 mb-6">
+            <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
+            <button 
+              onClick={async () => { 
+                const val = document.getElementById('adminTaskInput').value;
+                if(val) { 
+                  const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; 
+                  setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); 
+                  document.getElementById('adminTaskInput').value = ''; 
+                } 
+              }} 
+              className="bg-black text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-2 hover:bg-zinc-800"
+            >
+              <Plus className="w-4 h-4"/> Añadir
+            </button>
+          </div>
+          
+          <div className="space-y-3">
+            {settings.generalTasks?.length === 0 && <p className="text-zinc-400 italic text-sm p-4 text-center bg-zinc-50 rounded-xl">No hay tareas configuradas.</p>}
+            {settings.generalTasks?.map((t, i) => (
+              <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl">
+                <span className="font-medium text-slate-700">{t}</span>
+                <button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+
+  // --- RENDER DE CARGA E INICIO DE SESIÓN ---
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
+        <RefreshCw className="w-10 h-10 text-black animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans p-4">
+        <div className="bg-white p-8 md:p-10 rounded-3xl shadow-xl border border-zinc-100 w-full max-w-md">
+          <div className="flex flex-col items-center mb-8 text-center">
+            <div className="bg-black text-white p-4 rounded-2xl mb-4 shadow-lg rotate-3">
+              <Music className="w-8 h-8" />
+            </div>
+            <h1 className="text-3xl font-black text-slate-800 uppercase tracking-tighter">Los Mitos</h1>
+            <p className="text-zinc-400 mt-1 font-bold uppercase tracking-widest text-xs">Escuela de Música</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            {loginError && (
+              <div className="p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100 text-center">
+                {loginError}
+              </div>
+            )}
+            <div>
+              <input type="email" required value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none transition-colors font-medium" placeholder="Email del profesor" />
+            </div>
+            <div>
+              <input type="password" required value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none transition-colors font-medium" placeholder="Contraseña" />
+            </div>
+            <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 transition-all mt-6 shadow-xl uppercase tracking-widest text-sm active:scale-95">
+              <Lock className="w-5 h-5" /> Entrar
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadingData) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
+        <div className="flex flex-col items-center gap-4 p-8 bg-white rounded-3xl shadow-lg border border-zinc-100">
+          <RefreshCw className="w-10 h-10 text-black animate-spin" />
+          <h2 className="text-xl font-black text-slate-800 uppercase tracking-wide">Cargando datos</h2>
+          <p className="text-zinc-400 font-medium">Sincronizando con la nube...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const isCapacityMissing = !currentSession?.capacity;
+  const maxCap = parseInt(currentSession?.capacity, 10) || 0;
+  const currentCount = currentSession?.students?.length || 0;
+  const isCapacityReached = !isCapacityMissing && currentCount >= maxCap;
+  const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
+  const isDisabledAdd = isCapacityMissing || isCapacityReached;
+
+  // LÓGICA DE DÍAS FUTUROS Y FESTIVOS
+  const todayISO = new Date().toISOString().split('T')[0];
+  const isFutureDate = date > todayISO;
+  
+  const isFestivo = settings.festivos?.includes(date);
+  const isVacacion = settings.vacaciones?.includes(date);
+  const isSpecialDay = isFestivo || isVacacion;
+
+  // TABLÓN DE SUSTITUCIONES GLOBAL
+  const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
@@ -1214,6 +1228,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       )}
 
       <main className="max-w-5xl mx-auto p-4 md:p-8 mt-2">
+        {/* TABS (MENÚ SUPERIOR) */}
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
@@ -1233,10 +1248,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           )}
         </div>
 
+        {/* --- PESTAÑA 1: LISTAS --- */}
         {activeTab === 'attendance' && (
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
             {!currentSession && (
               <>
+                {/* TABLÓN GLOBAL DE SUSTITUCIONES */}
                 {upcomingSubs.length > 0 && (
                   <div className="m-6 md:m-8 p-6 md:p-8 bg-zinc-900 rounded-3xl shadow-xl relative overflow-hidden">
                     <div className="relative z-10">
@@ -1314,9 +1331,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <MapPin className="w-3 h-3" /> {item.data.sede || 'Tarragona'} ({item.data.sala || 'Sala 1'})
+                              <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
-                              <User className="w-3 h-3" /> {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''}
+                              {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
                           </div>
                         </div>
@@ -1350,6 +1367,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               </div>
             ) : (
               <>
+                {/* CABECERA DENTRO DE LA CLASE */}
                 <div className="p-6 md:p-8 border-b border-zinc-100 bg-white relative">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
                     <div className="flex flex-col">
@@ -1370,6 +1388,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
 
+                  {/* AVISO MODO PREVISIÓN (FUTURO) */}
                   {isFutureDate && !currentSession.isNew && !currentSession.isSubstitution && (
                     <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
                       <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
@@ -1377,7 +1396,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
                       <input 
@@ -1388,44 +1407,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
                       />
                     </div>
-                    
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><MapPin className="w-3 h-3" /> Sede</label>
-                      <select 
-                        value={currentSession.sede} 
-                        onChange={(e) => handleSessionFieldChange('sede', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                      >
-                        {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><LayoutGrid className="w-3 h-3" /> Sala</label>
-                      <select 
-                        value={currentSession.sala} 
-                        onChange={(e) => handleSessionFieldChange('sala', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                      >
-                        {SALAS.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </div>
-
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
-                      <select 
+                      <input 
+                        type="text" 
+                        placeholder="Ej: Piano..." 
                         value={currentSession.subject} 
                         onChange={(e) => handleSessionFieldChange('subject', e.target.value)} 
                         disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                      >
-                        <option value="" disabled>Selecciona...</option>
-                        {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
-                      </select>
+                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
+                      />
                     </div>
-                    
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><User className="w-3 h-3" /> Aforo Máximo</label>
                       <input 
@@ -1438,7 +1430,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
                       />
                     </div>
-                    
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Timer className="w-3 h-3" /> Duración (min)</label>
                       <input 
@@ -1474,6 +1465,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   )}
                 </div>
 
+                {/* ZONA DE ALUMNOS */}
                 <div className="p-6 md:p-8">
                   <div className={`flex flex-col mb-8 p-6 rounded-2xl border-2 transition-colors ${isCapacityMissing ? 'bg-amber-50/50 border-amber-200' : isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-zinc-50 border-zinc-200'}`}>
                     <h3 className="text-sm uppercase tracking-widest font-black text-slate-800 mb-4 flex items-center gap-2">
@@ -1562,6 +1554,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             )}
                           </div>
                           
+                          {/* BOTONES MÓVIL: CONGELAR Y BORRAR */}
                           <div className="flex gap-2 sm:hidden">
                             <button onClick={() => togglePauseStudent(student.id)} className={`p-2 rounded-lg transition-colors ${student.isPaused ? 'bg-blue-100 text-blue-600' : 'text-zinc-400 hover:text-blue-500 hover:bg-blue-50'}`} title="Congelar Plaza">
                               <Snowflake className="w-5 h-5" />
@@ -1572,6 +1565,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </div>
                         </div>
 
+                        {/* BOTONERA ASISTENCIA / MANTENIMIENTO */}
                         <div className="flex items-center gap-2 w-full sm:w-auto">
                           {student.isPaused ? (
                             <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
@@ -1592,6 +1586,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           )}
                         </div>
 
+                        {/* BOTONES PC: CONGELAR Y BORRAR */}
                         <div className="hidden sm:flex items-center gap-2">
                           <button onClick={() => togglePauseStudent(student.id)} className={`p-3 rounded-xl transition-colors ${student.isPaused ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-zinc-300 hover:text-blue-500 hover:bg-blue-50'}`} title="Congelar Plaza (Mantenimiento)">
                             <Snowflake className="w-5 h-5" />
@@ -1768,8 +1763,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         {record.isRenounced && <span className="text-amber-600 text-xs font-black uppercase tracking-widest ml-3 bg-amber-50 px-2 py-1 rounded-lg">(RENUNCIADA)</span>}
                       </h3>
                       <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5 mt-2">
-                        <MapPin className="w-4 h-4" /> {record.sede || 'Tarragona'} ({record.sala || 'Sala 1'})
-                        <span className="mx-1">•</span> 
                         <User className="w-4 h-4" /> {record.teacher}
                       </p>
                     </div>
@@ -1979,6 +1972,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         )}
       </main>
 
+      {/* NAVEGACIÓN MÓVIL Y PC... */}
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
         <div className="flex justify-around p-2">
           {[{id:'attendance', i:ClipboardList}, {id:'tickets', i:Ticket}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (

@@ -31,7 +31,11 @@ import {
   PartyPopper,
   Coffee,
   MapPin,
-  LayoutGrid
+  LayoutGrid,
+  Bell,
+  UserMinus,
+  RefreshCcw,
+  PlusCircle
 } from 'lucide-react';
 
 import {
@@ -108,6 +112,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [globalStudents, setGlobalStudents] = useState([]);
   const [tickets, setTickets] = useState([]); 
   const [substitutions, setSubstitutions] = useState([]); 
+  const [gestiones, setGestiones] = useState([]); // <-- NUEVO ESTADO
   
   // Estado para los Ajustes Globales (Admin)
   const [settings, setSettings] = useState({
@@ -148,6 +153,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
     const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets');
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
+    const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); // <-- NUEVA REF
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -155,9 +161,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let studentsLoaded = false;
     let ticketsLoaded = false;
     let subsLoaded = false;
+    let gestionesLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded) setLoadingData(false);
     };
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
@@ -205,6 +212,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    const unsubGestiones = onSnapshot(gestionesRef, (snapshot) => {
+      setGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      gestionesLoaded = true;
+      checkLoading();
+    });
+
     return () => {
       unsubRecurring();
       unsubRecords();
@@ -213,6 +226,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubSettings();
       unsubTickets();
       unsubSubs();
+      unsubGestiones();
     };
   }, [user]);
 
@@ -236,6 +250,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       });
     }
   }, [date, dailyReports]);
+
+  // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Solo para este profe)
+  const notifications = useMemo(() => {
+    if (isAdmin) {
+      return gestiones.filter(g => g.status === 'pendiente');
+    } else {
+      const myStudentIds = new Set();
+      recurringClasses.forEach(c => c.students?.forEach(s => myStudentIds.add(s.id)));
+      return gestiones.filter(g => g.status === 'pendiente' && myStudentIds.has(g.studentId));
+    }
+  }, [gestiones, recurringClasses, isAdmin]);
 
   const getTeacherName = () => {
     if (!user || !user.email) return 'Profesor';
@@ -818,16 +843,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  const markTicketAsUsed = async (ticketId) => {
-    if (!user) return;
-    try {
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tickets', ticketId), { isUsed: true }, { merge: true });
-      showNotification({ type: 'success', text: 'Ticket marcado como recuperado.' });
-    } catch (e) {
-      showNotification({ type: 'error', text: 'Error al actualizar el ticket.' });
-    }
-  };
-
   const cancelClassForToday = async (classData) => {
     if (!user) return;
     const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
@@ -1157,13 +1172,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
-            { id: 'tickets', label: 'Bolsa', icon: Ticket },
+            { id: 'notifications', label: 'Avisos', icon: Bell }, // <-- PESTAÑA CAMBIADA
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
             { id: 'reports', label: 'Reportes', icon: BarChart3 }
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
               <tab.icon className="w-4 h-4"/> {tab.label}
+              {tab.id === 'notifications' && notifications.length > 0 && (
+                <span className="bg-red-500 w-2 h-2 rounded-full absolute top-2 right-2 animate-pulse"></span>
+              )}
             </button>
           ))}
           {isAdmin && (
@@ -1600,62 +1618,43 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           </div>
         )}
 
-        {/* --- PESTAÑA BOLSA DE RECUPERACIONES --- */}
-        {activeTab === 'tickets' && (
+        {/* --- NUEVA PESTAÑA: NOTIFICACIONES (Avisos) --- */}
+        {activeTab === 'notifications' && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
               <div>
-                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bolsa de Recuperaciones</h2>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Tickets generados automáticamente para los alumnos que avisaron.</p>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Notificaciones</h2>
+                <p className="text-sm font-medium text-zinc-500 mt-1">Gestiones pendientes solicitadas por tus alumnos.</p>
               </div>
+              <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${notifications.length > 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
+                {notifications.length} Pendientes
+              </span>
             </div>
 
-            {tickets.filter(t => !t.isUsed).length === 0 ? (
+            {notifications.length === 0 ? (
               <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
-                <Ticket className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
-                <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay tickets pendientes</h3>
+                <CheckCircle className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
+                <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay avisos pendientes</h3>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tickets.filter(t => !t.isUsed)
-                  .sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom))
-                  .map(ticket => {
-                    const today = new Date().toISOString().split('T')[0];
-                    const isExpired = today > ticket.validUntil;
-                    const isValidNow = today >= ticket.validFrom && today <= ticket.validUntil;
-
-                    return (
-                      <div key={ticket.id} className={`p-6 rounded-3xl border-2 shadow-sm flex flex-col justify-between ${isExpired ? 'bg-zinc-50 border-zinc-200 opacity-60' : isValidNow ? 'bg-white border-emerald-200' : 'bg-white border-amber-200'}`}>
-                        <div className="flex justify-between items-start mb-4">
-                          <div>
-                            <h3 className="font-black text-xl text-slate-800">{ticket.studentName}</h3>
-                            <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 mt-1">{ticket.subject}</p>
-                          </div>
-                          <div className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${isExpired ? 'bg-zinc-200 text-zinc-500' : isValidNow ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                            {isExpired ? 'Caducado' : isValidNow ? 'Activo' : 'Próximo Mes'}
-                          </div>
-                        </div>
-                        
-                        <div className="space-y-2 mb-6">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-zinc-500">Falta original:</span>
-                            <span className="font-bold text-slate-700">{formatDateSpanish(ticket.originalDate)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-zinc-500">Mes de uso:</span>
-                            <span className="font-bold text-slate-700">{formatDateSpanish(ticket.validFrom)} - {formatDateSpanish(ticket.validUntil)}</span>
-                          </div>
-                        </div>
-
-                        <button 
-                          onClick={() => markTicketAsUsed(ticket.id)}
-                          className="w-full py-4 rounded-xl font-black uppercase text-xs tracking-widest bg-black text-white hover:bg-zinc-800 transition-colors shadow-md"
-                        >
-                          Marcar como Recuperada
-                        </button>
+                {notifications.map(n => (
+                  <div key={n.id} className="bg-white border-2 border-zinc-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
+                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'cambio_horario' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-500'}`}>
+                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'cambio_horario' ? <RefreshCcw className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
+                    </div>
+                    <div>
+                      <h3 className="font-black text-lg uppercase tracking-tight">{n.studentName}</h3>
+                      <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">Solicita: {n.title}</p>
+                      <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+                        <p className="text-sm font-medium text-zinc-600 italic">"{n.details || 'Sin detalles adicionales'}"</p>
                       </div>
-                    );
-                })}
+                      {n.targetMonth && (
+                        <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mt-3">Para el mes de: {n.targetMonth}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -1950,16 +1949,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
         <div className="flex justify-around p-2">
-          {[{id:'attendance', i:ClipboardList}, {id:'tickets', i:Ticket}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-xl transition-all ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}><t.i className="w-6 h-6"/></button>
+          {[{id:'attendance', i:ClipboardList}, {id:'notifications', i:Bell}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-xl transition-all relative ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}>
+              <t.i className="w-6 h-6"/>
+              {t.id === 'notifications' && notifications.length > 0 && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+            </button>
           ))}
           {isAdmin && <button onClick={() => setActiveTab('admin')} className={`p-4 rounded-xl transition-all ${activeTab === 'admin' ? 'bg-red-600 text-white shadow-lg' : 'text-zinc-400'}`}><Settings className="w-6 h-6"/></button>}
         </div>
       </nav>
 
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-6 flex-col gap-4 z-40">
-        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'tickets', i:Ticket, t:'Bolsa'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black border-2'}`} title={t.t}><t.i/></button>
+        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'notifications', i:Bell, t:'Avisos'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
+          <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all relative ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black border-2'}`} title={t.t}>
+            <t.i/>
+            {t.id === 'notifications' && notifications.length > 0 && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+          </button>
         ))}
         {isAdmin && <button onClick={() => setActiveTab('admin')} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all mt-4 ${activeTab === 'admin' ? 'bg-red-600 text-white' : 'bg-white text-red-300 border-2'}`} title="Admin"><Settings/></button>}
       </nav>

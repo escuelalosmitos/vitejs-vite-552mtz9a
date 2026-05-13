@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, BookOpen, Video, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, BookOpen, Video, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check } from 'lucide-react';
 import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
@@ -9,11 +9,47 @@ const getDayName = (dayIndex) => {
   return days[dayIndex];
 };
 
+// HELPER: Calcula la fecha exacta y horas restantes para la próxima clase
+const getNextClassInfo = (dayOfWeek, timeStr) => {
+  const now = new Date();
+  const targetDay = parseInt(dayOfWeek);
+  let date = new Date(now.getTime());
+  
+  const [hours, minutes] = timeStr.split(':');
+  date.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+
+  const currentDay = now.getDay();
+  let daysToAdd = targetDay - currentDay;
+  
+  if (daysToAdd < 0) {
+    daysToAdd += 7;
+  } else if (daysToAdd === 0 && now > date) {
+    daysToAdd += 7;
+  }
+  
+  date.setDate(now.getDate() + daysToAdd);
+  
+  const diffMs = date - now;
+  const diffHours = diffMs / (1000 * 60 * 60);
+  
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const dateStr = `${y}-${m}-${d}`;
+
+  return { date, dateStr, diffHours };
+};
+
 export default function StudentPortal({ user, logout, db, appId }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [myClasses, setMyClasses] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
+  const [notification, setNotification] = useState(null);
+
+  // ESTADOS DEL MODAL DE AUSENCIA
+  const [absenceModal, setAbsenceModal] = useState(null);
+  const [showRules, setShowRules] = useState(false);
 
   // FORMULARIO ONBOARDING
   const [onboarding, setOnboarding] = useState({ name: '', instrument: 'Guitarra', classId: '' });
@@ -21,6 +57,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     checkRegistration();
   }, [user.email]);
+
+  const showToast = (msg, type = 'success') => {
+    setNotification({ text: msg, type });
+    setTimeout(() => setNotification(null), 4000);
+  };
 
   const checkRegistration = async () => {
     setLoading(true);
@@ -31,7 +72,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
       const studentData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
       setProfile(studentData);
       
-      // Si el perfil ya está reclamado, buscamos sus clases y tickets reales
       if (studentData.claimed) {
         await fetchRealStudentData(studentData.id);
       }
@@ -39,24 +79,20 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setLoading(false);
   };
 
-  // --- EL MOTOR DE BÚSQUEDA DE DATOS REALES ---
   const fetchRealStudentData = async (studentId) => {
     try {
-      // 1. Buscamos en las clases de TODOS los profesores
       const classesQuery = collectionGroup(db, 'recurringClasses');
       const classesSnap = await getDocs(classesQuery);
       
       const foundClasses = [];
       classesSnap.forEach(doc => {
         const data = doc.data();
-        // Si en la lista de alumnos de esta clase está nuestro ID, es nuestra clase
         if (data.students && data.students.some(s => s.id === studentId)) {
           foundClasses.push({ id: doc.id, refPath: doc.ref.path, ...data });
         }
       });
       setMyClasses(foundClasses);
 
-      // 2. Buscamos cuántos tickets SIN USAR tiene este alumno
       const ticketsQuery = collectionGroup(db, 'tickets');
       const ticketsSnap = await getDocs(ticketsQuery);
       
@@ -68,7 +104,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
         }
       });
       
-      // Actualizamos el perfil con el número de tickets reales
       setProfile(prev => ({ ...prev, activeTickets: validTicketsCount }));
 
     } catch (error) {
@@ -88,13 +123,120 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
     await setDoc(doc(db, 'artifacts', appId, 'students', studentId), data);
     setProfile({ id: studentId, ...data });
-    await fetchRealStudentData(studentId); // Buscamos por si acaso
+    await fetchRealStudentData(studentId);
   };
 
   const claimProfile = async () => {
     await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), { claimed: true });
     setProfile({ ...profile, claimed: true });
-    await fetchRealStudentData(profile.id); // Cargamos sus clases reales
+    await fetchRealStudentData(profile.id);
+  };
+
+  const openAbsenceModal = (clase) => {
+    const info = getNextClassInfo(clase.dayOfWeek, clase.time);
+    setAbsenceModal({ clase, ...info });
+  };
+
+  const confirmAbsence = async (wantsTicket) => {
+    if (!absenceModal || !profile) return;
+    
+    // Si avisa tarde, forzamos que no tenga ticket aunque el sistema pregunte
+    const status = (absenceModal.diffHours >= 16 && wantsTicket) ? 'notified' : 'notified_no_ticket';
+
+    try {
+      const classRef = doc(db, absenceModal.clase.refPath);
+      
+      // Merge seguro en Firestore
+      await setDoc(classRef, {
+        exceptions: {
+          [absenceModal.dateStr]: {
+            [profile.id]: status
+          }
+        }
+      }, { merge: true });
+
+      setAbsenceModal(null);
+      showToast('Aviso enviado correctamente al profesor.');
+      
+      // Opcional: Refrescar datos
+      await fetchRealStudentData(profile.id);
+    } catch (error) {
+      showToast('Error al enviar el aviso.', 'error');
+    }
+  };
+
+  // --- MODAL DE AVISO DE AUSENCIA ---
+  const AbsenceModalOverlay = () => {
+    if (!absenceModal) return null;
+    const isLate = absenceModal.diffHours < 16;
+
+    if (showRules) {
+      return (
+        <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
+            <button onClick={() => setShowRules(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+            <div className="flex items-center gap-3 text-black mb-6">
+              <FileText className="w-8 h-8" />
+              <h2 className="text-xl font-black uppercase tracking-tight">Normativa</h2>
+            </div>
+            <div className="space-y-4 text-sm text-zinc-600 font-medium">
+              <p>1. <strong className="text-black">Preaviso de 16h:</strong> Para tener derecho a recuperar una clase, es imprescindible avisar de la falta con un mínimo de 16 horas de antelación.</p>
+              <p>2. <strong className="text-black">Caducidad:</strong> Los tickets de recuperación generados son válidos exclusivamente durante el mes siguiente a la fecha de la falta.</p>
+              <p>3. <strong className="text-black">Alta activa:</strong> Para poder canjear un ticket de recuperación, el alumno debe estar dado de alta y al corriente de pago en la escuela.</p>
+            </div>
+            <button onClick={() => setShowRules(false)} className="w-full mt-8 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest">Entendido</button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative animate-in zoom-in-95 duration-200">
+          <button onClick={() => setAbsenceModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          
+          {isLate ? (
+            // ESCENARIO A: AVISO TARDÍO
+            <>
+              <div className="flex items-center justify-center w-16 h-16 bg-red-100 text-red-500 rounded-full mb-6 mx-auto">
+                <Clock className="w-8 h-8" />
+              </div>
+              <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso fuera de plazo</h2>
+              <p className="text-center text-zinc-500 font-medium mb-6">
+                Faltan menos de 16 horas para tu clase de mañana. Informaremos a tu profesor, pero <strong className="text-red-500">esta falta no generará ticket de recuperación</strong>.
+              </p>
+              <div className="space-y-3">
+                <button onClick={() => confirmAbsence(false)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg">Avisar de todas formas</button>
+                <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
+              </div>
+            </>
+          ) : (
+            // ESCENARIO B: AVISO A TIEMPO
+            <>
+              <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 text-emerald-500 rounded-full mb-6 mx-auto">
+                <CheckCircle className="w-8 h-8" />
+              </div>
+              <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso a tiempo</h2>
+              <p className="text-center text-zinc-500 font-medium mb-6">
+                Informaremos a tu profesor. Al haber avisado con antelación, tienes derecho a recuperar esta clase el próximo mes.
+              </p>
+              <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-4">¿Quieres ticket de recuperación?</h3>
+              <div className="space-y-3">
+                <button onClick={() => confirmAbsence(true)} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 transition-colors shadow-lg">Sí, quiero recuperarla</button>
+                <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black transition-colors">No, gracias. Solo aviso.</button>
+                <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
+              </div>
+            </>
+          )}
+
+          <div className="mt-8 pt-6 border-t border-zinc-100 text-center">
+            <button onClick={() => setShowRules(true)} className="text-xs font-bold text-zinc-400 hover:text-black uppercase tracking-widest flex items-center justify-center gap-1 mx-auto">
+              <FileText className="w-3 h-3"/> Leer Normativa de Recuperaciones
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
@@ -137,6 +279,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
   // ESCENARIO 3: PORTAL NORMAL CON DATOS REALES
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 relative">
+      <AbsenceModalOverlay />
+
+      {notification && (
+        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
+          <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>
+            {notification.type === 'error' ? <X className="w-5 h-5" /> : <Check className="w-5 h-5" />}
+            {notification.text}
+          </div>
+        </div>
+      )}
+
       <header className="bg-white p-5 sticky top-0 z-50 shadow-sm border-b border-zinc-200">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3"><div className="bg-black p-2 rounded-xl text-white"><Music className="w-5 h-5"/></div><div><h1 className="text-lg font-black uppercase leading-none">Mi Portal</h1><span className="text-[10px] font-bold text-zinc-400 uppercase">{profile.name}</span></div></div>
@@ -178,7 +331,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
                       <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                     </div>
 
-                    <button onClick={() => alert("¡Pronto programaremos este botón! Notificará al profesor y te dará un ticket.")} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-zinc-700 transition-all">
+                    <button onClick={() => openAbsenceModal(clase)} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-zinc-700 transition-all shadow-lg active:scale-95">
                       <AlertCircle className="w-4 h-4 text-amber-400" /> No podré asistir
                     </button>
                 </div>

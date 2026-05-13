@@ -76,10 +76,10 @@ export default function App() {
     );
   }
 
-  // --- RUTEO INTELIGENTE ---
+// --- RUTEO INTELIGENTE ---
   // Si el email tiene la palabra "alumno" (ej: hugo@alumno.com) carga el portal de alumnos.
   if (user.email.includes('alumno')) {
-    return <StudentPortal user={user} logout={handleLogout} />;
+    return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
   }
 
   // Si no tiene "alumno", asume que es profesor o admin.

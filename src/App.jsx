@@ -7,8 +7,8 @@ import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from
 import { getFirestore } from 'firebase/firestore';
 
 // --- MÓDULOS ---
-import TeacherPortal from './components/TeacherPortal';
-import StudentPortal from './components/StudentPortal';
+import TeacherPortal from './components/TeacherPortal.jsx';
+import StudentPortal from './components/StudentPortal.jsx';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {

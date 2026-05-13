@@ -497,13 +497,26 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
       </main>
 
-      <nav className="fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
-        <div className="flex justify-around p-2">
-          {[{id:'home', i:LayoutGrid, label:'Inicio'}, {id:'news', i:Info, label:'Avisos'}, {id:'contact', i:MessageSquare, label:'Gestiones'}].map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}><t.i className="w-6 h-6"/><span className="text-[10px] font-bold">{t.label}</span></button>
-          ))}
-        </div>
-      </nav>
+    <nav className="fixed bottom-0 left-0 right-0 w-full bg-white border-t border-zinc-200 z-40 pb-3">
+  <div className="flex justify-around items-center p-2 max-w-3xl mx-auto">
+    {[
+      { id: 'home', i: LayoutGrid, label: 'Inicio' },
+      { id: 'news', i: Info, label: 'Avisos' },
+      { id: 'contact', i: MessageSquare, label: 'Gestiones' }
+    ].map(t => (
+      <button
+        key={t.id}
+        onClick={() => setActiveTab(t.id)}
+        className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${
+          activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'
+        }`}
+      >
+        <t.i className="w-6 h-6" />
+        <span className="text-[10px] font-bold">{t.label}</span>
+      </button>
+    ))}
+  </div>
+</nav>
     </div>
   );
 }

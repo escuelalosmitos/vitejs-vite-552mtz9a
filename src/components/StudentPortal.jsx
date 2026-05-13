@@ -203,7 +203,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </div>
               <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso fuera de plazo</h2>
               <p className="text-center text-zinc-500 font-medium mb-6">
-                Faltan menos de 16 horas para tu clase de mañana. Informaremos a tu profesor, pero <strong className="text-red-500">esta falta no generará ticket de recuperación</strong>.
+                Estás avisando con menos de 16 horas de antelación para tu próxima clase. Informaremos a tu profesor, pero <strong className="text-red-500">esta falta no generará ticket de recuperación</strong>.
               </p>
               <div className="space-y-3">
                 <button onClick={() => confirmAbsence(false)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg">Avisar de todas formas</button>

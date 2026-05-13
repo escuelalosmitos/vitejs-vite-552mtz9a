@@ -97,12 +97,10 @@ const getPreviousMonthStr = (currentMonthStr) => {
   return `${prevY}-${String(prevM).padStart(2, '0')}`;
 };
 
-
 // ============================================================================
 // COMPONENTE PRINCIPAL (Módulo de Profesores)
 // ============================================================================
 export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL }) {
-  
   const [loadingData, setLoadingData] = useState(true);
   const [recurringClasses, setRecurringClasses] = useState([]);
   const [records, setRecords] = useState([]);
@@ -216,7 +214,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubTickets();
       unsubSubs();
     };
-  }, [user, db, appId]);
+  }, [user]);
 
   useEffect(() => {
     const reportForDate = dailyReports.find(r => r.id === date);
@@ -259,24 +257,28 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
-  // CÁLCULO DE NÓMINA
+  // CÁLCULO DE NÓMINA (MODIFICADO PARA IGNORAR HORAS RENUNCIADAS)
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); 
     const prevMonth = getPreviousMonthStr(currentMonth);
 
+    // Horas reales actuales: Excluimos explicitamente las que tienen isRenounced === true
     const currentRecords = records.filter(r => r.date && r.date.startsWith(currentMonth) && !r.isRenounced);
     const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const currentHours = currentMinutes / 60;
 
+    // Media mes anterior: También excluimos las renunciadas para ser justos en la proyección
     const prevRecords = records.filter(r => r.date && r.date.startsWith(prevMonth) && !r.isRenounced);
     const prevTotalMinutes = prevRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const prevUniqueDays = new Set(prevRecords.map(r => r.date)).size;
     const avgDailyMins = prevUniqueDays > 0 ? (prevTotalMinutes / prevUniqueDays) : 0;
 
+    // Proyección de vacaciones
     const vacationsThisMonth = (settings.vacaciones || []).filter(d => d.startsWith(currentMonth)).length;
     const projectedMinutes = vacationsThisMonth * avgDailyMins;
     const projectedHours = projectedMinutes / 60;
 
+    // Totales
     const totalHours = currentHours + projectedHours;
     const earnings = totalHours * (settings.hourlyRate || 0);
 
@@ -361,6 +363,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
 
     setIsSendingReport(true);
+    // ETIQUETAS CORREGIDAS PARA MATCH CON APPS SCRIPT
     const payload = {
       profesor: getTeacherName(),
       profesorEmail: user.email,
@@ -389,6 +392,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const startSession = (scheduledClass = null) => {
     if (scheduledClass) {
+      // PREVISIONES: Leemos si para la fecha de hoy hay excepciones guardadas
       const exceptionsToday = scheduledClass.exceptions?.[date] || {};
 
       setCurrentSession({
@@ -407,12 +411,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         exceptions: scheduledClass.exceptions || {}, 
         students: scheduledClass.students.map(s => {
           let currentStatus = s.isPaused ? 'paused' : 'present';
+          // Si hay una excepción guardada para este alumno hoy, la aplicamos
           if (exceptionsToday[s.id]) {
             currentStatus = exceptionsToday[s.id];
           }
           return { ...s, status: currentStatus };
         }),
         newStudentName: '',
+        newStudentEmail: '',
         isAddingRecovery: false,
         cancelledDates: scheduledClass.cancelledDates || []
       });
@@ -432,6 +438,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         exceptions: {},
         students: [],
         newStudentName: '',
+        newStudentEmail: '',
         isAddingRecovery: false,
         cancelledDates: []
       });
@@ -456,6 +463,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       exceptions: {},
       students: sub.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
       newStudentName: '',
+      newStudentEmail: '',
       isAddingRecovery: false,
       cancelledDates: [],
       isSubstitution: true, 
@@ -491,6 +499,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
+    const studentEmail = (currentSession.newStudentEmail || '').trim().toLowerCase();
+    
     if (!studentName) return;
 
     if (currentSession.capacity) {
@@ -502,14 +512,23 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
 
     let studentId;
-    let existingStudent = globalStudents.find(s => s.name.toLowerCase() === studentName.toLowerCase());
+    let existingStudent = globalStudents.find(s => 
+      s.name.toLowerCase() === studentName.toLowerCase() || 
+      (studentEmail && s.email === studentEmail)
+    );
 
     if (existingStudent) {
       studentId = existingStudent.id;
     } else {
       studentId = Date.now().toString();
       try {
-        await setDoc(doc(db, 'artifacts', appId, 'students', studentId), { name: studentName });
+        await setDoc(doc(db, 'artifacts', appId, 'students', studentId), { 
+          name: studentName,
+          email: studentEmail,
+          claimed: false,
+          instruments: [currentSession.subject],
+          classes: [currentSession.classId]
+        });
       } catch (error) {
         console.error("Error creando alumno global:", error);
       }
@@ -537,12 +556,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {
           id: studentId,
           name: studentName,
+          email: studentEmail,
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
           isPaused: false
         }
       ],
       newStudentName: '',
+      newStudentEmail: '',
       isAddingRecovery: false
     });
   };
@@ -582,7 +603,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     try {
       const templateStudents = currentSession.students
         .filter(s => !s.isRecovery)
-        .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
+        .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
 
       // CÁLCULO DE EXCEPCIONES PARA FECHAS FUTURAS (Modo Previsión)
       const todayISO = new Date().toISOString().split('T')[0];
@@ -593,7 +614,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         const exceptionsForDate = {};
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
-              exceptionsForDate[s.id] = s.status; 
+              exceptionsForDate[s.id] = s.status; // Guardamos que "Avisó" o "Faltó" para ese día
            }
         });
         finalExceptions[date] = exceptionsForDate;
@@ -677,10 +698,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
+      // 1. Obtenemos todas las horas de las clases ya guardadas o programadas hoy
       const scheduledTimesToday = dashboardItems.map(i => i.data.time);
+      
+      // 2. Añadimos la hora de la sesión que tenemos abierta actualmente para que se cuente a sí misma
       scheduledTimesToday.push(currentSession.time);
+      
+      // 3. Ordenamos y sacamos la última
       scheduledTimesToday.sort();
       const lastTimeScheduled = scheduledTimesToday[scheduledTimesToday.length - 1];
+      
+      // 4. Comparamos
       const isLastClass = currentSession.time === lastTimeScheduled;
 
       if (isLastClass) {
@@ -759,7 +787,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       if (currentSession.isRecurring && !currentSession.isSubstitution) {
         const templateStudents = currentSession.students
           .filter(s => !s.isRecovery)
-          .map(s => ({ id: s.id, name: s.name, isPaused: s.isPaused || false }));
+          .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
 
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId), {
           dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
@@ -877,6 +905,24 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
+  const stats = useMemo(() => {
+    const studentStats = {};
+    records.forEach(record => {
+      record.students.forEach(student => {
+        if (!studentStats[student.name]) {
+          studentStats[student.name] = { present: 0, absent: 0, notified: 0, total: 0 };
+        }
+        studentStats[student.name].total++;
+        if (student.status === 'present') studentStats[student.name].present++;
+        if (student.status === 'absent') studentStats[student.name].absent++;
+        if (student.status === 'notified') studentStats[student.name].notified++;
+      });
+    });
+    return Object.entries(studentStats)
+      .map(([name, counts]) => ({ name, ...counts }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [records]);
+
 
   // --- COMPONENTES AUXILIARES ---
 
@@ -939,8 +985,110 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   };
 
+  const AdminPanel = () => {
+    const [newTask, setNewTask] = useState('');
 
-  // --- RENDER DE CARGA ---
+    const saveSettings = async (newSet) => {
+      await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSet);
+      showNotification({ type: 'success', text: 'Ajustes guardados globalmente.' });
+    };
+
+    return (
+      <div className="space-y-8 animate-in fade-in duration-500">
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Lock className="w-5 h-5"/> Coste de Hora (Convenio)</h2>
+          <p className="text-zinc-500 mb-6 text-sm">Este valor se usará para calcular la nómina de todos los profesores.</p>
+          <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
+            <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
+            <span className="text-2xl font-bold">€ / hora</span>
+            <button onClick={() => saveSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar Valor</button>
+          </div>
+        </div>
+
+        {/* CALENDARIO ESCOLAR */}
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
+          <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
+          
+          <div className="flex flex-col sm:flex-row gap-3 mb-8">
+            <input id="adminDateInput" type="date" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold flex-1" />
+            <select id="adminDateType" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold uppercase text-xs">
+              <option value="festivo">Festivo</option>
+              <option value="vacacion">Vacaciones</option>
+            </select>
+            <button onClick={async () => { 
+              const d = document.getElementById('adminDateInput').value;
+              const t = document.getElementById('adminDateType').value;
+              if(d) {
+                const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]);
+                if(!arr.includes(d)) {
+                  const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]};
+                  setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);
+                  showNotification({ type: 'success', text: `Día añadido al calendario`});
+                }
+              }
+            }} className="bg-black text-white px-8 py-4 rounded-2xl shadow-lg font-black uppercase text-[10px]"><Plus/></button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Días Festivos</h4>
+              <div className="space-y-2">
+                {(!settings.festivos || settings.festivos.length === 0) && <p className="text-xs text-zinc-400 italic">No hay festivos.</p>}
+                {settings.festivos?.sort().map(f => (
+                  <div key={f} className="flex justify-between p-3 bg-amber-50 rounded-xl text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={async () => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones</h4>
+              <div className="space-y-2">
+                {(!settings.vacaciones || settings.vacaciones.length === 0) && <p className="text-xs text-zinc-400 italic">No hay vacaciones.</p>}
+                {settings.vacaciones?.sort().map(v => (
+                  <div key={v} className="flex justify-between p-3 bg-emerald-50 rounded-xl text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={async () => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+          <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Settings className="w-5 h-5"/> Tareas Generales (Hora Muerta)</h2>
+          <p className="text-zinc-500 mb-6 text-sm">Estas opciones aparecerán cuando un profesor tenga una hora libre entre clases.</p>
+          
+          <div className="flex flex-col sm:flex-row gap-2 mb-6">
+            <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
+            <button 
+              onClick={async () => { 
+                const val = document.getElementById('adminTaskInput').value;
+                if(val) { 
+                  const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; 
+                  setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); 
+                  document.getElementById('adminTaskInput').value = ''; 
+                } 
+              }} 
+              className="bg-black text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-2 hover:bg-zinc-800"
+            >
+              <Plus className="w-4 h-4"/> Añadir
+            </button>
+          </div>
+          
+          <div className="space-y-3">
+            {settings.generalTasks?.length === 0 && <p className="text-zinc-400 italic text-sm p-4 text-center bg-zinc-50 rounded-xl">No hay tareas configuradas.</p>}
+            {settings.generalTasks?.map((t, i) => (
+              <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl">
+                <span className="font-medium text-slate-700">{t}</span>
+                <button onClick={async () => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+
+  // --- RENDER DE CARGA E INICIO DE SESIÓN ---
   if (loadingData) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
@@ -1323,6 +1471,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         )}
                       </div>
 
+                      {/* --- CAMPO EMAIL NUEVO --- */}
+                      <div className="w-full sm:flex-1 relative">
+                        <input
+                          type="email"
+                          placeholder="Email del alumno (Opcional)"
+                          value={currentSession.newStudentEmail}
+                          onChange={(e) => handleSessionFieldChange('newStudentEmail', e.target.value)}
+                          disabled={isDisabledAdd}
+                          className={`w-full p-4 text-sm font-bold rounded-xl outline-none transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
+                        />
+                      </div>
+
                       <div className={`flex items-center gap-3 w-full sm:w-auto px-4 py-4 rounded-xl border-2 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-zinc-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
                         <input
                           type="checkbox"
@@ -1333,7 +1493,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           className="w-5 h-5 accent-amber-600 rounded cursor-pointer disabled:cursor-not-allowed"
                         />
                         <label htmlFor="isRecovery" className="text-xs font-black text-amber-900 uppercase tracking-widest cursor-pointer whitespace-nowrap">
-                          Viene a recuperar
+                          Recuperar
                         </label>
                       </div>
 
@@ -1345,6 +1505,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         Añadir
                       </button>
                     </div>
+                    {currentSession.newStudentEmail && <p className="text-[10px] font-bold text-blue-600 mt-3">💡 Al poner email, el alumno podrá activar su portal automáticamente la primera vez que entre.</p>}
                   </div>
 
                   <div className="space-y-4">
@@ -1355,6 +1516,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             <span className={`font-bold text-lg ${student.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
                               {student.name}
                             </span>
+                            {student.email && (
+                              <span className="text-[10px] text-zinc-400 font-bold">
+                                {student.email}
+                              </span>
+                            )}
                             {student.isRecovery && !student.isPaused && (
                               <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
                                 <CornerDownRight className="w-3 h-3" /> Recuperación

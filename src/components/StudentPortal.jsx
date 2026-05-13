@@ -591,8 +591,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
               <button 
                 onClick={() => setGestionModal({
                   type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
-                  desc: 'Si necesitas un respiro temporal pero no quieres perder tu matrícula ni tus ventajas.',
-                  placeholder: 'Indica por cuánto tiempo aproximado quieres congelar la plaza...'
+                  desc: 'Si necesitas un respiro temporal pero no quieres perder tu plaza ni tus ventajas. Recuerda que la cuota de mantenimiento es de 15€/Mes. Si quieres mantener mas de un mes tendrás que solicitarlo mes a mes. Esta gestión afecta solo al mes que viene',
+                  placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
                 className="bg-white p-6 rounded-3xl border-2 border-zinc-100 hover:border-black text-left transition-all shadow-sm group"
               >

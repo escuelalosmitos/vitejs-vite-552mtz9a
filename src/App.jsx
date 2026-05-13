@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Music, Lock, RefreshCw } from 'lucide-react';
+import { Music, Lock, RefreshCw, UserPlus } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 // --- MÓDULOS ---
@@ -32,6 +32,10 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  
+  // NUEVOS ESTADOS PARA GESTIONAR EL REGISTRO
+  const [isLoginMode, setIsLoginMode] = useState(true); 
+  const [authError, setAuthError] = useState(''); 
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -40,12 +44,28 @@ export default function App() {
     });
   }, []);
 
-  const handleLogin = async (e) => {
+  const handleAuth = async (e) => {
     e.preventDefault();
+    setAuthError('');
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      if (isLoginMode) {
+        // MODO ENTRAR
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        // MODO REGISTRO
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
     } catch (err) {
-      alert("Error de credenciales. Revisa tu email y contraseña.");
+      // TRADUCCIÓN DE ERRORES AL ESPAÑOL PARA EL USUARIO
+      if (err.code === 'auth/email-already-in-use') {
+        setAuthError("Este email ya está registrado. Inicia sesión.");
+      } else if (err.code === 'auth/weak-password') {
+        setAuthError("La contraseña debe tener al menos 6 caracteres.");
+      } else if (err.code === 'auth/invalid-credential') {
+        setAuthError("Email o contraseña incorrectos.");
+      } else {
+        setAuthError("Error: " + err.message);
+      }
     }
   };
 
@@ -57,32 +77,66 @@ export default function App() {
     </div>
   );
 
-  // --- PANTALLA DE LOGIN UNIFICADA ---
+  // --- PANTALLA UNIFICADA DE LOGIN / REGISTRO ---
   if (!user) {
     return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
-        <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md text-center">
-          <div className="bg-black text-white p-4 rounded-2xl mb-6 inline-block rotate-3"><Music/></div>
-          <h1 className="text-3xl font-black uppercase tracking-tighter mb-8">Los Mitos</h1>
-          <form onSubmit={handleLogin} className="space-y-4">
-            <input type="email" placeholder="Tu Email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium" />
-            <input type="password" placeholder="Contraseña" required value={password} onChange={e => setPassword(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium" />
-            <button type="submit" className="w-full bg-black text-white font-black py-4 rounded-xl uppercase tracking-widest text-sm mt-4 flex justify-center items-center gap-2">
-              <Lock className="w-4 h-4"/> Entrar al Ecosistema
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4 font-sans text-slate-800">
+        <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md text-center border border-zinc-100">
+          <div className="bg-black text-white p-4 rounded-2xl mb-6 inline-block rotate-3"><Music className="w-8 h-8"/></div>
+          <h1 className="text-3xl font-black uppercase tracking-tighter mb-1">Los Mitos</h1>
+          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-8">
+            {isLoginMode ? 'Acceso al portal' : 'Crea tu cuenta gratis'}
+          </p>
+          
+          {authError && (
+            <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <input 
+              type="email" 
+              placeholder="Tu Email" 
+              required 
+              value={email} 
+              onChange={e => setEmail(e.target.value)} 
+              className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium transition-colors" 
+            />
+            <input 
+              type="password" 
+              placeholder="Contraseña (mín. 6 caracteres)" 
+              required 
+              value={password} 
+              onChange={e => setPassword(e.target.value)} 
+              className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium transition-colors" 
+            />
+            <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-sm mt-4 flex justify-center items-center gap-2 transition-all active:scale-95 shadow-md">
+              {isLoginMode ? <Lock className="w-4 h-4"/> : <UserPlus className="w-4 h-4"/>} 
+              {isLoginMode ? 'Entrar al Ecosistema' : 'Crear Cuenta'}
             </button>
           </form>
+
+          {/* BOTÓN PARA CAMBIAR ENTRE LOGIN Y REGISTRO */}
+          <div className="mt-8 pt-6 border-t border-zinc-100">
+            <button 
+              type="button"
+              onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); }}
+              className="text-sm font-bold text-zinc-500 hover:text-black transition-colors"
+            >
+              {isLoginMode ? '¿No tienes cuenta? Regístrate aquí' : '¿Ya tienes cuenta? Inicia sesión'}
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
-// --- RUTEO INTELIGENTE ---
-  // Si el email tiene la palabra "alumno" (ej: hugo@alumno.com) carga el portal de alumnos.
+  // --- RUTEO INTELIGENTE ---
   if (user.email.includes('alumno')) {
     return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
   }
 
-  // Si no tiene "alumno", asume que es profesor o admin.
   return (
     <TeacherPortal 
       user={user} 

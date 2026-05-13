@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, BookOpen, Video, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, BookOpen, Video, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin } from 'lucide-react';
 import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];

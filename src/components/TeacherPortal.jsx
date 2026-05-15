@@ -35,7 +35,8 @@ import {
   Bell,
   UserMinus,
   RefreshCcw,
-  PlusCircle
+  PlusCircle,
+  CheckCircle
 } from 'lucide-react';
 
 import {

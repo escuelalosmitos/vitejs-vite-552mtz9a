@@ -1,8 +1,35 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
+
+// --- BANCO DE PREGUNTAS (CARRUSEL INFINITO) ---
+const TRIVIA_QUESTIONS = [
+  { q: "¿Cuántas cuerdas tiene una guitarra clásica estándar?", options: ["4", "5", "6", "7"], correct: 2 },
+  { q: "¿Qué clave se usa normalmente para leer partituras de bajo eléctrico?", options: ["Clave de Sol", "Clave de Fa", "Clave de Do", "Clave de Re"], correct: 1 },
+  { q: "¿Cuál es el tempo o velocidad habitual de una balada pop?", options: ["60-80 BPM", "120-140 BPM", "160-180 BPM", "200+ BPM"], correct: 0 },
+  { q: "¿Qué figura musical dura la mitad que una negra?", options: ["Blanca", "Corchea", "Semicorchea", "Fusa"], correct: 1 },
+  { q: "¿Cuál de estos NO es un instrumento de percusión?", options: ["Cajón", "Xilófono", "Oboe", "Timbal"], correct: 2 },
+  { q: "¿Qué significa la indicación 'Forte' (f) en una partitura?", options: ["Tocar rápido", "Tocar fuerte", "Tocar suave", "Parar"], correct: 1 },
+  { q: "¿Cuántos semitonos hay en una octava justa?", options: ["8", "10", "12", "14"], correct: 2 },
+  { q: "¿Quién compuso 'Las cuatro estaciones'?", options: ["Mozart", "Beethoven", "Vivaldi", "Bach"], correct: 2 },
+  { q: "¿Qué instrumento tocaba Jimi Hendrix?", options: ["Bajo", "Batería", "Teclado", "Guitarra"], correct: 3 },
+  { q: "¿Cuál es la nota más grave en la afinación estándar de un bajo de 4 cuerdas?", options: ["Mi (E)", "La (A)", "Re (D)", "Sol (G)"], correct: 0 },
+  { q: "¿Qué estilo musical se caracteriza por la improvisación y el ritmo 'swing'?", options: ["Reggae", "Jazz", "Heavy Metal", "Cumbia"], correct: 1 },
+  { q: "¿Cómo se llama el palito usado para tocar el violín?", options: ["Batuta", "Arco", "Baqueta", "Púa"], correct: 1 },
+  { q: "¿Qué nota es la 'A' en la notación anglosajona?", options: ["Do", "Fa", "Sol", "La"], correct: 3 },
+  { q: "¿Qué significa 'A cappella'?", options: ["Cantar muy agudo", "Cantar sin instrumentos", "Cantar en latín", "Cantar rápido"], correct: 1 },
+  { q: "¿Qué efecto de guitarra se usa para simular el sonido de tocar en una cueva?", options: ["Distorsión", "Wah-Wah", "Fuzz", "Reverb"], correct: 3 }
+];
+
+const getDayOfYear = () => {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 0);
+  const diff = now - start;
+  const oneDay = 1000 * 60 * 60 * 24;
+  return Math.floor(diff / oneDay);
+};
 
 const getDayName = (dayIndex) => {
   const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -90,7 +117,14 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [mboxInst, setMboxInst] = useState('');
   const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
 
+  // ESTADOS PARA TRIVIA (RETO DIARIO)
+  const [triviaModal, setTriviaModal] = useState(false);
+  const [triviaTime, setTriviaTime] = useState(8);
+  const [triviaSelected, setTriviaSelected] = useState(null);
+  const [triviaResult, setTriviaResult] = useState(null); // 'win', 'lose', 'timeout'
+
   const timeRules = getMonthNames();
+  const todayStr = new Date().toISOString().split('T')[0];
 
   useEffect(() => {
     checkRegistration();
@@ -109,7 +143,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     if (!profile?.id) return;
     
-    // Escuchador del perfil en tiempo real para cambios de Mitobox/Mitoverso
     const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
       if (docSnap.exists()) {
         setProfile(prev => ({ ...prev, ...docSnap.data() }));
@@ -126,6 +159,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubGestiones();
     };
   }, [profile?.id, db, appId]);
+
+  // LÓGICA DEL TEMPORIZADOR DEL RETO DIARIO
+  useEffect(() => {
+    let timer;
+    if (triviaModal && triviaTime > 0 && triviaResult === null) {
+      timer = setInterval(() => {
+        setTriviaTime(prev => prev - 1);
+      }, 1000);
+    } else if (triviaTime === 0 && triviaResult === null) {
+      handleTriviaAnswer(-1); // Tiempo agotado
+    }
+    return () => clearInterval(timer);
+  }, [triviaModal, triviaTime, triviaResult]);
 
   const showToast = (msg, type = 'success') => {
     setNotification({ text: msg, type });
@@ -221,7 +267,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
         instruments: [onboarding.instrument],
         classes: onboarding.classId ? [onboarding.classId] : [],
         hasMitobox: false,
-        hasMitoverso: false
+        hasMitoverso: false,
+        triviaPoints: 0,
+        triviaVictories: 0
     };
     await setDoc(doc(db, 'artifacts', appId, 'students', studentId), data);
     setProfile({ id: studentId, ...data });
@@ -342,9 +390,44 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
   };
 
+  // --- LÓGICA DE TRIVIA ---
+  const dailyQuestionIndex = getDayOfYear() % TRIVIA_QUESTIONS.length;
+  const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
+  const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
+
+  const startTrivia = () => {
+    setTriviaSelected(null);
+    setTriviaResult(null);
+    setTriviaTime(8);
+    setTriviaModal(true);
+  };
+
+  const handleTriviaAnswer = async (index) => {
+    if (triviaResult !== null) return;
+    setTriviaSelected(index);
+    
+    let isCorrect = index === currentQuestion.correct;
+    let newResult = isCorrect ? 'win' : (index === -1 ? 'timeout' : 'lose');
+    setTriviaResult(newResult);
+    
+    let newPoints = profile.triviaPoints || 0;
+    if (isCorrect) newPoints += 1;
+
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+        triviaLastPlayed: todayStr,
+        triviaPoints: newPoints
+      });
+    } catch (e) { console.error("Error guardando trivia", e); }
+
+    setTimeout(() => {
+      setTriviaModal(false);
+    }, 2500); 
+  };
+
+
   const pendingAbsences = [];
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.type !== 'alta_mitobox'); 
-  const todayStr = new Date().toISOString().split('T')[0];
   
   if (profile) {
     myClasses.forEach(clase => {
@@ -503,7 +586,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
-  // NUEVO MODAL: MITOBOX INTELIGENTE (VERSIÓN DEFINITIVA)
   const MitoboxModalOverlay = () => {
     if (!mitoboxModal) return null;
     
@@ -516,39 +598,27 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (mboxDate && mboxSede) {
       const targetDay = new Date(`${mboxDate}T00:00:00`).getDay();
       
-      // 1. Obtenemos TODAS las clases de ese día y sede
       const allScheduledClasses = allClasses.filter(c => c.dayOfWeek === targetDay && c.sede === mboxSede);
 
-      // 2. Filtramos: ¿Qué clases están "VIVAS"? (El profe va a ir sí o sí)
       const aliveClasses = allScheduledClasses.filter(c => {
-        if (c.cancelledDates?.includes(mboxDate)) return false; // El profe canceló la clase
-
+        if (c.cancelledDates?.includes(mboxDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
-        
-        // Contamos cuántos alumnos realmente van a asistir ese día
         const activeStudents = (c.students || []).filter(s => {
           if (s.isPaused) return false;
           const estadoHoy = exceptionsEseDia[s.id];
           if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
-          return true; // Este alumno va a ir
+          return true;
         });
 
-        // Si la clase no tiene NINGÚN alumno asistente, la clase está "MUERTA". El profe no va.
         if (activeStudents.length === 0) return false;
-        
         return true;
       });
 
-      // 3. Extraemos solo las horas a las que hay al menos UNA clase viva
       const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
       
-      // 4. Calculamos las salas libres en esas horas vivas
       activeTimes.forEach(t => {
-        // ¿Qué salas ocupan las clases vivas a esta hora?
         const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala);
         const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
-        
-        // Las libres son las sobrantes. ¡Si una clase "Murió", su sala estará libre aquí!
         const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
         
         freeSalas.forEach(fs => {
@@ -644,6 +714,53 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
+  const TriviaModalOverlay = () => {
+    if (!triviaModal) return null;
+    return (
+      <div className="fixed inset-0 bg-black/95 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative flex flex-col items-center">
+          
+          <div className="w-full bg-zinc-100 rounded-full h-2 mb-8 overflow-hidden">
+            <div className="bg-amber-400 h-full transition-all duration-1000 linear" style={{ width: `${(triviaTime / 8) * 100}%` }}></div>
+          </div>
+          <div className="text-3xl font-black mb-6 flex items-center justify-center w-16 h-16 rounded-full border-4 border-zinc-100 text-slate-800">
+            {triviaTime}
+          </div>
+
+          <h2 className="text-xl font-black text-center text-slate-800 mb-8 leading-tight">{currentQuestion.q}</h2>
+
+          <div className="w-full space-y-3">
+            {currentQuestion.options.map((opt, idx) => {
+              let btnClass = "bg-white border-2 border-zinc-200 text-slate-700 hover:border-black";
+              if (triviaResult !== null) {
+                if (idx === currentQuestion.correct) btnClass = "bg-emerald-500 border-emerald-500 text-white"; 
+                else if (idx === triviaSelected) btnClass = "bg-rose-500 border-rose-500 text-white"; 
+                else btnClass = "bg-zinc-100 border-zinc-200 text-zinc-400 opacity-50"; 
+              }
+
+              return (
+                <button 
+                  key={idx} 
+                  disabled={triviaResult !== null}
+                  onClick={() => handleTriviaAnswer(idx)}
+                  className={`w-full p-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${btnClass}`}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+
+          {triviaResult === 'win' && <p className="mt-6 text-emerald-600 font-black animate-bounce uppercase tracking-widest text-sm">¡Correcto! +1 Punto</p>}
+          {triviaResult === 'lose' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Incorrecto!</p>}
+          {triviaResult === 'timeout' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Se acabó el tiempo!</p>}
+
+        </div>
+      </div>
+    );
+  };
+
+
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
   if (!profile) {
@@ -667,6 +784,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       <GestionModalOverlay />
       <MitoboxModalOverlay />
       <ContractOverlay />
+      <TriviaModalOverlay />
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
           <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>
@@ -688,11 +806,56 @@ export default function StudentPortal({ user, logout, db, appId }) {
         {/* --- PESTAÑA 1: INICIO --- */}
         {activeTab === 'home' && (
           <div className="space-y-6">
-            <div className="bg-white border-2 border-zinc-100 rounded-3xl p-6 flex items-center justify-between shadow-sm">
-              <div><h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Hola, {profile.name.split(' ')[0]}</h2><p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Escuela Los Mitos</p></div>
+            
+            <div className="bg-white border-2 border-zinc-100 rounded-3xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-sm">
+              <div>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Hola, {profile.name.split(' ')[0]}</h2>
+                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Escuela Los Mitos</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="bg-amber-50 text-amber-600 px-4 py-2 rounded-xl flex items-center gap-2">
+                  <Trophy className="w-4 h-4"/>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest leading-none">Puntos Mes</p>
+                    <p className="font-black leading-none">{profile.triviaPoints || 0}</p>
+                  </div>
+                </div>
+                {profile.triviaVictories > 0 && (
+                  <div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl flex items-center gap-2">
+                    <Star className="w-4 h-4"/>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest leading-none">Victorias</p>
+                      <p className="font-black leading-none">{profile.triviaVictories}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
-            <h3 className="font-black uppercase tracking-widest text-xs text-zinc-400 px-2 flex items-center gap-2"><Calendar className="w-4 h-4"/> Mis Clases Asignadas</h3>
+            {/* BANNER DEL RETO DIARIO */}
+            {!hasPlayedToday ? (
+              <div className="bg-gradient-to-r from-amber-400 to-orange-500 rounded-3xl p-1 text-white shadow-xl relative overflow-hidden transform hover:scale-[1.02] transition-transform cursor-pointer" onClick={startTrivia}>
+                <div className="bg-black/10 absolute inset-0"></div>
+                <div className="relative z-10 p-6 flex flex-col sm:flex-row items-center justify-between gap-6">
+                  <div>
+                    <h3 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2 mb-1"><Trophy className="w-6 h-6 text-amber-200"/> Reto del Día</h3>
+                    <p className="text-xs font-bold text-amber-100 uppercase tracking-widest">Responde rápido y suma puntos.</p>
+                  </div>
+                  <button className="w-full sm:w-auto bg-white text-orange-600 px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg flex items-center justify-center gap-2 pointer-events-none">
+                    <Timer className="w-4 h-4"/> Jugar Ahora
+                  </button>
+                </div>
+                <p className="relative z-10 text-[9px] font-bold text-center text-amber-100/70 pb-2 px-4 uppercase tracking-widest">Condición indispensable: Ser alumno activo y al corriente de pago para optar a premios.</p>
+              </div>
+            ) : (
+              <div className="bg-zinc-100 border-2 border-zinc-200 rounded-3xl p-6 text-center shadow-sm">
+                <CheckCircle className="w-8 h-8 text-zinc-300 mx-auto mb-2"/>
+                <p className="font-black text-slate-800 uppercase tracking-tight">Ya has jugado hoy</p>
+                <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mt-1">Vuelve mañana a por más puntos.</p>
+              </div>
+            )}
+
+            <h3 className="font-black uppercase tracking-widest text-xs text-zinc-400 px-2 flex items-center gap-2 mt-8"><Calendar className="w-4 h-4"/> Mis Clases Asignadas</h3>
             
             {myClasses.length === 0 ? (
               <div className="p-8 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
@@ -837,6 +1000,97 @@ export default function StudentPortal({ user, logout, db, appId }) {
           </div>
         )}
 
+        {/* --- PESTAÑA: EXTRAS --- */}
+        {activeTab === 'extras' && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-900 text-white border-2 border-indigo-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
+              <div className="relative z-10">
+                <h2 className="text-2xl font-black uppercase tracking-tight">Mitos+</h2>
+                <p className="text-blue-200 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
+              </div>
+              <Sparkles className="w-24 h-24 text-white/10 absolute -right-4 -bottom-4 pointer-events-none" />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
+                {profile?.hasMitoverso && (
+                  <div className="absolute top-4 right-4 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                    <Star className="w-3 h-3"/> Suscripción Activa
+                  </div>
+                )}
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
+                  <MonitorPlay className="w-8 h-8"/>
+                </div>
+                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitoverso</h3>
+                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
+                  Accede a nuestra plataforma de cursos online, audios y recursos exclusivos. Ideal para alumnos de guitarra que quieren avanzar a su ritmo desde casa.
+                </p>
+                {!profile?.hasMitoverso && (
+                  <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
+                    <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
+                    <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                  </div>
+                )}
+                
+                {profile?.hasMitoverso ? (
+                  <button 
+                    onClick={() => window.open('https://classroom.google.com/', '_blank')}
+                    className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-colors shadow-lg flex items-center justify-center gap-2"
+                  >
+                    Entrar a Classroom <ArrowRight className="w-4 h-4"/>
+                  </button>
+                ) : (
+                  <button 
+                    onClick={requestMitoverso}
+                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                  >
+                    Solicitar Acceso
+                  </button>
+                )}
+              </div>
+
+              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
+                {profile?.hasMitobox && (
+                  <div className="absolute top-4 right-4 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                    <Star className="w-3 h-3"/> Tarifa Plana Activa
+                  </div>
+                )}
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
+                  <DoorOpen className="w-8 h-8"/>
+                </div>
+                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
+                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
+                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
+                </p>
+                {!profile?.hasMitobox && (
+                  <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
+                    <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
+                    <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                  </div>
+                )}
+                
+                {profile?.hasMitobox ? (
+                  <button 
+                    onClick={() => setMitoboxModal(true)}
+                    className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex items-center justify-center gap-2"
+                  >
+                    <Calendar className="w-4 h-4"/> Reservar Sala
+                  </button>
+                ) : (
+                  <button 
+                    onClick={requestMitobox}
+                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                  >
+                    Solicitar Acceso
+                  </button>
+                )}
+              </div>
+
+            </div>
+          </div>
+        )}
+
         {/* --- PESTAÑA: TABLÓN --- */}
         {activeTab === 'news' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
@@ -951,98 +1205,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
           </div>
         )}
 
-        {/* --- NUEVA PESTAÑA: EXTRAS (Mitos+) --- */}
-        {activeTab === 'extras' && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-900 text-white border-2 border-indigo-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
-              <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight">Mitos+</h2>
-                <p className="text-blue-200 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
-              </div>
-              <Sparkles className="w-24 h-24 text-white/10 absolute -right-4 -bottom-4 pointer-events-none" />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              
-              {/* MITOVERSO CARD */}
-              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                {profile?.hasMitoverso && (
-                  <div className="absolute top-4 right-4 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Star className="w-3 h-3"/> Suscripción Activa
-                  </div>
-                )}
-                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
-                  <MonitorPlay className="w-8 h-8"/>
-                </div>
-                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitoverso</h3>
-                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  Accede a nuestra plataforma de cursos online, audios y recursos exclusivos. Ideal para alumnos de guitarra que quieren avanzar a su ritmo desde casa.
-                </p>
-                {!profile?.hasMitoverso && (
-                  <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
-                    <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
-                    <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
-                  </div>
-                )}
-                
-                {profile?.hasMitoverso ? (
-                  <button 
-                    onClick={() => window.open('https://classroom.google.com/', '_blank')}
-                    className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-colors shadow-lg flex items-center justify-center gap-2"
-                  >
-                    Entrar a Classroom <ArrowRight className="w-4 h-4"/>
-                  </button>
-                ) : (
-                  <button 
-                    onClick={requestMitoverso}
-                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
-                  >
-                    Solicitar Acceso
-                  </button>
-                )}
-              </div>
-
-              {/* MITOBOX CARD */}
-              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                {profile?.hasMitobox && (
-                  <div className="absolute top-4 right-4 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Star className="w-3 h-3"/> Tarifa Plana Activa
-                  </div>
-                )}
-                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
-                  <DoorOpen className="w-8 h-8"/>
-                </div>
-                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
-                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
-                </p>
-                {!profile?.hasMitobox && (
-                  <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
-                    <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
-                    <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
-                  </div>
-                )}
-                
-                {profile?.hasMitobox ? (
-                  <button 
-                    onClick={() => setMitoboxModal(true)}
-                    className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex items-center justify-center gap-2"
-                  >
-                    <Calendar className="w-4 h-4"/> Reservar Sala
-                  </button>
-                ) : (
-                  <button 
-                    onClick={requestMitobox}
-                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
-                  >
-                    Solicitar Acceso
-                  </button>
-                )}
-              </div>
-
-            </div>
-          </div>
-        )}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 w-full bg-white border-t border-zinc-200 z-40 pb-3">

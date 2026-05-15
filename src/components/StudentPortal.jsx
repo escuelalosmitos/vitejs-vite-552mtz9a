@@ -56,8 +56,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [myClasses, setMyClasses] = useState([]);
-  const [allClasses, setAllClasses] = useState([]); // Para buscar plazas
-  const [schoolCalendar, setSchoolCalendar] = useState([]); // Festivos y vacaciones
+  const [allClasses, setAllClasses] = useState([]); 
+  const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [announcements, setAnnouncements] = useState([]); 
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
@@ -66,6 +66,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showRules, setShowRules] = useState(false);
   const [showCalendarRules, setShowCalendarRules] = useState(false);
   const [onboarding, setOnboarding] = useState({ name: '', instrument: 'Guitarra', classId: '' });
+  const [healthCheck, setHealthCheck] = useState(false); // <-- NUEVO ESTADO PARA EL CHECK LEGAL
 
   // ESTADOS PARA GESTIONES
   const [gestionModal, setGestionModal] = useState(null);
@@ -97,7 +98,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const fetchAllClassesAndCalendar = async () => {
     try {
-      // Clases
       const classesQuery = collectionGroup(db, 'recurringClasses');
       const classesSnap = await getDocs(classesQuery);
       const classesList = [];
@@ -106,7 +106,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
       });
       setAllClasses(classesList);
 
-      // Calendario (Festivos/Vacaciones)
       const calSnap = await getDocs(collection(db, 'artifacts', appId, 'calendar'));
       const calList = calSnap.docs.map(d => d.data());
       setSchoolCalendar(calList);
@@ -186,6 +185,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const openAbsenceModal = (clase) => {
     const info = getNextClassInfo(clase.dayOfWeek, clase.time);
+    setHealthCheck(false); // Reseteamos el check al abrir
     setAbsenceModal({ clase, ...info });
   };
 
@@ -204,7 +204,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const sendGestion = async () => {
-    if (timeRules.isLate && !acceptLatePenalty) {
+    // Si es un canje de ticket, no le aplicamos la penalización del día 20 (eso es para cobros)
+    const isTicketRedemption = gestionModal.type === 'recuperacion';
+    
+    if (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) {
       showToast('Debes aceptar las condiciones de plazo marcando la casilla.', 'error');
       return;
     }
@@ -220,8 +223,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
         title: gestionModal.title,
         details: gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
-        targetMonth: timeRules.isLate ? timeRules.nextNext : timeRules.next,
-        isLateRequest: timeRules.isLate,
+        targetMonth: (!isTicketRedemption && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
+        isLateRequest: !isTicketRedemption && timeRules.isLate,
         status: 'pendiente',
         date: new Date().toISOString()
       };
@@ -252,6 +255,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
               <p>1. <strong className="text-black">Preaviso de 16h:</strong> Para recuperar una clase, avisa con mín. 16 horas de antelación.</p>
               <p>2. <strong className="text-black">Caducidad:</strong> Los tickets caducan al mes siguiente de la falta.</p>
               <p>3. <strong className="text-black">Alta activa:</strong> Solo alumnos al corriente de pago pueden recuperar.</p>
+              <p>4. <strong className="text-black">Causas justificadas:</strong> Las recuperaciones solo se concederán por motivos de salud, trabajo o estudios.</p>
+              <p>5. <strong className="text-black">Límite de recuperación:</strong> Las clases de recuperación no se pueden volver a recuperar en caso de nueva falta.</p>
             </div>
             <button onClick={() => setShowRules(false)} className="w-full mt-8 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest">Entendido</button>
           </div>
@@ -277,10 +282,32 @@ export default function StudentPortal({ user, logout, db, appId }) {
             <>
               <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 text-emerald-500 rounded-full mb-6 mx-auto"><CheckCircle className="w-8 h-8" /></div>
               <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso a tiempo</h2>
-              <p className="text-center text-zinc-500 font-medium mb-6">Informaremos a tu profesor. Tienes derecho a recuperar esta clase el próximo mes.</p>
-              <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-4">¿Quieres ticket de recuperación?</h3>
+              <p className="text-center text-zinc-500 font-medium mb-4">Informaremos a tu profesor. Tienes derecho a recuperar esta clase el próximo mes.</p>
+              
+              <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-2">¿Quieres ticket de recuperación?</h3>
+              
+              {/* NUEVA ZONA: CHECKBOX LEGAL */}
+              <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl mb-4">
+                <p className="text-xs text-amber-800 font-bold mb-3 leading-relaxed">Recuerda que solo se puede recuperar por razones de <strong>salud, trabajo o estudios</strong>.</p>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={healthCheck} 
+                    onChange={e => setHealthCheck(e.target.checked)} 
+                    className="w-4 h-4 accent-amber-600 rounded cursor-pointer" 
+                  />
+                  <span className="text-xs font-black text-amber-950 uppercase tracking-widest">Cumplo las condiciones</span>
+                </label>
+              </div>
+
               <div className="space-y-3">
-                <button onClick={() => confirmAbsence(true)} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg">Sí, quiero recuperarla</button>
+                <button 
+                  onClick={() => confirmAbsence(true)} 
+                  disabled={!healthCheck}
+                  className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Sí, quiero recuperarla
+                </button>
                 <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
                 <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
               </div>
@@ -297,13 +324,32 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const GestionModalOverlay = () => {
     if (!gestionModal) return null;
 
-    // Filtramos clases libres si es cambio o ampliación
-    const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases';
-    const availableClasses = isClassSearch ? allClasses.filter(c => 
-      c.subject === (selectedInst || profile.instruments[0]) && 
-      (!c.students || c.students.length < parseInt(c.capacity || 4)) &&
-      !c.students?.some(s => s.id === profile.id)
-    ) : [];
+    const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
+    const isTicketRedemption = gestionModal.type === 'recuperacion';
+
+    // LÓGICA DE FILTRADO DE CLASES
+    const availableClasses = isClassSearch ? allClasses.filter(c => {
+      const targetInstrument = selectedInst || profile.instruments[0];
+      
+      // 1. Debe coincidir el instrumento
+      if (c.subject !== targetInstrument) return false;
+      
+      const maxCap = parseInt(c.capacity || 4);
+      const currentStudents = c.students?.length || 0;
+      
+      // 2. Debe haber hueco
+      if (currentStudents >= maxCap) return false;
+      
+      // 3. El alumno no debe estar ya en esa clase
+      if (c.students?.some(s => s.id === profile.id)) return false;
+
+      // 4. REGLA DE NEGOCIO: Si es para recuperar Guitarra, SOLO grupos de 8.
+      if (isTicketRedemption && targetInstrument === 'Guitarra') {
+        if (maxCap !== 8) return false;
+      }
+
+      return true;
+    }) : [];
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
@@ -315,32 +361,36 @@ export default function StudentPortal({ user, logout, db, appId }) {
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
           </div>
           
-          <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
-            <Clock className="w-4 h-4"/> Normativa del día 20
-          </div>
+          {!isTicketRedemption && (
+            <>
+              <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                <Clock className="w-4 h-4"/> Normativa del día 20
+              </div>
 
-          {/* MENSAJE DE ADVERTENCIA DE PLAZO */}
-          {timeRules.isLate ? (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
-              <h3 className="text-sm font-black text-red-800 uppercase mb-1 flex items-center gap-2"><AlertCircle className="w-4 h-4"/> Solicitud fuera de plazo</h3>
-              <p className="text-xs text-red-700 font-medium mb-3">Estás pidiendo este trámite del día 21 en adelante. Según el contrato de prestación de servicios, no podrá tramitarse para <strong>{timeRules.next}</strong>.</p>
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input type="checkbox" checked={acceptLatePenalty} onChange={e => setAcceptLatePenalty(e.target.checked)} className="mt-1 w-4 h-4 text-red-600 rounded" />
-                <span className="text-xs font-bold text-red-900">Sí, quiero que tengáis mi petición en cuenta para <strong>{timeRules.nextNext}</strong>.</span>
-              </label>
-            </div>
-          ) : (
-            <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
-              <p className="text-xs font-bold text-emerald-800 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> En plazo. Tu solicitud aplicará para <strong>{timeRules.next}</strong>.</p>
-            </div>
+              {timeRules.isLate ? (
+                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+                  <h3 className="text-sm font-black text-red-800 uppercase mb-1 flex items-center gap-2"><AlertCircle className="w-4 h-4"/> Solicitud fuera de plazo</h3>
+                  <p className="text-xs text-red-700 font-medium mb-3">Estás pidiendo este trámite del día 21 en adelante. Según el contrato de prestación de servicios, no podrá tramitarse para <strong>{timeRules.next}</strong>.</p>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={acceptLatePenalty} onChange={e => setAcceptLatePenalty(e.target.checked)} className="mt-1 w-4 h-4 text-red-600 rounded" />
+                    <span className="text-xs font-bold text-red-900">Sí, quiero que tengáis mi petición en cuenta para <strong>{timeRules.nextNext}</strong>.</span>
+                  </label>
+                </div>
+              ) : (
+                <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <p className="text-xs font-bold text-emerald-800 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> En plazo. Tu solicitud aplicará para <strong>{timeRules.next}</strong>.</p>
+                </div>
+              )}
+            </>
           )}
 
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
 
-          {/* BUSCADOR DE PLAZAS SI APLICA */}
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">1. Busca disponibilidad en directo</p>
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
+                {isTicketRedemption ? '1. Elige el grupo para recuperar' : '1. Busca disponibilidad en directo'}
+              </p>
               
               {gestionModal.type === 'ampliar_clases' && (
                 <select value={selectedInst} onChange={e => setSelectedInst(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
@@ -360,7 +410,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 </div>
               ) : (
                 <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-500">No hay grupos grupales libres. Para clases particulares, escríbenos a gestiones@escuelalosmitos.com</p>
+                  <p className="text-xs font-bold text-zinc-500">
+                    No hay grupos {isTicketRedemption ? 'habilitados para recuperación' : 'grupales libres'}. Escríbenos a gestiones@escuelalosmitos.com
+                  </p>
                 </div>
               )}
             </div>
@@ -373,7 +425,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
             className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-sm font-medium mb-6"
           />
 
-          <button onClick={sendGestion} disabled={isSendingGestion || (timeRules.isLate && !acceptLatePenalty)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
+          <button onClick={sendGestion} disabled={isSendingGestion || (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) || (isClassSearch && !selectedNewClass)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
             {isSendingGestion ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar Solicitud</>}
           </button>
         </div>
@@ -502,7 +554,15 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg flex items-center gap-2"><Ticket className="w-5 h-5 text-amber-500"/> Recuperaciones</h3>
                 <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{profile.activeTickets || 0} Tickets</span>
               </div>
-              <button disabled={!profile.activeTickets} className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}>
+              <button 
+                disabled={!profile.activeTickets} 
+                onClick={() => setGestionModal({
+                  type: 'recuperacion', title: 'Canjear Ticket', icon: Ticket, color: 'text-amber-500',
+                  desc: 'Elige el grupo en el que quieres gastar tu ticket. Si no encuentras disponibilidad, vuelve a mirar otro día.',
+                  placeholder: 'Añade observaciones para el profesor (Opcional)...'
+                })}
+                className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+              >
                 {profile.activeTickets > 0 ? 'Canjear Ticket Libre' : 'No tienes tickets'}
               </button>
             </div>

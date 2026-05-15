@@ -364,7 +364,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     });
   }
 
-  // MODAL DE ABSENCIAS (MANTENIDO INTACTO)
   const AbsenceModalOverlay = () => {
     if (!absenceModal) return null;
     const isLate = absenceModal.diffHours < 16;
@@ -428,7 +427,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
-  // MODAL DE GESTIONES NORMALES (MANTENIDO INTACTO)
   const GestionModalOverlay = () => {
     if (!gestionModal) return null;
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
@@ -505,25 +503,52 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
-  // NUEVO MODAL: MITOBOX
+  // NUEVO MODAL: MITOBOX INTELIGENTE (VERSIÓN DEFINITIVA)
   const MitoboxModalOverlay = () => {
     if (!mitoboxModal) return null;
     
-    // Calcular "Mañana" para el limite del calendario
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-    // Motor de búsqueda de "Horas Valle"
+    // MOTOR INTELIGENTE DE BÚSQUEDA DE SALAS
     let availableMboxSlots = [];
     if (mboxDate && mboxSede) {
       const targetDay = new Date(`${mboxDate}T00:00:00`).getDay();
-      const activeClassesThatDay = allClasses.filter(c => c.dayOfWeek === targetDay && c.sede === mboxSede);
-      const activeTimes = [...new Set(activeClassesThatDay.map(c => c.time))].sort();
       
+      // 1. Obtenemos TODAS las clases de ese día y sede
+      const allScheduledClasses = allClasses.filter(c => c.dayOfWeek === targetDay && c.sede === mboxSede);
+
+      // 2. Filtramos: ¿Qué clases están "VIVAS"? (El profe va a ir sí o sí)
+      const aliveClasses = allScheduledClasses.filter(c => {
+        if (c.cancelledDates?.includes(mboxDate)) return false; // El profe canceló la clase
+
+        const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
+        
+        // Contamos cuántos alumnos realmente van a asistir ese día
+        const activeStudents = (c.students || []).filter(s => {
+          if (s.isPaused) return false;
+          const estadoHoy = exceptionsEseDia[s.id];
+          if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
+          return true; // Este alumno va a ir
+        });
+
+        // Si la clase no tiene NINGÚN alumno asistente, la clase está "MUERTA". El profe no va.
+        if (activeStudents.length === 0) return false;
+        
+        return true;
+      });
+
+      // 3. Extraemos solo las horas a las que hay al menos UNA clase viva
+      const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
+      
+      // 4. Calculamos las salas libres en esas horas vivas
       activeTimes.forEach(t => {
-        const occupiedSalas = activeClassesThatDay.filter(c => c.time === t).map(c => c.sala);
+        // ¿Qué salas ocupan las clases vivas a esta hora?
+        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala);
         const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
+        
+        // Las libres son las sobrantes. ¡Si una clase "Murió", su sala estará libre aquí!
         const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
         
         freeSalas.forEach(fs => {
@@ -703,6 +728,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline text-zinc-600">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
                       
+                      {/* BLOQUEO DEL BOTÓN SI YA AVISÓ */}
                       {hasNotifiedNext ? (
                         <div className="w-full bg-zinc-800/50 text-emerald-400 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-emerald-900/50">
                           <CheckCircle className="w-4 h-4" /> Falta Notificada

@@ -33,7 +33,8 @@ import {
   RefreshCcw,
   PlusCircle,
   CheckCircle,
-  ShieldAlert
+  ShieldAlert,
+  LoyoutGrid
 } from 'lucide-react';
 
 import {
@@ -424,13 +425,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
         exceptions: scheduledClass.exceptions || {}, 
-        students: scheduledClass.students.map(s => {
-          let currentStatus = s.isPaused ? 'paused' : 'present';
-          if (exceptionsToday[s.id]) {
-            currentStatus = exceptionsToday[s.id];
-          }
-          return { ...s, status: currentStatus };
-        }),
+      students: (scheduledClass.students || []).map(s => {
+  let currentStatus = s.isPaused ? 'paused' : 'present';
+  if (exceptionsToday[s.id]) {
+    currentStatus = exceptionsToday[s.id];
+  }
+  return { ...s, status: currentStatus };
+}),
         newStudentName: '',
         newStudentEmail: '',
         isAddingRecovery: false,
@@ -1128,8 +1129,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
                         <div className="flex items-center gap-4">
                           <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
-                            <span className="text-sm leading-none">{item.data.time.split(':')[0]}</span>
-                            <span className="text-[10px] opacity-70">{item.data.time.split(':')[1]}</span>
+                           <span className="text-sm leading-none">{(item.data.time || '00:00').split(':')[0]}</span>
+                            <span className="text-[10px] opacity-70">{(item.data.time || '00:00').split(':')[1]}</span>
                           </div>
                           <div>
                             <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' || isSpecialDay ? 'text-zinc-500' : 'text-slate-800'}`}>

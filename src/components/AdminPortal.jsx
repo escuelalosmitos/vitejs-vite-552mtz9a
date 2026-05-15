@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Inbox, Users, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
-  ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award 
+  ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, Target
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
@@ -20,7 +20,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [gestiones, setGestiones] = useState([]);
   const [students, setStudents] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
-  const [settings, setSettings] = useState({ festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [] });
+  const [settings, setSettings] = useState({ 
+    festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [],
+    prizes: { trimestral: '', anual: '' } // <-- NUEVO: Para premios internos
+  });
 
   // FORMULARIOS LOCALES
   const [searchStudent, setSearchStudent] = useState('');
@@ -92,32 +95,33 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(!window.confirm(`¿Confirmas el cierre del mes? Hay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
 
     try {
-      // 1. Sumamos victoria a los ganadores
       const winnerNames = [];
       const updatePromises = [];
       
       winners.forEach(w => {
-        // Formatear nombre: "Juan P."
         const nameParts = w.name.split(' ');
         const initial = nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : '';
         winnerNames.push(`${nameParts[0]} ${initial}`);
         
+        // Sumamos victoria a los que empatan en cabeza
         updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', w.id), {
           triviaVictories: (w.triviaVictories || 0) + 1
         }));
       });
 
-      // 2. Reseteamos puntos de TODOS los que han jugado a 0
+      // Traspasamos los puntos del mes al contador histórico (TotalPoints) y reseteamos el mes a 0 para todos los que jugaron
       players.forEach(p => {
+        const currentTotal = p.triviaTotalPoints || 0;
         updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', p.id), {
+          triviaTotalPoints: currentTotal + p.triviaPoints,
           triviaPoints: 0
         }));
       });
 
       await Promise.all(updatePromises);
 
-      // 3. Auto-publicamos en el tablón
-      const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} aciertos!\n\nTodos los contadores vuelven a cero. ¡El reto de este mes ya ha empezado! Recuerda que el vencedor anual obtendrá premios valorados en 100€.`;
+      // Publicamos en el tablón
+      const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} aciertos!\n\nTodos los contadores vuelven a cero. ¡El reto de este mes ya ha empezado! Recuerda que el vencedor anual obtendrá premios por fidelidad y mérito.`;
       const id = Date.now().toString();
       await setDoc(doc(db, 'artifacts', appId, 'announcements', id), {
         title: "🏆 ¡Ganadores del Reto del Mes!",
@@ -125,7 +129,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         date: new Date().toISOString().split('T')[0]
       });
 
-      alert("Mes cerrado con éxito. Aviso publicado y marcadores a cero.");
+      alert("Mes cerrado con éxito. Puntos guardados en el histórico, marcadores a cero y aviso publicado.");
 
     } catch (e) {
       alert("Error al cerrar el mes.");
@@ -138,8 +142,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
+  // --- CÁLCULOS DE RANKINGS ---
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
-  const rankedStudents = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10); // Top 10
+  
+  // 1. Ranking Mensual (Puntos del mes actual)
+  const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
+  
+  // 2. Ranking Anual (Meses ganados)
+  const rankAnnual = students.filter(s => s.triviaVictories > 0).sort((a,b) => b.triviaVictories - a.triviaVictories).slice(0,10);
+  
+  // 3. Ranking Global Histórico (Puntos Totales guardados + Puntos del mes en curso)
+  const rankGlobal = students
+    .filter(s => (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) > 0)
+    .map(s => ({ ...s, liveTotal: (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) }))
+    .sort((a,b) => b.liveTotal - a.liveTotal)
+    .slice(0,10);
 
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
 
@@ -156,7 +173,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         <nav className="flex-1 overflow-x-auto md:overflow-y-auto flex md:flex-col p-4 gap-2 no-scrollbar">
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja Ent.', count: pendingGestiones.length },
-            { id: 'announcements', icon: Megaphone, label: 'Tablón y Retos' },
+            { id: 'announcements', icon: Megaphone, label: 'Tablón' },
+            { id: 'gamification', icon: Trophy, label: 'Retos' },
             { id: 'students', icon: Users, label: 'Alumnos' },
             { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
@@ -227,57 +245,136 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* PESTAÑA MEGAPHONE / RETOS */}
+        {/* --- PESTAÑA GAMIFICACIÓN (RETOS) --- */}
+        {activeTab === 'gamification' && (
+          <div className="space-y-8 animate-in fade-in">
+            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Retos y Gamificación</h2>
+                <p className="text-zinc-500 font-medium">Rankings de alumnos y gestión de premios.</p>
+              </div>
+              <button onClick={handleCerrarRetoMensual} className="w-full sm:w-auto bg-amber-500 hover:bg-amber-600 text-white px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-lg transition-colors">
+                <Award className="w-4 h-4"/> Cerrar Mes
+              </button>
+            </header>
+
+            {/* TABLAS DE RANKING */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              {/* MENSUAL */}
+              <div className="bg-white rounded-3xl shadow-sm border border-amber-200 overflow-hidden flex flex-col h-96">
+                <div className="bg-amber-50 p-4 border-b border-amber-100 flex items-center justify-between">
+                  <h3 className="font-black uppercase tracking-tight text-amber-900 flex items-center gap-2">
+                    <Timer className="w-5 h-5 text-amber-500"/> Mensual
+                  </h3>
+                  <span className="bg-amber-200 text-amber-800 px-2 py-0.5 rounded text-[10px] font-black uppercase animate-pulse">En curso</span>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-amber-50/20">
+                  {rankMonthly.length === 0 ? <p className="text-xs text-zinc-400 italic">Nadie ha puntuado aún.</p> : rankMonthly.map((s, i) => (
+                    <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-amber-100 rounded-xl shadow-sm">
+                      <div className="flex items-center gap-3">
+                        <span className={`font-black w-6 h-6 rounded-full flex items-center justify-center text-xs ${i === 0 ? 'bg-amber-400 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span>
+                        <span className="font-bold text-sm text-slate-700 truncate max-w-[100px]">{s.name.split(' ')[0]}</span>
+                      </div>
+                      <span className="font-black text-amber-600">{s.triviaPoints} <span className="text-[9px] uppercase">pts</span></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ANUAL */}
+              <div className="bg-white rounded-3xl shadow-sm border border-indigo-200 overflow-hidden flex flex-col h-96">
+                <div className="bg-indigo-50 p-4 border-b border-indigo-100 flex items-center justify-between">
+                  <h3 className="font-black uppercase tracking-tight text-indigo-900 flex items-center gap-2">
+                    <Star className="w-5 h-5 text-indigo-500"/> Anual
+                  </h3>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-indigo-50/20">
+                  {rankAnnual.length === 0 ? <p className="text-xs text-zinc-400 italic">Nadie ha ganado un mes aún.</p> : rankAnnual.map((s, i) => (
+                    <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-indigo-100 rounded-xl shadow-sm">
+                      <div className="flex items-center gap-3">
+                        <span className={`font-black w-6 h-6 rounded-full flex items-center justify-center text-xs ${i === 0 ? 'bg-indigo-500 text-white' : 'text-zinc-400'}`}>{i+1}</span>
+                        <span className="font-bold text-sm text-slate-700 truncate max-w-[100px]">{s.name.split(' ')[0]}</span>
+                      </div>
+                      <span className="font-black text-indigo-600">{s.triviaVictories} <span className="text-[9px] uppercase">Victorias</span></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* GLOBAL / HISTÓRICO */}
+              <div className="bg-zinc-900 rounded-3xl shadow-sm border border-zinc-800 overflow-hidden flex flex-col h-96">
+                <div className="bg-black p-4 border-b border-zinc-800 flex items-center justify-between">
+                  <h3 className="font-black uppercase tracking-tight text-white flex items-center gap-2">
+                    <Target className="w-5 h-5 text-zinc-400"/> Global
+                  </h3>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-zinc-900/50">
+                  {rankGlobal.length === 0 ? <p className="text-xs text-zinc-500 italic">Sin datos históricos.</p> : rankGlobal.map((s, i) => (
+                    <div key={s.id} className="flex items-center justify-between p-3 bg-zinc-800 border border-zinc-700 rounded-xl">
+                      <div className="flex items-center gap-3">
+                        <span className="font-black text-zinc-500 text-xs w-4">{i+1}.</span>
+                        <span className="font-bold text-sm text-zinc-300 truncate max-w-[100px]">{s.name.split(' ')[0]}</span>
+                      </div>
+                      <span className="font-black text-white">{s.liveTotal} <span className="text-[9px] text-zinc-500 uppercase">pts</span></span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            {/* PREMIOS INTERNOS */}
+            <div className="bg-white p-6 md:p-8 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+              <div className="flex items-center gap-3 mb-6">
+                <Gift className="w-6 h-6 text-black"/>
+                <h3 className="text-xl font-black uppercase tracking-tight">Estrategia de Premios (Interno)</h3>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Objetivo Trimestral</label>
+                  <textarea 
+                    value={settings.prizes?.trimestral || ''} 
+                    onChange={e => setSettings({...settings, prizes: {...settings.prizes, trimestral: e.target.value}})}
+                    placeholder="Ej: Juego de púas gratis, o camiseta de la escuela..."
+                    className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] text-sm font-medium"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Gran Premio Anual</label>
+                  <textarea 
+                    value={settings.prizes?.anual || ''} 
+                    onChange={e => setSettings({...settings, prizes: {...settings.prizes, anual: e.target.value}})}
+                    placeholder="Ej: 1 mes de Mitoverso gratis o grabación en estudio..."
+                    className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] text-sm font-medium"
+                  />
+                </div>
+              </div>
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-100 hover:bg-zinc-200 text-zinc-800 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs transition-colors">
+                Guardar Notas de Premios
+              </button>
+            </div>
+
+          </div>
+        )}
+
+        {/* --- TABLÓN (MEGÁFONO) --- */}
         {activeTab === 'announcements' && (
           <div className="space-y-8 animate-in fade-in">
             <header>
-              <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Tablón y Gamificación</h2>
-              <p className="text-zinc-500 font-medium">Comunícate con tus alumnos y gestiona los Retos Mensuales.</p>
+              <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Tablón de Avisos</h2>
+              <p className="text-zinc-500 font-medium">Publica noticias en el muro principal de los alumnos.</p>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              {/* RANKING EN DIRECTO */}
-              <div className="bg-white p-6 rounded-3xl shadow-sm border border-amber-200 relative overflow-hidden flex flex-col">
-                <div className="flex justify-between items-start mb-6 relative z-10">
-                  <div className="flex items-center gap-2">
-                    <Trophy className="w-6 h-6 text-amber-500"/>
-                    <h3 className="font-black uppercase tracking-tight text-xl text-slate-800">Ranking Mensual</h3>
-                  </div>
-                  <span className="bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest animate-pulse">En Directo</span>
-                </div>
-                
-                <div className="flex-1 space-y-2 mb-6 relative z-10 max-h-64 overflow-y-auto pr-2">
-                  {rankedStudents.length === 0 ? (
-                    <p className="text-xs text-zinc-400 italic">Nadie ha puntuado aún este mes.</p>
-                  ) : (
-                    rankedStudents.map((s, i) => (
-                      <div key={s.id} className="flex items-center justify-between p-3 bg-zinc-50 border border-zinc-100 rounded-xl">
-                        <div className="flex items-center gap-3">
-                          <span className={`font-black w-6 h-6 rounded-full flex items-center justify-center text-xs ${i === 0 ? 'bg-amber-400 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span>
-                          <span className="font-bold text-sm text-slate-700">{s.name}</span>
-                        </div>
-                        <span className="font-black text-slate-800">{s.triviaPoints} <span className="text-[10px] text-zinc-400 uppercase">pts</span></span>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <button onClick={handleCerrarRetoMensual} className="w-full bg-amber-500 hover:bg-amber-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-lg relative z-10 transition-colors">
-                  <Award className="w-4 h-4"/> Cerrar Mes y Anunciar Ganador
+            {/* POSTEAR AVISO */}
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-zinc-200">
+              <h3 className="font-black uppercase tracking-widest text-xs text-zinc-400 mb-4 flex items-center gap-2"><Plus className="w-4 h-4"/> Nuevo Aviso</h3>
+              <div className="space-y-4">
+                <input type="text" placeholder="Titular impactante..." value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-xl focus:border-black outline-none font-black text-sm" />
+                <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-xl focus:border-black outline-none min-h-[120px] resize-y font-medium text-sm" />
+                <button onClick={postAnnouncement} className="w-full md:w-auto bg-black text-white px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
+                  <Megaphone className="w-4 h-4"/> Publicar Aviso
                 </button>
-                <Trophy className="absolute -bottom-8 -right-8 w-40 h-40 text-amber-50 pointer-events-none -rotate-12"/>
-              </div>
-
-              {/* POSTEAR AVISO */}
-              <div className="bg-white p-6 rounded-3xl shadow-sm border border-zinc-200">
-                <h3 className="font-black uppercase tracking-widest text-xs text-zinc-400 mb-4 flex items-center gap-2"><Plus className="w-4 h-4"/> Nuevo Aviso Libre</h3>
-                <div className="space-y-4">
-                  <input type="text" placeholder="Titular impactante..." value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-xl focus:border-black outline-none font-black text-sm" />
-                  <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-xl focus:border-black outline-none min-h-[120px] resize-y font-medium text-sm" />
-                  <button onClick={postAnnouncement} className="w-full bg-black text-white px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
-                    <Megaphone className="w-4 h-4"/> Publicar Aviso
-                  </button>
-                </div>
               </div>
             </div>
 

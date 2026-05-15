@@ -1200,7 +1200,7 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
                 <div className="relative z-10 p-6 flex flex-col sm:flex-row items-center justify-between gap-6">
                   <div>
                     <h3 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2 mb-1"><Trophy className="w-6 h-6 text-amber-200"/> Reto del Día</h3>
-                    <p className="text-xs font-bold text-amber-100 uppercase tracking-widest">¡Responde rápido, suma puntos y gana premios!.</p>
+                    <p className="text-xs font-bold text-amber-100 uppercase tracking-widest">¡Responde rápido, suma puntos y gana premios!</p>
                   </div>
                   <button className="w-full sm:w-auto bg-white text-orange-600 px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg flex items-center justify-center gap-2 pointer-events-none">
                     <Timer className="w-4 h-4"/> Jugar Ahora

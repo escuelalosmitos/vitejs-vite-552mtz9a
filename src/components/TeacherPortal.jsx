@@ -34,7 +34,7 @@ import {
   PlusCircle,
   CheckCircle,
   ShieldAlert,
-  LoyoutGrid
+  LayoutGrid
 } from 'lucide-react';
 
 import {

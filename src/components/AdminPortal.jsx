@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Inbox, Users, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
-  ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, Target
+  ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, Target, Timer
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 

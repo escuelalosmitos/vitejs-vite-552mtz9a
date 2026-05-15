@@ -9,6 +9,11 @@ const getDayName = (dayIndex) => {
   return days[dayIndex];
 };
 
+const formatDateSpanish = (dateString) => {
+  if (!dateString) return '';
+  return dateString.split('-').reverse().join('/');
+};
+
 const getNextClassInfo = (dayOfWeek, timeStr) => {
   const now = new Date();
   const targetDay = parseInt(dayOfWeek);
@@ -59,6 +64,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [allClasses, setAllClasses] = useState([]); 
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [announcements, setAnnouncements] = useState([]); 
+  const [myGestiones, setMyGestiones] = useState([]); // <-- NUEVO ESTADO: Gestiones del alumno
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
 
@@ -66,7 +72,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showRules, setShowRules] = useState(false);
   const [showCalendarRules, setShowCalendarRules] = useState(false);
   const [onboarding, setOnboarding] = useState({ name: '', instrument: 'Guitarra', classId: '' });
-  const [healthCheck, setHealthCheck] = useState(false); // <-- NUEVO ESTADO PARA EL CHECK LEGAL
+  const [healthCheck, setHealthCheck] = useState(false); 
 
   // ESTADOS PARA GESTIONES
   const [gestionModal, setGestionModal] = useState(null);
@@ -90,6 +96,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     return () => unsubAnnouncements();
   }, [user.email]);
+
+  // NUEVO EFFECT: Escuchar las gestiones de este alumno en tiempo real
+  useEffect(() => {
+    if (!profile?.id) return;
+    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
+    const unsubGestiones = onSnapshot(q, (snapshot) => {
+      setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubGestiones();
+  }, [profile?.id, db, appId]);
 
   const showToast = (msg, type = 'success') => {
     setNotification({ text: msg, type });
@@ -204,7 +220,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const sendGestion = async () => {
-    // Si es un canje de ticket, no le aplicamos la penalización del día 20 (eso es para cobros)
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     
     if (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) {
@@ -241,6 +256,31 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setIsSendingGestion(false);
     }
   };
+
+  // --- CÁLCULO DE AVISOS Y GESTIONES PENDIENTES ---
+  const pendingAbsences = [];
+  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
+  const todayStr = new Date().toISOString().split('T')[0];
+  
+  if (profile) {
+    myClasses.forEach(clase => {
+      if (clase.exceptions) {
+        Object.keys(clase.exceptions).forEach(dateStr => {
+          // Solo mostramos faltas futuras o de hoy en "En trámite"
+          if (dateStr >= todayStr) {
+            const status = clase.exceptions[dateStr][profile.id];
+            if (status === 'notified' || status === 'notified_no_ticket') {
+              pendingAbsences.push({
+                subject: clase.subject,
+                date: dateStr,
+                wantsTicket: status === 'notified'
+              });
+            }
+          }
+        });
+      }
+    });
+  }
 
   const AbsenceModalOverlay = () => {
     if (!absenceModal) return null;
@@ -286,7 +326,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
               
               <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-2">¿Quieres ticket de recuperación?</h3>
               
-              {/* NUEVA ZONA: CHECKBOX LEGAL */}
               <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl mb-4">
                 <p className="text-xs text-amber-800 font-bold mb-3 leading-relaxed">Recuerda que solo se puede recuperar por razones de <strong>salud, trabajo o estudios</strong>.</p>
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -330,24 +369,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
     // LÓGICA DE FILTRADO DE CLASES
     const availableClasses = isClassSearch ? allClasses.filter(c => {
       const targetInstrument = selectedInst || profile.instruments[0];
-      
-      // 1. Debe coincidir el instrumento
       if (c.subject !== targetInstrument) return false;
       
       const maxCap = parseInt(c.capacity || 4);
       const currentStudents = c.students?.length || 0;
-      
-      // 2. Debe haber hueco
       if (currentStudents >= maxCap) return false;
-      
-      // 3. El alumno no debe estar ya en esa clase
       if (c.students?.some(s => s.id === profile.id)) return false;
 
-      // 4. REGLA DE NEGOCIO: Si es para recuperar Guitarra, SOLO grupos de 8.
+      // REGLA DE NEGOCIO: Si es recuperación de Guitarra, SOLO grupos de 8.
       if (isTicketRedemption && targetInstrument === 'Guitarra') {
         if (maxCap !== 8) return false;
       }
-
       return true;
     }) : [];
 
@@ -517,6 +549,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
               myClasses.map((clase, idx) => {
                 const classInfo = getNextClassInfo(clase.dayOfWeek, clase.time);
                 const holidayMatch = schoolCalendar.find(c => c.date === classInfo.dateStr);
+                const hasNotifiedNext = clase.exceptions?.[classInfo.dateStr]?.[profile.id];
 
                 if (holidayMatch) {
                   const isFestivo = holidayMatch.type === 'festivo';
@@ -541,9 +574,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
                       <div className="flex flex-col sm:flex-row gap-3 text-sm font-medium text-zinc-300 mb-8 bg-zinc-800/50 p-4 rounded-2xl border border-zinc-700/50">
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline text-zinc-600">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
-                      <button onClick={() => openAbsenceModal(clase)} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-zinc-700 transition-all shadow-lg active:scale-95">
-                        <AlertCircle className="w-4 h-4 text-amber-400" /> No podré asistir
-                      </button>
+                      
+                      {/* BLOQUEO DEL BOTÓN SI YA AVISÓ */}
+                      {hasNotifiedNext ? (
+                        <div className="w-full bg-zinc-800/50 text-emerald-400 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-emerald-900/50">
+                          <CheckCircle className="w-4 h-4" /> Falta Notificada
+                        </div>
+                      ) : (
+                        <button onClick={() => openAbsenceModal(clase)} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-zinc-700 transition-all shadow-lg active:scale-95">
+                          <AlertCircle className="w-4 h-4 text-amber-400" /> No podré asistir
+                        </button>
+                      )}
                   </div>
                 );
               })
@@ -566,8 +607,45 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 {profile.activeTickets > 0 ? 'Canjear Ticket Libre' : 'No tienes tickets'}
               </button>
             </div>
+
+            {/* --- NUEVA SECCIÓN: EN TRÁMITE --- */}
+            {(pendingProcedures.length > 0 || pendingAbsences.length > 0) && (
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200 mt-6">
+                <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg mb-4 flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-amber-500"/> En Trámite
+                </h3>
+                <div className="space-y-3">
+                  
+                  {/* FALTAS NOTIFICADAS (ESPERANDO CONFIRMACIÓN DEL PROFE) */}
+                  {pendingAbsences.map((abs, i) => (
+                    <div key={`abs-${i}`} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
+                       <div>
+                         <p className="text-xs font-black uppercase text-slate-800 tracking-tight">Falta: {abs.subject}</p>
+                         <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">{formatDateSpanish(abs.date)}</p>
+                       </div>
+                       <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg ${abs.wantsTicket ? 'bg-amber-100 text-amber-700' : 'bg-zinc-200 text-zinc-500'}`}>
+                         {abs.wantsTicket ? 'Esperando Ticket' : 'Solo Aviso'}
+                       </span>
+                    </div>
+                  ))}
+
+                  {/* GESTIONES ADMINISTRATIVAS PENDIENTES */}
+                  {pendingProcedures.map(proc => (
+                    <div key={proc.id} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
+                       <div>
+                         <p className="text-xs font-black uppercase text-slate-800 tracking-tight">{proc.title}</p>
+                         <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">Solicitado el {new Date(proc.date).toLocaleDateString('es-ES')}</p>
+                       </div>
+                       <span className="text-[10px] font-black uppercase tracking-widest bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg">
+                         En revisión
+                       </span>
+                    </div>
+                  ))}
+
+                </div>
+              </div>
+            )}
             
-            {/* LINK SUTIL AL CALENDARIO */}
             <div className="text-center mt-4">
               <button onClick={() => setShowCalendarRules(true)} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4">Ver Calendario y Normativa (Contrato)</button>
             </div>

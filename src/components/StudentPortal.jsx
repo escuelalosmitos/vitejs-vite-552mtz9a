@@ -64,7 +64,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [allClasses, setAllClasses] = useState([]); 
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [announcements, setAnnouncements] = useState([]); 
-  const [myGestiones, setMyGestiones] = useState([]); // <-- NUEVO ESTADO: Gestiones del alumno
+  const [myGestiones, setMyGestiones] = useState([]); 
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
 
@@ -97,7 +97,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return () => unsubAnnouncements();
   }, [user.email]);
 
-  // NUEVO EFFECT: Escuchar las gestiones de este alumno en tiempo real
   useEffect(() => {
     if (!profile?.id) return;
     const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
@@ -201,7 +200,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const openAbsenceModal = (clase) => {
     const info = getNextClassInfo(clase.dayOfWeek, clase.time);
-    setHealthCheck(false); // Reseteamos el check al abrir
+    setHealthCheck(false); 
     setAbsenceModal({ clase, ...info });
   };
 
@@ -266,14 +265,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
     myClasses.forEach(clase => {
       if (clase.exceptions) {
         Object.keys(clase.exceptions).forEach(dateStr => {
-          // Solo mostramos faltas futuras o de hoy en "En trámite"
           if (dateStr >= todayStr) {
             const status = clase.exceptions[dateStr][profile.id];
-            if (status === 'notified' || status === 'notified_no_ticket') {
+            // REGLA DE NEGOCIO: Solo mostrar en "En trámite" si esperan un ticket
+            if (status === 'notified') {
               pendingAbsences.push({
                 subject: clase.subject,
-                date: dateStr,
-                wantsTicket: status === 'notified'
+                date: dateStr
               });
             }
           }
@@ -623,8 +621,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
                          <p className="text-xs font-black uppercase text-slate-800 tracking-tight">Falta: {abs.subject}</p>
                          <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">{formatDateSpanish(abs.date)}</p>
                        </div>
-                       <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg ${abs.wantsTicket ? 'bg-amber-100 text-amber-700' : 'bg-zinc-200 text-zinc-500'}`}>
-                         {abs.wantsTicket ? 'Esperando Ticket' : 'Solo Aviso'}
+                       <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-amber-100 text-amber-700">
+                         Esperando Ticket
                        </span>
                     </div>
                   ))}

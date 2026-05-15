@@ -329,7 +329,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             
             <div className="bg-zinc-100 p-6 rounded-2xl border border-zinc-200 text-center">
                <Calendar className="w-8 h-8 text-zinc-400 mx-auto mb-2"/>
-               <p className="text-sm font-bold text-zinc-500 uppercase tracking-widest">Para gestionar Festivos y Nóminas, usa la Vista de Profesor -> Admin.</p>
+               <p className="text-sm font-bold text-zinc-500 uppercase tracking-widest">Para gestionar Festivos y Nóminas, usa la Vista de Profesor a Admin.</p>
             </div>
           </div>
         )}

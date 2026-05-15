@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
@@ -70,18 +70,25 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const [absenceModal, setAbsenceModal] = useState(null);
   const [showRules, setShowRules] = useState(false);
-  const [showContract, setShowContract] = useState(false); // <-- NUEVO ESTADO CONTRATO
-  const [contractText, setContractText] = useState(''); // <-- TEXTO DEL CONTRATO DESDE BD
+  const [showContract, setShowContract] = useState(false); 
+  const [contractText, setContractText] = useState(''); 
   const [onboarding, setOnboarding] = useState({ name: '', instrument: 'Guitarra', classId: '' });
   const [healthCheck, setHealthCheck] = useState(false); 
 
-  // ESTADOS PARA GESTIONES
+  // ESTADOS PARA GESTIONES GLOBALES
   const [gestionModal, setGestionModal] = useState(null);
   const [gestionText, setGestionText] = useState('');
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
+
+  // ESTADOS PARA MITOBOX
+  const [mitoboxModal, setMitoboxModal] = useState(false);
+  const [mboxDate, setMboxDate] = useState('');
+  const [mboxSede, setMboxSede] = useState('Tarragona');
+  const [mboxInst, setMboxInst] = useState('');
+  const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
 
   const timeRules = getMonthNames();
 
@@ -207,12 +214,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     await fetchRealStudentData(studentId);
   };
 
-  const claimProfile = async () => {
-    await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), { claimed: true });
-    setProfile({ ...profile, claimed: true });
-    await fetchRealStudentData(profile.id);
-  };
-
   const openAbsenceModal = (clase) => {
     const info = getNextClassInfo(clase.dayOfWeek, clase.time);
     setHealthCheck(false); 
@@ -271,7 +272,34 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
   };
 
-  // --- CÁLCULO DE AVISOS Y GESTIONES PENDIENTES ---
+  const sendMitoboxReservation = async () => {
+    if (!mboxDate || !mboxSede || !mboxInst || !mboxSelectedSlot) return;
+    setIsSendingGestion(true);
+    try {
+      const gestionId = `mbox-${Date.now()}`;
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
+        studentId: profile.id,
+        studentName: profile.name,
+        studentEmail: profile.email,
+        type: 'mitobox',
+        title: 'Reserva Mitobox',
+        details: `Reserva para ensayar: ${mboxInst}. Fecha: ${mboxDate}. Sede: ${mboxSede}. Hora: ${mboxSelectedSlot.time}h en ${mboxSelectedSlot.sala}`,
+        status: 'pendiente',
+        date: new Date().toISOString(),
+        reservationDate: mboxDate
+      });
+      setMitoboxModal(false);
+      setMboxDate('');
+      setMboxSelectedSlot(null);
+      setMboxInst('');
+      showToast('Reserva Mitobox solicitada. Espera confirmación.');
+    } catch (e) {
+      showToast('Error al reservar sala.', 'error');
+    } finally {
+      setIsSendingGestion(false);
+    }
+  };
+
   const pendingAbsences = [];
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
   const todayStr = new Date().toISOString().split('T')[0];
@@ -294,6 +322,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     });
   }
 
+  // MODAL DE ABSENCIAS (MANTENIDO INTACTO)
   const AbsenceModalOverlay = () => {
     if (!absenceModal) return null;
     const isLate = absenceModal.diffHours < 16;
@@ -315,7 +344,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
         </div>
       );
     }
-
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative animate-in zoom-in-95 duration-200">
@@ -335,30 +363,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
               <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 text-emerald-500 rounded-full mb-6 mx-auto"><CheckCircle className="w-8 h-8" /></div>
               <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso a tiempo</h2>
               <p className="text-center text-zinc-500 font-medium mb-4">Informaremos a tu profesor. Tienes derecho a recuperar esta clase el próximo mes.</p>
-              
               <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-2">¿Quieres ticket de recuperación?</h3>
-              
               <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl mb-4">
                 <p className="text-xs text-amber-800 font-bold mb-3 leading-relaxed">Recuerda que solo se puede recuperar por razones de <strong>salud, trabajo o estudios</strong>.</p>
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input 
-                    type="checkbox" 
-                    checked={healthCheck} 
-                    onChange={e => setHealthCheck(e.target.checked)} 
-                    className="w-4 h-4 accent-amber-600 rounded cursor-pointer" 
-                  />
+                  <input type="checkbox" checked={healthCheck} onChange={e => setHealthCheck(e.target.checked)} className="w-4 h-4 accent-amber-600 rounded cursor-pointer" />
                   <span className="text-xs font-black text-amber-950 uppercase tracking-widest">Cumplo las condiciones</span>
                 </label>
               </div>
-
               <div className="space-y-3">
-                <button 
-                  onClick={() => confirmAbsence(true)} 
-                  disabled={!healthCheck}
-                  className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  Sí, quiero recuperarla
-                </button>
+                <button onClick={() => confirmAbsence(true)} disabled={!healthCheck} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">Sí, quiero recuperarla</button>
                 <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
                 <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
               </div>
@@ -372,23 +386,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
+  // MODAL DE GESTIONES NORMALES (MANTENIDO INTACTO)
   const GestionModalOverlay = () => {
     if (!gestionModal) return null;
-
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
     const isTicketRedemption = gestionModal.type === 'recuperacion';
 
-    // LÓGICA DE FILTRADO DE CLASES
     const availableClasses = isClassSearch ? allClasses.filter(c => {
       const targetInstrument = selectedInst || profile.instruments[0];
       if (c.subject !== targetInstrument) return false;
-      
       const maxCap = parseInt(c.capacity || 4);
       const currentStudents = c.students?.length || 0;
       if (currentStudents >= maxCap) return false;
       if (c.students?.some(s => s.id === profile.id)) return false;
-
-      // REGLA DE NEGOCIO: Si es recuperación de Guitarra, SOLO grupos de 8.
       if (isTicketRedemption && targetInstrument === 'Guitarra') {
         if (maxCap !== 8) return false;
       }
@@ -399,18 +409,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
           <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setAcceptLatePenalty(false);}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
           </div>
-          
           {!isTicketRedemption && (
             <>
-              <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2">
-                <Clock className="w-4 h-4"/> Normativa del día 20
-              </div>
-
+              <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2"><Clock className="w-4 h-4"/> Normativa del día 20</div>
               {timeRules.isLate ? (
                 <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
                   <h3 className="text-sm font-black text-red-800 uppercase mb-1 flex items-center gap-2"><AlertCircle className="w-4 h-4"/> Solicitud fuera de plazo</h3>
@@ -421,28 +426,20 @@ export default function StudentPortal({ user, logout, db, appId }) {
                   </label>
                 </div>
               ) : (
-                <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
-                  <p className="text-xs font-bold text-emerald-800 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> En plazo. Tu solicitud aplicará para <strong>{timeRules.next}</strong>.</p>
-                </div>
+                <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl"><p className="text-xs font-bold text-emerald-800 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> En plazo. Tu solicitud aplicará para <strong>{timeRules.next}</strong>.</p></div>
               )}
             </>
           )}
-
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
-
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
-                {isTicketRedemption ? '1. Elige el grupo para recuperar' : '1. Busca disponibilidad en directo'}
-              </p>
-              
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige el grupo para recuperar' : '1. Busca disponibilidad en directo'}</p>
               {gestionModal.type === 'ampliar_clases' && (
                 <select value={selectedInst} onChange={e => setSelectedInst(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
                   <option value="">Selecciona Instrumento...</option>
                   {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
                 </select>
               )}
-
               {availableClasses.length > 0 ? (
                 <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
                   {availableClasses.map(c => (
@@ -453,24 +450,119 @@ export default function StudentPortal({ user, logout, db, appId }) {
                   ))}
                 </div>
               ) : (
-                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-500">
-                    No hay grupos {isTicketRedemption ? 'habilitados para recuperación' : 'grupales libres'}. Escríbenos a gestiones@escuelalosmitos.com
-                  </p>
+                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-zinc-100"><p className="text-xs font-bold text-zinc-500">No hay grupos {isTicketRedemption ? 'habilitados para recuperación' : 'grupales libres'}. Escríbenos a gestiones@escuelalosmitos.com</p></div>
+              )}
+            </div>
+          )}
+          <textarea placeholder={gestionModal.placeholder} value={gestionText} onChange={(e) => setGestionText(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-sm font-medium mb-6"/>
+          <button onClick={sendGestion} disabled={isSendingGestion || (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) || (isClassSearch && !selectedNewClass)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
+            {isSendingGestion ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar Solicitud</>}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // NUEVO MODAL: MITOBOX
+  const MitoboxModalOverlay = () => {
+    if (!mitoboxModal) return null;
+    
+    // Calcular "Mañana" para el limite del calendario
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    // Motor de búsqueda de "Horas Valle"
+    let availableMboxSlots = [];
+    if (mboxDate && mboxSede) {
+      const targetDay = new Date(`${mboxDate}T00:00:00`).getDay();
+      // Buscamos clases que ocurran ese día de la semana y en esa sede
+      const activeClassesThatDay = allClasses.filter(c => c.dayOfWeek === targetDay && c.sede === mboxSede);
+      
+      // Extraemos las horas a las que la escuela "existe" (hay profes)
+      const activeTimes = [...new Set(activeClassesThatDay.map(c => c.time))].sort();
+      
+      activeTimes.forEach(t => {
+        // En esa hora 't', vemos qué salas están ocupadas
+        const occupiedSalas = activeClassesThatDay.filter(c => c.time === t).map(c => c.sala);
+        const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
+        // Y sacamos las que NO están ocupadas
+        const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
+        
+        freeSalas.forEach(fs => {
+          availableMboxSlots.push({ time: t, sala: fs });
+        });
+      });
+    }
+
+    return (
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
+          <button onClick={() => {setMitoboxModal(false); setMboxDate(''); setMboxSelectedSlot(null);}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          
+          <div className="flex items-center gap-3 text-black mb-6">
+            <DoorOpen className="w-8 h-8 text-blue-500" />
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight leading-none">Reservar Sala</h2>
+              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">Servicio Mitobox</p>
+            </div>
+          </div>
+          
+          <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl mb-6">
+            <p className="text-xs text-blue-800 font-bold leading-relaxed">
+              Recuerda que para que tu reserva sea validada, debes tener activa la tarifa plana Mitobox (35€/mes) en tu suscripción de Tadosi. 
+            </p>
+          </div>
+
+          <div className="space-y-4 mb-6">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">1. ¿Qué instrumento tocarás?</label>
+              <select value={mboxInst} onChange={e => setMboxInst(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
+                <option value="">Selecciona Instrumento...</option>
+                {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">2. Fecha (Mín. 24h vista)</label>
+              <input type="date" min={tomorrowStr} value={mboxDate} onChange={e => {setMboxDate(e.target.value); setMboxSelectedSlot(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800" />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">3. Centro</label>
+              <select value={mboxSede} onChange={e => {setMboxSede(e.target.value); setMboxSelectedSlot(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
+                <option value="Tarragona">Tarragona</option>
+                <option value="Reus">Reus</option>
+              </select>
+            </div>
+          </div>
+
+          {mboxDate && mboxSede && (
+            <div className="mb-6 space-y-4 border-t border-zinc-100 pt-4">
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block">4. Salas y Horas disponibles</label>
+              {availableMboxSlots.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                  {availableMboxSlots.map((slot, i) => (
+                    <button 
+                      key={i} 
+                      onClick={() => setMboxSelectedSlot(slot)} 
+                      className={`p-3 rounded-xl border-2 text-left transition-all ${mboxSelectedSlot === slot ? 'border-blue-500 bg-blue-50 text-blue-900' : 'border-zinc-100 hover:border-blue-300 text-slate-700'}`}
+                    >
+                      <div className="font-black text-sm">{slot.time}h</div>
+                      <div className="text-[10px] font-bold uppercase tracking-widest opacity-60">{slot.sala}</div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-200">
+                  <p className="text-xs font-bold text-zinc-500">No hay salas libres o escuela cerrada para la fecha y centro elegidos.</p>
                 </div>
               )}
             </div>
           )}
 
-          <textarea 
-            placeholder={gestionModal.placeholder}
-            value={gestionText}
-            onChange={(e) => setGestionText(e.target.value)}
-            className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-sm font-medium mb-6"
-          />
-
-          <button onClick={sendGestion} disabled={isSendingGestion || (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) || (isClassSearch && !selectedNewClass)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
-            {isSendingGestion ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar Solicitud</>}
+          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+            {isSendingGestion ? 'Enviando...' : <><CheckCircle className="w-4 h-4"/> Confirmar Reserva</>}
           </button>
         </div>
       </div>
@@ -517,6 +609,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 relative">
       <AbsenceModalOverlay />
       <GestionModalOverlay />
+      <MitoboxModalOverlay />
       <ContractOverlay />
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
@@ -579,7 +672,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline text-zinc-600">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
                       
-                      {/* BLOQUEO DEL BOTÓN SI YA AVISÓ */}
                       {hasNotifiedNext ? (
                         <div className="w-full bg-zinc-800/50 text-emerald-400 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-emerald-900/50">
                           <CheckCircle className="w-4 h-4" /> Falta Notificada
@@ -619,8 +711,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
                   <Clock className="w-5 h-5 text-amber-500"/> En Trámite
                 </h3>
                 <div className="space-y-3">
-                  
-                  {/* FALTAS NOTIFICADAS (ESPERANDO CONFIRMACIÓN DEL PROFE) */}
                   {pendingAbsences.map((abs, i) => (
                     <div key={`abs-${i}`} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
                        <div>
@@ -632,8 +722,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
                        </span>
                     </div>
                   ))}
-
-                  {/* GESTIONES ADMINISTRATIVAS PENDIENTES */}
                   {pendingProcedures.map(proc => (
                     <div key={proc.id} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
                        <div>
@@ -645,19 +733,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
                        </span>
                     </div>
                   ))}
-
                 </div>
               </div>
             )}
             
-            {/* LINK SUTIL AL CONTRATO */}
             <div className="text-center mt-4">
               <button onClick={() => setShowContract(true)} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4">Ver contrato de prestación de servicios</button>
             </div>
           </div>
         )}
 
-        {/* --- NUEVA PESTAÑA: CALENDARIO --- */}
+        {/* --- PESTAÑA: CALENDARIO --- */}
         {activeTab === 'calendar' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
@@ -735,7 +821,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
               <MessageSquare className="w-20 h-20 text-zinc-200 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
-            {/* AVISO LEGAL DÍA 20 */}
             <div className="bg-white p-4 rounded-2xl border-2 border-amber-100 text-amber-900 text-xs font-medium leading-relaxed">
               <strong className="font-black uppercase tracking-widest text-[10px] block mb-1 text-amber-700">Normativa Administrativa:</strong>
               Todas las gestiones (bajas, cambios de horario, mantenimientos) que modifiquen la facturación deben solicitarse antes del <strong>día 20 de cada mes</strong>. Las peticiones enviadas del 21 en adelante, tendrán efecto en el mes siguiente.
@@ -808,6 +893,68 @@ export default function StudentPortal({ user, logout, db, appId }) {
             </div>
           </div>
         )}
+
+        {/* --- NUEVA PESTAÑA: EXTRAS (Mitos+) --- */}
+        {activeTab === 'extras' && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-900 text-white border-2 border-indigo-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
+              <div className="relative z-10">
+                <h2 className="text-2xl font-black uppercase tracking-tight">Mitos+</h2>
+                <p className="text-blue-200 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
+              </div>
+              <Sparkles className="w-24 h-24 text-white/10 absolute -right-4 -bottom-4 pointer-events-none" />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              {/* MITOVERSO CARD */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full">
+                <div className="bg-indigo-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6">
+                  <MonitorPlay className="w-8 h-8 text-indigo-600"/>
+                </div>
+                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitoverso</h3>
+                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
+                  Accede a nuestra plataforma de cursos online, audios y recursos exclusivos. Ideal para alumnos de guitarra que quieren avanzar a su ritmo desde casa.
+                </p>
+                <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
+                  <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
+                  <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                </div>
+                <button 
+                  onClick={() => {
+                    const ok = window.confirm('Serás redirigido al portal de inscripciones.\n\n⚠️ MUY IMPORTANTE: Cuando rellenes tus datos, no olvides marcar la casilla "Tengo una suscripción y quiero otra" para que el sistema reconozca tu descuento de alumno.');
+                    if(ok) window.open('https://app.tadosi.com', '_blank'); // <-- CAMBIA ESTE LINK POR EL DE TADOSI REAL
+                  }}
+                  className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                >
+                  Solicitar Acceso
+                </button>
+              </div>
+
+              {/* MITOBOX CARD */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full">
+                <div className="bg-blue-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6">
+                  <DoorOpen className="w-8 h-8 text-blue-600"/>
+                </div>
+                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
+                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
+                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
+                </p>
+                <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
+                  <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
+                  <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                </div>
+                <button 
+                  onClick={() => setMitoboxModal(true)}
+                  className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex items-center justify-center gap-2"
+                >
+                  <Calendar className="w-4 h-4"/> Reservar Sala
+                </button>
+              </div>
+
+            </div>
+          </div>
+        )}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 w-full bg-white border-t border-zinc-200 z-40 pb-3">
@@ -816,7 +963,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
             {id:'home', i:LayoutGrid, label:'Inicio'}, 
             {id:'calendar', i:Calendar, label:'Calendario'}, 
             {id:'news', i:Info, label:'Avisos'}, 
-            {id:'contact', i:MessageSquare, label:'Gestiones'}
+            {id:'contact', i:MessageSquare, label:'Gestiones'},
+            {id:'extras', i:Sparkles, label:'Extras'}
           ].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>
               <t.i className="w-6 h-6"/>

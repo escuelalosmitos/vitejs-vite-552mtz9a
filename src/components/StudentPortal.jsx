@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun } from 'lucide-react';
-import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
@@ -70,7 +70,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const [absenceModal, setAbsenceModal] = useState(null);
   const [showRules, setShowRules] = useState(false);
-  const [showCalendarRules, setShowCalendarRules] = useState(false);
+  const [showContract, setShowContract] = useState(false); // <-- NUEVO ESTADO CONTRATO
+  const [contractText, setContractText] = useState(''); // <-- TEXTO DEL CONTRATO DESDE BD
   const [onboarding, setOnboarding] = useState({ name: '', instrument: 'Guitarra', classId: '' });
   const [healthCheck, setHealthCheck] = useState(false); 
 
@@ -87,6 +88,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     checkRegistration();
     fetchAllClassesAndCalendar();
+    fetchContractText();
 
     const unsubAnnouncements = onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -109,6 +111,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const showToast = (msg, type = 'success') => {
     setNotification({ text: msg, type });
     setTimeout(() => setNotification(null), 4000);
+  };
+
+  const fetchContractText = async () => {
+    try {
+      const docSnap = await getDoc(doc(db, 'artifacts', appId, 'settings', 'global'));
+      if (docSnap.exists() && docSnap.data().contract) {
+        setContractText(docSnap.data().contract);
+      } else {
+        setContractText('El contrato de prestación de servicios aún no está disponible online. Por favor, contacta con administración.');
+      }
+    } catch (e) {
+      console.log("Error cargando el contrato", e);
+    }
   };
 
   const fetchAllClassesAndCalendar = async () => {
@@ -267,7 +282,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
         Object.keys(clase.exceptions).forEach(dateStr => {
           if (dateStr >= todayStr) {
             const status = clase.exceptions[dateStr][profile.id];
-            // REGLA DE NEGOCIO: Solo mostrar en "En trámite" si esperan un ticket
             if (status === 'notified') {
               pendingAbsences.push({
                 subject: clase.subject,
@@ -463,27 +477,20 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
-  const CalendarRulesOverlay = () => {
-    if (!showCalendarRules) return null;
+  const ContractOverlay = () => {
+    if (!showContract) return null;
     return (
-      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
-          <button onClick={() => setShowCalendarRules(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          <div className="flex items-center gap-3 text-black mb-6"><Calendar className="w-8 h-8" /><h2 className="text-xl font-black uppercase tracking-tight">Calendario</h2></div>
-          <p className="text-xs font-bold text-zinc-500 mb-4 bg-zinc-50 p-3 rounded-lg border border-zinc-200">
-            * Según el contrato de prestación de servicios firmado al darse de alta, la escuela se rige por el calendario laboral y escolar oficial.
-          </p>
-          <div className="max-h-64 overflow-y-auto space-y-2">
-            {schoolCalendar.length === 0 ? <p className="text-sm font-medium text-zinc-500">No hay festivos próximos registrados.</p> :
-              schoolCalendar.map((cal, i) => (
-                <div key={i} className={`p-3 rounded-xl border flex justify-between items-center ${cal.type === 'festivo' ? 'bg-red-50 border-red-100 text-red-800' : 'bg-purple-50 border-purple-100 text-purple-800'}`}>
-                  <div><span className="text-xs font-black uppercase tracking-widest opacity-60 block">{cal.type}</span><span className="font-bold text-sm">{cal.title || 'Día no lectivo'}</span></div>
-                  <span className="font-black text-sm">{cal.date}</span>
-                </div>
-              ))
-            }
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-2xl w-full p-8 shadow-2xl relative flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200">
+          <button onClick={() => setShowContract(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full z-10"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-black mb-6 shrink-0">
+            <FileText className="w-8 h-8" />
+            <h2 className="text-xl font-black uppercase tracking-tight leading-none">Contrato de Servicios</h2>
           </div>
-          <button onClick={() => setShowCalendarRules(false)} className="w-full mt-6 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest">Cerrar</button>
+          <div className="overflow-y-auto pr-2 text-sm text-slate-600 font-medium leading-relaxed flex-1 space-y-4 whitespace-pre-wrap">
+            {contractText}
+          </div>
+          <button onClick={() => setShowContract(false)} className="w-full mt-6 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shrink-0 shadow-lg hover:bg-zinc-800 transition-colors">Cerrar Contrato</button>
         </div>
       </div>
     );
@@ -510,7 +517,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 relative">
       <AbsenceModalOverlay />
       <GestionModalOverlay />
-      <CalendarRulesOverlay />
+      <ContractOverlay />
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
           <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>
@@ -559,7 +566,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
                       </div>
                       <p className={`font-bold uppercase text-[10px] tracking-widest mb-4 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>{holidayMatch.title || 'Escuela Cerrada'} • {classInfo.dateStr}</p>
                       <p className={`text-sm font-medium mb-4 ${isFestivo ? 'text-red-800' : 'text-purple-800'}`}>Tu próxima clase de {clase.subject} coincide con un día no lectivo oficial. La escuela permanecerá cerrada.</p>
-                      <button onClick={() => setShowCalendarRules(true)} className={`w-full py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-colors ${isFestivo ? 'bg-red-200 text-red-900 hover:bg-red-300' : 'bg-purple-200 text-purple-900 hover:bg-purple-300'}`}>Ver Calendario Escolar</button>
                     </div>
                   );
                 }
@@ -606,7 +612,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </button>
             </div>
 
-            {/* --- NUEVA SECCIÓN: EN TRÁMITE --- */}
+            {/* --- SECCIÓN: EN TRÁMITE --- */}
             {(pendingProcedures.length > 0 || pendingAbsences.length > 0) && (
               <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200 mt-6">
                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg mb-4 flex items-center gap-2">
@@ -644,13 +650,51 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </div>
             )}
             
+            {/* LINK SUTIL AL CONTRATO */}
             <div className="text-center mt-4">
-              <button onClick={() => setShowCalendarRules(true)} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4">Ver Calendario y Normativa (Contrato)</button>
+              <button onClick={() => setShowContract(true)} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4">Ver contrato de prestación de servicios</button>
             </div>
           </div>
         )}
 
-        {/* --- PESTAÑA 2: TABLÓN --- */}
+        {/* --- NUEVA PESTAÑA: CALENDARIO --- */}
+        {activeTab === 'calendar' && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+            <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
+              <div className="relative z-10">
+                <h2 className="text-2xl font-black uppercase tracking-tight">Calendario</h2>
+                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Días no lectivos oficiales</p>
+              </div>
+              <Calendar className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
+            </div>
+
+            <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
+               {schoolCalendar.length === 0 ? (
+                 <div className="text-center py-8">
+                   <Calendar className="w-12 h-12 text-zinc-200 mx-auto mb-3" />
+                   <p className="font-bold text-zinc-400 uppercase tracking-widest text-sm">No hay festivos registrados</p>
+                 </div>
+               ) : (
+                 <div className="space-y-3">
+                   {schoolCalendar.sort((a,b) => a.date.localeCompare(b.date)).map((cal, i) => {
+                     const isPast = cal.date < new Date().toISOString().split('T')[0];
+                     return (
+                       <div key={i} className={`p-4 rounded-2xl border flex justify-between items-center ${isPast ? 'bg-zinc-50 border-zinc-100 opacity-60' : cal.type === 'festivo' ? 'bg-red-50 border-red-100 text-red-900' : 'bg-purple-50 border-purple-100 text-purple-900'}`}>
+                         <div>
+                           <span className="text-[10px] font-black uppercase tracking-widest opacity-60 block">{cal.type}</span>
+                           <span className="font-bold text-sm">{cal.title || 'Día no lectivo'}</span>
+                         </div>
+                         <span className="font-black text-sm">{formatDateSpanish(cal.date)}</span>
+                       </div>
+                     );
+                   })}
+                 </div>
+               )}
+            </div>
+          </div>
+        )}
+
+        {/* --- PESTAÑA: TABLÓN --- */}
         {activeTab === 'news' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
@@ -680,7 +724,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
           </div>
         )}
 
-        {/* --- PESTAÑA 3: GESTIONES --- */}
+        {/* --- PESTAÑA: GESTIONES --- */}
         {activeTab === 'contact' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-zinc-100 border-2 border-zinc-200 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-sm relative overflow-hidden">
@@ -768,8 +812,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
       <nav className="fixed bottom-0 left-0 right-0 w-full bg-white border-t border-zinc-200 z-40 pb-3">
         <div className="flex justify-around items-center p-2 max-w-3xl mx-auto">
-          {[{id:'home', i:LayoutGrid, label:'Inicio'}, {id:'news', i:Info, label:'Avisos'}, {id:'contact', i:MessageSquare, label:'Gestiones'}].map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}><t.i className="w-6 h-6"/><span className="text-[10px] font-bold">{t.label}</span></button>
+          {[
+            {id:'home', i:LayoutGrid, label:'Inicio'}, 
+            {id:'calendar', i:Calendar, label:'Calendario'}, 
+            {id:'news', i:Info, label:'Avisos'}, 
+            {id:'contact', i:MessageSquare, label:'Gestiones'}
+          ].map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>
+              <t.i className="w-6 h-6"/>
+              <span className="text-[10px] font-bold">{t.label}</span>
+            </button>
           ))}
         </div>
       </nav>

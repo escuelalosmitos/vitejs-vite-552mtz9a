@@ -2,14 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { 
   Inbox, Users, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert,
-  ArrowRightLeft
+  ArrowRightLeft, PartyPopper, Palmtree, Lock
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
   const date = new Date(dateString);
-  return date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute:'2-digit' });
+  return date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
@@ -20,7 +20,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [gestiones, setGestiones] = useState([]);
   const [students, setStudents] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
-  const [settings, setSettings] = useState({ festivos: [], vacaciones: [], contract: '' });
+  const [settings, setSettings] = useState({ festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [] });
 
   // FORMULARIOS LOCALES
   const [searchStudent, setSearchStudent] = useState('');
@@ -46,7 +46,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
 
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => {
-      if (docSnap.exists()) setSettings(docSnap.data());
+      if (docSnap.exists()) setSettings({ ...settings, ...docSnap.data() });
       checkLoad();
     });
 
@@ -86,10 +86,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // --- FUNCIONES SETTINGS ---
-  const saveContract = async () => {
-    await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), { ...settings }, { merge: true });
-    alert('Contrato actualizado correctamente.');
+  // --- FUNCIONES SETTINGS GLOBALES ---
+  const saveGlobalSettings = async (newSettings) => {
+    await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSettings, { merge: true });
+    alert('Ajustes guardados correctamente.');
   };
 
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
@@ -100,7 +100,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
       
       {/* MENÚ LATERAL (PC) / SUPERIOR (MÓVIL) */}
-      <aside className="w-full md:w-72 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0">
+      <aside className="w-full md:w-72 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl">
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
           <div>
             <div className="flex items-center gap-3 text-white mb-1">
@@ -109,7 +109,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 hidden md:block">Panel de Administración</p>
           </div>
-          {/* Switcher Móvil */}
           <button onClick={switchToTeacher} className="md:hidden bg-zinc-800 text-white p-2 rounded-lg"><ArrowRightLeft className="w-5 h-5"/></button>
         </div>
 
@@ -227,7 +226,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   </div>
                   
                   <div className="flex gap-2 pt-4 border-t border-zinc-100">
-                    {/* MITOVERSO TOGGLE */}
                     <button 
                       onClick={() => toggleStudentService(student.id, 'hasMitoverso', student.hasMitoverso)}
                       className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${student.hasMitoverso ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-indigo-200'}`}
@@ -237,7 +235,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       <span className={`text-[9px] font-bold uppercase ${student.hasMitoverso ? 'text-indigo-500' : 'text-zinc-300'}`}>{student.hasMitoverso ? 'ON' : 'OFF'}</span>
                     </button>
 
-                    {/* MITOBOX TOGGLE */}
                     <button 
                       onClick={() => toggleStudentService(student.id, 'hasMitobox', student.hasMitobox)}
                       className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${student.hasMitobox ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-zinc-100 text-zinc-400 hover:border-blue-200'}`}
@@ -303,12 +300,103 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         {/* --- CONFIGURACIÓN GLOBAL --- */}
         {activeTab === 'settings' && (
-          <div className="space-y-6 animate-in fade-in">
+          <div className="space-y-8 animate-in fade-in">
             <header className="mb-8">
               <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Configuración</h2>
               <p className="text-zinc-500 font-medium">Ajustes globales y legales de la escuela.</p>
             </header>
 
+            {/* TARIFA CONVENIO */}
+            <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Lock className="w-5 h-5"/> Coste de Hora (Convenio)</h2>
+              <p className="text-zinc-500 mb-6 text-sm">Este valor se usará para calcular la nómina de todos los profesores.</p>
+              <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
+                <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-bold w-32 p-2 border-b-4 border-black outline-none bg-transparent" />
+                <span className="text-2xl font-bold">€ / hora</span>
+                <button onClick={() => saveGlobalSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider transition-colors shadow-md">Actualizar Valor</button>
+              </div>
+            </div>
+
+            {/* CALENDARIO ESCOLAR */}
+            <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Calendar className="w-5 h-5"/> Calendario Escolar</h2>
+              <p className="text-zinc-500 mb-8 text-sm">Bloquea días a nivel global. Los Festivos no suman a nómina. Las Vacaciones sumarán la media diaria del mes anterior.</p>
+              
+              <div className="flex flex-col sm:flex-row gap-3 mb-8">
+                <input id="adminDateInput" type="date" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold flex-1" />
+                <select id="adminDateType" className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl focus:border-black outline-none font-bold uppercase text-xs">
+                  <option value="festivo">Festivo</option>
+                  <option value="vacacion">Vacaciones</option>
+                </select>
+                <button onClick={() => { 
+                  const d = document.getElementById('adminDateInput').value;
+                  const t = document.getElementById('adminDateType').value;
+                  if(d) {
+                    const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]);
+                    if(!arr.includes(d)) {
+                      const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]};
+                      setSettings(s); saveGlobalSettings(s);
+                    }
+                  }
+                }} className="bg-black text-white px-8 py-4 rounded-2xl shadow-lg font-black uppercase text-[10px]"><Plus/></button>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Días Festivos</h4>
+                  <div className="space-y-2">
+                    {(!settings.festivos || settings.festivos.length === 0) && <p className="text-xs text-zinc-400 italic">No hay festivos.</p>}
+                    {settings.festivos?.sort().map(f => (
+                      <div key={f} className="flex justify-between p-3 bg-amber-50 rounded-xl text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-3 border-b pb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones</h4>
+                  <div className="space-y-2">
+                    {(!settings.vacaciones || settings.vacaciones.length === 0) && <p className="text-xs text-zinc-400 italic">No hay vacaciones.</p>}
+                    {settings.vacaciones?.sort().map(v => (
+                      <div key={v} className="flex justify-between p-3 bg-emerald-50 rounded-xl text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}}><Trash2 className="w-4 h-4 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* TAREAS HORA MUERTA */}
+            <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
+              <h2 className="text-xl font-bold uppercase mb-2 flex items-center gap-2 tracking-wide"><Check className="w-5 h-5"/> Tareas Generales (Hora Muerta)</h2>
+              <p className="text-zinc-500 mb-6 text-sm">Estas opciones aparecerán cuando un profesor tenga una hora libre entre clases.</p>
+              
+              <div className="flex flex-col sm:flex-row gap-2 mb-6">
+                <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras del aula..." className="flex-1 p-3 bg-zinc-50 border border-zinc-200 focus:border-black outline-none rounded-xl" />
+                <button 
+                  onClick={() => { 
+                    const val = document.getElementById('adminTaskInput').value;
+                    if(val) { 
+                      const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; 
+                      setSettings(s); saveGlobalSettings(s); 
+                      document.getElementById('adminTaskInput').value = ''; 
+                    } 
+                  }} 
+                  className="bg-black text-white px-6 py-3 rounded-xl font-bold uppercase text-xs tracking-wider flex items-center justify-center gap-2 hover:bg-zinc-800"
+                >
+                  <Plus className="w-4 h-4"/> Añadir
+                </button>
+              </div>
+              
+              <div className="space-y-3">
+                {settings.generalTasks?.length === 0 && <p className="text-zinc-400 italic text-sm p-4 text-center bg-zinc-50 rounded-xl">No hay tareas configuradas.</p>}
+                {settings.generalTasks?.map((t, i) => (
+                  <div key={i} className="flex justify-between items-center p-4 bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <span className="font-medium text-slate-700">{t}</span>
+                    <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors"><Trash2 className="w-5 h-5"/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* CONTRATO */}
             <div className="bg-white p-6 md:p-8 rounded-2xl border border-zinc-200 shadow-sm">
               <div className="flex items-center gap-3 mb-2">
                 <FileText className="w-6 h-6 text-black"/>
@@ -322,15 +410,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 className="w-full p-5 bg-zinc-50 border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-medium text-sm text-slate-700 min-h-[300px] resize-y mb-4"
                 placeholder="Pega aquí el texto completo del contrato de prestación de servicios..."
               />
-              <button onClick={saveContract} className="bg-black text-white px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-8 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
                 <Check className="w-4 h-4"/> Actualizar Contrato
               </button>
             </div>
             
-            <div className="bg-zinc-100 p-6 rounded-2xl border border-zinc-200 text-center">
-               <Calendar className="w-8 h-8 text-zinc-400 mx-auto mb-2"/>
-               <p className="text-sm font-bold text-zinc-500 uppercase tracking-widest">Para gestionar Festivos y Nóminas, usa la Vista de Profesor a Admin.</p>
-            </div>
           </div>
         )}
 

@@ -9,6 +9,7 @@ import { getFirestore } from 'firebase/firestore';
 // --- MÓDULOS ---
 import TeacherPortal from './components/TeacherPortal.jsx';
 import StudentPortal from './components/StudentPortal.jsx';
+import AdminPortal from './components/AdminPortal.jsx'; // <-- IMPORTAMOS EL MODO DIOS
 
 // --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {
@@ -36,6 +37,9 @@ export default function App() {
   // NUEVOS ESTADOS PARA GESTIONAR EL REGISTRO
   const [isLoginMode, setIsLoginMode] = useState(true); 
   const [authError, setAuthError] = useState(''); 
+  
+  // ESTADO PARA EL SWITCHER DEL ADMIN
+  const [viewMode, setViewMode] = useState('admin'); // 'admin' o 'teacher'
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -133,10 +137,27 @@ export default function App() {
   }
 
   // --- RUTEO INTELIGENTE ---
+  const isPaco = user.email === ADMIN_EMAIL;
+
+  // 1. Si es Paco y tiene la vista de Admin activada
+  if (isPaco && viewMode === 'admin') {
+    return (
+      <AdminPortal 
+        user={user} 
+        logout={handleLogout} 
+        db={db} 
+        appId={appId} 
+        switchToTeacher={() => setViewMode('teacher')} 
+      />
+    );
+  }
+
+  // 2. Si es un Alumno
   if (user.email.includes('alumno')) {
     return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
   }
 
+  // 3. Si es Profesor, o si Paco ha pulsado "Vista Profesor"
   return (
     <TeacherPortal 
       user={user} 

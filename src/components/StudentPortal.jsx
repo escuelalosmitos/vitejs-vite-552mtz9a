@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
@@ -108,11 +108,23 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   useEffect(() => {
     if (!profile?.id) return;
+    
+    // Escuchador del perfil en tiempo real para cambios de Mitobox/Mitoverso
+    const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
+      if (docSnap.exists()) {
+        setProfile(prev => ({ ...prev, ...docSnap.data() }));
+      }
+    });
+
     const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
     const unsubGestiones = onSnapshot(q, (snapshot) => {
       setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
-    return () => unsubGestiones();
+
+    return () => {
+      unsubProfile();
+      unsubGestiones();
+    };
   }, [profile?.id, db, appId]);
 
   const showToast = (msg, type = 'success') => {
@@ -207,7 +219,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
         email: user.email, 
         claimed: true, 
         instruments: [onboarding.instrument],
-        classes: onboarding.classId ? [onboarding.classId] : []
+        classes: onboarding.classId ? [onboarding.classId] : [],
+        hasMitobox: false,
+        hasMitoverso: false
     };
     await setDoc(doc(db, 'artifacts', appId, 'students', studentId), data);
     setProfile({ id: studentId, ...data });
@@ -272,18 +286,46 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
   };
 
+  // --- FUNCIONES EXTRAS (MITOBOX / MITOVERSO) ---
+  const requestMitoverso = () => {
+    const ok = window.confirm('Serás redirigido al portal de inscripciones de Tadosi.\n\n⚠️ MUY IMPORTANTE: Cuando rellenes tus datos, no olvides marcar la casilla "Tengo una suscripción y quiero otra" para que el sistema reconozca tu descuento de alumno.');
+    if (ok) window.open('https://qow.es/GKidLP', '_blank');
+  };
+
+  const requestMitobox = async () => {
+    const ok = window.confirm('Serás redirigido al portal de inscripciones de Tadosi para formalizar tu alta en la tarifa plana.\n\nAl continuar, también enviaremos un aviso a administración.');
+    if (ok) {
+      window.open('https://qow.es/wIXCp7', '_blank');
+      try {
+        const gestionId = `mbox-req-${Date.now()}`;
+        await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
+          studentId: profile.id,
+          studentName: profile.name,
+          studentEmail: profile.email,
+          type: 'alta_mitobox',
+          title: 'Solicitud Alta Mitobox',
+          details: 'El alumno ha iniciado el proceso de alta en la tarifa plana Mitobox a través de Tadosi.',
+          status: 'pendiente',
+          date: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
   const sendMitoboxReservation = async () => {
     if (!mboxDate || !mboxSede || !mboxInst || !mboxSelectedSlot) return;
     setIsSendingGestion(true);
     try {
-      const gestionId = `mbox-${Date.now()}`;
+      const gestionId = `mbox-res-${Date.now()}`;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
         studentName: profile.name,
         studentEmail: profile.email,
-        type: 'mitobox',
-        title: 'Reserva Mitobox',
-        details: `Reserva para ensayar: ${mboxInst}. Fecha: ${mboxDate}. Sede: ${mboxSede}. Hora: ${mboxSelectedSlot.time}h en ${mboxSelectedSlot.sala}`,
+        type: 'reserva_mitobox',
+        title: 'Reserva de Sala (Mitobox)',
+        details: `Reserva para ensayar: ${mboxInst}. Fecha: ${formatDateSpanish(mboxDate)}. Sede: ${mboxSede}. Hora: ${mboxSelectedSlot.time}h en ${mboxSelectedSlot.sala}`,
         status: 'pendiente',
         date: new Date().toISOString(),
         reservationDate: mboxDate
@@ -292,7 +334,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setMboxDate('');
       setMboxSelectedSlot(null);
       setMboxInst('');
-      showToast('Reserva Mitobox solicitada. Espera confirmación.');
+      showToast('Reserva de sala enviada. Espera confirmación.');
     } catch (e) {
       showToast('Error al reservar sala.', 'error');
     } finally {
@@ -301,7 +343,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const pendingAbsences = [];
-  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
+  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.type !== 'alta_mitobox'); 
   const todayStr = new Date().toISOString().split('T')[0];
   
   if (profile) {
@@ -476,17 +518,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
     let availableMboxSlots = [];
     if (mboxDate && mboxSede) {
       const targetDay = new Date(`${mboxDate}T00:00:00`).getDay();
-      // Buscamos clases que ocurran ese día de la semana y en esa sede
       const activeClassesThatDay = allClasses.filter(c => c.dayOfWeek === targetDay && c.sede === mboxSede);
-      
-      // Extraemos las horas a las que la escuela "existe" (hay profes)
       const activeTimes = [...new Set(activeClassesThatDay.map(c => c.time))].sort();
       
       activeTimes.forEach(t => {
-        // En esa hora 't', vemos qué salas están ocupadas
         const occupiedSalas = activeClassesThatDay.filter(c => c.time === t).map(c => c.sala);
         const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
-        // Y sacamos las que NO están ocupadas
         const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
         
         freeSalas.forEach(fs => {
@@ -506,12 +543,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
               <h2 className="text-xl font-black uppercase tracking-tight leading-none">Reservar Sala</h2>
               <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">Servicio Mitobox</p>
             </div>
-          </div>
-          
-          <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl mb-6">
-            <p className="text-xs text-blue-800 font-bold leading-relaxed">
-              Recuerda que para que tu reserva sea validada, debes tener activa la tarifa plana Mitobox (35€/mes) en tu suscripción de Tadosi. 
-            </p>
           </div>
 
           <div className="space-y-4 mb-6">
@@ -908,48 +939,79 @@ export default function StudentPortal({ user, logout, db, appId }) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               {/* MITOVERSO CARD */}
-              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full">
-                <div className="bg-indigo-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6">
-                  <MonitorPlay className="w-8 h-8 text-indigo-600"/>
+              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
+                {profile?.hasMitoverso && (
+                  <div className="absolute top-4 right-4 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                    <Star className="w-3 h-3"/> Suscripción Activa
+                  </div>
+                )}
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
+                  <MonitorPlay className="w-8 h-8"/>
                 </div>
                 <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitoverso</h3>
                 <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
                   Accede a nuestra plataforma de cursos online, audios y recursos exclusivos. Ideal para alumnos de guitarra que quieren avanzar a su ritmo desde casa.
                 </p>
-                <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
-                  <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
-                  <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
-                </div>
-                <button 
-                  onClick={() => {
-                    const ok = window.confirm('Serás redirigido al portal de inscripciones.\n\n⚠️ MUY IMPORTANTE: Cuando rellenes tus datos, no olvides marcar la casilla "Tengo una suscripción y quiero otra" para que el sistema reconozca tu descuento de alumno.');
-                    if(ok) window.open('https://app.tadosi.com', '_blank'); // <-- CAMBIA ESTE LINK POR EL DE TADOSI REAL
-                  }}
-                  className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
-                >
-                  Solicitar Acceso
-                </button>
+                {!profile?.hasMitoverso && (
+                  <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
+                    <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
+                    <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                  </div>
+                )}
+                
+                {profile?.hasMitoverso ? (
+                  <button 
+                    onClick={() => window.open('https://classroom.google.com/', '_blank')}
+                    className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-colors shadow-lg flex items-center justify-center gap-2"
+                  >
+                    Entrar a Classroom <ArrowRight className="w-4 h-4"/>
+                  </button>
+                ) : (
+                  <button 
+                    onClick={requestMitoverso}
+                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                  >
+                    Solicitar Acceso
+                  </button>
+                )}
               </div>
 
               {/* MITOBOX CARD */}
-              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full">
-                <div className="bg-blue-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6">
-                  <DoorOpen className="w-8 h-8 text-blue-600"/>
+              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
+                {profile?.hasMitobox && (
+                  <div className="absolute top-4 right-4 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                    <Star className="w-3 h-3"/> Tarifa Plana Activa
+                  </div>
+                )}
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
+                  <DoorOpen className="w-8 h-8"/>
                 </div>
                 <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
                 <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
                   ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
                 </p>
-                <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
-                  <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
-                  <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
-                </div>
-                <button 
-                  onClick={() => setMitoboxModal(true)}
-                  className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex items-center justify-center gap-2"
-                >
-                  <Calendar className="w-4 h-4"/> Reservar Sala
-                </button>
+                {!profile?.hasMitobox && (
+                  <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
+                    <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
+                    <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                  </div>
+                )}
+                
+                {profile?.hasMitobox ? (
+                  <button 
+                    onClick={() => setMitoboxModal(true)}
+                    className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex items-center justify-center gap-2"
+                  >
+                    <Calendar className="w-4 h-4"/> Reservar Sala
+                  </button>
+                ) : (
+                  <button 
+                    onClick={requestMitobox}
+                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                  >
+                    Solicitar Acceso
+                  </button>
+                )}
               </div>
 
             </div>
@@ -962,9 +1024,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
           {[
             {id:'home', i:LayoutGrid, label:'Inicio'}, 
             {id:'calendar', i:Calendar, label:'Calendario'}, 
+            {id:'extras', i:Sparkles, label:'Extras'},
             {id:'news', i:Info, label:'Avisos'}, 
-            {id:'contact', i:MessageSquare, label:'Gestiones'},
-            {id:'extras', i:Sparkles, label:'Extras'}
+            {id:'contact', i:MessageSquare, label:'Gestiones'}
           ].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>
               <t.i className="w-6 h-6"/>

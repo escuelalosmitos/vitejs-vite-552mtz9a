@@ -249,14 +249,32 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
-  // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Solo para este profe)
+ // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Mejorado para Recuperaciones)
   const notifications = useMemo(() => {
     if (isAdmin) {
+      // El Modo Dios lo ve TODO
       return gestiones.filter(g => g.status === 'pendiente');
     } else {
+      // El profesor ve lo suyo
       const myStudentIds = new Set();
-      recurringClasses.forEach(c => c.students?.forEach(s => myStudentIds.add(s.id)));
-      return gestiones.filter(g => g.status === 'pendiente' && myStudentIds.has(g.studentId));
+      const myClassIds = new Set(); // Recopilamos las IDs de las clases de este profe
+      
+      recurringClasses.forEach(c => {
+        myClassIds.add(c.id);
+        c.students?.forEach(s => myStudentIds.add(s.id));
+      });
+
+      return gestiones.filter(g => {
+        if (g.status !== 'pendiente') return false;
+
+        // CASO 1: Es una recuperación o cambio dirigido Específicamente a una clase de este profe
+        if (g.requestedClass && myClassIds.has(g.requestedClass)) return true;
+
+        // CASO 2: Es una gestión (baja, mantenimiento...) de un alumno titular suyo
+        if (myStudentIds.has(g.studentId)) return true;
+
+        return false;
+      });
     }
   }, [gestiones, recurringClasses, isAdmin]);
 

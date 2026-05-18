@@ -4,6 +4,9 @@ import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, coll
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
+// 👇 AQUÍ IMPORTAS LAS PREGUNTAS DESDE EL NUEVO ARCHIVO 👇
+import { TRIVIA_QUESTIONS } from './triviaQuestions';
+
 const getDayOfYear = () => {
   const now = new Date();
   const start = new Date(now.getFullYear(), 0, 0);

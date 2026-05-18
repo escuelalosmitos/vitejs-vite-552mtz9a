@@ -4,12 +4,12 @@ import { Music, Lock, RefreshCw, UserPlus } from 'lucide-react';
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, collection, query, where, getDocs } from 'firebase/firestore';
 
 // --- MÓDULOS ---
 import TeacherPortal from './components/TeacherPortal.jsx';
 import StudentPortal from './components/StudentPortal.jsx';
-import AdminPortal from './components/AdminPortal.jsx'; // <-- IMPORTAMOS EL MODO DIOS
+import AdminPortal from './components/AdminPortal.jsx'; 
 
 // --- CONFIGURACIÓN DE FIREBASE ---
 const firebaseConfig = {
@@ -34,11 +34,11 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   
-  // NUEVOS ESTADOS PARA GESTIONAR EL REGISTRO
+  // ESTADOS DE AUTENTICACIÓN Y ERRORES
   const [isLoginMode, setIsLoginMode] = useState(true); 
   const [authError, setAuthError] = useState(''); 
   
-  // ESTADO PARA EL SWITCHER DEL ADMIN
+  // ESTADO PARA EL ENTRADA/SALIDA DEL ADMIN
   const [viewMode, setViewMode] = useState('admin'); // 'admin' o 'teacher'
 
   useEffect(() => {
@@ -51,24 +51,36 @@ export default function App() {
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
+    const cleanEmail = email.toLowerCase().trim();
+
     try {
       if (isLoginMode) {
-        // MODO ENTRAR
-        await signInWithEmailAndPassword(auth, email, password);
+        // MODO LOGIN NORMAL
+        await signInWithEmailAndPassword(auth, cleanEmail, password);
       } else {
-        // MODO REGISTRO
-        await createUserWithEmailAndPassword(auth, email, password);
+        // --- EL PORTERO ANTI-BOTS (MODO REGISTRO REAL) ---
+        // 1. Buscamos si el email existe en el Archivador (Firestore)
+        const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
+        const snapshot = await getDocs(q);
+
+        // 2. Si no ha sido introducido previamente por un profesor y no eres Paco, se cancela la creación.
+        if (snapshot.empty && cleanEmail !== ADMIN_EMAIL) {
+          setAuthError("Acceso denegado: Este email no consta en la base de datos de alumnos activos.");
+          return; // <-- BLOQUEO: Impide que Firebase registre la cuenta basura
+        }
+
+        // 3. Si es un alumno real pre-autorizado, le permitimos crear su cuenta y contraseña propia
+        await createUserWithEmailAndPassword(auth, cleanEmail, password);
       }
     } catch (err) {
-      // TRADUCCIÓN DE ERRORES AL ESPAÑOL PARA EL USUARIO
       if (err.code === 'auth/email-already-in-use') {
-        setAuthError("Este email ya está registrado. Inicia sesión.");
+        setAuthError("Este email ya está registrado. Por favor, inicia sesión.");
       } else if (err.code === 'auth/weak-password') {
-        setAuthError("La contraseña debe tener al menos 6 caracteres.");
+        setAuthError("La contraseña es poco segura (Mínimo 6 caracteres).");
       } else if (err.code === 'auth/invalid-credential') {
-        setAuthError("Email o contraseña incorrectos.");
+        setAuthError("El email o la contraseña son incorrectos.");
       } else {
-        setAuthError("Error: " + err.message);
+        setAuthError("Error de sincronización: " + err.message);
       }
     }
   };
@@ -81,7 +93,7 @@ export default function App() {
     </div>
   );
 
-  // --- PANTALLA UNIFICADA DE LOGIN / REGISTRO ---
+  // --- INTERFAZ DE LOGIN / REGISTRO ---
   if (!user) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4 font-sans text-slate-800">
@@ -89,11 +101,11 @@ export default function App() {
           <div className="bg-black text-white p-4 rounded-2xl mb-6 inline-block rotate-3"><Music className="w-8 h-8"/></div>
           <h1 className="text-3xl font-black uppercase tracking-tighter mb-1">Los Mitos</h1>
           <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-8">
-            {isLoginMode ? 'Acceso al portal' : 'Crea tu cuenta gratis'}
+            {isLoginMode ? 'Acceso al portal' : 'Reivindicar cuenta de alumno'}
           </p>
           
           {authError && (
-            <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100">
+            <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100 animate-in fade-in">
               {authError}
             </div>
           )}
@@ -101,7 +113,7 @@ export default function App() {
           <form onSubmit={handleAuth} className="space-y-4">
             <input 
               type="email" 
-              placeholder="Tu Email" 
+              placeholder="Tu Correo Electrónico" 
               required 
               value={email} 
               onChange={e => setEmail(e.target.value)} 
@@ -109,7 +121,7 @@ export default function App() {
             />
             <input 
               type="password" 
-              placeholder="Contraseña (mín. 6 caracteres)" 
+              placeholder="Contraseña" 
               required 
               value={password} 
               onChange={e => setPassword(e.target.value)} 
@@ -117,18 +129,17 @@ export default function App() {
             />
             <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-sm mt-4 flex justify-center items-center gap-2 transition-all active:scale-95 shadow-md">
               {isLoginMode ? <Lock className="w-4 h-4"/> : <UserPlus className="w-4 h-4"/>} 
-              {isLoginMode ? 'Entrar al Ecosistema' : 'Crear Cuenta'}
+              {isLoginMode ? 'Entrar al Ecosistema' : 'Crear mi Contraseña'}
             </button>
           </form>
 
-          {/* BOTÓN PARA CAMBIAR ENTRE LOGIN Y REGISTRO */}
           <div className="mt-8 pt-6 border-t border-zinc-100">
             <button 
               type="button"
               onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); }}
               className="text-sm font-bold text-zinc-500 hover:text-black transition-colors"
             >
-              {isLoginMode ? '¿No tienes cuenta? Regístrate aquí' : '¿Ya tienes cuenta? Inicia sesión'}
+              {isLoginMode ? '¿Primera vez aquí? Activa tu cuenta' : '¿Ya tienes contraseña? Inicia sesión'}
             </button>
           </div>
         </div>
@@ -136,10 +147,11 @@ export default function App() {
     );
   }
 
-  // --- RUTEO INTELIGENTE ---
+  // --- RUTEO INTELIGENTE POR DOMINIO CORPORATIVO ---
   const isPaco = user.email === ADMIN_EMAIL;
+  const isTeacher = user.email.toLowerCase().endsWith('@escuelalosmitos.com');
 
-  // 1. Si es Paco y tiene la vista de Admin activada
+  // 1. Caso Especial: Si es Paco y tiene el conmutador en Modo Admin (Dios)
   if (isPaco && viewMode === 'admin') {
     return (
       <AdminPortal 
@@ -152,21 +164,22 @@ export default function App() {
     );
   }
 
-  // 2. Si es un Alumno
-  if (user.email.includes('alumno')) {
-    return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
+  // 2. Si el correo pertenece al dominio de la escuela, se le presenta el portal de profesores
+  if (isTeacher) {
+    return (
+      <TeacherPortal 
+        user={user} 
+        logout={handleLogout} 
+        db={db} 
+        auth={auth} 
+        appId={appId} 
+        ADMIN_EMAIL={ADMIN_EMAIL}
+        APPS_SCRIPT_URL={APPS_SCRIPT_URL}
+        switchToAdmin={() => setViewMode('admin')}
+      />
+    );
   }
 
-  // 3. Si es Profesor, o si Paco ha pulsado "Vista Profesor"
-  return (
-    <TeacherPortal 
-      user={user} 
-      logout={handleLogout} 
-      db={db} 
-      auth={auth} 
-      appId={appId} 
-      ADMIN_EMAIL={ADMIN_EMAIL}
-      APPS_SCRIPT_URL={APPS_SCRIPT_URL}
-    />
-  );
+  // 3. Cualquier otro dominio externo del mundo entra directamente al portal de alumnos/familias
+  return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
 }

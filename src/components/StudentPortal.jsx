@@ -133,30 +133,44 @@ export default function StudentPortal({ user, logout, db, appId }) {
       }
     });
 
-    // --- NUEVO: RADAR DE CLASES EN TIEMPO REAL ---
-    const classesQuery = collectionGroup(db, 'recurringClasses');
-    const unsubClasses = onSnapshot(classesQuery, (snapshot) => {
-      const foundClasses = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.students && data.students.some(s => s.id === profile.id)) {
-          foundClasses.push({ id: doc.id, refPath: doc.ref.path, ...data });
-        }
-      });
-      setMyClasses(foundClasses);
-    });
+ // --- NUEVO: RADAR DE CLASES EN TIEMPO REAL (TODAS Y LAS MÍAS) ---
+  useEffect(() => {
+    if (!profile?.id) return;
+    
+    const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
+      if (docSnap.exists()) {
+        setProfile(prev => ({ ...prev, ...docSnap.data() }));
+      }
+    });
 
-    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
-    const unsubGestiones = onSnapshot(q, (snapshot) => {
-      setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    const classesQuery = collectionGroup(db, 'recurringClasses');
+    const unsubClasses = onSnapshot(classesQuery, (snapshot) => {
+      const all = [];
+      const mine = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        const classObj = { id: doc.id, refPath: doc.ref.path, ...data };
+        all.push(classObj); // Guardamos la clase para el motor Mitobox
+        
+        if (data.students && data.students.some(s => s.id === profile.id)) {
+          mine.push(classObj); // Guardamos la clase para la agenda personal
+        }
+      });
+      setAllClasses(all);
+      setMyClasses(mine);
+    });
 
-    return () => {
-      unsubProfile();
-      unsubClasses(); // <-- Apagamos el radar al salir
-      unsubGestiones();
-    };
-  }, [profile?.id, db, appId]);
+    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
+    const unsubGestiones = onSnapshot(q, (snapshot) => {
+      setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    return () => {
+      unsubProfile();
+      unsubClasses(); 
+      unsubGestiones();
+    };
+  }, [profile?.id, db, appId]);
 
   // LÓGICA DEL TEMPORIZADOR DEL RETO DIARIO
   useEffect(() => {
@@ -614,9 +628,14 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
     // MOTOR INTELIGENTE DE BÚSQUEDA DE SALAS
     let availableMboxSlots = [];
     if (mboxDate && mboxSede) {
-      const targetDay = new Date(`${mboxDate}T00:00:00`).getDay();
+      // Usamos el helper global para evitar bugs de zona horaria en Safari/iOS
+      const targetDay = getDayOfWeek(mboxDate);
       
-      const allScheduledClasses = allClasses.filter(c => c.dayOfWeek === targetDay && c.sede === mboxSede);
+      // Escudo: (c.sede || 'Tarragona') por si hay clases antiguas sin sede
+      const allScheduledClasses = allClasses.filter(c => 
+        c.dayOfWeek === targetDay && 
+        (c.sede || 'Tarragona') === mboxSede
+      );
 
       const aliveClasses = allScheduledClasses.filter(c => {
         if (c.cancelledDates?.includes(mboxDate)) return false; 
@@ -628,6 +647,7 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
           return true;
         });
 
+        // Si la clase no tiene alumnos que vayan a asistir, el centro no abre
         if (activeStudents.length === 0) return false;
         return true;
       });
@@ -635,7 +655,8 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
       const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
       
       activeTimes.forEach(t => {
-        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala);
+        // Escudo extra por si c.sala no estuviera definida en clases viejas
+        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala || 'Sala 1');
         const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
         const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
         

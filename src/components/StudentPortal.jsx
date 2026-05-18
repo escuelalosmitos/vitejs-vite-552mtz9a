@@ -124,25 +124,39 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return () => unsubAnnouncements();
   }, [user.email]);
 
-  useEffect(() => {
-    if (!profile?.id) return;
-    
-    const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
-      if (docSnap.exists()) {
-        setProfile(prev => ({ ...prev, ...docSnap.data() }));
-      }
-    });
+ useEffect(() => {
+    if (!profile?.id) return;
+    
+    const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
+      if (docSnap.exists()) {
+        setProfile(prev => ({ ...prev, ...docSnap.data() }));
+      }
+    });
 
-    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
-    const unsubGestiones = onSnapshot(q, (snapshot) => {
-      setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    // --- NUEVO: RADAR DE CLASES EN TIEMPO REAL ---
+    const classesQuery = collectionGroup(db, 'recurringClasses');
+    const unsubClasses = onSnapshot(classesQuery, (snapshot) => {
+      const foundClasses = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.students && data.students.some(s => s.id === profile.id)) {
+          foundClasses.push({ id: doc.id, refPath: doc.ref.path, ...data });
+        }
+      });
+      setMyClasses(foundClasses);
+    });
 
-    return () => {
-      unsubProfile();
-      unsubGestiones();
-    };
-  }, [profile?.id, db, appId]);
+    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
+    const unsubGestiones = onSnapshot(q, (snapshot) => {
+      setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    return () => {
+      unsubProfile();
+      unsubClasses(); // <-- Apagamos el radar al salir
+      unsubGestiones();
+    };
+  }, [profile?.id, db, appId]);
 
   // LÓGICA DEL TEMPORIZADOR DEL RETO DIARIO
   useEffect(() => {

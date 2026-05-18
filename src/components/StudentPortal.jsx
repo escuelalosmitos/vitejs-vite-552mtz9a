@@ -19,6 +19,37 @@ const getDayName = (dayIndex) => {
   const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
   return days[dayIndex];
 };
+// --- HELPERS FALTANTES PARA LAS CLASES Y NÓMINAS ---
+const getDayOfWeek = (dateString) => {
+  if (!dateString) return 0;
+  const [year, month, day] = dateString.split('-');
+  return new Date(year, month - 1, day).getDay();
+};
+
+const normalizeNumber = (value) => {
+  const number = Number(String(value).replace(',', '.'));
+  return Number.isFinite(number) ? number : 0;
+};
+
+const generateTicketDates = (dateString) => {
+  if (!dateString) return { validFrom: '', validUntil: '' };
+  const [y, m] = dateString.split('-').map(Number);
+  let nextY = y;
+  let nextM = m + 1;
+  if (nextM > 12) { nextM = 1; nextY++; }
+  const validFrom = `${nextY}-${String(nextM).padStart(2, '0')}-01`;
+  const lastDay = new Date(nextY, nextM, 0).getDate();
+  const validUntil = `${nextY}-${String(nextM).padStart(2, '0')}-${lastDay}`;
+  return { validFrom, validUntil };
+};
+
+const getPreviousMonthStr = (currentMonthStr) => { 
+  const [y, m] = currentMonthStr.split('-').map(Number);
+  let prevM = m - 1;
+  let prevY = y;
+  if (prevM === 0) { prevM = 12; prevY--; }
+  return `${prevY}-${String(prevM).padStart(2, '0')}`;
+};
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';

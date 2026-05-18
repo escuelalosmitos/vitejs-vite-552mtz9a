@@ -124,16 +124,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return () => unsubAnnouncements();
   }, [user.email]);
 
- useEffect(() => {
-    if (!profile?.id) return;
-    
-    const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
-      if (docSnap.exists()) {
-        setProfile(prev => ({ ...prev, ...docSnap.data() }));
-      }
-    });
-
- // --- NUEVO: RADAR DE CLASES EN TIEMPO REAL (TODAS Y LAS MÍAS) ---
   useEffect(() => {
     if (!profile?.id) return;
     
@@ -205,19 +195,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const fetchAllClassesAndCalendar = async () => {
     try {
-      const classesQuery = collectionGroup(db, 'recurringClasses');
-      const classesSnap = await getDocs(classesQuery);
-      const classesList = [];
-      classesSnap.forEach(doc => {
-        classesList.push({ id: doc.id, refPath: doc.ref.path, ...doc.data() });
-      });
-      setAllClasses(classesList);
-
       const calSnap = await getDocs(collection(db, 'artifacts', appId, 'calendar'));
       const calList = calSnap.docs.map(d => d.data());
       setSchoolCalendar(calList);
     } catch (e) {
-      console.log("No se pudo cargar calendario/clases extra");
+      console.log("No se pudo cargar calendario");
     }
   };
 
@@ -239,18 +221,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const fetchRealStudentData = async (studentId) => {
     try {
-      const classesQuery = collectionGroup(db, 'recurringClasses');
-      const classesSnap = await getDocs(classesQuery);
-      
-      const foundClasses = [];
-      classesSnap.forEach(doc => {
-        const data = doc.data();
-        if (data.students && data.students.some(s => s.id === studentId)) {
-          foundClasses.push({ id: doc.id, refPath: doc.ref.path, ...data });
-        }
-      });
-      setMyClasses(foundClasses);
-
       const ticketsQuery = collectionGroup(db, 'tickets');
       const ticketsSnap = await getDocs(ticketsQuery);
       
@@ -314,7 +284,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         type: 'aviso_ausencia',
         title: `Falta a clase: ${absenceModal.clase.subject}`,
         details: `El alumno no asistirá el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
-        requestedClass: absenceModal.clase.id, // <-- Esto hace que le llegue a su profe
+        requestedClass: absenceModal.clase.id, 
         status: 'pendiente',
         date: new Date().toISOString()
       });
@@ -422,8 +392,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   // --- LÓGICA DE TRIVIA ---
-  // Multiplicamos por 137 (número primo) para que salte de categoría cada día sin repetir ninguna en todo el año.
-const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
+  const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
   const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
 
@@ -628,10 +597,8 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
     // MOTOR INTELIGENTE DE BÚSQUEDA DE SALAS
     let availableMboxSlots = [];
     if (mboxDate && mboxSede) {
-      // Usamos el helper global para evitar bugs de zona horaria en Safari/iOS
       const targetDay = getDayOfWeek(mboxDate);
       
-      // Escudo: (c.sede || 'Tarragona') por si hay clases antiguas sin sede
       const allScheduledClasses = allClasses.filter(c => 
         c.dayOfWeek === targetDay && 
         (c.sede || 'Tarragona') === mboxSede
@@ -647,7 +614,6 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
           return true;
         });
 
-        // Si la clase no tiene alumnos que vayan a asistir, el centro no abre
         if (activeStudents.length === 0) return false;
         return true;
       });
@@ -655,7 +621,6 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
       const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
       
       activeTimes.forEach(t => {
-        // Escudo extra por si c.sala no estuviera definida en clases viejas
         const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala || 'Sala 1');
         const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
         const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));

@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup } from 'firebase/firestore';
 
@@ -154,8 +154,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
-  // --- CÁLCULOS ANALÍTICOS ---
+ // --- CÁLCULOS ANALÍTICOS ---
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
+  const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30); // Guardamos las últimas 30 cerradas
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
   const rankAnnual = students.filter(s => s.triviaVictories > 0).sort((a,b) => b.triviaVictories - a.triviaVictories).slice(0,10);
   const rankGlobal = students.filter(s => (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) > 0)
@@ -306,6 +307,50 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
               </div>
             )}
+
+            {/* TABLA DE HISTORIAL DE TRÁMITES CERRADOS */}
+            {resolvedGestiones.length > 0 && (
+              <div className="mt-12 pt-8 border-t border-zinc-200">
+                <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
+                  <History className="w-5 h-5 text-zinc-400"/> Historial de Trámites (Cerrados)
+                </h3>
+                <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden opacity-80 hover:opacity-100 transition-opacity">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
+                          <th className="p-4 font-black">Fecha</th>
+                          <th className="p-4 font-black">Alumno</th>
+                          <th className="p-4 font-black">Tipo</th>
+                          <th className="p-4 font-black">Detalles</th>
+                          <th className="p-4 font-black text-right">Estado Final</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-sm font-medium text-slate-700">
+                        {resolvedGestiones.map(g => (
+                          <tr key={g.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
+                            <td className="p-4 whitespace-nowrap text-zinc-500">{formatDateSpanish(g.date)}</td>
+                            <td className="p-4 font-black text-black">{g.studentName}</td>
+                            <td className="p-4">
+                              <span className="px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest bg-zinc-200 text-zinc-800">
+                                {g.type.replace('_', ' ')}
+                              </span>
+                            </td>
+                            <td className="p-4 max-w-md truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</td>
+                            <td className="p-4 text-right whitespace-nowrap">
+                              <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                                {g.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
           </div>
         )}
 

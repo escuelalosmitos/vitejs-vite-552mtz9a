@@ -1,4 +1,4 @@
-const TRIVIA_QUESTIONS = [
+export const TRIVIA_QUESTIONS = [
   // Teoría [0-49]
   { q: "¿Cuántas líneas tiene un pentagrama?", options: ["4", "5", "6", "7"], correct: 1 },
   { q: "¿Qué figura musical dura 4 tiempos en 4/4?", options: ["Blanca", "Negra", "Redonda", "Corchea"], correct: 2 },

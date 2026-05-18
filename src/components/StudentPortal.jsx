@@ -280,12 +280,31 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setAbsenceModal({ clase, ...info });
   };
 
-  const confirmAbsence = async (wantsTicket) => {
+ const confirmAbsence = async (wantsTicket) => {
     if (!absenceModal || !profile) return;
-    const status = (absenceModal.diffHours >= 16 && wantsTicket) ? 'notified' : 'notified_no_ticket';
+    
+    const isLate = absenceModal.diffHours < 16;
+    const status = (!isLate && wantsTicket) ? 'notified' : 'notified_no_ticket';
+    
     try {
+      // 1. MAGIA INVISIBLE: Marcar al alumno en la lista de clase
       const classRef = doc(db, absenceModal.clase.refPath);
       await setDoc(classRef, { exceptions: { [absenceModal.dateStr]: { [profile.id]: status } } }, { merge: true });
+      
+      // 2. NUEVO: Mandar un Aviso a la bandeja del Profesor (y al Modo Dios)
+      const gestionId = `falta-${Date.now()}`;
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
+        studentId: profile.id,
+        studentName: profile.name,
+        studentEmail: profile.email,
+        type: 'aviso_ausencia',
+        title: `Falta a clase: ${absenceModal.clase.subject}`,
+        details: `El alumno no asistirá el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
+        requestedClass: absenceModal.clase.id, // <-- Esto hace que le llegue a su profe
+        status: 'pendiente',
+        date: new Date().toISOString()
+      });
+
       setAbsenceModal(null);
       showToast('Aviso enviado correctamente al profesor.');
       await fetchRealStudentData(profile.id);

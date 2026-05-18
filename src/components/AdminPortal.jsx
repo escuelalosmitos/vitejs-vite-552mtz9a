@@ -337,33 +337,53 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       <th className="p-4 font-black text-center">Estado (Alta/Mantenimiento)</th>
                     </tr>
                   </thead>
-                  <tbody className="text-sm font-medium text-slate-700">
-                    {students.filter(s => s.name.toLowerCase().includes(searchStudent.toLowerCase())).map(student => {
-                      const isCongelado = student.globalStatus === 'congelado';
-                      return (
-                        <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-                          <td className="p-4">
-                            <div className={`font-black ${isCongelado ? 'text-zinc-400 line-through' : 'text-slate-900'}`}>{student.name}</div>
-                            <div className="text-[10px] text-zinc-400 font-bold">{student.email || 'Sin email'}</div>
-                          </td>
-                          <td className="p-4 text-center">
-                            <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
-                              {student.hasMitoverso ? 'ON' : 'OFF'}
-                            </button>
-                          </td>
-                          <td className="p-4 text-center">
-                            <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
-                              {student.hasMitobox ? 'ON' : 'OFF'}
-                            </button>
-                          </td>
-                          <td className="p-4 text-center">
-                            <button onClick={() => toggleStudentToggle(student.id, 'globalStatus', student.globalStatus)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${!isCongelado ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200'}`}>
-                              {!isCongelado ? 'ACTIVO' : 'CONGELADO'}
-                            </button>
-                          </td>
-                        </tr>
+                 <tbody className="text-sm font-medium text-slate-700">
+                    {(() => {
+                      // 1. Buscamos qué alumnos están realmente matriculados en alguna clase de los profes
+                      const alumnosMatriculados = new Set();
+                      allClasses.forEach(c => {
+                        (c.students || []).forEach(s => alumnosMatriculados.add(s.id));
+                      });
+
+                      // 2. Filtramos la base de datos cruzándola con los matriculados y la barra de búsqueda
+                      const crmStudents = students.filter(s => 
+                        alumnosMatriculados.has(s.id) && 
+                        s.name.toLowerCase().includes(searchStudent.toLowerCase())
                       );
-                    })}
+
+                      if (crmStudents.length === 0) {
+                        return <tr><td colSpan="4" className="p-8 text-center text-zinc-400 italic">No se encontraron alumnos activos.</td></tr>;
+                      }
+
+                      return crmStudents.map(student => {
+                        const isCongelado = student.globalStatus === 'congelado';
+                        return (
+                          <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
+                            <td className="p-4">
+                              <div className={`font-black ${isCongelado ? 'text-zinc-400 line-through' : 'text-slate-900'}`}>{student.name}</div>
+                              <div className="text-[10px] text-zinc-400 font-bold">{student.email || 'Sin email'}</div>
+                            </td>
+                            <td className="p-4 text-center">
+                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
+                                {student.hasMitoverso ? 'ON' : 'OFF'}
+                              </button>
+                            </td>
+                            <td className="p-4 text-center">
+                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
+                                {student.hasMitobox ? 'ON' : 'OFF'}
+                              </button>
+                            </td>
+                            
+                            {/* ESTA ES LA ETIQUETA INFORMATIVA (SIN BOTÓN) */}
+                            <td className="p-4 text-center">
+                              <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${!isCongelado ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
+                                {!isCongelado ? 'ACTIVO' : 'CONGELADO'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>

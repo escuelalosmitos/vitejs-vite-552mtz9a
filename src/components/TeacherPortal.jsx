@@ -42,7 +42,8 @@ import {
   onSnapshot,
   doc,
   setDoc,
-  deleteDoc
+  deleteDoc,
+  updateDoc
 } from 'firebase/firestore';
 
 // --- CONSTANTES DEL NEGOCIO (V2.0) ---
@@ -249,7 +250,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
- // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Mejorado para Recuperaciones)
+  // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Mejorado para Recuperaciones)
   const notifications = useMemo(() => {
     if (isAdmin) {
       // El Modo Dios lo ve TODO
@@ -286,6 +287,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const showNotification = (msg) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3000);
+  };
+
+  const dismissNotification = async (id) => {
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', id), { status: 'completado' });
+    } catch (e) {
+      console.error("Error al ocultar notificación", e);
+    }
   };
 
   const recordsForSelectedDate = useMemo(() => {
@@ -643,7 +652,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       let finalExceptions = currentSession.exceptions || {};
 
       if (isFutureDate && !currentSession.isNew && !currentSession.isSubstitution) {
-        const exceptionsForDate = {};
+        const exceptionsForDate = { ...(currentSession.exceptions?.[date] || {}) }; 
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
               exceptionsForDate[s.id] = s.status; 
@@ -1521,18 +1530,27 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {notifications.map(n => (
                   <div key={n.id} className="bg-white border-2 border-zinc-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
-                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'cambio_horario' ? 'bg-blue-50 text-blue-500' : 'bg-emerald-50 text-emerald-500'}`}>
-                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'cambio_horario' ? <RefreshCcw className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
+                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : 'bg-emerald-50 text-emerald-500'}`}>
+                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
                     </div>
-                    <div>
+                    <div className="flex-1">
                       <h3 className="font-black text-lg uppercase tracking-tight">{n.studentName}</h3>
-                      <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">Solicita: {n.title}</p>
+                      <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">
+                        {n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`}
+                      </p>
                       <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
                         <p className="text-sm font-medium text-zinc-600 italic">"{n.details || 'Sin detalles adicionales'}"</p>
                       </div>
                       {n.targetMonth && (
                         <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mt-3">Para el mes de: {n.targetMonth}</p>
                       )}
+                      
+                      <div className="mt-4 pt-4 border-t border-zinc-100">
+                        <button onClick={() => dismissNotification(n.id)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                          <Check className="w-4 h-4"/> Enterado / Ocultar
+                        </button>
+                      </div>
+
                     </div>
                   </div>
                 ))}

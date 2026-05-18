@@ -34,7 +34,8 @@ import {
   PlusCircle,
   CheckCircle,
   ShieldAlert,
-  LayoutGrid
+  LayoutGrid,
+  FileText
 } from 'lucide-react';
 
 import {
@@ -129,6 +130,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [isSendingReport, setIsSendingReport] = useState(false);
   
   const [deadHourModal, setDeadHourModal] = useState(null);
+  const [notesModal, setNotesModal] = useState(null); // NUEVO ESTADO: Bloc de notas del alumno
 
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
@@ -253,12 +255,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Mejorado para Recuperaciones)
   const notifications = useMemo(() => {
     if (isAdmin) {
-      // El Modo Dios lo ve TODO
       return gestiones.filter(g => g.status === 'pendiente');
     } else {
-      // El profesor ve lo suyo
       const myStudentIds = new Set();
-      const myClassIds = new Set(); // Recopilamos las IDs de las clases de este profe
+      const myClassIds = new Set();
       
       recurringClasses.forEach(c => {
         myClassIds.add(c.id);
@@ -267,13 +267,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
       return gestiones.filter(g => {
         if (g.status !== 'pendiente') return false;
-
-        // CASO 1: Es una recuperación o cambio dirigido Específicamente a una clase de este profe
         if (g.requestedClass && myClassIds.has(g.requestedClass)) return true;
-
-        // CASO 2: Es una gestión (baja, mantenimiento...) de un alumno titular suyo
         if (myStudentIds.has(g.studentId)) return true;
-
         return false;
       });
     }
@@ -452,13 +447,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         dayOfWeek: scheduledClass.dayOfWeek,
         isRecurring: true,
         exceptions: scheduledClass.exceptions || {}, 
-      students: (scheduledClass.students || []).map(s => {
-  let currentStatus = s.isPaused ? 'paused' : 'present';
-  if (exceptionsToday[s.id]) {
-    currentStatus = exceptionsToday[s.id];
-  }
-  return { ...s, status: currentStatus };
-}),
+        students: (scheduledClass.students || []).map(s => {
+          // Lógica correcta: la clase manda, pero las excepciones diarias prevalecen
+          let currentStatus = s.isPaused ? 'paused' : 'present';
+          if (exceptionsToday[s.id]) {
+            currentStatus = exceptionsToday[s.id];
+          }
+          return { ...s, status: currentStatus };
+        }),
         newStudentName: '',
         newStudentEmail: '',
         isAddingRecovery: false,
@@ -526,19 +522,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  const togglePauseStudent = (id) => {
-    setCurrentSession({
-      ...currentSession,
-      students: currentSession.students.map(s => {
-        if (s.id === id) {
-          const newlyPaused = !s.isPaused;
-          return { ...s, isPaused: newlyPaused, status: newlyPaused ? 'paused' : 'present' };
-        }
-        return s;
-      })
-    });
-  };
-
   const addStudent = async () => {
     const studentName = currentSession.newStudentName.trim();
     const studentEmail = (currentSession.newStudentEmail || '').trim().toLowerCase();
@@ -569,7 +552,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           email: studentEmail,
           claimed: false,
           instruments: [currentSession.subject],
-          classes: [currentSession.classId]
+          classes: [currentSession.classId],
+          internalNotes: '' // Campo creado por defecto
         });
       } catch (error) {
         console.error("Error creando alumno global:", error);
@@ -601,7 +585,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           email: studentEmail,
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
-          isPaused: false
+          isPaused: existingStudent?.globalStatus === 'congelado' || false
         }
       ],
       newStudentName: '',
@@ -961,7 +945,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               Cancelar
             </button>
             
-            {/* BOTÓN: RENUNCIAR */}
             <button 
               onClick={() => {
                 const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
@@ -980,6 +963,58 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               className="w-full bg-black text-white font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-30 transition-all hover:bg-zinc-800"
             >
               Confirmar Tarea
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // NUEVO MODAL: BLOC DE NOTAS DEL ALUMNO
+  const NotesModalOverlay = () => {
+    if (!notesModal) return null;
+    const globalStudentInfo = globalStudents.find(s => s.id === notesModal.id);
+    const [text, setText] = useState(globalStudentInfo?.internalNotes || '');
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+      setSaving(true);
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'students', notesModal.id), { internalNotes: text });
+        showNotification({ type: 'success', text: 'Notas internas guardadas.' });
+        setNotesModal(null);
+      } catch (e) {
+        showNotification({ type: 'error', text: 'Error al guardar las notas.' });
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
+          <button onClick={() => setNotesModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-indigo-600 mb-2">
+            <FileText className="w-8 h-8" />
+            <h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2>
+          </div>
+          <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
+
+          <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
+            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos, observaciones médicas o evolución académica.</p>
+          </div>
+
+          <textarea 
+            value={text} 
+            onChange={e => setText(e.target.value)} 
+            placeholder="Ej: Es el hermano menor de Hugo. Alérgico a los cacahuetes. Le cuesta la lectura rítmica..."
+            className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6 transition-colors"
+          />
+
+          <div className="flex gap-4">
+            <button onClick={() => setNotesModal(null)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">Cancelar</button>
+            <button onClick={handleSave} disabled={saving} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
+              {saving ? 'Guardando...' : 'Guardar Notas'}
             </button>
           </div>
         </div>
@@ -1022,6 +1057,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
       {deadHourModal && <DeadHourOverlay />}
+      {notesModal && <NotesModalOverlay />}
 
       <header className="bg-black text-white p-5 sticky top-0 z-50 shadow-md border-b border-zinc-800">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
@@ -1436,10 +1472,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             )}
                           </div>
                           
-                          {/* BOTONES MÓVIL: CONGELAR Y BORRAR */}
+                          {/* BOTONES MÓVIL: NOTAS Y BORRAR */}
                           <div className="flex gap-2 sm:hidden">
-                            <button onClick={() => togglePauseStudent(student.id)} className={`p-2 rounded-lg transition-colors ${student.isPaused ? 'bg-blue-100 text-blue-600' : 'text-zinc-400 hover:text-blue-500 hover:bg-blue-50'}`} title="Congelar Plaza">
-                              <Snowflake className="w-5 h-5" />
+                            <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
+                              <FileText className="w-5 h-5" />
                             </button>
                             <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-red-500 p-2">
                               <Trash2 className="w-5 h-5" />
@@ -1468,12 +1504,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           )}
                         </div>
 
-                        {/* BOTONES PC: CONGELAR Y BORRAR */}
+                        {/* BOTONES PC: NOTAS Y BORRAR */}
                         <div className="hidden sm:flex items-center gap-2">
-                          <button onClick={() => togglePauseStudent(student.id)} className={`p-3 rounded-xl transition-colors ${student.isPaused ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-zinc-300 hover:text-blue-500 hover:bg-blue-50'}`} title="Congelar Plaza (Mantenimiento)">
-                            <Snowflake className="w-5 h-5" />
+                          <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
+                            <FileText className="w-5 h-5" />
                           </button>
-                          <button onClick={() => removeStudent(student.id)} className="text-zinc-300 hover:text-rose-600 hover:bg-rose-50 p-3 rounded-xl transition-colors" title="Borrar alumno">
+                          <button onClick={() => removeStudent(student.id)} className="text-zinc-300 hover:text-rose-600 hover:bg-rose-50 p-3 rounded-xl transition-colors" title="Borrar alumno de la clase">
                             <Trash2 className="w-5 h-5" />
                           </button>
                         </div>

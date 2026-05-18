@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Inbox, Users, Megaphone, Settings, LogOut, Search, MonitorPlay, 
+  Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp

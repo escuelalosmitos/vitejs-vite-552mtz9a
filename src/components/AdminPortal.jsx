@@ -306,7 +306,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         </div>
       </aside>
 
-      <main className="flex-1 p-4 md:p-8 max-w-7xl mx-auto w-full">
+      <main className="flex-1 min-w-0 p-4 md:p-8 max-w-7xl mx-auto w-full">
         
         {/* --- 1. BANDEJA DE GESTIONES (FORMATO FILA) --- */}
         {activeTab === 'gestiones' && (
@@ -361,7 +361,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             )}
 
-            {/* TABLA DE HISTORIAL DE TRÁMITES CERRADOS */}
+              {/* TABLA DE HISTORIAL DE TRÁMITES CERRADOS */}
             {resolvedGestiones.length > 0 && (
               <div className="mt-12 pt-8 border-t border-zinc-200">
                 <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
@@ -406,7 +406,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
           </div>
         )}
-
+        
         {/* --- 2. ALUMNOS CRM (FORMATO FILA E INTERRUPTORES) --- */}
         {activeTab === 'students' && (
           <div className="space-y-6 animate-in fade-in">

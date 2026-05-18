@@ -748,17 +748,24 @@ const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
 
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
-  if (!profile) {
+ if (!profile) {
     return (
-      <div className="min-h-screen bg-white p-8 flex flex-col justify-center max-w-md mx-auto">
-        <div className="bg-black text-white p-4 rounded-2xl w-fit mb-6 rotate-3"><Music/></div>
-        <h1 className="text-3xl font-black uppercase tracking-tight leading-none mb-2">¡Bienvenido!</h1>
-        <p className="text-zinc-500 font-medium mb-8">Configura tu portal de alumno para empezar.</p>
-        <form onSubmit={handleOnboarding} className="space-y-4">
-          <div><label className="text-[10px] font-black uppercase text-zinc-400">Nombre Completo</label><input required type="text" value={onboarding.name} onChange={e => setOnboarding({...onboarding, name: e.target.value})} className="w-full p-4 bg-zinc-50 border rounded-xl font-bold" /></div>
-          <div><label className="text-[10px] font-black uppercase text-zinc-400">¿Qué estudias?</label><select value={onboarding.instrument} onChange={e => setOnboarding({...onboarding, instrument: e.target.value})} className="w-full p-4 bg-zinc-50 border rounded-xl font-bold">{INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}</select></div>
-          <button type="submit" className="w-full bg-black text-white py-5 rounded-2xl font-black uppercase mt-6 flex justify-center items-center gap-2">Activar Mi Portal <ArrowRight/></button>
-        </form>
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
+        <div className="bg-red-100 text-red-500 p-6 rounded-full mb-6">
+          <AlertCircle className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Acceso Denegado</h1>
+        <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
+          Tu correo electrónico (<strong className="text-black">{user.email}</strong>) no está asignado a ninguna clase activa en la escuela.
+        </p>
+        <div className="bg-amber-50 border border-amber-200 p-6 rounded-2xl mb-8">
+          <p className="text-sm text-amber-800 font-bold">
+            Si eres alumno de Los Mitos, asegúrate de haber iniciado sesión con el mismo correo que le diste a tu profesor.
+          </p>
+        </div>
+        <button onClick={logout} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors">
+          Cerrar Sesión y probar con otro correo
+        </button>
       </div>
     );
   }

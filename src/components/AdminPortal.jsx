@@ -34,6 +34,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [searchStudent, setSearchStudent] = useState('');
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
   const [expandedTeacher, setExpandedTeacher] = useState(null); // Para el desplegable de clases
+  const [notesModal, setNotesModal] = useState(null); // <-- NUEVO: Estado para el bloc de notas
 
   useEffect(() => {
     let loaded = 0;
@@ -210,11 +211,63 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   }, [allRecords, settings.hourlyRate]);
 
+  // NUEVO MODAL: BLOC DE NOTAS DEL ALUMNO (MODO DIOS)
+  const NotesModalOverlay = () => {
+    if (!notesModal) return null;
+    const globalStudentInfo = students.find(s => s.id === notesModal.id);
+    const [text, setText] = useState(globalStudentInfo?.internalNotes || '');
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+      setSaving(true);
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'students', notesModal.id), { internalNotes: text });
+        alert('Notas internas guardadas.');
+        setNotesModal(null);
+      } catch (e) {
+        alert('Error al guardar las notas.');
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
+          <button onClick={() => setNotesModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-indigo-600 mb-2">
+            <FileText className="w-8 h-8" />
+            <h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2>
+          </div>
+          <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
+
+          <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
+            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos, observaciones médicas o evolución académica.</p>
+          </div>
+
+          <textarea 
+            value={text} 
+            onChange={e => setText(e.target.value)} 
+            placeholder="Ej: Es el hermano menor de Hugo. Alérgico a los cacahuetes. Le cuesta la lectura rítmica..."
+            className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6 transition-colors"
+          />
+
+          <div className="flex gap-4">
+            <button onClick={() => setNotesModal(null)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">Cancelar</button>
+            <button onClick={handleSave} disabled={saving} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
+              {saving ? 'Guardando...' : 'Guardar Notas'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
+      {notesModal && <NotesModalOverlay />}
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -377,6 +430,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   <thead>
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                       <th className="p-4 font-black">Alumno</th>
+                      <th className="p-4 font-black text-center">Ficha</th>
                       <th className="p-4 font-black text-center">Mitoverso</th>
                       <th className="p-4 font-black text-center">Mitobox</th>
                       <th className="p-4 font-black text-center">Estado (Alta/Mantenimiento)</th>
@@ -397,7 +451,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       );
 
                       if (crmStudents.length === 0) {
-                        return <tr><td colSpan="4" className="p-8 text-center text-zinc-400 italic">No se encontraron alumnos activos.</td></tr>;
+                        return <tr><td colSpan="5" className="p-8 text-center text-zinc-400 italic">No se encontraron alumnos activos.</td></tr>;
                       }
 
                       return crmStudents.map(student => {
@@ -407,6 +461,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <td className="p-4">
                               <div className={`font-black ${isCongelado ? 'text-zinc-400 line-through' : 'text-slate-900'}`}>{student.name}</div>
                               <div className="text-[10px] text-zinc-400 font-bold">{student.email || 'Sin email'}</div>
+                            </td>
+                            <td className="p-4 text-center">
+                              <button onClick={() => setNotesModal(student)} className="p-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-colors" title="Ver/Editar Notas Internas">
+                                <FileText className="w-5 h-5 mx-auto" />
+                              </button>
                             </td>
                             <td className="p-4 text-center">
                               <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
@@ -572,8 +631,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
           </div>
         )}
-
-        {/* --- EL RESTO DE PESTAÑAS (TABLÓN, GAMIFICACIÓN, SETTINGS) SE MANTIENEN IGUAL QUE ANTES, LIGERAMENTE ADAPTADAS AL DISEÑO LIMPIO --- */}
         
         {activeTab === 'announcements' && (
           <div className="space-y-6 animate-in fade-in">
@@ -620,7 +677,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </header>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Tablas de Ranking Idénticas a la versión anterior */}
               <div className="bg-white rounded-2xl shadow-sm border border-amber-200 flex flex-col h-96">
                 <div className="bg-amber-50 p-4 border-b border-amber-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-amber-900 flex items-center gap-2"><Timer className="w-4 h-4"/> Mensual</h3><span className="bg-amber-200 text-amber-800 px-2 py-0.5 rounded text-[10px] font-black uppercase animate-pulse">En curso</span></div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-amber-50/20">

@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup } from 'firebase/firestore';
 

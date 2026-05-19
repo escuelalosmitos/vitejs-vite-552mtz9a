@@ -85,7 +85,34 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { [field]: newStatus });
     }
   };
+// --- FUNCIÓN DE BAJA GLOBAL (SUPERPODER MODO DIOS) ---
+  const handleGlobalBaja = async (studentId, studentName) => {
+    if (!window.confirm(`⚠️ CUIDADO: ¿Estás seguro de que quieres dar de BAJA a ${studentName}?\n\nEsto lo eliminará de TODAS las clases de todos los profesores automáticamente y lo marcará como congelado. Esta acción no se puede deshacer de golpe.`)) {
+      return;
+    }
 
+    try {
+      // 1. Congelar su perfil global
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
+
+      // 2. Buscar en qué clases está matriculado y borrarlo
+      const classesToUpdate = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+      
+      const updatePromises = classesToUpdate.map(c => {
+        const updatedStudents = c.students.filter(s => s.id !== studentId);
+        // Ojo, la ruta de la clase está en c.refPath gracias al radar que hicimos
+        return updateDoc(doc(db, c.refPath), { students: updatedStudents });
+      });
+
+      await Promise.all(updatePromises);
+      alert(`✅ ${studentName} ha sido dado de baja correctamente de ${classesToUpdate.length} clases.`);
+      
+    } catch (error) {
+      console.error("Error al dar de baja:", error);
+      alert("Hubo un error al procesar la baja global.");
+    }
+  };
+  
   // --- FUNCIONES TABLÓN ---
   const postAnnouncement = async () => {
     if (!newAnnounce.title || !newAnnounce.content) return alert('Rellena todos los campos');
@@ -407,7 +434,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
         
-        {/* --- 2. ALUMNOS CRM (FORMATO FILA E INTERRUPTORES) --- */}
+    {/* --- 2. ALUMNOS CRM (FORMATO FILA E INTERRUPTORES) --- */}
         {activeTab === 'students' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
@@ -434,6 +461,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       <th className="p-4 font-black text-center">Mitoverso</th>
                       <th className="p-4 font-black text-center">Mitobox</th>
                       <th className="p-4 font-black text-center">Estado (Alta/Mantenimiento)</th>
+                      <th className="p-4 font-black text-right">Baja</th>
                     </tr>
                   </thead>
                  <tbody className="text-sm font-medium text-slate-700">
@@ -451,7 +479,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       );
 
                       if (crmStudents.length === 0) {
-                        return <tr><td colSpan="5" className="p-8 text-center text-zinc-400 italic">No se encontraron alumnos activos.</td></tr>;
+                        return <tr><td colSpan="6" className="p-8 text-center text-zinc-400 italic">No se encontraron alumnos activos.</td></tr>;
                       }
 
                       return crmStudents.map(student => {
@@ -459,8 +487,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                         return (
                           <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
                             <td className="p-4">
-                              <div className={`font-black ${isCongelado ? 'text-zinc-400 line-through' : 'text-slate-900'}`}>{student.name}</div>
-                              <div className="text-[10px] text-zinc-400 font-bold">{student.email || 'Sin email'}</div>
+                              <div className={`font-black truncate max-w-[150px] md:max-w-[250px] ${isCongelado ? 'text-zinc-400 line-through' : 'text-slate-900'}`} title={student.name}>{student.name}</div>
+                              <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] md:max-w-[250px]" title={student.email}>{student.email || 'Sin email'}</div>
                             </td>
                             <td className="p-4 text-center">
                               <button onClick={() => setNotesModal(student)} className="p-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-colors" title="Ver/Editar Notas Internas">
@@ -483,6 +511,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${!isCongelado ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
                                 {!isCongelado ? 'ACTIVO' : 'CONGELADO'}
                               </span>
+                            </td>
+
+                            {/* 👇 BOTÓN DE BAJA GLOBAL 👇 */}
+                            <td className="p-4 text-right">
+                              <button 
+                                onClick={() => handleGlobalBaja(student.id, student.name)} 
+                                disabled={isCongelado}
+                                className={`p-2 rounded-xl transition-colors ${isCongelado ? 'text-zinc-300 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50 hover:text-rose-700'}`} 
+                                title="Dar de baja de todas las clases"
+                              >
+                                <UserMinus className="w-5 h-5" />
+                              </button>
                             </td>
                           </tr>
                         );

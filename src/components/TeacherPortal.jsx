@@ -45,7 +45,7 @@ import {
   setDoc,
   deleteDoc,
   updateDoc,
-  collectionGroup // <-- AÑADIDO PARA LEER LAS CLASES GLOBALES
+  collectionGroup 
 } from 'firebase/firestore';
 
 // --- CONSTANTES DEL NEGOCIO (V2.0) ---
@@ -104,6 +104,114 @@ const getPreviousMonthStr = (currentMonthStr) => {
 };
 
 // ============================================================================
+// COMPONENTES MODALES AUXILIARES (Extraídos para cumplir Reglas de React)
+// ============================================================================
+const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
+  const [note, setNote] = useState('');
+  const [selectedTask, setSelectedTask] = useState('');
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="flex items-center gap-3 text-red-600 mb-4">
+          <AlertCircle className="w-8 h-8" />
+          <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
+        </div>
+        <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para realizar en este tiempo o renuncia a esta hora si prefieres descansar.</p>
+        
+        <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
+          {tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
+          {tasks.map((t, i) => (
+            <button key={i} onClick={() => setSelectedTask(t)} className={`w-full text-left p-3 rounded-xl border-2 transition-all ${selectedTask === t ? 'border-black bg-zinc-50 font-bold' : 'border-zinc-100 text-zinc-500 hover:border-zinc-300'}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+
+        <textarea 
+          placeholder="Escribe brevemente qué has hecho..."
+          value={note} onChange={e => setNote(e.target.value)}
+          className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[80px]"
+        />
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <button onClick={onCancel} className="w-full bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">
+            Cancelar
+          </button>
+          
+          <button 
+            onClick={() => {
+              const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
+              if (isConfirmed) {
+                onRenounce();
+              }
+            }}
+            className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1"
+          >
+            <Coffee className="w-4 h-4" /> Renunciar
+          </button>
+
+          <button 
+            disabled={!selectedTask || !note}
+            onClick={() => onConfirm(selectedTask, note)}
+            className="w-full bg-black text-white font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-30 transition-all hover:bg-zinc-800"
+          >
+            Confirmar Tarea
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const NotesModalComponent = ({ notesModal, onClose, globalStudents, db, appId, showNotification }) => {
+  const globalStudentInfo = globalStudents.find(s => s.id === notesModal.id);
+  const [text, setText] = useState(globalStudentInfo?.internalNotes || '');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'students', notesModal.id), { internalNotes: text });
+      showNotification({ type: 'success', text: 'Notas internas guardadas.' });
+      onClose();
+    } catch (e) {
+      showNotification({ type: 'error', text: 'Error al guardar las notas.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
+        <button onClick={onClose} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+        <div className="flex items-center gap-3 text-indigo-600 mb-2">
+          <FileText className="w-8 h-8" />
+          <h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2>
+        </div>
+        <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
+        <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
+          <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos o evolución.</p>
+        </div>
+        <textarea 
+          value={text} 
+          onChange={e => setText(e.target.value)} 
+          placeholder="Ej: Es el hermano menor de Hugo..."
+          className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6 transition-colors"
+        />
+        <div className="flex gap-4">
+          <button onClick={onClose} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">Cancelar</button>
+          <button onClick={handleSave} disabled={saving} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
+            {saving ? 'Guardando...' : 'Guardar Notas'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
 // COMPONENTE PRINCIPAL (Módulo de Profesores)
 // ============================================================================
 export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL, switchToAdmin }) {
@@ -131,7 +239,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [isSendingReport, setIsSendingReport] = useState(false);
   
   const [deadHourModal, setDeadHourModal] = useState(null);
-  const [notesModal, setNotesModal] = useState(null); // NUEVO ESTADO: Bloc de notas del alumno
+  const [notesModal, setNotesModal] = useState(null);
 
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
@@ -152,7 +260,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     if (!user) return;
 
     setLoadingData(true);
-    const myName = getTeacherName(); // <-- Usamos el nombre para filtrar clases globales
+    const myName = getTeacherName();
 
     // --- LECTURA GLOBAL DE CLASES Y NÓMINAS PARA SINCRONIZACIÓN PERFECTA ---
     const recurringRef = collectionGroup(db, 'recurringClasses');
@@ -177,12 +285,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     };
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
-      // Filtramos las clases globales para quedarnos solo con las de este profesor
       const myClasses = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.teacher === myName || data.originalTeacherUid === user.uid) { // Soporte para sustituciones
-            myClasses.push({ id: doc.id, refPath: doc.ref.path, ...data });
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data.teacher === myName || data.originalTeacherUid === user.uid) { 
+            myClasses.push({ id: docSnap.id, refPath: docSnap.ref.path, ...data });
         }
       });
       setRecurringClasses(myClasses);
@@ -192,9 +299,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
       const recs = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.teacher === myName) recs.push({ id: doc.id, ...data });
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data.teacher === myName) recs.push({ id: docSnap.id, ...data });
       });
       recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);
@@ -203,13 +310,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubDaily = onSnapshot(dailyRef, (snapshot) => {
-      setDailyReports(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setDailyReports(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       dailyLoaded = true;
       checkLoading();
     });
 
     const unsubStudents = onSnapshot(globalStudentsRef, (snapshot) => {
-      setGlobalStudents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setGlobalStudents(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       studentsLoaded = true;
       checkLoading();
     });
@@ -221,21 +328,20 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubTickets = onSnapshot(ticketsRef, (snapshot) => {
-      // Cargamos todos los tickets para calcular bien las recuperaciones
-      const tks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const tks = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
       setTickets(tks);
       ticketsLoaded = true;
       checkLoading();
     });
 
     const unsubSubs = onSnapshot(substitutionsRef, (snapshot) => {
-      setSubstitutions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setSubstitutions(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       subsLoaded = true;
       checkLoading();
     });
 
     const unsubGestiones = onSnapshot(gestionesRef, (snapshot) => {
-      setGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setGestiones(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       gestionesLoaded = true;
       checkLoading();
     });
@@ -273,14 +379,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
-  // CÁLCULO INTELIGENTE DE NOTIFICACIONES
   // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Filtrado para Profesores)
   const notifications = useMemo(() => {
     if (isAdmin) {
-      // Si eres tú (Modo Dios encubierto), lo ves todo
       return gestiones.filter(g => g.status === 'pendiente');
     } else {
-      // Si es un profesor normal, preparamos la lista de sus clases
       const myClassIds = new Set();
       recurringClasses.forEach(c => {
         myClassIds.add(c.id);
@@ -290,7 +393,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         if (g.status !== 'pendiente') return false;
         
         // REGLA DE ORO: Los profes SOLO ven "Avisos de Ausencia" que pertenezcan a SUS clases.
-        // El resto del papeleo (bajas, cambios de hora, Mitobox...) es invisible para ellos.
         if (g.type === 'aviso_ausencia' && g.requestedClass && myClassIds.has(g.requestedClass)) {
           return true;
         }
@@ -458,7 +560,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
         isNew: false,
         classId: scheduledClass.id,
-        refPath: scheduledClass.refPath, // Mantenemos la ruta para el guardado global
+        refPath: scheduledClass.refPath, 
         time: scheduledClass.time,
         sede: scheduledClass.sede || 'Tarragona',
         sala: scheduledClass.sala || 'Sala 1',
@@ -941,115 +1043,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
-
-  // --- COMPONENTES AUXILIARES ---
-
-  const DeadHourOverlay = () => {
-    const [note, setNote] = useState('');
-    const [selectedTask, setSelectedTask] = useState('');
-
-    return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-        <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl animate-in zoom-in-95 duration-200">
-          <div className="flex items-center gap-3 text-red-600 mb-4">
-            <AlertCircle className="w-8 h-8" />
-            <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
-          </div>
-          <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para realizar en este tiempo o renuncia a esta hora si prefieres descansar.</p>
-          
-          <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
-            {deadHourModal.tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
-            {deadHourModal.tasks.map((t, i) => (
-              <button key={i} onClick={() => setSelectedTask(t)} className={`w-full text-left p-3 rounded-xl border-2 transition-all ${selectedTask === t ? 'border-black bg-zinc-50 font-bold' : 'border-zinc-100 text-zinc-500 hover:border-zinc-300'}`}>
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <textarea 
-            placeholder="Escribe brevemente qué has hecho..."
-            value={note} onChange={e => setNote(e.target.value)}
-            className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[80px]"
-          />
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <button onClick={() => setDeadHourModal(null)} className="w-full bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">
-              Cancelar
-            </button>
-            
-            <button 
-              onClick={() => {
-                const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
-                if (isConfirmed) {
-                  executeSaveRecord(null, true);
-                }
-              }}
-              className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1"
-            >
-              <Coffee className="w-4 h-4" /> Renunciar
-            </button>
-
-            <button 
-              disabled={!selectedTask || !note}
-              onClick={() => executeSaveRecord(`${selectedTask}: ${note}`, false)}
-              className="w-full bg-black text-white font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-30 transition-all hover:bg-zinc-800"
-            >
-              Confirmar Tarea
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderNotesModal = () => {
-    if (!notesModal) return null;
-    const globalStudentInfo = globalStudents.find(s => s.id === notesModal.id);
-    const [text, setText] = useState(globalStudentInfo?.internalNotes || '');
-    const [saving, setSaving] = useState(false);
-
-    const handleSave = async () => {
-      setSaving(true);
-      try {
-        await updateDoc(doc(db, 'artifacts', appId, 'students', notesModal.id), { internalNotes: text });
-        showNotification({ type: 'success', text: 'Notas internas guardadas.' });
-        setNotesModal(null);
-      } catch (e) {
-        showNotification({ type: 'error', text: 'Error al guardar las notas.' });
-      } finally {
-        setSaving(false);
-      }
-    };
-
-    return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
-          <button onClick={() => setNotesModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          <div className="flex items-center gap-3 text-indigo-600 mb-2">
-            <FileText className="w-8 h-8" />
-            <h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2>
-          </div>
-          <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
-          <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
-            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos o evolución.</p>
-          </div>
-          <textarea 
-            value={text} 
-            onChange={e => setText(e.target.value)} 
-            placeholder="Ej: Es el hermano menor de Hugo..."
-            className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6 transition-colors"
-          />
-          <div className="flex gap-4">
-            <button onClick={() => setNotesModal(null)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">Cancelar</button>
-            <button onClick={handleSave} disabled={saving} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
-              {saving ? 'Guardando...' : 'Guardar Notas'}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
   // --- RENDER DE CARGA E INICIO DE SESIÓN ---
   if (loadingData) {
     return (
@@ -1082,8 +1075,25 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
-      {deadHourModal && <DeadHourOverlay />}
-      {renderNotesModal()}
+      {deadHourModal && (
+        <DeadHourModalComponent
+          tasks={deadHourModal.tasks}
+          onCancel={() => setDeadHourModal(null)}
+          onRenounce={() => executeSaveRecord(null, true)}
+          onConfirm={(task, note) => executeSaveRecord(`${task}: ${note}`, false)}
+        />
+      )}
+      
+      {notesModal && (
+        <NotesModalComponent 
+          notesModal={notesModal}
+          globalStudents={globalStudents}
+          db={db}
+          appId={appId}
+          onClose={() => setNotesModal(null)}
+          showNotification={showNotification}
+        />
+      )}
 
       <header className="bg-black text-white p-5 sticky top-0 z-50 shadow-md border-b border-zinc-800">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
@@ -1290,7 +1300,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <p className="text-xs font-bold text-purple-900">Estás viendo una fecha futura. El botón de pasar lista está bloqueado, pero puedes marcar alumnos que ya te han avisado y darle a <b>"Guardar Previsión"</b>.</p>
                     </div>
                   )}
-                  {/* 👇 PEGA ESTO JUSTO AQUÍ DEBAJO 👇 */}
+
                   {/* AVISO DE AUTO-CANCELACIÓN (+2 HORAS) */}
                   {currentSession.isAutoCancelled && (
                     <div className="mb-6 p-4 bg-red-50 border-2 border-red-200 rounded-xl flex items-center gap-3">
@@ -1298,7 +1308,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <p className="text-xs font-bold text-red-900">🚨 CLASE CANCELADA. Todos los alumnos avisaron con más de 2h de antelación. Esta hora no se cobra ni requiere tareas. Dale a "Guardar Asistencia" para archivarla.</p>
                     </div>
                   )}
-                  {/* 👆 FIN DEL AVISO 👆 */}
+                  
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
@@ -1570,7 +1580,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           </div>
         )}
 
-        {/* --- NUEVA PESTAÑA: NOTIFICACIONES (Avisos) --- */}
+        {/* --- PESTAÑA NOTIFICACIONES (Avisos) --- */}
         {activeTab === 'notifications' && (
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">

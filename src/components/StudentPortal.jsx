@@ -878,11 +878,41 @@ END:VCALENDAR`;
       </div>
     );
   };
+if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
+  // 👇 AQUÍ EMPIEZA LO NUEVO: BLOQUEO PARA ALUMNOS DADOS DE BAJA 👇
+  if (profile?.globalStatus === 'baja') {
+    return (
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
+        <div className="bg-zinc-200 text-zinc-500 p-6 rounded-full mb-6">
+          <UserMinus className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Cuenta Desactivada</h1>
+        <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
+          Estás dado de baja de la Escuela Los Mitos. Ya no tienes acceso a la plataforma ni a los servicios premium.
+        </p>
+        <div className="bg-white border-2 border-zinc-200 p-6 rounded-2xl mb-8 w-full shadow-sm">
+          <p className="text-sm text-slate-700 font-bold mb-4 uppercase tracking-widest">
+            ¿Quieres volver a dar caña?
+          </p>
+          <a 
+            href="https://www.escuelalosmitos.com/plazas-libres-en-clases-de-musica-en-tarragona-y-reus/" 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="block w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors"
+          >
+            Ver Plazas Libres
+          </a>
+        </div>
+        <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
+          Cerrar Sesión
+        </button>
+      </div>
+    );
+  }
+  // 👆 AQUÍ ACABA LO NUEVO 👆
 
-  if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
-
- if (!profile) {
+  if (!profile) {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
         <div className="bg-red-100 text-red-500 p-6 rounded-full mb-6">

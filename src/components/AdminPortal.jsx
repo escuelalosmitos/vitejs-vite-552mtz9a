@@ -527,8 +527,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <div className="max-w-[150px] md:max-w-[250px] truncate text-xs" title={g.details}>{g.details}</div>
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
-                            <button onClick={() => updateGestionStatus(g.id, 'completado')} className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg mr-2 transition-colors" title="Aprobar / Hecho"><Check className="w-4 h-4"/></button>
-                            <button onClick={() => updateGestionStatus(g.id, 'rechazado')} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
+                            <button onClick={() => updateGestionStatus(g.id, 'completado', g)} className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg mr-2 transition-colors" title="Aprobar y Ejecutar"><Check className="w-4 h-4"/></button>
+                            <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
                           </td>
                         </tr>
                       ))}

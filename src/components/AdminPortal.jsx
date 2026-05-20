@@ -6,6 +6,7 @@ import {
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -80,10 +81,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return tomorrow.getDate() === 1;
   }, []);
 
-  // --- FUNCIONES GESTIONES ---
- // --- FUNCIÓN DE APROBACIÓN INTELIGENTE (CON EFECTO REAL EN EL SISTEMA) ---
-  // --- FUNCIONES GESTIONES (AUTOMATIZACIÓN INTEGRADA DE BANDEJA) ---
-  // --- FUNCIONES GESTIONES (AUTOMATIZACIÓN INTEGRADA DE BANDEJA) ---
+// --- FUNCIONES GESTIONES ---
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
     if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
@@ -178,7 +176,29 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         // 4. Archivamos el ticket
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        logMessage += `✅ Ticket archivado con éxito.`;
+        logMessage += `✅ Ticket archivado con éxito.\n`;
+
+        // 🚀 5. NUEVO: DISPARADOR DEL EMAIL AL PROFESOR RECEPTOR 🚀
+        try {
+          // Extraemos el nombre del profesor y lo convertimos a formato email corporativo
+          const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+          
+          await fetch(APPS_SCRIPT_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({
+              type: 'notificacion_profesor',
+              teacherEmail: emailProfe,
+              subject: `🎉 ¡Nuevo alumno en tu clase de ${targetClass.subject}!`,
+              body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+            })
+          });
+          logMessage += `📩 Email enviado al profesor (${emailProfe}).`;
+        } catch(e) { 
+          console.log("Fallo silencioso del mailer en Modo Dios", e); 
+          logMessage += `⚠️ No se pudo enviar el email al profesor.`;
+        }
 
         alert(logMessage);
       } else {

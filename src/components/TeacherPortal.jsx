@@ -104,7 +104,7 @@ const getPreviousMonthStr = (currentMonthStr) => {
 };
 
 // ============================================================================
-// COMPONENTES MODALES AUXILIARES (Extraídos para cumplir Reglas de React)
+// COMPONENTES MODALES AUXILIARES
 // ============================================================================
 const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
   const [note, setNote] = useState('');
@@ -224,7 +224,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
   
-  // Estado para los Ajustes Globales de solo lectura (Tarifas y Tareas)
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: [],
@@ -262,7 +261,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     setLoadingData(true);
     const myName = getTeacherName();
 
-    // --- LECTURA GLOBAL DE CLASES Y NÓMINAS PARA SINCRONIZACIÓN PERFECTA ---
     const recurringRef = collectionGroup(db, 'recurringClasses');
     const recordsRef = collectionGroup(db, 'records'); 
     const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
@@ -379,7 +377,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
-  // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Filtrado para Profesores)
   const notifications = useMemo(() => {
     if (isAdmin) {
       return gestiones.filter(g => g.status === 'pendiente');
@@ -391,12 +388,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
       return gestiones.filter(g => {
         if (g.status !== 'pendiente') return false;
-        
-        // REGLA DE ORO: Los profes SOLO ven "Avisos de Ausencia" que pertenezcan a SUS clases.
         if (g.type === 'aviso_ausencia' && g.requestedClass && myClassIds.has(g.requestedClass)) {
           return true;
         }
-        
         return false;
       });
     }
@@ -425,7 +419,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
-  // CÁLCULO DE NÓMINA 
   const monthlyPayroll = useMemo(() => {
     const currentMonth = date.substring(0, 7); 
     const prevMonth = getPreviousMonthStr(currentMonth);
@@ -748,7 +741,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         .filter(s => !s.isRecovery)
         .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
 
-      const todayISO = new Date().toISOString().split('T')[0];
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
 
@@ -762,10 +754,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         finalExceptions[date] = exceptionsForDate;
       }
 
-      // --- GUARDADO DE CLASE MODIFICADO PARA USAR COLECCIÓN GLOBAL ---
       const targetPath = currentSession.isNew 
         ? doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave) 
-        : doc(db, currentSession.refPath); // Conserva la ruta original si existe
+        : doc(db, currentSession.refPath); 
         
       await setDoc(targetPath, {
         dayOfWeek: dayToSave,
@@ -844,7 +835,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
-      // 🚀 NUEVO: CONTROL DE AUTO-CANCELACIÓN (REGLA DE LAS 2 HORAS)
       if (currentSession.isAutoCancelled) {
         showNotification({ type: 'success', text: "Clase auto-cancelada. Hora no computable registrada." });
         executeSaveRecord("Clase cancelada automáticamente por ausencia total (+2h de antelación)", true);
@@ -972,7 +962,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
     try {
       const updatedCancelledDates = [...(classData.cancelledDates || []), date];
-      // Guardado global para actualizar el calendario de la escuela
       await setDoc(doc(db, classData.refPath), {
         ...classData,
         cancelledDates: updatedCancelledDates
@@ -1007,7 +996,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     if (!isConfirmed) return;
 
     try {
-      await deleteDoc(doc(db, classData.refPath)); // Borrado usando ref global
+      await deleteDoc(doc(db, classData.refPath)); 
       showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
     } catch (error) {
       console.error(error);
@@ -1066,6 +1055,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   // LÓGICA DE DÍAS FUTUROS Y FESTIVOS
   const todayISO = new Date().toISOString().split('T')[0];
   const isFutureDate = date > todayISO;
+  
+  // 👇 AQUÍ ESTÁ EL CANDADO DE LAS 24 HORAS 👇
+  const isExpiredDate = React.useMemo(() => {
+    const classDate = new Date(date);
+    const now = new Date();
+    const diffMs = now - classDate;
+    const diffHours = diffMs / (1000 * 60 * 60);
+    return diffHours > 36; // Bloquea si han pasado más de 36 horas desde la fecha elegida
+  }, [date]);
   
   const isFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
@@ -1194,7 +1192,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </label>
                     <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
                   </div>
-                  <button onClick={() => startSession(null)} disabled={isSpecialDay} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest disabled:opacity-30 disabled:cursor-not-allowed">
+                  <button onClick={() => startSession(null)} disabled={isSpecialDay || isExpiredDate} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest disabled:opacity-30 disabled:cursor-not-allowed">
                     <ClipboardList className="w-5 h-5" /> Nueva Clase
                   </button>
                 </div>
@@ -1244,12 +1242,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </div>
                         </div>
                         <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
+                          
+                          {/* 👇 AQUÍ ESTÁ EL BLOQUE PROTEGIDO DEL PASADO 👇 */}
                           {isSpecialDay ? (
                             <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">No Laborable</span>
                           ) : item.type === 'completed' ? (
                             <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-4 py-2 rounded-lg font-black border border-emerald-200 uppercase tracking-widest">
                               <Check className="w-4 h-4" /> Completado
                             </span>
+                          ) : isExpiredDate ? (
+                            <div className="w-full sm:w-auto bg-rose-50 text-rose-500 py-2.5 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest border border-rose-100 flex items-center justify-center gap-2 cursor-not-allowed">
+                              <AlertCircle className="w-4 h-4"/> Plazo Expirado
+                            </div>
                           ) : (
                             <>
                               <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-zinc-100 hover:bg-black hover:text-white text-black font-bold py-2.5 px-5 rounded-xl inline-flex items-center justify-center gap-2 transition-all text-xs uppercase tracking-widest">
@@ -1265,6 +1269,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               </button>
                             </>
                           )}
+                          {/* 👆 FIN DEL BLOQUE PROTEGIDO 👆 */}
+
                         </div>
                       </div>
                     ))}

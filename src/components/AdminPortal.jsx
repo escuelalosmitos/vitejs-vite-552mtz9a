@@ -3,9 +3,9 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -32,10 +32,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
-  const [filterStatus, setFilterStatus] = useState('activo'); // NUEVO: Filtro predeterminado
+  const [filterStatus, setFilterStatus] = useState('activo');
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
+  
+  // ESTADOS PARA EL RADAR MITOBOX
+  const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
+  const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
 
   useEffect(() => {
     let loaded = 0;
@@ -57,9 +61,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       if (docSnap.exists()) setSettings(prev => ({ ...prev, ...docSnap.data() })); 
       checkLoad(); 
     });
-    // NUEVOS LISTENERS PARA INTELIGENCIA DE NEGOCIO
     const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
-      setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() }))); // <-- CORRECCIÓN: Agregado refPath para la baja global
+      setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
       checkLoad();
     });
     const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
@@ -69,6 +72,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); };
   }, [appId, db]);
+
+  // --- CHIVATO DEL TRIVIAL (Último día del mes) ---
+  const isLastDayOfMonth = useMemo(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.getDate() === 1;
+  }, []);
 
   // --- FUNCIONES GESTIONES ---
   const updateGestionStatus = async (id, status) => {
@@ -81,41 +91,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';
     const newStatus = isStatusField ? (currentValue === 'congelado' ? 'activo' : 'congelado') : !currentValue;
-    
     if(window.confirm(`¿Cambiar este ajuste a ${isStatusField ? newStatus.toUpperCase() : (newStatus ? 'ON' : 'OFF')}?`)) {
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { [field]: newStatus });
     }
   };
 
-  // --- FUNCIÓN DE CAMBIO DE ESTADO Y BAJA GLOBAL CORREGIDA ---
   const handleUpdateStudentStatus = async (studentId, studentName, newStatus) => {
-    // Si es una baja, pedimos confirmación doble
     if (newStatus === 'baja') {
       const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
       if (!confirmBaja) return;
     }
-
     try {
-      // 1. Actualizar estado en el perfil global del alumno
-      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { 
-        globalStatus: newStatus 
-      });
-
-      // 2. Si es baja, lo arrancamos de todas las clases en tiempo real
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
       if (newStatus === 'baja') {
-        const classesWithThisStudent = allClasses.filter(c => 
-          c.students && c.students.some(s => s.id === studentId)
-        );
-
+        const classesWithThisStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
         const updatePromises = classesWithThisStudent.map(c => {
           const updatedList = c.students.filter(s => s.id !== studentId);
-          // Usamos la propiedad refPath que capturamos en el radar onSnapshot
-          if (c.refPath) {
-            return updateDoc(doc(db, c.refPath), { students: updatedList });
-          }
+          if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
           return Promise.resolve();
         });
-
         await Promise.all(updatePromises);
         alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases.`);
       } else {
@@ -126,19 +120,49 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       alert("Hubo un error al procesar el cambio. Revisa la consola.");
     }
   };
-  
+
+  // --- BOTÓN DE LIMPIEZA ANUAL DE TICKETS CADUCADOS ---
+  const cleanExpiredTickets = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    if (!window.confirm(`🧹 LIMPIEZA DE BASE DE DATOS\n\n¿Quieres borrar definitivamente todos los tickets cuya validez expiró antes de hoy (${formatDateSpanish(today)})?\n\nEsta operación libera espacio y optimiza la carga del sistema.`)) return;
+    try {
+      setLoading(true);
+      const ticketsQuery = collectionGroup(db, 'tickets');
+      const snapshot = await getDocs(ticketsQuery);
+      const batch = writeBatch(db);
+      let count = 0;
+
+      snapshot.forEach((ticketDoc) => {
+        const t = ticketDoc.data();
+        if (t.validUntil < today) {
+          batch.delete(ticketDoc.ref);
+          count++;
+        }
+      });
+
+      if (count === 0) alert("✨ Todo reluciente. No hay tickets caducados que limpiar.");
+      else {
+        await batch.commit();
+        alert(`🗑️ ¡Limpieza completada! Se han borrado ${count} tickets caducados.`);
+      }
+    } catch (e) {
+      console.error("Error limpiando tickets:", e);
+      alert("Hubo un error en la limpieza masiva.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // --- FUNCIONES TABLÓN ---
   const postAnnouncement = async () => {
     if (!newAnnounce.title || !newAnnounce.content) return alert('Rellena todos los campos');
     const id = Date.now().toString();
     await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { 
-      ...newAnnounce, 
-      date: new Date().toISOString().split('T')[0] 
+      ...newAnnounce, date: new Date().toISOString().split('T')[0] 
     });
     setNewAnnounce({ title: '', content: '' });
     alert('Aviso publicado.');
   };
-
   const deleteAnnouncement = async (id) => { 
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
@@ -147,48 +171,28 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const handleCerrarRetoMensual = async () => {
     const players = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints);
     if(players.length === 0) return alert("Nadie ha jugado este mes.");
-
     const maxScore = players[0].triviaPoints;
     const winners = players.filter(s => s.triviaPoints === maxScore);
-    
     if(!window.confirm(`¿Confirmas el cierre del mes? Hay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
-
     try {
       const winnerNames = [];
       const updatePromises = [];
-      
       winners.forEach(w => {
         const nameParts = w.name.split(' ');
         const initial = nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : '';
         winnerNames.push(`${nameParts[0]} ${initial}`);
-        updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', w.id), {
-          triviaVictories: (w.triviaVictories || 0) + 1
-        }));
+        updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', w.id), { triviaVictories: (w.triviaVictories || 0) + 1 }));
       });
-
       players.forEach(p => {
         const currentTotal = p.triviaTotalPoints || 0;
-        updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', p.id), {
-          triviaTotalPoints: currentTotal + p.triviaPoints,
-          triviaPoints: 0
-        }));
+        updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { triviaTotalPoints: currentTotal + p.triviaPoints, triviaPoints: 0 }));
       });
-
       await Promise.all(updatePromises);
-
       const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} aciertos!\n\nTodos los contadores vuelven a cero. ¡El reto de este mes ya ha empezado! Recuerda que el vencedor anual obtendrá premios por fidelidad y mérito.`;
       const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), {
-        title: "🏆 ¡Ganadores del Reto del Mes!",
-        content: msg,
-        date: new Date().toISOString().split('T')[0]
-      });
-
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "🏆 ¡Ganadores del Reto del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
       alert("Mes cerrado con éxito.");
-
-    } catch (e) {
-      alert("Error al cerrar el mes.");
-    }
+    } catch (e) { alert("Error al cerrar el mes."); }
   };
 
   const saveGlobalSettings = async (newSettings) => {
@@ -198,14 +202,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
  // --- CÁLCULOS ANALÍTICOS ---
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
-  const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30); // Guardamos las últimas 30 cerradas
+  const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
   const rankAnnual = students.filter(s => s.triviaVictories > 0).sort((a,b) => b.triviaVictories - a.triviaVictories).slice(0,10);
   const rankGlobal = students.filter(s => (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) > 0)
     .map(s => ({ ...s, liveTotal: (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) }))
     .sort((a,b) => b.liveTotal - a.liveTotal).slice(0,10);
 
-  // AGRUPACIÓN DE CLASES POR PROFESOR
   const classesByTeacher = useMemo(() => {
     const grouped = {};
     allClasses.forEach(c => {
@@ -213,28 +216,24 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       if (!grouped[teacherName]) grouped[teacherName] = [];
       grouped[teacherName].push(c);
     });
-    // Ordenamos las clases dentro de cada profesor por día y hora
     Object.keys(grouped).forEach(t => {
       grouped[t].sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
     });
     return grouped;
   }, [allClasses]);
 
-  // CLASES EN PELIGRO (Capacidad > 1 y ocupación <= 50%)
   const dangerClasses = useMemo(() => {
     return allClasses.filter(c => {
       const cap = parseInt(c.capacity) || 0;
-      if (cap <= 1) return false; // Ignoramos clases particulares
+      if (cap <= 1) return false; 
       const activeCount = (c.students || []).filter(s => !s.isPaused).length;
       return activeCount <= (cap / 2);
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
   }, [allClasses]);
 
-  // NÓMINAS DE PROFESORES DEL MES EN CURSO
   const teachersPayroll = useMemo(() => {
     const currentMonth = new Date().toISOString().substring(0, 7);
     const thisMonthRecords = allRecords.filter(r => r.date.startsWith(currentMonth) && !r.isRenounced);
-    
     const payroll = {};
     thisMonthRecords.forEach(r => {
       const tName = r.teacher || 'Desconocido';
@@ -242,17 +241,43 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const duration = Number(String(r.duration).replace(',', '.')) || 60;
       payroll[tName] += (duration / 60);
     });
-    
-    // Transformar a array para pintar
     return Object.entries(payroll).map(([name, hours]) => ({
-      name,
-      hours: hours.toFixed(2),
-      earnings: (hours * (settings.hourlyRate || 17.33)).toFixed(2)
+      name, hours: hours.toFixed(2), earnings: (hours * (settings.hourlyRate || 17.33)).toFixed(2)
     })).sort((a, b) => b.hours - a.hours);
-
   }, [allRecords, settings.hourlyRate]);
 
-  // NUEVO MODAL: BLOC DE NOTAS DEL ALUMNO (MODO DIOS)
+  // RADAR MITOBOX (MODO DIOS)
+  const availableMboxSlotsAdmin = useMemo(() => {
+    let slots = [];
+    if (mboxAdminDate && mboxAdminSede) {
+      const targetDay = new Date(`${mboxAdminDate}T00:00:00`).getDay();
+      const allScheduledClasses = allClasses.filter(c => c.dayOfWeek === targetDay && (c.sede || 'Tarragona') === mboxAdminSede);
+
+      const aliveClasses = allScheduledClasses.filter(c => {
+        if (c.cancelledDates?.includes(mboxAdminDate)) return false; 
+        const exceptionsEseDia = c.exceptions?.[mboxAdminDate] || {};
+        const activeStudents = (c.students || []).filter(s => {
+          if (s.isPaused) return false;
+          const estadoHoy = exceptionsEseDia[s.id];
+          if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
+          return true;
+        });
+        return activeStudents.length > 0;
+      });
+
+      const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
+      activeTimes.forEach(t => {
+        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala || 'Sala 1');
+        const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
+        const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
+        freeSalas.forEach(fs => { slots.push({ time: t, sala: fs }); });
+      });
+    }
+    return slots;
+  }, [allClasses, mboxAdminDate, mboxAdminSede]);
+
+
+  // MODAL: BLOC DE NOTAS
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
     const globalStudentInfo = students.find(s => s.id === notesModal.id);
@@ -267,32 +292,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         setNotesModal(null);
       } catch (e) {
         alert('Error al guardar las notas.');
-      } finally {
-        setSaving(false);
-      }
+      } finally { setSaving(false); }
     };
 
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
           <button onClick={() => setNotesModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          <div className="flex items-center gap-3 text-indigo-600 mb-2">
-            <FileText className="w-8 h-8" />
-            <h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2>
-          </div>
+          <div className="flex items-center gap-3 text-indigo-600 mb-2"><FileText className="w-8 h-8" /><h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2></div>
           <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
-
           <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
-            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos, observaciones médicas o evolución académica.</p>
+            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos o estado del alumno.</p>
           </div>
-
-          <textarea 
-            value={text} 
-            onChange={e => setText(e.target.value)} 
-            placeholder="Ej: Es el hermano menor de Hugo. Alérgico a los cacahuetes. Le cuesta la lectura rítmica..."
-            className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6 transition-colors"
-          />
-
+          <textarea value={text} onChange={e => setText(e.target.value)} placeholder="Ej: Es el hermano menor de Hugo..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6" />
           <div className="flex gap-4">
             <button onClick={() => setNotesModal(null)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">Cancelar</button>
             <button onClick={handleSave} disabled={saving} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
@@ -323,6 +335,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: pendingGestiones.length },
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
+            { id: 'mitobox', icon: DoorOpen, label: 'Mitobox' }, // <-- NUEVA PESTAÑA
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
@@ -349,7 +362,23 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
       <main className="flex-1 min-w-0 p-4 md:p-8 max-w-7xl mx-auto w-full">
         
-        {/* --- 1. BANDEJA DE GESTIONES (FORMATO FILA) --- */}
+        {/* BANNER AVISO CIERRE MES (Si es el último día del mes) */}
+        {isLastDayOfMonth && (
+          <div className="mb-6 bg-gradient-to-r from-amber-400 to-amber-500 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-4 animate-pulse">
+            <div className="flex items-center gap-3 text-amber-950">
+              <AlertTriangle className="w-6 h-6" />
+              <div>
+                <p className="font-black uppercase tracking-widest text-sm">Hoy es el último día del mes</p>
+                <p className="text-xs font-bold opacity-80">Recuerda ir a la pestaña "Retos" y hacer clic en Cerrar Mes para el Trivial.</p>
+              </div>
+            </div>
+            <button onClick={() => setActiveTab('gamification')} className="bg-amber-950 text-amber-400 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors whitespace-nowrap">
+              Ir a cerrar mes
+            </button>
+          </div>
+        )}
+
+        {/* --- 1. BANDEJA DE GESTIONES --- */}
         {activeTab === 'gestiones' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
@@ -404,7 +433,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             )}
 
-            {/* TABLA DE HISTORIAL DE TRÁMITES CERRADOS */}
             {resolvedGestiones.length > 0 && (
               <div className="mt-12 pt-8 border-t border-zinc-200">
                 <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
@@ -433,7 +461,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               </span>
                             </td>
                             <td className="p-4">
-                              <div className="max-w-[150px] md:max-w-[300px] truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</div>
+                              <div className="max-w-[200px] md:max-w-md truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</div>
                             </td>
                             <td className="p-4 text-right whitespace-nowrap">
                               <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
@@ -461,7 +489,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
-                {/* Selector de Filtro de Estado */}
                 <div className="flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
                   {['activo', 'congelado', 'baja'].map((s) => (
                     <button
@@ -486,21 +513,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
             <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[900px]">
+                <table className="w-full text-left border-collapse table-auto">
                   <thead>
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                      <th className="p-4 font-black">Alumno</th>
-                      <th className="p-4 font-black text-center">Ficha</th>
-                      <th className="p-4 font-black text-center">Mitoverso</th>
-                      <th className="p-4 font-black text-center">Mitobox</th>
-                      <th className="p-4 font-black text-center">Estado / Gestión</th>
+                      <th className="p-4 font-black w-[35%]">Alumno</th>
+                      <th className="p-4 font-black text-center w-[15%]">Ficha</th>
+                      <th className="p-4 font-black text-center w-[15%]">Mitos+</th>
+                      <th className="p-4 font-black text-center w-[15%]">Mitobox</th>
+                      <th className="p-4 font-black text-center w-[20%]">Estado</th>
                     </tr>
                   </thead>
                   <tbody className="text-sm font-medium text-slate-700">
                     {(() => {
                       const filtered = students.filter(s => {
                         const matchSearch = s.name.toLowerCase().includes(searchStudent.toLowerCase());
-                        // Si no tiene status, asumimos 'activo'
                         const currentStatus = s.globalStatus || 'activo';
                         const matchStatus = currentStatus === filterStatus;
                         return matchSearch && matchStatus;
@@ -512,9 +538,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
                       return filtered.map(student => (
                         <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-                          <td className="p-4">
-                            <div className="font-black text-slate-900 truncate max-w-[200px]">{student.name}</div>
-                            <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[200px]">{student.email}</div>
+                          <td className="p-4 overflow-hidden">
+                            <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
+                            <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px]" title={student.email}>{student.email}</div>
                           </td>
                           <td className="p-4 text-center">
                             <button onClick={() => setNotesModal(student)} className="p-2.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded-xl transition-all shadow-sm">
@@ -531,22 +557,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               {student.hasMitobox ? 'ON' : 'OFF'}
                             </button>
                           </td>
-                          <td className="p-4">
-                            <div className="flex items-center justify-center gap-2">
-                              <select 
-                                value={student.globalStatus || 'activo'}
-                                onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
-                                className={`text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-lg border-2 outline-none transition-all ${
-                                  student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
-                                  student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
-                                  'bg-emerald-50 border-emerald-200 text-emerald-700'
-                                }`}
-                              >
-                                <option value="activo">Activo</option>
-                                <option value="congelado">Congelado</option>
-                                <option value="baja">Dar de Baja</option>
-                              </select>
-                            </div>
+                          <td className="p-4 text-center">
+                            <select 
+                              value={student.globalStatus || 'activo'}
+                              onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
+                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full rounded-lg border-2 outline-none transition-all cursor-pointer ${
+                                student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
+                                student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
+                                'bg-emerald-50 border-emerald-200 text-emerald-700'
+                              }`}
+                            >
+                              <option value="activo">Activo</option>
+                              <option value="congelado">Congelado</option>
+                              <option value="baja">Dar de Baja</option>
+                            </select>
                           </td>
                         </tr>
                       ));
@@ -558,7 +582,50 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 3. CLASES POR PROFESOR --- */}
+        {/* --- 3. NUEVA PESTAÑA MITOBOX --- */}
+        {activeTab === 'mitobox' && (
+          <div className="space-y-6 animate-in fade-in">
+            <header className="mb-6">
+              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Radar Mitobox</h2>
+              <p className="text-zinc-500 font-medium text-sm">Visualiza las salas libres que pueden reservar los alumnos.</p>
+            </header>
+
+            <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
+              <div className="flex flex-col sm:flex-row gap-4 mb-6">
+                <div className="flex-1">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Día a consultar</label>
+                  <input type="date" value={mboxAdminDate} onChange={e => setMboxAdminDate(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800" />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Centro</label>
+                  <select value={mboxAdminSede} onChange={e => setMboxAdminSede(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
+                    <option value="Tarragona">Tarragona</option>
+                    <option value="Reus">Reus</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="border-t border-zinc-100 pt-6">
+                {availableMboxSlotsAdmin.length > 0 ? (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {availableMboxSlotsAdmin.map((slot, i) => (
+                      <div key={i} className="bg-blue-50 border border-blue-100 p-4 rounded-xl text-center">
+                        <p className="text-blue-900 font-black text-xl">{slot.time}h</p>
+                        <p className="text-[10px] text-blue-600 font-bold uppercase tracking-widest">{slot.sala}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-zinc-50 border-2 border-dashed border-zinc-200 p-8 rounded-2xl text-center">
+                    <p className="text-sm font-bold text-zinc-500 uppercase tracking-widest">No hay salas disponibles para la fecha o sede elegidas.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- 4. CLASES POR PROFESOR --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
@@ -614,7 +681,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES EN PELIGRO --- */}
+        {/* --- 5. CLASES EN PELIGRO --- */}
         {activeTab === 'danger' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex items-center gap-3">
@@ -655,7 +722,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 5. PROFESORES (NÓMINAS) --- */}
+        {/* --- 6. PROFESORES (NÓMINAS) --- */}
         {activeTab === 'teachers' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -695,7 +762,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
         
-        {/* --- 6. TABLÓN --- */}
+        {/* --- 7. TABLÓN --- */}
         {activeTab === 'announcements' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
@@ -728,7 +795,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 7. GAMIFICACIÓN --- */}
+        {/* --- 8. GAMIFICACIÓN --- */}
         {activeTab === 'gamification' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -788,7 +855,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 8. SETTINGS --- */}
+        {/* --- 9. SETTINGS --- */}
         {activeTab === 'settings' && (
           <div className="space-y-6 animate-in fade-in">
              <header className="mb-6">
@@ -855,6 +922,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-medium text-xs text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Pega aquí el texto completo..." />
               <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm">Guardar Contrato</button>
             </div>
+
+            {/* MANTENIMIENTO DE BASE DE DATOS */}
+            <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Trash2 className="w-4 h-4 text-black"/> Mantenimiento del Sistema</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-4">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos optimizada y rápida.</p>
+              
+              <button 
+                onClick={cleanExpiredTickets} 
+                className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm transition-colors w-max"
+              >
+                <Trash2 className="w-4 h-4"/> Purgar Tickets Caducados
+              </button>
+            </div>
+
           </div>
         )}
 

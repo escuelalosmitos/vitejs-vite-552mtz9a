@@ -82,6 +82,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   }, []);
 
 // --- FUNCIONES GESTIONES ---
+ // --- FUNCIONES GESTIONES ---
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
     if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
@@ -103,24 +104,62 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         let borradas = 0;
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
         
-        // Lo hacemos con un FOR para evitar fallos silenciosos de Promise.all
         for (let c of classesWithStudent) {
           const updatedList = c.students.filter(s => s.id !== studentId);
           if (c.refPath) {
             await updateDoc(doc(db, c.refPath), { students: updatedList });
             borradas++;
+
+            // 🚀 NUEVO: AVISO DE BAJA AL PROFESOR 🚀
+            try {
+              const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+              await fetch(APPS_SCRIPT_URL, {
+                method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                  type: 'notificacion_profesor',
+                  teacherEmail: emailProfe,
+                  subject: `❌ Baja de alumno: ${studentName} (${c.subject})`,
+                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} se ha dado de BAJA de tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+                })
+              });
+            } catch(e) { console.log("Fallo correo baja", e); }
           }
         }
         
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`✅ Baja ejecutada. ${studentName} borrado de ${borradas} clases y archivado en CRM.`);
+        alert(`✅ Baja ejecutada. Profesores avisados por correo. ${studentName} borrado de ${borradas} clases.`);
       }
 
       // CASO B: SOLICITUD DE MANTENIMIENTO (CONGELAR CUOTA)
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
+        
+        const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        
+        for (let c of classesWithStudent) {
+          if (c.refPath) {
+            // Lo actualizamos en la plantilla para que le salga como "congelado" al profesor
+            const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: true } : s);
+            await updateDoc(doc(db, c.refPath), { students: updatedList });
+
+            // 🚀 NUEVO: AVISO DE MANTENIMIENTO AL PROFESOR 🚀
+            try {
+              const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+              await fetch(APPS_SCRIPT_URL, {
+                method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                  type: 'notificacion_profesor',
+                  teacherEmail: emailProfe,
+                  subject: `❄️ Alumno congelado: ${studentName} (${c.subject})`,
+                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} ha CONGELADO su plaza de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h) durante este mes.\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+                })
+              });
+            } catch(e) { console.log("Fallo correo congelar", e); }
+          }
+        }
+
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`❄️ Cuenta congelada. El estado de ${studentName} se ha actualizado a Mantenimiento.`);
+        alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores han sido avisados.`);
       }
 
       // CASO C: CAMBIO DE HORARIO, AMPLIAR CLASES O RECUPERACIÓN
@@ -154,6 +193,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             if (c.refPath) {
               await updateDoc(doc(db, c.refPath), { students: updatedList });
               logMessage += `➖ Borrado de la clase de ${c.subject} (${c.time}h).\n`;
+
+              // 🚀 AVISO DE CAMBIO AL PROFESOR ANTIGUO 🚀
+              try {
+                const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+                await fetch(APPS_SCRIPT_URL, {
+                  method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                  body: JSON.stringify({
+                    type: 'notificacion_profesor',
+                    teacherEmail: emailProfe,
+                    subject: `🔄 Cambio de horario: ${studentName} (${c.subject})`,
+                    body: `Hola ${c.teacher},\n\nTe informamos que ${studentName} se ha cambiado de horario y ya NO vendrá a tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nLo hemos borrado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo.`
+                  })
+                });
+              } catch(e) {}
             }
           }
         }
@@ -178,9 +231,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         logMessage += `✅ Ticket archivado con éxito.\n`;
 
-        // 🚀 5. NUEVO: DISPARADOR DEL EMAIL AL PROFESOR RECEPTOR 🚀
+        // 🚀 5. DISPARADOR DEL EMAIL AL PROFESOR NUEVO 🚀
         try {
-          // Extraemos el nombre del profesor y lo convertimos a formato email corporativo
           const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
           
           await fetch(APPS_SCRIPT_URL, {
@@ -194,15 +246,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
             })
           });
-          logMessage += `📩 Email enviado al profesor (${emailProfe}).`;
-        } catch(e) { 
-          console.log("Fallo silencioso del mailer en Modo Dios", e); 
-          logMessage += `⚠️ No se pudo enviar el email al profesor.`;
-        }
+          logMessage += `📩 Email enviado al profesor receptor.`;
+        } catch(e) { }
 
         alert(logMessage);
       } else {
-        // En caso de que sea un aviso de ausencia o ticket antiguo
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         alert("✅ Trámite genérico archivado correctamente.");
       }

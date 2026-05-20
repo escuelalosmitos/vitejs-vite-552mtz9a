@@ -274,22 +274,27 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   }, [date, dailyReports]);
 
   // CÁLCULO INTELIGENTE DE NOTIFICACIONES
+  // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Filtrado para Profesores)
   const notifications = useMemo(() => {
     if (isAdmin) {
+      // Si eres tú (Modo Dios encubierto), lo ves todo
       return gestiones.filter(g => g.status === 'pendiente');
     } else {
-      const myStudentIds = new Set();
+      // Si es un profesor normal, preparamos la lista de sus clases
       const myClassIds = new Set();
-      
       recurringClasses.forEach(c => {
         myClassIds.add(c.id);
-        c.students?.forEach(s => myStudentIds.add(s.id));
       });
 
       return gestiones.filter(g => {
         if (g.status !== 'pendiente') return false;
-        if (g.requestedClass && myClassIds.has(g.requestedClass)) return true;
-        if (myStudentIds.has(g.studentId)) return true;
+        
+        // REGLA DE ORO: Los profes SOLO ven "Avisos de Ausencia" que pertenezcan a SUS clases.
+        // El resto del papeleo (bajas, cambios de hora, Mitobox...) es invisible para ellos.
+        if (g.type === 'aviso_ausencia' && g.requestedClass && myClassIds.has(g.requestedClass)) {
+          return true;
+        }
+        
         return false;
       });
     }

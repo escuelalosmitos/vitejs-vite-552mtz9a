@@ -377,6 +377,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
+  // --- ZONA SEGURA DE HOOKS USEMEMO ---
   const notifications = useMemo(() => {
     if (isAdmin) {
       return gestiones.filter(g => g.status === 'pendiente');
@@ -395,19 +396,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       });
     }
   }, [gestiones, recurringClasses, isAdmin]);
-
-  const showNotification = (msg) => {
-    setNotification(msg);
-    setTimeout(() => setNotification(null), 3000);
-  };
-
-  const dismissNotification = async (id) => {
-    try {
-      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', id), { status: 'completado' });
-    } catch (e) {
-      console.error("Error al ocultar notificación", e);
-    }
-  };
 
   const recordsForSelectedDate = useMemo(() => {
     return records
@@ -447,6 +435,53 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       earnings: earnings.toFixed(2) 
     };
   }, [records, date, settings]);
+
+  const dashboardItems = useMemo(() => {
+    const selectedDayOfWeek = getDayOfWeek(date);
+    const items = [];
+    const recordsToday = records.filter(r => r.date === date);
+    
+    const scheduledToday = recurringClasses.filter(rc => 
+      rc.dayOfWeek === selectedDayOfWeek && 
+      !(rc.cancelledDates && rc.cancelledDates.includes(date))
+    );
+
+    scheduledToday.forEach(rc => {
+      const recordExists = recordsToday.find(r => r.classId === rc.id);
+      if (recordExists) items.push({ type: 'completed', data: recordExists });
+      else items.push({ type: 'pending', data: rc });
+    });
+
+    recordsToday.forEach(r => {
+      const isScheduled = scheduledToday.find(rc => rc.id === r.classId);
+      if (!isScheduled) items.push({ type: 'completed', data: r });
+    });
+
+    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
+  }, [date, records, recurringClasses]);
+
+  // 👇 CANDADO DE LAS 24 HORAS EN EL LUGAR CORRECTO (Arriba, junto a los otros useMemo) 👇
+  const isExpiredDate = useMemo(() => {
+    const classDate = new Date(date);
+    const now = new Date();
+    const diffMs = now - classDate;
+    const diffHours = diffMs / (1000 * 60 * 60);
+    return diffHours > 36;
+  }, [date]);
+  // 👆 FIN DE LA ZONA SEGURA DE HOOKS 👆
+
+  const showNotification = (msg) => {
+    setNotification(msg);
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const dismissNotification = async (id) => {
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', id), { status: 'completado' });
+    } catch (e) {
+      console.error("Error al ocultar notificación", e);
+    }
+  };
 
   const buildAttendanceDetails = () => {
     if (recordsForSelectedDate.length === 0) {
@@ -781,30 +816,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  const dashboardItems = useMemo(() => {
-    const selectedDayOfWeek = getDayOfWeek(date);
-    const items = [];
-    const recordsToday = records.filter(r => r.date === date);
-    
-    const scheduledToday = recurringClasses.filter(rc => 
-      rc.dayOfWeek === selectedDayOfWeek && 
-      !(rc.cancelledDates && rc.cancelledDates.includes(date))
-    );
-
-    scheduledToday.forEach(rc => {
-      const recordExists = recordsToday.find(r => r.classId === rc.id);
-      if (recordExists) items.push({ type: 'completed', data: recordExists });
-      else items.push({ type: 'pending', data: rc });
-    });
-
-    recordsToday.forEach(r => {
-      const isScheduled = scheduledToday.find(rc => rc.id === r.classId);
-      if (!isScheduled) items.push({ type: 'completed', data: r });
-    });
-
-    return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
-  }, [date, records, recurringClasses]);
-
   const checkDeadHourAndSave = () => {
     if (!currentSession.subject || !currentSession.capacity) {
       showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
@@ -1056,15 +1067,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const todayISO = new Date().toISOString().split('T')[0];
   const isFutureDate = date > todayISO;
   
-  // 👇 AQUÍ ESTÁ EL CANDADO DE LAS 24 HORAS 👇
-  const isExpiredDate = React.useMemo(() => {
-    const classDate = new Date(date);
-    const now = new Date();
-    const diffMs = now - classDate;
-    const diffHours = diffMs / (1000 * 60 * 60);
-    return diffHours > 36; // Bloquea si han pasado más de 36 horas desde la fecha elegida
-  }, [date]);
-  
   const isFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isFestivo || isVacacion;
@@ -1243,13 +1245,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         </div>
                         <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
                           
-                          {/* 👇 AQUÍ ESTÁ EL BLOQUE PROTEGIDO DEL PASADO 👇 */}
+                          {/* 👇 BLOQUE PROTEGIDO DEL PASADO 👇 */}
                           {isSpecialDay ? (
                             <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">No Laborable</span>
                           ) : item.type === 'completed' ? (
-                            <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-4 py-2 rounded-lg font-black border border-emerald-200 uppercase tracking-widest">
-                              <Check className="w-4 h-4" /> Completado
-                            </span>
+                            <button onClick={() => viewSummary(item.record)} className="w-full sm:w-auto bg-emerald-100 hover:bg-emerald-200 text-emerald-800 py-3 px-5 rounded-xl font-black uppercase text-[10px] tracking-widest transition-colors shadow-sm">
+                              Ver Resumen
+                            </button>
                           ) : isExpiredDate ? (
                             <div className="w-full sm:w-auto bg-rose-50 text-rose-500 py-2.5 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest border border-rose-100 flex items-center justify-center gap-2 cursor-not-allowed">
                               <AlertCircle className="w-4 h-4"/> Plazo Expirado

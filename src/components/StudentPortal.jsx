@@ -410,11 +410,39 @@ export default function StudentPortal({ user, logout, db, appId }) {
         date: new Date().toISOString(),
         reservationDate: mboxDate
       });
+
+      // MAGIA: Generación del archivo .ics
+      const [y, m, d] = mboxDate.split('-');
+      const [h, min] = mboxSelectedSlot.time.split(':');
+      const startDate = new Date(y, m - 1, d, h, min);
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hora de reserva
+
+      const formatDateICS = (date) => date.toISOString().replace(/-|:|\.\d+/g, '');
+      const icsContent = `BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+DTSTART:${formatDateICS(startDate)}
+DTEND:${formatDateICS(endDate)}
+SUMMARY:Ensayo Mitobox - Escuela Los Mitos
+DESCRIPTION:Reserva para ensayar ${mboxInst} en ${mboxSede} (${mboxSelectedSlot.sala})
+LOCATION:Escuela Los Mitos - ${mboxSede}
+END:VEVENT
+END:VCALENDAR`;
+
+      const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Ensayo_Mitobox_${mboxDate}.ics`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
       setMitoboxModal(false);
       setMboxDate('');
       setMboxSelectedSlot(null);
       setMboxInst('');
-      showToast('Reserva de sala enviada. Espera confirmación.');
+      showToast('Reserva confirmada. Se ha descargado el archivo para tu calendario.');
     } catch (e) {
       showToast('Error al reservar sala.', 'error');
     } finally {

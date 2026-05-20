@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
 // 👇 AQUÍ IMPORTAS LAS PREGUNTAS DESDE EL NUEVO ARCHIVO 👇
@@ -320,9 +321,29 @@ export default function StudentPortal({ user, logout, db, appId }) {
         date: new Date().toISOString()
       });
 
+      // 3. 🚀 NUEVO: DISPARADOR DEL EMAIL AL PROFESOR 🚀
+      try {
+        // OJO: Transforma "Paco Perez" en "paco.perez@escuelalosmitos.com"
+        const emailProfe = `${absenceModal.clase.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+        
+        await fetch(APPS_SCRIPT_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            type: 'notificacion_profesor',
+            teacherEmail: emailProfe,
+            subject: `⚠️ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`,
+            body: `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado mediante la App que NO asistirá a tu clase de ${absenceModal.clase.subject} el próximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\nEl sistema ya lo ha tachado de tu lista de asistencia para ese día.\n\nUn saludo,\nCoordinación Los Mitos.`
+          })
+        });
+      } catch(e) { console.log("Fallo silencioso del mailer", e); }
+
       setAbsenceModal(null);
       showToast('Aviso enviado correctamente al profesor.');
       await fetchRealStudentData(profile.id);
+
+    // 👇 ESTO ES LO QUE TE FALTABA PARA QUE NO EXPLOTE 👇
     } catch (error) {
       showToast('Error al enviar el aviso.', 'error');
     }

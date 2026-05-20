@@ -455,6 +455,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const exceptionsToday = scheduledClass.exceptions?.[date] || {};
 
       setCurrentSession({
+        isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
         isNew: false,
         classId: scheduledClass.id,
         refPath: scheduledClass.refPath, // Mantenemos la ruta para el guardado global
@@ -741,6 +742,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
+      // 🚀 NUEVO: CONTROL DE AUTO-CANCELACIÓN (REGLA DE LAS 2 HORAS)
+      if (currentSession.isAutoCancelled) {
+        showNotification({ type: 'success', text: "Clase auto-cancelada. Hora no computable registrada." });
+        executeSaveRecord("Clase cancelada automáticamente por ausencia total (+2h de antelación)", true);
+        return;
+      }
+
       const scheduledTimesToday = dashboardItems.map(i => i.data.time);
       scheduledTimesToday.push(currentSession.time);
       scheduledTimesToday.sort();
@@ -1282,7 +1290,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <p className="text-xs font-bold text-purple-900">Estás viendo una fecha futura. El botón de pasar lista está bloqueado, pero puedes marcar alumnos que ya te han avisado y darle a <b>"Guardar Previsión"</b>.</p>
                     </div>
                   )}
-
+                  {/* 👇 PEGA ESTO JUSTO AQUÍ DEBAJO 👇 */}
+                  {/* AVISO DE AUTO-CANCELACIÓN (+2 HORAS) */}
+                  {currentSession.isAutoCancelled && (
+                    <div className="mb-6 p-4 bg-red-50 border-2 border-red-200 rounded-xl flex items-center gap-3">
+                      <AlertCircle className="text-red-600 w-6 h-6 shrink-0"/>
+                      <p className="text-xs font-bold text-red-900">🚨 CLASE CANCELADA. Todos los alumnos avisaron con más de 2h de antelación. Esta hora no se cobra ni requiere tareas. Dale a "Guardar Asistencia" para archivarla.</p>
+                    </div>
+                  )}
+                  {/* 👆 FIN DEL AVISO 👆 */}
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>

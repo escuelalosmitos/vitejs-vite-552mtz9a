@@ -507,7 +507,7 @@ END:VCALENDAR`;
     });
   }
 
-  const AbsenceModalOverlay = () => {
+  const renderAbsenceModal = () => {
     if (!absenceModal) return null;
     const isLate = absenceModal.diffHours < 16;
     if (showRules) {
@@ -570,24 +570,35 @@ END:VCALENDAR`;
     );
   };
 
-  const GestionModalOverlay = () => {
+  const renderGestionModal = () => {
+// 👇 1. ESCUDO Y VARIABLES QUE NO TE PUEDEN FALTAR 👇
     if (!gestionModal) return null;
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
     const isTicketRedemption = gestionModal.type === 'recuperacion';
 
-    const availableClasses = isClassSearch ? allClasses.filter(c => {
-      const targetInstrument = selectedInst || profile.instruments[0];
-      if (c.subject !== targetInstrument) return false;
-      const maxCap = parseInt(c.capacity || 4);
-      const currentStudents = c.students?.length || 0;
-      if (currentStudents >= maxCap) return false;
-      if (c.students?.some(s => s.id === profile.id)) return false;
-      if (isTicketRedemption && targetInstrument === 'Guitarra') {
-        if (maxCap !== 8) return false;
+    // 👇 2. TU LÓGICA (Que está perfecta) 👇
+    let availableClasses = [];
+    if (isClassSearch) {
+      if (gestionModal.type === 'ampliar_clases' && !selectedInst) {
+        availableClasses = []; // Si no hay instrumento elegido, forzamos lista vacía
+      } else {
+        const targetInstrument = gestionModal.type === 'ampliar_clases' ? selectedInst : (selectedInst || profile.instruments[0]);
+        if (targetInstrument) {
+          availableClasses = allClasses.filter(c => {
+            if (c.subject !== targetInstrument) return false;
+            const maxCap = parseInt(c.capacity || 4);
+            const currentStudents = c.students?.length || 0;
+            if (currentStudents >= maxCap) return false;
+            if (c.students?.some(s => s.id === profile.id)) return false;
+            if (isTicketRedemption && targetInstrument === 'Guitarra') {
+              if (maxCap !== 8) return false;
+            }
+            return true;
+          });
+        }
       }
-      return true;
-    }) : [];
-
+    }
+    
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
@@ -615,25 +626,30 @@ END:VCALENDAR`;
           )}
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
           {isClassSearch && (
-            <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
+<div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
               <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige el grupo para recuperar' : '1. Busca disponibilidad en directo'}</p>
+              
               {gestionModal.type === 'ampliar_clases' && (
-                <select value={selectedInst} onChange={e => setSelectedInst(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
+                <select value={selectedInst} onChange={e => {setSelectedInst(e.target.value); setSelectedNewClass(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
                   <option value="">Selecciona Instrumento...</option>
                   {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
                 </select>
               )}
-              {availableClasses.length > 0 ? (
-                <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
-                  {availableClasses.map(c => (
-                    <div key={c.id} onClick={() => setSelectedNewClass(c)} className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedNewClass?.id === c.id ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
-                      <div className="flex justify-between items-center mb-1"><span className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)}</span><span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded">{c.time}h</span></div>
-                      <div className="text-xs text-zinc-500 font-medium">Prof: {c.teacher} • Quedan {parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-zinc-100"><p className="text-xs font-bold text-zinc-500">No hay grupos {isTicketRedemption ? 'habilitados para recuperación' : 'grupales libres'}. Escríbenos a gestiones@escuelalosmitos.com</p></div>
+
+              {/* AQUÍ ESTÁ EL TRUCO: Si es "ampliar_clases" y NO ha elegido instrumento, ocultamos la lista. En cualquier otro caso, la mostramos. */}
+              {!(gestionModal.type === 'ampliar_clases' && !selectedInst) && (
+                availableClasses.length > 0 ? (
+                  <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
+                    {availableClasses.map(c => (
+                      <div key={c.id} onClick={() => setSelectedNewClass(c)} className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedNewClass?.id === c.id ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
+                        <div className="flex justify-between items-center mb-1"><span className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)}</span><span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded">{c.time}h</span></div>
+                        <div className="text-xs text-zinc-500 font-medium">Prof: {c.teacher} • Quedan {parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-zinc-100"><p className="text-xs font-bold text-zinc-500">No hay grupos libres o compatibles. Escríbenos a gestiones@escuelalosmitos.com</p></div>
+                )
               )}
             </div>
           )}
@@ -646,7 +662,7 @@ END:VCALENDAR`;
     );
   };
 
-  const MitoboxModalOverlay = () => {
+  const renderMitoboxModal = () => {
     if (!mitoboxModal) return null;
     
     const tomorrow = new Date();
@@ -758,7 +774,7 @@ END:VCALENDAR`;
     );
   };
 
-  const ContractOverlay = () => {
+  const renderContract = () => {
     if (!showContract) return null;
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
@@ -777,7 +793,7 @@ END:VCALENDAR`;
     );
   };
 
-  const TriviaModalOverlay = () => {
+  const renderTriviaModal = () => {
     if (!triviaModal) return null;
     return (
       <div className="fixed inset-0 bg-black/95 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200">
@@ -850,11 +866,11 @@ END:VCALENDAR`;
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 relative">
-      <AbsenceModalOverlay />
-      <GestionModalOverlay />
-      <MitoboxModalOverlay />
-      <ContractOverlay />
-      <TriviaModalOverlay />
+      {renderAbsenceModal()}
+      {renderGestionModal()}
+      {renderMitoboxModal()}
+      {renderContract()}
+      {renderTriviaModal()}
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
           <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>

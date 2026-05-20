@@ -83,6 +83,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // --- FUNCIONES GESTIONES ---
  // --- FUNCIÓN DE APROBACIÓN INTELIGENTE (CON EFECTO REAL EN EL SISTEMA) ---
   // --- FUNCIONES GESTIONES (AUTOMATIZACIÓN INTEGRADA DE BANDEJA) ---
+  // --- FUNCIONES GESTIONES (AUTOMATIZACIÓN INTEGRADA DE BANDEJA) ---
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
     if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
@@ -100,65 +101,97 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       // CASO A: SOLICITUD DE BAJA DEFINITIVA
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
+        
+        let borradas = 0;
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-        const updatePromises = classesWithStudent.map(c => {
+        
+        // Lo hacemos con un FOR para evitar fallos silenciosos de Promise.all
+        for (let c of classesWithStudent) {
           const updatedList = c.students.filter(s => s.id !== studentId);
-          if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
-          return Promise.resolve();
-        });
-        await Promise.all(updatePromises);
-        alert(`✅ Baja ejecutada. ${studentName} removido de todas las clases y del directorio activo.`);
+          if (c.refPath) {
+            await updateDoc(doc(db, c.refPath), { students: updatedList });
+            borradas++;
+          }
+        }
+        
+        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        alert(`✅ Baja ejecutada. ${studentName} borrado de ${borradas} clases y archivado en CRM.`);
       }
+
       // CASO B: SOLICITUD DE MANTENIMIENTO (CONGELAR CUOTA)
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
+        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         alert(`❄️ Cuenta congelada. El estado de ${studentName} se ha actualizado a Mantenimiento.`);
       }
+
       // CASO C: CAMBIO DE HORARIO, AMPLIAR CLASES O RECUPERACIÓN
-      else if ((type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') && requestedClass) {
-        const targetClass = allClasses.find(c => c.id === requestedClass);
-        if (!targetClass) {
-          alert("❌ Error: La clase de destino ya no está disponible o está llena.");
+      else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
+        
+        if (!requestedClass) {
+          alert("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se archivará el ticket.");
+          await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
           return;
         }
 
-        // Si es cambio de horario, lo quitamos de la clase antigua
-        if (type === 'cambio_horario') {
-          const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
-          const removePromises = oldClasses.map(c => {
-            const updatedList = c.students.filter(s => s.id !== studentId);
-            if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
-            return Promise.resolve();
-          });
-          await Promise.all(removePromises);
+        const targetClass = allClasses.find(c => c.id === requestedClass);
+        if (!targetClass) {
+          alert(`❌ Error crítico: La clase elegida por el alumno (ID: ${requestedClass}) ya no existe en la base de datos.`);
+          return;
         }
 
+        if (!targetClass.refPath) {
+          alert("❌ Error de ruta: No se puede acceder al archivo del profesor para escribir el nuevo alumno.");
+          return;
+        }
+
+        let logMessage = `Iniciando proceso para ${studentName}:\n\n`;
+
+        // 1. Si es cambio de horario, quitamos al alumno de su clase antigua
+        if (type === 'cambio_horario') {
+          const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
+          
+          for (let c of oldClasses) {
+            const updatedList = c.students.filter(s => s.id !== studentId);
+            if (c.refPath) {
+              await updateDoc(doc(db, c.refPath), { students: updatedList });
+              logMessage += `➖ Borrado de la clase de ${c.subject} (${c.time}h).\n`;
+            }
+          }
+        }
+
+        // 2. Preparamos los datos del alumno para la nueva clase
         const newStudentPayload = {
           id: studentId,
           name: studentName,
           email: studentInfo?.email || '',
           isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
-          status: 'present'
+          status: 'present',
+          isRecovery: type === 'recuperacion'
         };
 
-        if (type === 'recuperacion') newStudentPayload.isRecovery = true;
-
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-        if (targetClass.refPath) {
-          await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-        }
-        alert(`🔄 Trámite aplicado. ${studentName} ha sido inscrito en el nuevo horario.`);
-      }
+        
+        // 3. Ejecutamos la escritura forzada sin guardias silenciosas
+        await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
+        logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
 
-      // Archivar el ticket
-      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        // 4. Archivamos el ticket
+        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        logMessage += `✅ Ticket archivado con éxito.`;
+
+        alert(logMessage);
+      } else {
+        // En caso de que sea un aviso de ausencia o ticket antiguo
+        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        alert("✅ Trámite genérico archivado correctamente.");
+      }
 
     } catch (error) {
       console.error("Error al procesar la aprobación:", error);
-      alert("Hubo un error al ejecutar la acción en segundo plano.");
+      alert(`❌ ERROR DEL SISTEMA:\n\n${error.message}`);
     }
   };
-
   // --- FUNCIONES ALUMNOS (CRM) ---
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';

@@ -303,11 +303,28 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const status = (!isLate && wantsTicket) ? 'notified' : 'notified_no_ticket';
     
     try {
-      // 1. MAGIA INVISIBLE: Marcar al alumno en la lista de clase
       const classRef = doc(db, absenceModal.clase.refPath);
-      await setDoc(classRef, { exceptions: { [absenceModal.dateStr]: { [profile.id]: status } } }, { merge: true });
       
-      // 2. NUEVO: Mandar un Aviso a la bandeja del Profesor (y al Modo Dios)
+      // 🧠 LÓGICA DE CLASE VACÍA Y REGLA DE LAS 2 HORAS
+      const currentExceptions = absenceModal.clase.exceptions?.[absenceModal.dateStr] || {};
+      currentExceptions[profile.id] = status; // Simulamos cómo quedará la clase tras este aviso
+      
+      const activeStudents = (absenceModal.clase.students || []).filter(s => !s.isPaused);
+      const allAbsentNow = activeStudents.length > 0 && activeStudents.every(s => {
+        const st = currentExceptions[s.id];
+        return st === 'absent' || st === 'notified' || st === 'notified_no_ticket';
+      });
+
+      // ¿Han faltado todos y quedan más de 2 horas para la clase?
+      const isCancelledWithNotice = allAbsentNow && (absenceModal.diffHours >= 2);
+
+      // Guardamos la falta en Firebase (y la bandera de cancelación si aplica)
+      await setDoc(classRef, { 
+        exceptions: { [absenceModal.dateStr]: { [profile.id]: status } },
+        ...(isCancelledWithNotice ? { autoCancelled: { [absenceModal.dateStr]: true } } : {})
+      }, { merge: true });
+      
+      // 2. Mandar Aviso a la bandeja del Profesor (Modo Dios)
       const gestionId = `falta-${Date.now()}`;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
@@ -320,6 +337,37 @@ export default function StudentPortal({ user, logout, db, appId }) {
         status: 'pendiente',
         date: new Date().toISOString()
       });
+
+      // 3. 🚀 DISPARADOR DEL EMAIL INTELIGENTE AL PROFESOR 🚀
+      try {
+        const emailProfe = `${absenceModal.clase.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+        
+        let subjectEmail = `⚠️ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`;
+        let bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado que NO asistirá a tu clase de ${absenceModal.clase.subject} el próximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\n${isLate ? '⚠️ IMPORTANTE: El aviso se ha realizado FUERA DE PLAZO (con menos de 16h de antelación).' : '✅ El aviso se ha realizado dentro de plazo.'}\n\nEl sistema ya ha actualizado tu lista de asistencia para que no le esperes.\n\nUn saludo,\nCoordinación Los Mitos.`;
+
+        // Si se vacía la clase, sobrescribimos el mail por uno más importante
+        if (isCancelledWithNotice) {
+          subjectEmail = `🚨 CLASE CANCELADA (+2h antelación): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
+          bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nAl haberse vaciado la clase con MÁS DE 2 HORAS de antelación, esta sesión queda CANCELADA.\n\nSegún normativa, esta hora no requiere asistencia presencial, no se habilitará el protocolo de tareas y no computará en nómina.\n\nUn saludo,\nCoordinación Los Mitos.`;
+        } else if (allAbsentNow) {
+          subjectEmail = `⚠️ CLASE VACÍA (Aviso de última hora): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
+          bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nComo el último aviso se ha producido con MENOS DE 2 HORAS de antelación, mantienes tu derecho a cobrar la hora.\n\nAl abrir la App para pasar lista, se activará el Protocolo de Hora Muerta para que selecciones una tarea y puedas registrarla en tu nómina.\n\nUn saludo,\nCoordinación Los Mitos.`;
+        }
+        
+        await fetch(APPS_SCRIPT_URL, {
+          method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ type: 'notificacion_profesor', teacherEmail: emailProfe, subject: subjectEmail, body: bodyEmail })
+        });
+      } catch(e) { console.log("Fallo silencioso del mailer", e); }
+
+      setAbsenceModal(null);
+      showToast('Aviso enviado correctamente al profesor.');
+      await fetchRealStudentData(profile.id);
+
+    } catch (error) {
+      showToast('Error al enviar el aviso.', 'error');
+    }
+  };
 
       // 3. 🚀 DISPARADOR DEL EMAIL AL PROFESOR 🚀
       try {

@@ -369,32 +369,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
   };
 
-      // 3. 🚀 DISPARADOR DEL EMAIL AL PROFESOR 🚀
-      try {
-        const emailProfe = `${absenceModal.clase.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-        
-        await fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            type: 'notificacion_profesor',
-            teacherEmail: emailProfe,
-            subject: `⚠️ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`,
-            body: `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado que NO asistirá a tu clase de ${absenceModal.clase.subject} el próximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\n${isLate ? '⚠️ IMPORTANTE: El aviso se ha realizado FUERA DE PLAZO (con menos de 16h de antelación).' : '✅ El aviso se ha realizado dentro de plazo.'}\n\nEl sistema ya ha actualizado tu lista de asistencia para que no le esperes.\n\nUn saludo,\nCoordinación Los Mitos.`
-          })
-        });
-      } catch(e) { console.log("Fallo silencioso del mailer", e); }
-
-      setAbsenceModal(null);
-      showToast('Aviso enviado correctamente al profesor.');
-      await fetchRealStudentData(profile.id);
-
-    } catch (error) {
-      showToast('Error al enviar el aviso.', 'error');
-    }
-  };
-
   const sendGestion = async () => {
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     
@@ -926,7 +900,8 @@ END:VCALENDAR`;
       </div>
     );
   };
-if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
+  
+  if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
   // 👇 AQUÍ EMPIEZA LO NUEVO: BLOQUEO PARA ALUMNOS DADOS DE BAJA 👇
   if (profile?.globalStatus === 'baja') {

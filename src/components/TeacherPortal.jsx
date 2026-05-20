@@ -44,7 +44,8 @@ import {
   doc,
   setDoc,
   deleteDoc,
-  updateDoc
+  updateDoc,
+  collectionGroup // <-- AÑADIDO PARA LEER LAS CLASES GLOBALES
 } from 'firebase/firestore';
 
 // --- CONSTANTES DEL NEGOCIO (V2.0) ---
@@ -141,18 +142,25 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
+  
+  const getTeacherName = () => {
+    if (!user || !user.email) return 'Profesor';
+    return user.email.split('@')[0];
+  };
 
   useEffect(() => {
     if (!user) return;
 
     setLoadingData(true);
+    const myName = getTeacherName(); // <-- Usamos el nombre para filtrar clases globales
 
-    const recurringRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses');
-    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
+    // --- LECTURA GLOBAL DE CLASES Y NÓMINAS PARA SINCRONIZACIÓN PERFECTA ---
+    const recurringRef = collectionGroup(db, 'recurringClasses');
+    const recordsRef = collectionGroup(db, 'records'); 
     const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
     const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
-    const ticketsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'tickets');
+    const ticketsRef = collectionGroup(db, 'tickets');
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
 
@@ -169,13 +177,25 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     };
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
-      setRecurringClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      // Filtramos las clases globales para quedarnos solo con las de este profesor
+      const myClasses = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.teacher === myName || data.originalTeacherUid === user.uid) { // Soporte para sustituciones
+            myClasses.push({ id: doc.id, refPath: doc.ref.path, ...data });
+        }
+      });
+      setRecurringClasses(myClasses);
       recurringLoaded = true;
       checkLoading();
     });
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
-      const recs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const recs = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.teacher === myName) recs.push({ id: doc.id, ...data });
+      });
       recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);
       recordsLoaded = true;
@@ -201,6 +221,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubTickets = onSnapshot(ticketsRef, (snapshot) => {
+      // Cargamos todos los tickets para calcular bien las recuperaciones
       const tks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTickets(tks);
       ticketsLoaded = true;
@@ -252,7 +273,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
-  // CÁLCULO INTELIGENTE DE NOTIFICACIONES (Mejorado para Recuperaciones)
+  // CÁLCULO INTELIGENTE DE NOTIFICACIONES
   const notifications = useMemo(() => {
     if (isAdmin) {
       return gestiones.filter(g => g.status === 'pendiente');
@@ -273,11 +294,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       });
     }
   }, [gestiones, recurringClasses, isAdmin]);
-
-  const getTeacherName = () => {
-    if (!user || !user.email) return 'Profesor';
-    return user.email.split('@')[0];
-  };
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -436,6 +452,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       setCurrentSession({
         isNew: false,
         classId: scheduledClass.id,
+        refPath: scheduledClass.refPath, // Mantenemos la ruta para el guardado global
         time: scheduledClass.time,
         sede: scheduledClass.sede || 'Tarragona',
         sala: scheduledClass.sala || 'Sala 1',
@@ -448,7 +465,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         isRecurring: true,
         exceptions: scheduledClass.exceptions || {}, 
         students: (scheduledClass.students || []).map(s => {
-          // Lógica correcta: la clase manda, pero las excepciones diarias prevalecen
           let currentStatus = s.isPaused ? 'paused' : 'present';
           if (exceptionsToday[s.id]) {
             currentStatus = exceptionsToday[s.id];
@@ -553,7 +569,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           claimed: false,
           instruments: [currentSession.subject],
           classes: [currentSession.classId],
-          internalNotes: '' // Campo creado por defecto
+          internalNotes: '' 
         });
       } catch (error) {
         console.error("Error creando alumno global:", error);
@@ -591,13 +607,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       newStudentName: '',
       newStudentEmail: '',
       isAddingRecovery: false
-    });
-  };
-
-  const removeStudent = (id) => {
-    setCurrentSession({
-      ...currentSession,
-      students: currentSession.students.filter(s => s.id !== id)
     });
   };
 
@@ -645,7 +654,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         finalExceptions[date] = exceptionsForDate;
       }
 
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave), {
+      // --- GUARDADO DE CLASE MODIFICADO PARA USAR COLECCIÓN GLOBAL ---
+      const targetPath = currentSession.isNew 
+        ? doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave) 
+        : doc(db, currentSession.refPath); // Conserva la ruta original si existe
+        
+      await setDoc(targetPath, {
         dayOfWeek: dayToSave,
         time: currentSession.time,
         sede: currentSession.sede || 'Tarragona',
@@ -658,7 +672,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents,
         exceptions: finalExceptions
-      });
+      }, { merge: true });
 
       showNotification({ type: 'success', text: isFutureDate ? 'Previsión guardada para esta fecha.' : 'Plantilla actualizada con éxito.' });
       setCurrentSession(null);
@@ -803,7 +817,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           .filter(s => !s.isRecovery)
           .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
 
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId), {
+        const targetPath = currentSession.isNew 
+          ? doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId) 
+          : doc(db, currentSession.refPath);
+          
+        await setDoc(targetPath, {
           dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
           time: currentSession.time,
           sede: currentSession.sede || 'Tarragona',
@@ -816,7 +834,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           cancelledDates: currentSession.cancelledDates || [],
           students: templateStudents,
           exceptions: currentSession.exceptions || {}
-        });
+        }, { merge: true });
       }
 
       if (currentSession.isSubstitution && currentSession.substitutionId) {
@@ -839,7 +857,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
     try {
       const updatedCancelledDates = [...(classData.cancelledDates || []), date];
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classData.id), {
+      // Guardado global para actualizar el calendario de la escuela
+      await setDoc(doc(db, classData.refPath), {
         ...classData,
         cancelledDates: updatedCancelledDates
       });
@@ -867,13 +886,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  const deleteRecurringClass = async (classId) => {
+  const deleteRecurringClass = async (classData) => {
     if (!user) return;
     const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario permanentemente?');
     if (!isConfirmed) return;
 
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classId));
+      await deleteDoc(doc(db, classData.refPath)); // Borrado usando ref global
       showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
     } catch (error) {
       console.error(error);
@@ -970,8 +989,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   };
 
-  // NUEVO MODAL: BLOC DE NOTAS DEL ALUMNO
-  const NotesModalOverlay = () => {
+  const renderNotesModal = () => {
     if (!notesModal) return null;
     const globalStudentInfo = globalStudents.find(s => s.id === notesModal.id);
     const [text, setText] = useState(globalStudentInfo?.internalNotes || '');
@@ -999,18 +1017,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2>
           </div>
           <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
-
           <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
-            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos, observaciones médicas o evolución académica.</p>
+            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos o evolución.</p>
           </div>
-
           <textarea 
             value={text} 
             onChange={e => setText(e.target.value)} 
-            placeholder="Ej: Es el hermano menor de Hugo. Alérgico a los cacahuetes. Le cuesta la lectura rítmica..."
+            placeholder="Ej: Es el hermano menor de Hugo..."
             className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6 transition-colors"
           />
-
           <div className="flex gap-4">
             <button onClick={() => setNotesModal(null)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">Cancelar</button>
             <button onClick={handleSave} disabled={saving} className="flex-1 bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
@@ -1021,7 +1036,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       </div>
     );
   };
-
 
   // --- RENDER DE CARGA E INICIO DE SESIÓN ---
   if (loadingData) {
@@ -1051,13 +1065,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isFestivo || isVacacion;
 
-  // TABLÓN DE SUSTITUCIONES GLOBAL
   const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
       {deadHourModal && <DeadHourOverlay />}
-      {notesModal && <NotesModalOverlay />}
+      {renderNotesModal()}
 
       <header className="bg-black text-white p-5 sticky top-0 z-50 shadow-md border-b border-zinc-800">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
@@ -1122,7 +1135,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
             {!currentSession && (
               <>
-                {/* TABLÓN GLOBAL DE SUSTITUCIONES */}
                 {upcomingSubs.length > 0 && (
                   <div className="m-6 md:m-8 p-6 md:p-8 bg-zinc-900 rounded-3xl shadow-xl relative overflow-hidden">
                     <div className="relative z-10">
@@ -1225,7 +1237,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                                 <CalendarOff className="w-5 h-5" />
                               </button>
 
-                              <button onClick={() => deleteRecurringClass(item.data.id)} className="p-2.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors shrink-0" title="Eliminar plantilla permanentemente">
+                              <button onClick={() => deleteRecurringClass(item.data)} className="p-2.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors shrink-0" title="Eliminar plantilla permanentemente">
                                 <Trash2 className="w-5 h-5" />
                               </button>
                             </>
@@ -1259,7 +1271,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
 
-                  {/* AVISO MODO PREVISIÓN (FUTURO) */}
                   {isFutureDate && !currentSession.isNew && !currentSession.isSubstitution && (
                     <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
                       <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
@@ -1472,13 +1483,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             )}
                           </div>
                           
-                          {/* BOTONES MÓVIL: NOTAS Y BORRAR */}
+                          {/* BOTONES MÓVIL: NOTAS */}
                           <div className="flex gap-2 sm:hidden">
                             <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
                               <FileText className="w-5 h-5" />
-                            </button>
-                            <button onClick={() => removeStudent(student.id)} className="text-zinc-400 hover:text-red-500 p-2">
-                              <Trash2 className="w-5 h-5" />
                             </button>
                           </div>
                         </div>
@@ -1504,13 +1512,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           )}
                         </div>
 
-                        {/* BOTONES PC: NOTAS Y BORRAR */}
+                        {/* BOTONES PC: NOTAS */}
                         <div className="hidden sm:flex items-center gap-2">
                           <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
                             <FileText className="w-5 h-5" />
-                          </button>
-                          <button onClick={() => removeStudent(student.id)} className="text-zinc-300 hover:text-rose-600 hover:bg-rose-50 p-3 rounded-xl transition-colors" title="Borrar alumno de la clase">
-                            <Trash2 className="w-5 h-5" />
                           </button>
                         </div>
                       </div>

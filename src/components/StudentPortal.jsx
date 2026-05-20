@@ -358,6 +358,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setGestionText('');
       setSelectedNewClass(null);
       setAcceptLatePenalty(false);
+      setSelectedInst(''); // Limpiar para que no se quede guardado
       showToast('Solicitud enviada a Administración.');
     } catch (error) {
       showToast('Error al enviar la solicitud.', 'error');
@@ -411,11 +412,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
         reservationDate: mboxDate
       });
 
-      // MAGIA: Generación del archivo .ics
+      // --- INICIO MAGIA: Generación del archivo .ics ---
       const [y, m, d] = mboxDate.split('-');
       const [h, min] = mboxSelectedSlot.time.split(':');
       const startDate = new Date(y, m - 1, d, h, min);
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hora de reserva
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // Añade 1 hora de ensayo
 
       const formatDateICS = (date) => date.toISOString().replace(/-|:|\.\d+/g, '');
       const icsContent = `BEGIN:VCALENDAR
@@ -437,6 +438,7 @@ END:VCALENDAR`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      // --- FIN MAGIA ---
 
       setMitoboxModal(false);
       setMboxDate('');
@@ -507,6 +509,7 @@ END:VCALENDAR`;
     });
   }
 
+  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderAbsenceModal = () => {
     if (!absenceModal) return null;
     const isLate = absenceModal.diffHours < 16;
@@ -570,13 +573,12 @@ END:VCALENDAR`;
     );
   };
 
+  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderGestionModal = () => {
-// 👇 1. ESCUDO Y VARIABLES QUE NO TE PUEDEN FALTAR 👇
     if (!gestionModal) return null;
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
     const isTicketRedemption = gestionModal.type === 'recuperacion';
 
-    // 👇 2. TU LÓGICA (Que está perfecta) 👇
     let availableClasses = [];
     if (isClassSearch) {
       if (gestionModal.type === 'ampliar_clases' && !selectedInst) {
@@ -598,11 +600,11 @@ END:VCALENDAR`;
         }
       }
     }
-    
+
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
-          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setAcceptLatePenalty(false);}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
@@ -626,7 +628,7 @@ END:VCALENDAR`;
           )}
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
           {isClassSearch && (
-<div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
+            <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
               <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige el grupo para recuperar' : '1. Busca disponibilidad en directo'}</p>
               
               {gestionModal.type === 'ampliar_clases' && (
@@ -662,6 +664,7 @@ END:VCALENDAR`;
     );
   };
 
+  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderMitoboxModal = () => {
     if (!mitoboxModal) return null;
     
@@ -774,6 +777,7 @@ END:VCALENDAR`;
     );
   };
 
+  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderContract = () => {
     if (!showContract) return null;
     return (
@@ -793,6 +797,7 @@ END:VCALENDAR`;
     );
   };
 
+  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderTriviaModal = () => {
     if (!triviaModal) return null;
     return (
@@ -866,11 +871,14 @@ END:VCALENDAR`;
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 relative">
+      
+      {/* 👇 AQUÍ ES DONDE AHORA LLAMAMOS A LAS FUNCIONES DIRECTAMENTE 👇 */}
       {renderAbsenceModal()}
       {renderGestionModal()}
       {renderMitoboxModal()}
       {renderContract()}
       {renderTriviaModal()}
+      
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
           <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>

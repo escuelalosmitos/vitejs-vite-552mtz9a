@@ -32,9 +32,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
+  const [filterStatus, setFilterStatus] = useState('activo'); // NUEVO: Filtro predeterminado
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
-  const [expandedTeacher, setExpandedTeacher] = useState(null); // Para el desplegable de clases
-  const [notesModal, setNotesModal] = useState(null); // <-- NUEVO: Estado para el bloc de notas
+  const [expandedTeacher, setExpandedTeacher] = useState(null); 
+  const [notesModal, setNotesModal] = useState(null); 
 
   useEffect(() => {
     let loaded = 0;
@@ -58,7 +59,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     // NUEVOS LISTENERS PARA INTELIGENCIA DE NEGOCIO
     const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
-      setAllClasses(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() }))); // <-- CORRECCIÓN: Agregado refPath para la baja global
       checkLoad();
     });
     const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
@@ -85,31 +86,44 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { [field]: newStatus });
     }
   };
-// --- FUNCIÓN DE BAJA GLOBAL (SUPERPODER MODO DIOS) ---
-  const handleGlobalBaja = async (studentId, studentName) => {
-    if (!window.confirm(`⚠️ CUIDADO: ¿Estás seguro de que quieres dar de BAJA a ${studentName}?\n\nEsto lo eliminará de TODAS las clases de todos los profesores automáticamente y lo marcará como congelado. Esta acción no se puede deshacer de golpe.`)) {
-      return;
+
+  // --- FUNCIÓN DE CAMBIO DE ESTADO Y BAJA GLOBAL CORREGIDA ---
+  const handleUpdateStudentStatus = async (studentId, studentName, newStatus) => {
+    // Si es una baja, pedimos confirmación doble
+    if (newStatus === 'baja') {
+      const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
+      if (!confirmBaja) return;
     }
 
     try {
-      // 1. Congelar su perfil global
-      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
-
-      // 2. Buscar en qué clases está matriculado y borrarlo
-      const classesToUpdate = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-      
-      const updatePromises = classesToUpdate.map(c => {
-        const updatedStudents = c.students.filter(s => s.id !== studentId);
-        // Ojo, la ruta de la clase está en c.refPath gracias al radar que hicimos
-        return updateDoc(doc(db, c.refPath), { students: updatedStudents });
+      // 1. Actualizar estado en el perfil global del alumno
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { 
+        globalStatus: newStatus 
       });
 
-      await Promise.all(updatePromises);
-      alert(`✅ ${studentName} ha sido dado de baja correctamente de ${classesToUpdate.length} clases.`);
-      
+      // 2. Si es baja, lo arrancamos de todas las clases en tiempo real
+      if (newStatus === 'baja') {
+        const classesWithThisStudent = allClasses.filter(c => 
+          c.students && c.students.some(s => s.id === studentId)
+        );
+
+        const updatePromises = classesWithThisStudent.map(c => {
+          const updatedList = c.students.filter(s => s.id !== studentId);
+          // Usamos la propiedad refPath que capturamos en el radar onSnapshot
+          if (c.refPath) {
+            return updateDoc(doc(db, c.refPath), { students: updatedList });
+          }
+          return Promise.resolve();
+        });
+
+        await Promise.all(updatePromises);
+        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases.`);
+      } else {
+        alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
+      }
     } catch (error) {
-      console.error("Error al dar de baja:", error);
-      alert("Hubo un error al procesar la baja global.");
+      console.error("Error en la gestión del alumno:", error);
+      alert("Hubo un error al procesar el cambio. Revisa la consola.");
     }
   };
   
@@ -351,7 +365,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             ) : (
               <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full text-left border-collapse min-w-[800px]">
                     <thead>
                       <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                         <th className="p-4 font-black">Fecha</th>
@@ -375,7 +389,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             </span>
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
                           </td>
-                          <td className="p-4 max-w-xs truncate text-xs" title={g.details}>{g.details}</td>
+                          <td className="p-4">
+                            <div className="max-w-[150px] md:max-w-[250px] truncate text-xs" title={g.details}>{g.details}</div>
+                          </td>
                           <td className="p-4 text-right whitespace-nowrap">
                             <button onClick={() => updateGestionStatus(g.id, 'completado')} className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg mr-2 transition-colors" title="Aprobar / Hecho"><Check className="w-4 h-4"/></button>
                             <button onClick={() => updateGestionStatus(g.id, 'rechazado')} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
@@ -388,7 +404,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             )}
 
-              {/* TABLA DE HISTORIAL DE TRÁMITES CERRADOS */}
+            {/* TABLA DE HISTORIAL DE TRÁMITES CERRADOS */}
             {resolvedGestiones.length > 0 && (
               <div className="mt-12 pt-8 border-t border-zinc-200">
                 <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
@@ -396,7 +412,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </h3>
                 <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden opacity-80 hover:opacity-100 transition-opacity">
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
+                    <table className="w-full text-left border-collapse min-w-[800px]">
                       <thead>
                         <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                           <th className="p-4 font-black">Fecha</th>
@@ -416,7 +432,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                 {g.type.replace('_', ' ')}
                               </span>
                             </td>
-                            <td className="p-4 max-w-md truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</td>
+                            <td className="p-4">
+                              <div className="max-w-[150px] md:max-w-[300px] truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</div>
+                            </td>
                             <td className="p-4 text-right whitespace-nowrap">
                               <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
                                 {g.status}
@@ -430,103 +448,108 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
               </div>
             )}
-
           </div>
         )}
-        
-    {/* --- 2. ALUMNOS CRM (FORMATO FILA E INTERRUPTORES) --- */}
+
+        {/* --- 2. ALUMNOS CRM MEJORADO --- */}
         {activeTab === 'students' && (
           <div className="space-y-6 animate-in fade-in">
-            <header className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+            <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Directorio Alumnos</h2>
-                <p className="text-zinc-500 font-medium text-sm">Activa servicios premium o congela cuentas.</p>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona estados, notas y accesos premium.</p>
               </div>
-              <div className="relative w-full sm:w-72">
-                <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input 
-                  type="text" placeholder="Buscar por nombre..." value={searchStudent} onChange={e => setSearchStudent(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm"
-                />
+
+              <div className="flex flex-col sm:flex-row gap-3 items-center">
+                {/* Selector de Filtro de Estado */}
+                <div className="flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
+                  {['activo', 'congelado', 'baja'].map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setFilterStatus(s)}
+                      className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${filterStatus === s ? 'bg-black text-white' : 'text-zinc-400 hover:text-black'}`}
+                    >
+                      {s}s
+                    </button>
+                  ))}
+                </div>
+
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input 
+                    type="text" placeholder="Buscar alumno..." value={searchStudent} onChange={e => setSearchStudent(e.target.value)}
+                    className="w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm shadow-sm"
+                  />
+                </div>
               </div>
             </header>
 
             <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[800px]">
+                <table className="w-full text-left border-collapse min-w-[900px]">
                   <thead>
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                       <th className="p-4 font-black">Alumno</th>
                       <th className="p-4 font-black text-center">Ficha</th>
                       <th className="p-4 font-black text-center">Mitoverso</th>
                       <th className="p-4 font-black text-center">Mitobox</th>
-                      <th className="p-4 font-black text-center">Estado (Alta/Mantenimiento)</th>
-                      <th className="p-4 font-black text-right">Baja</th>
+                      <th className="p-4 font-black text-center">Estado / Gestión</th>
                     </tr>
                   </thead>
-                 <tbody className="text-sm font-medium text-slate-700">
+                  <tbody className="text-sm font-medium text-slate-700">
                     {(() => {
-                      // 1. Buscamos qué alumnos están realmente matriculados en alguna clase de los profes
-                      const alumnosMatriculados = new Set();
-                      allClasses.forEach(c => {
-                        (c.students || []).forEach(s => alumnosMatriculados.add(s.id));
+                      const filtered = students.filter(s => {
+                        const matchSearch = s.name.toLowerCase().includes(searchStudent.toLowerCase());
+                        // Si no tiene status, asumimos 'activo'
+                        const currentStatus = s.globalStatus || 'activo';
+                        const matchStatus = currentStatus === filterStatus;
+                        return matchSearch && matchStatus;
                       });
 
-                      // 2. Filtramos la base de datos cruzándola con los matriculados y la barra de búsqueda
-                      const crmStudents = students.filter(s => 
-                        alumnosMatriculados.has(s.id) && 
-                        s.name.toLowerCase().includes(searchStudent.toLowerCase())
-                      );
-
-                      if (crmStudents.length === 0) {
-                        return <tr><td colSpan="6" className="p-8 text-center text-zinc-400 italic">No se encontraron alumnos activos.</td></tr>;
+                      if (filtered.length === 0) {
+                        return <tr><td colSpan="5" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
                       }
 
-                      return crmStudents.map(student => {
-                        const isCongelado = student.globalStatus === 'congelado';
-                        return (
-                          <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-                            <td className="p-4">
-                              <div className={`font-black truncate max-w-[150px] md:max-w-[250px] ${isCongelado ? 'text-zinc-400 line-through' : 'text-slate-900'}`} title={student.name}>{student.name}</div>
-                              <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] md:max-w-[250px]" title={student.email}>{student.email || 'Sin email'}</div>
-                            </td>
-                            <td className="p-4 text-center">
-                              <button onClick={() => setNotesModal(student)} className="p-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-xl transition-colors" title="Ver/Editar Notas Internas">
-                                <FileText className="w-5 h-5 mx-auto" />
-                              </button>
-                            </td>
-                            <td className="p-4 text-center">
-                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
-                                {student.hasMitoverso ? 'ON' : 'OFF'}
-                              </button>
-                            </td>
-                            <td className="p-4 text-center">
-                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200 hover:bg-zinc-200'}`}>
-                                {student.hasMitobox ? 'ON' : 'OFF'}
-                              </button>
-                            </td>
-                            
-                            {/* ESTA ES LA ETIQUETA INFORMATIVA (SIN BOTÓN) */}
-                            <td className="p-4 text-center">
-                              <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${!isCongelado ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
-                                {!isCongelado ? 'ACTIVO' : 'CONGELADO'}
-                              </span>
-                            </td>
-
-                            {/* 👇 BOTÓN DE BAJA GLOBAL 👇 */}
-                            <td className="p-4 text-right">
-                              <button 
-                                onClick={() => handleGlobalBaja(student.id, student.name)} 
-                                disabled={isCongelado}
-                                className={`p-2 rounded-xl transition-colors ${isCongelado ? 'text-zinc-300 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50 hover:text-rose-700'}`} 
-                                title="Dar de baja de todas las clases"
+                      return filtered.map(student => (
+                        <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
+                          <td className="p-4">
+                            <div className="font-black text-slate-900 truncate max-w-[200px]">{student.name}</div>
+                            <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[200px]">{student.email}</div>
+                          </td>
+                          <td className="p-4 text-center">
+                            <button onClick={() => setNotesModal(student)} className="p-2.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded-xl transition-all shadow-sm">
+                              <FileText className="w-5 h-5 mx-auto" />
+                            </button>
+                          </td>
+                          <td className="p-4 text-center">
+                            <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200'}`}>
+                              {student.hasMitoverso ? 'ON' : 'OFF'}
+                            </button>
+                          </td>
+                          <td className="p-4 text-center">
+                            <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200'}`}>
+                              {student.hasMitobox ? 'ON' : 'OFF'}
+                            </button>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex items-center justify-center gap-2">
+                              <select 
+                                value={student.globalStatus || 'activo'}
+                                onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
+                                className={`text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-lg border-2 outline-none transition-all ${
+                                  student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
+                                  student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
+                                  'bg-emerald-50 border-emerald-200 text-emerald-700'
+                                }`}
                               >
-                                <UserMinus className="w-5 h-5" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      });
+                                <option value="activo">Activo</option>
+                                <option value="congelado">Congelado</option>
+                                <option value="baja">Dar de Baja</option>
+                              </select>
+                            </div>
+                          </td>
+                        </tr>
+                      ));
                     })()}
                   </tbody>
                 </table>
@@ -672,6 +695,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
         
+        {/* --- 6. TABLÓN --- */}
         {activeTab === 'announcements' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
@@ -704,6 +728,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
+        {/* --- 7. GAMIFICACIÓN --- */}
         {activeTab === 'gamification' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -763,7 +788,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- SETTINGS --- */}
+        {/* --- 8. SETTINGS --- */}
         {activeTab === 'settings' && (
           <div className="space-y-6 animate-in fade-in">
              <header className="mb-6">

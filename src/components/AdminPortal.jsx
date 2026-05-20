@@ -82,15 +82,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   // --- FUNCIONES GESTIONES ---
  // --- FUNCIÓN DE APROBACIÓN INTELIGENTE (CON EFECTO REAL EN EL SISTEMA) ---
+  // --- FUNCIONES GESTIONES (AUTOMATIZACIÓN INTEGRADA DE BANDEJA) ---
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
-    
-    if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) {
-      return;
-    }
+    if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
 
     try {
-      // SI SE RECHAZA, solo cambiamos el estado de la notificación y terminamos
       if (status !== 'completado' || !gestionData) {
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status });
         alert(`Trámite marcado como ${status.toUpperCase()}.`);
@@ -98,79 +95,67 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
 
       const { studentId, studentName, type, requestedClass } = gestionData;
+      const studentInfo = students.find(s => s.id === studentId);
 
-      // ==========================================
-      // CASO A: EL ALUMNO SOLICITA DAR DE BAJA
-      // ==========================================
+      // CASO A: SOLICITUD DE BAJA DEFINITIVA
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
-        
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-        const updatePromises = classesWithThisStudent.map(c => {
+        const updatePromises = classesWithStudent.map(c => {
           const updatedList = c.students.filter(s => s.id !== studentId);
           if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
           return Promise.resolve();
         });
         await Promise.all(updatePromises);
-        alert(`✅ Baja ejecutada. ${studentName} eliminado de todas las clases.`);
+        alert(`✅ Baja ejecutada. ${studentName} removido de todas las clases y del directorio activo.`);
       }
-
-      // ==========================================
-      // CASO B: EL ALUMNO SOLICITA MANTENIMIENTO (CONGELAR)
-      // ==========================================
+      // CASO B: SOLICITUD DE MANTENIMIENTO (CONGELAR CUOTA)
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
-        alert(`❄️ ${studentName} ha sido pasado a estado CONGELADO con éxito.`);
+        alert(`❄️ Cuenta congelada. El estado de ${studentName} se ha actualizado a Mantenimiento.`);
       }
-
-      // ==========================================
-      // CASO C: CAMBIO DE HORARIO O RECUPERACIÓN
-      // ==========================================
-      else if ((type === 'cambio_horario' || type === 'recuperacion') && requestedClass) {
-        // 1. Buscar la clase de destino elegida por el alumno
+      // CASO C: CAMBIO DE HORARIO, AMPLIAR CLASES O RECUPERACIÓN
+      else if ((type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') && requestedClass) {
         const targetClass = allClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
-          alert("❌ Error: La clase de destino ya no existe o no está disponible.");
+          alert("❌ Error: La clase de destino ya no está disponible o está llena.");
           return;
         }
 
-        // 2. Si es un cambio de horario fijo, primero lo borramos de su clase actual del mismo instrumento
+        // Si es cambio de horario, lo quitamos de la clase antigua
         if (type === 'cambio_horario') {
           const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
           const removePromises = oldClasses.map(c => {
             const updatedList = c.students.filter(s => s.id !== studentId);
-            return updateDoc(doc(db, c.refPath), { students: updatedList });
+            if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
+            return Promise.resolve();
           });
           await Promise.all(removePromises);
         }
 
-        // 3. Lo metemos en la nueva clase (conservando sus datos de email y estado)
-        const studentInfo = students.find(s => s.id === studentId);
         const newStudentPayload = {
           id: studentId,
           name: studentName,
           email: studentInfo?.email || '',
-          isPaused: newStatus === 'congelado',
+          isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
           status: 'present'
         };
-        
-        // Si es una recuperación, le añadimos la etiqueta para que el profe lo sepa
-        if (type === 'recuperacion') {
-          newStudentPayload.isRecovery = true;
-        }
 
-        const updatedTargetStudents = [...(targetClass.students || []), newStudentPayload];
-        await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-        
-        alert(`🔄 Cambio completado. ${studentName} inscrito en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).`);
+        if (type === 'recuperacion') newStudentPayload.isRecovery = true;
+
+        const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
+        if (targetClass.refPath) {
+          await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
+        }
+        alert(`🔄 Trámite aplicado. ${studentName} ha sido inscrito en el nuevo horario.`);
       }
 
-      // 3. Finalmente, cambiamos el estado de la gestión a completado para que desaparezca de la bandeja
+      // Archivar el ticket
       await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
 
     } catch (error) {
-      console.error("Error al procesar la aprobación automática:", error);
-      alert("Hubo un error al ejecutar la acción automática.");
+      console.error("Error al procesar la aprobación:", error);
+      alert("Hubo un error al ejecutar la acción en segundo plano.");
     }
   };
 

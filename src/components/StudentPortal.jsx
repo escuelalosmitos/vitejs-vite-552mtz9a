@@ -491,6 +491,22 @@ END:VCALENDAR`;
   const pendingAbsences = [];
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.type !== 'alta_mitobox'); 
   
+  // 👇 NUEVO: Detectar si hay un trámite administrativo mayor en curso 👇
+  const pendingAdminGestiones = myGestiones.filter(g => 
+    g.status === 'pendiente' && 
+    ['baja', 'mantenimiento', 'cambio_horario', 'ampliar_clases'].includes(g.type)
+  );
+  const hasPendingAdminGestion = pendingAdminGestiones.length > 0;
+
+  // 👇 NUEVO: Función escudo para evitar duplicidades 👇
+  const handleAdminGestionClick = (gestionPayload) => {
+    if (hasPendingAdminGestion) {
+      showToast('Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.', 'error');
+      return;
+    }
+    setGestionModal(gestionPayload);
+  };
+  
   if (profile) {
     myClasses.forEach(clase => {
       if (clase.exceptions) {
@@ -976,17 +992,26 @@ END:VCALENDAR`;
                   );
                 }
 
+                // 👇 Detectamos si el alumno está congelado
+                const isCongelado = profile?.globalStatus === 'congelado';
+
                 return (
-                  <div key={idx} className="bg-black text-white rounded-3xl p-6 shadow-xl relative overflow-hidden mb-4">
-                      <p className="text-zinc-400 font-bold uppercase text-[10px] tracking-widest mb-1">Clase de {clase.subject}</p>
-                      <h2 className="text-3xl font-black uppercase tracking-tighter">{getDayName(clase.dayOfWeek)}</h2>
-                      <p className="text-lg font-medium text-zinc-300 mb-6">{clase.time}h</p>
-                      <div className="flex flex-col sm:flex-row gap-3 text-sm font-medium text-zinc-300 mb-8 bg-zinc-800/50 p-4 rounded-2xl border border-zinc-700/50">
-                        <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline text-zinc-600">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
+                  <div key={idx} className={`rounded-3xl p-6 shadow-xl relative overflow-hidden mb-4 transition-all ${isCongelado ? 'bg-zinc-200 text-zinc-500 border-2 border-zinc-300' : 'bg-black text-white'}`}>
+                      <p className={`${isCongelado ? 'text-zinc-500' : 'text-zinc-400'} font-bold uppercase text-[10px] tracking-widest mb-1`}>Clase de {clase.subject}</p>
+                      <h2 className={`text-3xl font-black uppercase tracking-tighter ${isCongelado ? 'text-zinc-400' : ''}`}>{getDayName(clase.dayOfWeek)}</h2>
+                      <p className={`text-lg font-medium mb-6 ${isCongelado ? 'text-zinc-500' : 'text-zinc-300'}`}>{clase.time}h</p>
+                      
+                      <div className={`flex flex-col sm:flex-row gap-3 text-sm font-medium mb-8 p-4 rounded-2xl border ${isCongelado ? 'bg-zinc-300/50 border-zinc-300 text-zinc-600' : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300'}`}>
+                        <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
                       
-                      {/* BLOQUEO DEL BOTÓN SI YA AVISÓ */}
-                      {hasNotifiedNext ? (
+                      {/* 👇 NUEVA LÓGICA DE BOTONERA CONGELADA 👇 */}
+                      {isCongelado ? (
+                        <div className="w-full bg-blue-100 text-blue-800 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-3 uppercase text-[10px] sm:text-xs tracking-widest border border-blue-200 text-center leading-tight">
+                          <Snowflake className="w-5 h-5 shrink-0" />
+                          <span>Tienes la plaza congelada.<br/>Te la estamos guardando este mes.</span>
+                        </div>
+                      ) : hasNotifiedNext ? (
                         <div className="w-full bg-zinc-800/50 text-emerald-400 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-emerald-900/50">
                           <CheckCircle className="w-4 h-4" /> Falta Notificada
                         </div>
@@ -1233,71 +1258,77 @@ END:VCALENDAR`;
               <MessageSquare className="w-20 h-20 text-zinc-200 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
-            <div className="bg-white p-4 rounded-2xl border-2 border-amber-100 text-amber-900 text-xs font-medium leading-relaxed">
-              <strong className="font-black uppercase tracking-widest text-[10px] block mb-1 text-amber-700">Normativa Administrativa:</strong>
-              Todas las gestiones (bajas, cambios de horario, mantenimientos) que modifiquen la facturación deben solicitarse antes del <strong>día 20 de cada mes</strong>. Las peticiones enviadas del 21 en adelante, tendrán efecto en el mes siguiente.
+            <div className="bg-white p-5 rounded-2xl border-2 border-amber-100 text-amber-900 text-xs font-medium leading-relaxed shadow-sm">
+              <strong className="font-black uppercase tracking-widest text-[11px] block mb-2 text-amber-700 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4"/> Normativa Administrativa
+              </strong>
+              <ul className="list-disc pl-4 space-y-2 mt-2 text-amber-800/90">
+                <li>Todas las gestiones (bajas, cambios de horario, mantenimientos) deben solicitarse antes del <strong>día 20 de cada mes</strong>. Las enviadas del 21 en adelante, tendrán efecto en el mes siguiente.</li>
+                <li><strong>Solo se puede hacer una de estas gestiones al mes</strong>, y el trámite no se puede rectificar una vez solicitado.</li>
+                <li>Para cualquier duda, podéis recurrir al botón de <strong>"Dudas u otras gestiones"</strong> al final de esta página.</li>
+              </ul>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button 
-                onClick={() => setGestionModal({
+                onClick={() => handleAdminGestionClick({
                   type: 'cambio_horario', title: 'Cambiar Horario Fijo', icon: RefreshCcw, color: 'text-blue-500',
                   desc: 'Busca una plaza libre en otro grupo y solicita el cambio para el mes que viene.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className="bg-white p-6 rounded-3xl border-2 border-zinc-100 hover:border-black text-left transition-all shadow-sm group"
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className="bg-blue-50 w-12 h-12 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><RefreshCcw className="w-6 h-6 text-blue-500"/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Solicita otro día u hora</p>
               </button>
 
               <button 
-                onClick={() => setGestionModal({
+                onClick={() => handleAdminGestionClick({
                   type: 'ampliar_clases', title: 'Añadir Otra Clase', icon: PlusCircle, color: 'text-emerald-500',
                   desc: 'Añade una hora extra o empieza con un nuevo instrumento grupal.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className="bg-white p-6 rounded-3xl border-2 border-zinc-100 hover:border-black text-left transition-all shadow-sm group"
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className="bg-emerald-50 w-12 h-12 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><PlusCircle className="w-6 h-6 text-emerald-500"/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Ampliar Mis Clases</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Apunta un nuevo instrumento</p>
               </button>
 
               <button 
-                onClick={() => setGestionModal({
+                onClick={() => handleAdminGestionClick({
                   type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
-                  desc: 'Si necesitas un respiro temporal pero no quieres perder tu plaza ni tus ventajas. Recuerda que la cuota de mantenimiento es de 15€/Mes. Si quieres mantener mas de un mes tendrás que solicitarlo mes a mes. Esta gestión afecta solo al mes que viene',
+                  desc: 'Congela tu plaza temporalmente por 15€/Mes. Esta gestión afecta solo al mes que viene.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className="bg-white p-6 rounded-3xl border-2 border-zinc-100 hover:border-black text-left transition-all shadow-sm group"
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className="bg-amber-50 w-12 h-12 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><Snowflake className="w-6 h-6 text-amber-500"/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-amber-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cuota Mantenimiento</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Congela tu plaza temporalmente</p>
               </button>
 
               <button 
-                onClick={() => setGestionModal({
+                onClick={() => handleAdminGestionClick({
                   type: 'baja', title: 'Dar de Baja mi Plaza', icon: UserMinus, color: 'text-red-500',
                   desc: 'Solicita la cancelación de tu suscripción en la escuela. Te echaremos de menos.',
                   placeholder: '¿Podrías decirnos brevemente el motivo? Nos ayuda a mejorar (Opcional)...'
                 })}
-                className="bg-white p-6 rounded-3xl border-2 border-zinc-100 hover:border-red-500 text-left transition-all shadow-sm group"
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}
               >
-                <div className="bg-red-50 w-12 h-12 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform"><UserMinus className="w-6 h-6 text-red-500"/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-red-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Dar de Baja</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Cancela tu suscripción</p>
               </button>
 
               <a 
-                href="mailto:gestiones@escuelalosmitos.com?subject=Otras%20Gestiones%20-%20Portal%20Alumno"
+                href="mailto:gestiones@escuelalosmitos.com?subject=Dudas%20y%20Otras%20Gestiones%20-%20Portal%20Alumno"
                 className="col-span-1 sm:col-span-2 bg-black p-6 rounded-3xl border-2 border-black hover:bg-zinc-800 text-left transition-all shadow-md group flex items-center justify-between"
               >
                 <div>
-                  <h3 className="font-black text-white uppercase tracking-tight text-lg">Otras Gestiones (Mail)</h3>
-                  <p className="text-xs font-medium text-zinc-400 mt-1">Clases particulares, dudas de facturación...</p>
+                  <h3 className="font-black text-white uppercase tracking-tight text-lg">Dudas u otras gestiones</h3>
+                  <p className="text-xs font-medium text-zinc-400 mt-1">Vía Mail: Clases particulares, facturación, consultas...</p>
                 </div>
                 <div className="bg-zinc-800 p-4 rounded-full group-hover:scale-110 transition-transform"><Mail className="w-6 h-6 text-white"/></div>
               </a>

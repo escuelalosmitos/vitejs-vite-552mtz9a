@@ -3,10 +3,14 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
+
+const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
+const SEDES = ["Tarragona", "Reus"];
+const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -15,6 +19,21 @@ const formatDateSpanish = (dateString) => {
 };
 
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
+
+// Helper: Generador de fechas para los Tickets (Mes + 1)
+const generateTicketDates = () => {
+  const now = new Date();
+  let nextY = now.getFullYear();
+  let nextM = now.getMonth() + 2; // +1 to jump to next month, +1 because months are 0-indexed in Date but we want 1-12
+  if (nextM > 12) {
+    nextM = 1;
+    nextY++;
+  }
+  const validFrom = `${nextY}-${String(nextM).padStart(2, '0')}-01`;
+  const lastDay = new Date(nextY, nextM, 0).getDate();
+  const validUntil = `${nextY}-${String(nextM).padStart(2, '0')}-${lastDay}`;
+  return { validFrom, validUntil };
+};
 
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
@@ -26,6 +45,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [announcements, setAnnouncements] = useState([]);
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
+  const [teachersList, setTeachersList] = useState([]); // Lista de profesores derivada
   const [settings, setSettings] = useState({ 
     festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [],
     prizes: { trimestral: '', anual: '' }
@@ -38,6 +58,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   
+  // ESTADOS MODALES NUEVOS
+  const [createClassModal, setCreateClassModal] = useState(false);
+  const [changeClassModal, setChangeClassModal] = useState(null);
+  const [selectedInstForChange, setSelectedInstForChange] = useState('');
+  
+  const [newClassData, setNewClassData] = useState({
+    dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1',
+    teacher: '', subject: '', capacity: '', duration: 60, notes: ''
+  });
+
   // ESTADOS PARA EL RADAR MITOBOX
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
@@ -63,7 +93,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad(); 
     });
     const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
-      setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
+      const classes = snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() }));
+      setAllClasses(classes);
+      // Extraemos nombres de profesores únicos
+      const teachers = [...new Set(classes.map(c => c.teacher))].filter(Boolean).sort();
+      setTeachersList(teachers);
       checkLoad();
     });
     const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
@@ -74,15 +108,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); };
   }, [appId, db]);
 
-  // --- CHIVATO DEL TRIVIAL (Último día del mes) ---
   const isLastDayOfMonth = useMemo(() => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     return tomorrow.getDate() === 1;
   }, []);
 
-// --- FUNCIONES GESTIONES ---
- // --- FUNCIONES GESTIONES ---
+  // --- FUNCIONES GESTIONES ---
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
     if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
@@ -110,7 +142,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             await updateDoc(doc(db, c.refPath), { students: updatedList });
             borradas++;
 
-            // 🚀 NUEVO: AVISO DE BAJA AL PROFESOR 🚀
             try {
               const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
               await fetch(APPS_SCRIPT_URL, {
@@ -130,7 +161,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert(`✅ Baja ejecutada. Profesores avisados por correo. ${studentName} borrado de ${borradas} clases.`);
       }
 
-      // CASO B: SOLICITUD DE MANTENIMIENTO (CONGELAR CUOTA)
+      // CASO B: SOLICITUD DE MANTENIMIENTO
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
         
@@ -138,11 +169,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         
         for (let c of classesWithStudent) {
           if (c.refPath) {
-            // Lo actualizamos en la plantilla para que le salga como "congelado" al profesor
             const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: true } : s);
             await updateDoc(doc(db, c.refPath), { students: updatedList });
 
-            // 🚀 NUEVO: AVISO DE MANTENIMIENTO AL PROFESOR 🚀
             try {
               const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
               await fetch(APPS_SCRIPT_URL, {
@@ -173,18 +202,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         const targetClass = allClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
-          alert(`❌ Error crítico: La clase elegida por el alumno (ID: ${requestedClass}) ya no existe en la base de datos.`);
-          return;
-        }
-
-        if (!targetClass.refPath) {
-          alert("❌ Error de ruta: No se puede acceder al archivo del profesor para escribir el nuevo alumno.");
+          alert(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
           return;
         }
 
         let logMessage = `Iniciando proceso para ${studentName}:\n\n`;
 
-        // 1. Si es cambio de horario, quitamos al alumno de su clase antigua
         if (type === 'cambio_horario') {
           const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
           
@@ -194,7 +217,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               await updateDoc(doc(db, c.refPath), { students: updatedList });
               logMessage += `➖ Borrado de la clase de ${c.subject} (${c.time}h).\n`;
 
-              // 🚀 AVISO DE CAMBIO AL PROFESOR ANTIGUO 🚀
               try {
                 const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
                 await fetch(APPS_SCRIPT_URL, {
@@ -211,7 +233,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           }
         }
 
-        // 2. Preparamos los datos del alumno para la nueva clase
         const newStudentPayload = {
           id: studentId,
           name: studentName,
@@ -222,23 +243,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         };
 
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-        
-        // 3. Ejecutamos la escritura forzada sin guardias silenciosas
         await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
 
-        // 4. Archivamos el ticket
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         logMessage += `✅ Ticket archivado con éxito.\n`;
 
-        // 🚀 5. DISPARADOR DEL EMAIL AL PROFESOR NUEVO 🚀
         try {
           const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-          
           await fetch(APPS_SCRIPT_URL, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({
               type: 'notificacion_profesor',
               teacherEmail: emailProfe,
@@ -246,7 +260,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
             })
           });
-          logMessage += `📩 Email enviado al profesor receptor.`;
         } catch(e) { }
 
         alert(logMessage);
@@ -256,10 +269,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
 
     } catch (error) {
-      console.error("Error al procesar la aprobación:", error);
       alert(`❌ ERROR DEL SISTEMA:\n\n${error.message}`);
     }
   };
+
   // --- FUNCIONES ALUMNOS (CRM) ---
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';
@@ -289,15 +302,85 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
     } catch (error) {
-      console.error("Error en la gestión del alumno:", error);
-      alert("Hubo un error al procesar el cambio. Revisa la consola.");
+      alert("Hubo un error al procesar el cambio.");
+    }
+  };
+
+  // NUEVO: CAMBIO DE HORARIO UNILATERAL
+  const executeDirectClassChange = async (student, targetClass) => {
+    if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
+    
+    try {
+      // 1. Borrar de clases antiguas del mismo instrumento
+      const oldClasses = allClasses.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
+      for (let c of oldClasses) {
+        const updatedList = c.students.filter(s => s.id !== student.id);
+        if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
+      }
+
+      // 2. Añadir a la nueva clase
+      const newStudentPayload = {
+        id: student.id,
+        name: student.name,
+        email: student.email || '',
+        isPaused: student.globalStatus === 'congelado',
+        status: 'present',
+        isRecovery: false
+      };
+
+      const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== student.id), newStudentPayload];
+      await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
+
+      alert(`✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}.`);
+      setChangeClassModal(null);
+    } catch (error) {
+      alert(`❌ Error al cambiar de clase: ${error.message}`);
+    }
+  };
+
+  // NUEVO: OTORGAR TICKET DE RECUPERACIÓN
+  const grantRecoveryTicket = async (student) => {
+    const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Se generarán para el mes próximo)`, "1");
+    if (!num || isNaN(num) || parseInt(num) <= 0) return;
+
+    try {
+      const { validFrom, validUntil } = generateTicketDates();
+      // Usamos el UID genérico 'admin' para no atarlo a un profesor específico si es un regalo global
+      // o buscamos el UID del primer profesor que le da clase. Por seguridad lo guardamos en un pool central
+      // pero como tu estructura los ata al profesor, crearemos un ref genérico o buscaremos su profesor principal.
+      
+      const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
+      const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool'; // Hack for routing
+
+      const promises = [];
+      for (let i = 0; i < parseInt(num); i++) {
+        const ticketId = `gift-${Date.now()}-${i}`;
+        promises.push(
+          setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
+            studentId: student.id,
+            studentName: student.name,
+            subject: 'Cortesía Escuela',
+            originalDate: new Date().toISOString().split('T')[0],
+            validFrom,
+            validUntil,
+            isUsed: false,
+            isGift: true,
+            createdAt: new Date().toISOString()
+          })
+        );
+      }
+      await Promise.all(promises);
+      alert(`🎁 Se han otorgado ${num} tickets a ${student.name}. Serán válidos desde el 1 del mes que viene.`);
+    } catch(e) {
+      alert("Error al otorgar tickets.");
+      console.error(e);
     }
   };
 
   // --- BOTÓN DE LIMPIEZA ANUAL DE TICKETS CADUCADOS ---
   const cleanExpiredTickets = async () => {
     const today = new Date().toISOString().split('T')[0];
-    if (!window.confirm(`🧹 LIMPIEZA DE BASE DE DATOS\n\n¿Quieres borrar definitivamente todos los tickets cuya validez expiró antes de hoy (${formatDateSpanish(today)})?\n\nEsta operación libera espacio y optimiza la carga del sistema.`)) return;
+    if (!window.confirm(`🧹 LIMPIEZA DE BASE DE DATOS\n\n¿Borrar definitivamente todos los tickets cuya validez expiró antes de hoy (${formatDateSpanish(today)})?`)) return;
     try {
       setLoading(true);
       const ticketsQuery = collectionGroup(db, 'tickets');
@@ -319,11 +402,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert(`🗑️ ¡Limpieza completada! Se han borrado ${count} tickets caducados.`);
       }
     } catch (e) {
-      console.error("Error limpiando tickets:", e);
       alert("Hubo un error en la limpieza masiva.");
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   // --- FUNCIONES TABLÓN ---
@@ -373,7 +453,45 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
- // --- CÁLCULOS ANALÍTICOS ---
+  // NUEVO: CREAR CLASE GLOBAL DESDE ADMIN
+  const handleCreateGlobalClass = async () => {
+    if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
+      return alert("El profesor, el instrumento y el aforo son obligatorios.");
+    }
+    
+    // Necesitamos averiguar el UID del profesor basado en su email
+    // Como Firebase Admin no permite listar UIDs desde cliente fácilmente, lo pediremos o usaremos un hash temporal 
+    // Lo ideal es tener una colección 'teachers' con sus UIDs, pero usaremos el email como ID de documento contenedor si es nuevo
+    const teacherEmail = `${newClassData.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`;
+    // Simplificación: Para no romper la estructura, guardaremos en un pool central o requeriremos que el profesor ya exista
+    const existingClass = allClasses.find(c => c.teacher === newClassData.teacher);
+    let targetUid = 'admin_generated'; 
+    if (existingClass && existingClass.refPath) {
+      targetUid = existingClass.refPath.split('/')[3]; // Extraemos el UID del path: artifacts/appId/users/UID/recurringClasses/...
+    } else {
+       alert("⚠️ Aviso: Este profesor no tiene clases previas. Se guardará bajo su email genérico.");
+       targetUid = teacherEmail.replace(/[@.]/g, '_'); // Fallback UID
+    }
+
+    const classId = Date.now().toString();
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
+        ...newClassData,
+        id: classId,
+        students: [],
+        exceptions: {},
+        cancelledDates: [],
+        dayOfWeek: parseInt(newClassData.dayOfWeek)
+      });
+      alert(`✅ Clase de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
+      setCreateClassModal(false);
+      setNewClassData({ dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, notes: '' });
+    } catch (e) {
+      alert("Error al crear la clase.");
+    }
+  };
+
+  // --- CÁLCULOS ANALÍTICOS ---
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
@@ -419,7 +537,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     })).sort((a, b) => b.hours - a.hours);
   }, [allRecords, settings.hourlyRate]);
 
-  // RADAR MITOBOX (MODO DIOS)
+  // RADAR MITOBOX
   const availableMboxSlotsAdmin = useMemo(() => {
     let slots = [];
     if (mboxAdminDate && mboxAdminSede) {
@@ -489,11 +607,119 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
+  // MODAL: CREAR CLASE GLOBAL
+  const CreateClassModalOverlay = () => {
+    if (!createClassModal) return null;
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative my-8">
+          <button onClick={() => setCreateClassModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <h2 className="text-xl font-black uppercase tracking-tight mb-6 flex items-center gap-2"><BookOpen className="text-indigo-600"/> Crear Clase Oficial</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor asignado *</label>
+              <select value={newClassData.teacher} onChange={e => setNewClassData({...newClassData, teacher: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                <option value="">Seleccionar...</option>
+                {teachersList.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Instrumento *</label>
+              <select value={newClassData.subject} onChange={e => setNewClassData({...newClassData, subject: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                <option value="">Seleccionar...</option>
+                {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día</label>
+              <select value={newClassData.dayOfWeek} onChange={e => setNewClassData({...newClassData, dayOfWeek: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Hora</label>
+              <input type="time" value={newClassData.time} onChange={e => setNewClassData({...newClassData, time: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede</label>
+              <select value={newClassData.sede} onChange={e => setNewClassData({...newClassData, sede: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sala</label>
+              <select value={newClassData.sala} onChange={e => setNewClassData({...newClassData, sala: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                {SALAS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Aforo *</label>
+              <input type="number" min="1" value={newClassData.capacity} onChange={e => setNewClassData({...newClassData, capacity: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" placeholder="Ej: 4" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Minutos</label>
+              <input type="number" step="5" min="15" value={newClassData.duration} onChange={e => setNewClassData({...newClassData, duration: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+            </div>
+          </div>
+
+          <button onClick={handleCreateGlobalClass} className="w-full bg-black text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors">
+            Registrar Clase Oficial
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // MODAL: CAMBIAR ALUMNO DE CLASE
+  const ChangeClassModalOverlay = () => {
+    if (!changeClassModal) return null;
+    const student = changeClassModal;
+    const targetInstrument = selectedInstForChange || (student.instruments && student.instruments[0]);
+    const availableClasses = targetInstrument ? allClasses.filter(c => c.subject === targetInstrument && (c.students?.length || 0) < parseInt(c.capacity || 4)) : [];
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
+          <button onClick={() => setChangeClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 mb-6"><ArrowRightLeft className="w-8 h-8 text-blue-600"/><h2 className="text-xl font-black uppercase">Cambiar de Grupo</h2></div>
+          <p className="text-xs text-zinc-500 font-bold mb-4 uppercase tracking-widest">Alumno: <span className="text-black">{student.name}</span></p>
+          
+          <select value={selectedInstForChange} onChange={e => setSelectedInstForChange(e.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 rounded-xl font-bold text-sm">
+            <option value="">Selecciona Instrumento...</option>
+            {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
+          </select>
+
+          <div className="max-h-64 overflow-y-auto space-y-2 pr-2">
+            {availableClasses.length === 0 ? (
+              <p className="text-center text-xs text-zinc-400 font-bold p-4 border-2 border-dashed rounded-xl">No hay grupos libres para este instrumento.</p>
+            ) : (
+              availableClasses.map(c => (
+                <div key={c.id} onClick={() => executeDirectClassChange(student, c)} className="p-3 rounded-xl border-2 border-zinc-100 hover:border-blue-500 cursor-pointer transition-colors">
+                  <div className="flex justify-between font-black text-sm uppercase"><span>{getDayName(c.dayOfWeek)}</span><span>{c.time}h</span></div>
+                  <div className="text-xs text-zinc-500 mt-1 flex justify-between"><span>Prof: {c.teacher}</span> <span className="text-blue-600 font-bold">{parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas libres</span></div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
       {notesModal && <NotesModalOverlay />}
+      {createClassModal && <CreateClassModalOverlay />}
+      {changeClassModal && <ChangeClassModalOverlay />}
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -508,7 +734,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: pendingGestiones.length },
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
-            { id: 'mitobox', icon: DoorOpen, label: 'Mitobox' }, // <-- NUEVA PESTAÑA
+            { id: 'mitobox', icon: DoorOpen, label: 'Mitobox' }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
@@ -658,7 +884,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Directorio Alumnos</h2>
-                <p className="text-zinc-500 font-medium text-sm">Gestiona estados, notas y accesos premium.</p>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona estados, notas y cambios manuales.</p>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
@@ -689,11 +915,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <table className="w-full text-left border-collapse table-auto">
                   <thead>
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                      <th className="p-4 font-black w-[35%]">Alumno</th>
-                      <th className="p-4 font-black text-center w-[15%]">Ficha</th>
-                      <th className="p-4 font-black text-center w-[15%]">Mitos+</th>
-                      <th className="p-4 font-black text-center w-[15%]">Mitobox</th>
-                      <th className="p-4 font-black text-center w-[20%]">Estado</th>
+                      <th className="p-4 font-black w-[30%]">Alumno</th>
+                      <th className="p-4 font-black text-center w-[15%]">Extras</th>
+                      <th className="p-4 font-black text-center w-[30%]">Acciones Dios</th>
+                      <th className="p-4 font-black text-right w-[25%]">Estado</th>
                     </tr>
                   </thead>
                   <tbody className="text-sm font-medium text-slate-700">
@@ -716,25 +941,34 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px]" title={student.email}>{student.email}</div>
                           </td>
                           <td className="p-4 text-center">
-                            <button onClick={() => setNotesModal(student)} className="p-2.5 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded-xl transition-all shadow-sm">
-                              <FileText className="w-5 h-5 mx-auto" />
-                            </button>
+                            <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => setNotesModal(student)} className="p-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded-lg transition-all" title="Notas Internas">
+                                <FileText className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700' : 'bg-zinc-100 text-zinc-400'}`} title="Mitoverso">
+                                M+
+                              </button>
+                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`} title="Mitobox">
+                                MB
+                              </button>
+                            </div>
                           </td>
                           <td className="p-4 text-center">
-                            <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200'}`}>
-                              {student.hasMitoverso ? 'ON' : 'OFF'}
-                            </button>
+                            {/* NUEVOS BOTONES MODO DIOS */}
+                            <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manualmente">
+                                <ArrowRightLeft className="w-3 h-3"/> Mover
+                              </button>
+                              <button onClick={() => grantRecoveryTicket(student)} className="flex items-center gap-1 p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors text-[10px] font-black uppercase tracking-widest" title="Regalar Ticket de Recuperación">
+                                <Gift className="w-3 h-3"/> Ticket
+                              </button>
+                            </div>
                           </td>
-                          <td className="p-4 text-center">
-                            <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700 border border-blue-200' : 'bg-zinc-100 text-zinc-400 border border-zinc-200'}`}>
-                              {student.hasMitobox ? 'ON' : 'OFF'}
-                            </button>
-                          </td>
-                          <td className="p-4 text-center">
+                          <td className="p-4 text-right">
                             <select 
                               value={student.globalStatus || 'activo'}
                               onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
-                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full rounded-lg border-2 outline-none transition-all cursor-pointer ${
+                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[120px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
                                 student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
                                 student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
                                 'bg-emerald-50 border-emerald-200 text-emerald-700'
@@ -801,9 +1035,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         {/* --- 4. CLASES POR PROFESOR --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
-            <header className="mb-6">
-              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mapa de Clases</h2>
-              <p className="text-zinc-500 font-medium text-sm">Visión global de todos los grupos activos por profesor.</p>
+            <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mapa de Clases</h2>
+                <p className="text-zinc-500 font-medium text-sm">Visión global de todos los grupos activos por profesor.</p>
+              </div>
+              <button onClick={() => setCreateClassModal(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors">
+                <Plus className="w-4 h-4"/> Crear Clase Oficial
+              </button>
             </header>
 
             <div className="space-y-4">
@@ -829,7 +1068,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             {classes.map(c => {
                               const activeC = (c.students || []).filter(s => !s.isPaused).length;
                               return (
-                                <div key={c.id} className="p-4 rounded-xl border border-zinc-100 bg-white shadow-sm flex justify-between items-center">
+                                <div key={c.id} className="p-4 rounded-xl border border-zinc-100 bg-white shadow-sm flex justify-between items-center relative group">
                                   <div>
                                     <div className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)} <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span></div>
                                     <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{c.subject} • {c.sede}</div>
@@ -840,6 +1079,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                     </span>
                                     <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
                                   </div>
+                                  {/* Boton para borrar clase global (opcional/seguridad) */}
+                                  <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                 </div>
                               );
                             })}

@@ -460,7 +460,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
   }, [date, records, recurringClasses]);
 
-  // 👇 CANDADO DE LAS 24 HORAS EN EL LUGAR CORRECTO (Arriba, junto a los otros useMemo) 👇
   const isExpiredDate = useMemo(() => {
     const classDate = new Date(date);
     const now = new Date();
@@ -544,6 +543,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
+    
+    // SEGURO ANTI-DESPISTES: Comprueba si hay clases pendientes antes de enviar
+    const pendingClasses = dashboardItems.filter(item => item.type === 'pending' && !isSpecialDay);
+    if (pendingClasses.length > 0) {
+      const ok = window.confirm(`⚠️ ¡ATENCIÓN!\n\nTienes ${pendingClasses.length} clase(s) sin pasar lista hoy.\nSi envías el reporte ahora, esas horas no constarán en tu nómina.\n\n¿Seguro que quieres enviar el reporte ya?`);
+      if (!ok) return;
+    }
+
     const report = formData || selectedDailyReport || dailyForm;
     const hasAttendance = recordsForSelectedDate.length > 0;
     const hasDailyReport = Boolean(report?.generalFeedback?.trim()) || Boolean(report?.incidents?.trim()) || Boolean(report?.newStudents?.trim()) || Boolean(report?.materialIssues?.trim());
@@ -581,58 +588,38 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const startSession = (scheduledClass = null) => {
-    if (scheduledClass) {
-      const exceptionsToday = scheduledClass.exceptions?.[date] || {};
+    if (!scheduledClass) return; // Ya no permitimos empezar sesiones vacías (crear)
+    
+    const exceptionsToday = scheduledClass.exceptions?.[date] || {};
 
-      setCurrentSession({
-        isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
-        isNew: false,
-        classId: scheduledClass.id,
-        refPath: scheduledClass.refPath, 
-        time: scheduledClass.time,
-        sede: scheduledClass.sede || 'Tarragona',
-        sala: scheduledClass.sala || 'Sala 1',
-        teacher: scheduledClass.teacher,
-        subject: scheduledClass.subject,
-        capacity: scheduledClass.capacity || '',
-        duration: scheduledClass.duration || 60,
-        notes: scheduledClass.notes || '',
-        dayOfWeek: scheduledClass.dayOfWeek,
-        isRecurring: true,
-        exceptions: scheduledClass.exceptions || {}, 
-        students: (scheduledClass.students || []).map(s => {
-          let currentStatus = s.isPaused ? 'paused' : 'present';
-          if (exceptionsToday[s.id]) {
-            currentStatus = exceptionsToday[s.id];
-          }
-          return { ...s, status: currentStatus };
-        }),
-        newStudentName: '',
-        newStudentEmail: '',
-        isAddingRecovery: false,
-        cancelledDates: scheduledClass.cancelledDates || []
-      });
-    } else {
-      setCurrentSession({
-        isNew: true,
-        classId: Date.now().toString(),
-        time: '17:00',
-        sede: 'Tarragona',
-        sala: 'Sala 1',
-        teacher: getTeacherName(),
-        subject: '',
-        capacity: '',
-        duration: 60,
-        notes: '',
-        isRecurring: true,
-        exceptions: {},
-        students: [],
-        newStudentName: '',
-        newStudentEmail: '',
-        isAddingRecovery: false,
-        cancelledDates: []
-      });
-    }
+    setCurrentSession({
+      isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
+      isNew: false, // Forzamos que nunca sea nueva
+      classId: scheduledClass.id,
+      refPath: scheduledClass.refPath, 
+      time: scheduledClass.time,
+      sede: scheduledClass.sede || 'Tarragona',
+      sala: scheduledClass.sala || 'Sala 1',
+      teacher: scheduledClass.teacher,
+      subject: scheduledClass.subject,
+      capacity: scheduledClass.capacity || '',
+      duration: scheduledClass.duration || 60,
+      notes: scheduledClass.notes || '',
+      dayOfWeek: scheduledClass.dayOfWeek,
+      isRecurring: true,
+      exceptions: scheduledClass.exceptions || {}, 
+      students: (scheduledClass.students || []).map(s => {
+        let currentStatus = s.isPaused ? 'paused' : 'present';
+        if (exceptionsToday[s.id]) {
+          currentStatus = exceptionsToday[s.id];
+        }
+        return { ...s, status: currentStatus };
+      }),
+      newStudentName: '',
+      newStudentEmail: '',
+      isAddingRecovery: false,
+      cancelledDates: scheduledClass.cancelledDates || []
+    });
   };
 
   const assumeSubstitution = (sub) => {
@@ -757,19 +744,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
-    const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
-
-    const hasCollision = recurringClasses.some(rc => 
-      rc.dayOfWeek === dayToSave && 
-      rc.time === currentSession.time &&
-      rc.id !== classIdToSave
-    );
-
-    if (hasCollision) {
-      showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
-      return;
-    }
+    const dayToSave = currentSession.dayOfWeek;
+    const classIdToSave = currentSession.classId;
 
     try {
       const templateStudents = currentSession.students
@@ -779,7 +755,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
 
-      if (isFutureDate && !currentSession.isNew && !currentSession.isSubstitution) {
+      if (isFutureDate && !currentSession.isSubstitution) {
         const exceptionsForDate = { ...(currentSession.exceptions?.[date] || {}) }; 
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
@@ -789,9 +765,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         finalExceptions[date] = exceptionsForDate;
       }
 
-      const targetPath = currentSession.isNew 
-        ? doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', classIdToSave) 
-        : doc(db, currentSession.refPath); 
+      const targetPath = doc(db, currentSession.refPath); 
         
       await setDoc(targetPath, {
         dayOfWeek: dayToSave,
@@ -824,22 +798,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
       showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
       return;
-    }
-
-    const dayToSave = currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek;
-    const classIdToSave = currentSession.isNew ? Date.now().toString() : currentSession.classId;
-
-    if (!currentSession.isSubstitution) {
-      const hasCollision = recurringClasses.some(rc => 
-        rc.dayOfWeek === dayToSave && 
-        rc.time === currentSession.time &&
-        rc.id !== classIdToSave
-      );
-
-      if (hasCollision) {
-        showNotification({ type: 'error', text: `Imposible guardar: Ya tienes otra clase programada los ${getDayName(dayToSave)} a las ${currentSession.time}.` });
-        return;
-      }
     }
 
     const activeStudents = currentSession.students.filter(s => !s.isPaused);
@@ -928,17 +886,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      if (currentSession.isRecurring && !currentSession.isSubstitution) {
+      if (!currentSession.isSubstitution) {
         const templateStudents = currentSession.students
           .filter(s => !s.isRecovery)
           .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
 
-        const targetPath = currentSession.isNew 
-          ? doc(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses', currentSession.classId) 
-          : doc(db, currentSession.refPath);
+        const targetPath = doc(db, currentSession.refPath);
           
         await setDoc(targetPath, {
-          dayOfWeek: currentSession.isNew ? getDayOfWeek(date) : currentSession.dayOfWeek,
+          dayOfWeek: currentSession.dayOfWeek,
           time: currentSession.time,
           sede: currentSession.sede || 'Tarragona',
           sala: currentSession.sala || 'Sala 1',
@@ -998,20 +954,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     } catch (error) {
       console.error(error);
       showNotification({ type: 'error', text: 'Error al cancelar la clase temporalmente.' });
-    }
-  };
-
-  const deleteRecurringClass = async (classData) => {
-    if (!user) return;
-    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario permanentemente?');
-    if (!isConfirmed) return;
-
-    try {
-      await deleteDoc(doc(db, classData.refPath)); 
-      showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Error al borrar la clase.' });
     }
   };
 
@@ -1194,9 +1136,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </label>
                     <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
                   </div>
-                  <button onClick={() => startSession(null)} disabled={isSpecialDay || isExpiredDate} className="w-full sm:w-auto bg-black hover:bg-zinc-800 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 uppercase text-xs tracking-widest disabled:opacity-30 disabled:cursor-not-allowed">
-                    <ClipboardList className="w-5 h-5" /> Nueva Clase
-                  </button>
+                  {/* BOTÓN DE NUEVA CLASE ELIMINADO POR SEGURIDAD */}
                 </div>
               </>
             )}
@@ -1219,7 +1159,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                 {dashboardItems.length === 0 ? (
                   <div className="text-center py-16 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
-                    <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay clases en agenda.</p>
+                    <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay clases programadas.</p>
+                    <p className="text-xs font-medium text-zinc-400 mt-2">Si deberías tener clase, contacta con coordinación.</p>
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -1265,10 +1206,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               <button onClick={() => cancelClassForToday(item.data)} className="p-2.5 text-zinc-400 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors shrink-0" title="Cancelar solo por hoy (Sustitución)">
                                 <CalendarOff className="w-5 h-5" />
                               </button>
-
-                              <button onClick={() => deleteRecurringClass(item.data)} className="p-2.5 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-colors shrink-0" title="Eliminar plantilla permanentemente">
-                                <Trash2 className="w-5 h-5" />
-                              </button>
                             </>
                           )}
                           {/* 👆 FIN DEL BLOQUE PROTEGIDO 👆 */}
@@ -1285,7 +1222,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <div className="p-6 md:p-8 border-b border-zinc-100 bg-white relative">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
                     <div className="flex flex-col">
-                      <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">{currentSession.isNew ? 'Nueva Clase' : 'Pasando lista'}</h2>
+                      <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Pasando lista</h2>
                       <span className="text-sm font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase tracking-widest">
                         <Calendar className="w-4 h-4" /> {getDayName(getDayOfWeek(date))}, {formatDateSpanish(date)}
                       </span>
@@ -1302,7 +1239,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
 
-                  {isFutureDate && !currentSession.isNew && !currentSession.isSubstitution && (
+                  {isFutureDate && !currentSession.isSubstitution && (
                     <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
                       <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
                       <p className="text-xs font-bold text-purple-900">Estás viendo una fecha futura. El botón de pasar lista está bloqueado, pero puedes marcar alumnos que ya te han avisado y darle a <b>"Guardar Previsión"</b>.</p>
@@ -1323,47 +1260,39 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <input 
                         type="time" 
                         value={currentSession.time} 
-                        onChange={(e) => handleSessionFieldChange('time', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
+                        disabled
+                        className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
                       />
                     </div>
 
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><MapPin className="w-3 h-3" /> Sede</label>
-                      <select 
+                      <input 
+                        type="text" 
                         value={currentSession.sede} 
-                        onChange={(e) => handleSessionFieldChange('sede', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                      >
-                        {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                        disabled
+                        className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
+                      />
                     </div>
 
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><LayoutGrid className="w-3 h-3" /> Sala</label>
-                      <select 
+                      <input 
+                        type="text" 
                         value={currentSession.sala} 
-                        onChange={(e) => handleSessionFieldChange('sala', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                      >
-                        {SALAS.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                        disabled
+                        className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
+                      />
                     </div>
 
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Music className="w-3 h-3" /> Instrumento</label>
-                      <select 
+                      <input 
+                        type="text" 
                         value={currentSession.subject} 
-                        onChange={(e) => handleSessionFieldChange('subject', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                      >
-                        <option value="" disabled>Selecciona...</option>
-                        {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
-                      </select>
+                        disabled
+                        className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
+                      />
                     </div>
                   </div>
 
@@ -1371,26 +1300,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><User className="w-3 h-3" /> Aforo Máximo</label>
                       <input 
-                        type="number" 
-                        min="1" 
-                        placeholder="Ej: 4" 
+                        type="text" 
                         value={currentSession.capacity} 
-                        onChange={(e) => handleSessionFieldChange('capacity', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
+                        disabled
+                        className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
                       />
                     </div>
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Timer className="w-3 h-3" /> Duración (min)</label>
                       <input 
-                        type="number" 
-                        min="15" 
-                        step="5"
-                        placeholder="Ej: 60" 
+                        type="text" 
                         value={currentSession.duration} 
-                        onChange={(e) => handleSessionFieldChange('duration', e.target.value)} 
-                        disabled={!currentSession.isNew}
-                        className={`w-full p-4 rounded-xl font-bold outline-none transition-all ${!currentSession.isNew ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-zinc-50 border-2 border-zinc-200 focus:border-black text-slate-800'}`} 
+                        disabled
+                        className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
                       />
                     </div>
                   </div>
@@ -1404,15 +1326,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       className="w-full p-4 bg-amber-50/40 border-2 border-amber-100 rounded-xl focus:border-amber-400 outline-none text-slate-800 font-medium text-sm min-h-[100px] resize-y transition-colors" 
                     />
                   </div>
-
-                  {currentSession.isNew && !currentSession.isSubstitution && (
-                    <div className="mt-6 flex items-center gap-2 p-4 bg-zinc-50 rounded-xl border-2 border-zinc-100">
-                      <input type="checkbox" id="recurring" checked={currentSession.isRecurring} onChange={(e) => handleSessionFieldChange('isRecurring', e.target.checked)} className="w-5 h-5 text-black rounded focus:ring-black accent-black cursor-pointer" />
-                      <label htmlFor="recurring" className="text-xs font-black uppercase tracking-widest text-slate-700 flex items-center gap-1.5 cursor-pointer">
-                        <RefreshCw className="w-4 h-4" /> Repetir clase cada semana
-                      </label>
-                    </div>
-                  )}
                 </div>
 
                 {/* ZONA DE ALUMNOS */}
@@ -1572,13 +1485,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   )}
 
                   <div className="mt-10 flex flex-col sm:flex-row gap-4 pt-8 border-t border-zinc-100">
-                    {!currentSession.isSubstitution && (
+                    {!currentSession.isSubstitution && isFutureDate && (
                       <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
                         <Calendar className="w-5 h-5" /> 
-                        {currentSession.isNew ? 'Solo Crear Clase' : (isFutureDate ? 'Guardar Previsión' : 'Actualizar Plantilla')}
+                        Guardar Previsión
                       </button>
                     )}
-                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate} className={`${currentSession.isSubstitution ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
+                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate} className={`${(currentSession.isSubstitution || !isFutureDate) ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
                   </div>

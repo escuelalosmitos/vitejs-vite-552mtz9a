@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -24,7 +24,7 @@ const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'J
 const generateTicketDates = () => {
   const now = new Date();
   let nextY = now.getFullYear();
-  let nextM = now.getMonth() + 2; // +1 to jump to next month, +1 because months are 0-indexed in Date but we want 1-12
+  let nextM = now.getMonth() + 2; 
   if (nextM > 12) {
     nextM = 1;
     nextY++;
@@ -45,7 +45,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [announcements, setAnnouncements] = useState([]);
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
-  const [availabilities, setAvailabilities] = useState({}); // <-- NUEVO: Guarda las disponibilidades de todos los profes
+  const [availabilities, setAvailabilities] = useState({}); 
   
   const [settings, setSettings] = useState({ 
     festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [],
@@ -59,6 +59,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
+  const [editStudentModal, setEditStudentModal] = useState(null); // NUEVO: Estado para editar alumno
   
   // ESTADOS MODALES NUEVOS
   const [createClassModal, setCreateClassModal] = useState(false);
@@ -66,6 +67,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
+    isRecurring: true, specificDate: new Date().toISOString().split('T')[0], // NUEVO: Campos para recurrencia
     dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1',
     teacher: '', subject: '', capacity: '', duration: 60, notes: ''
   });
@@ -76,7 +78,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 7) setLoading(false); }; // Ahora esperamos 7 cargas
+    const checkLoad = () => { loaded++; if(loaded === 7) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -102,7 +104,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setAllRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       checkLoad();
     });
-    // 👇 NUEVO: Escuchador de disponibilidades de toda la plantilla
     const unsubAvail = onSnapshot(collection(db, 'artifacts', appId, 'availability'), (snap) => {
       const av = {};
       snap.forEach(d => { av[d.id] = d.data().slots || {}; });
@@ -311,19 +312,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // CAMBIO DE HORARIO UNILATERAL
   const executeDirectClassChange = async (student, targetClass) => {
     if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
     
     try {
-      // 1. Borrar de clases antiguas del mismo instrumento
       const oldClasses = allClasses.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
       for (let c of oldClasses) {
         const updatedList = c.students.filter(s => s.id !== student.id);
         if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
       }
 
-      // 2. Añadir a la nueva clase
       const newStudentPayload = {
         id: student.id,
         name: student.name,
@@ -343,14 +341,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // OTORGAR TICKET DE RECUPERACIÓN
   const grantRecoveryTicket = async (student) => {
     const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Se generarán para el mes próximo)`, "1");
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
 
     try {
       const { validFrom, validUntil } = generateTicketDates();
-      
       const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
       const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
 
@@ -379,7 +375,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // --- BOTÓN DE LIMPIEZA ANUAL DE TICKETS CADUCADOS ---
   const cleanExpiredTickets = async () => {
     const today = new Date().toISOString().split('T')[0];
     if (!window.confirm(`🧹 LIMPIEZA DE BASE DE DATOS\n\n¿Borrar definitivamente todos los tickets cuya validez expiró antes de hoy (${formatDateSpanish(today)})?`)) return;
@@ -408,7 +403,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     } finally { setLoading(false); }
   };
 
-  // --- FUNCIONES TABLÓN ---
   const postAnnouncement = async () => {
     if (!newAnnounce.title || !newAnnounce.content) return alert('Rellena todos los campos');
     const id = Date.now().toString();
@@ -422,7 +416,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
-  // --- CIERRE DE RETO MENSUAL ---
   const handleCerrarRetoMensual = async () => {
     const players = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints);
     if(players.length === 0) return alert("Nadie ha jugado este mes.");
@@ -460,19 +453,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
     }
+    if (!newClassData.isRecurring && !newClassData.specificDate) {
+      return alert("Para una clase puntual, debes elegir una fecha.");
+    }
 
     // --- 🛡️ VERIFICACIÓN DE DISPONIBILIDAD (BLOQUEO BLANDO) ---
     const teacherKey = newClassData.teacher.toLowerCase();
-    const dayKey = newClassData.dayOfWeek;
+    const dayKey = newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString();
     const classTime = newClassData.time;
     
     const teacherSlots = availabilities[teacherKey]?.[dayKey] || [];
-    // Verificamos si la hora de inicio de la clase entra dentro de alguna de las franjas marcadas por el profe
     const isCovered = teacherSlots.some(slot => classTime >= slot.start && classTime < slot.end);
 
     if (!isCovered) {
       const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} a las ${classTime}h.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
-      if (!confirmForce) return; // Si dice que no, abortamos la creación
+      if (!confirmForce) return; 
     }
     // ------------------------------------------------------------
     
@@ -482,23 +477,44 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (existingClass && existingClass.refPath) {
       targetUid = existingClass.refPath.split('/')[3]; 
     } else {
-       alert("⚠️ Aviso: Este profesor no tiene clases previas registradas. Se le guardará bajo su correo del colegio.");
        targetUid = teacherEmail.replace(/[@.]/g, '_');
     }
 
-    const classId = Date.now().toString();
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
-        ...newClassData,
-        id: classId,
-        students: [],
-        exceptions: {},
-        cancelledDates: [],
-        dayOfWeek: parseInt(newClassData.dayOfWeek)
-      });
-      alert(`✅ Clase de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
+      if (newClassData.isRecurring) {
+        // Clase Recurrente de toda la vida
+        const classId = Date.now().toString();
+        await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
+          ...newClassData,
+          id: classId,
+          students: [],
+          exceptions: {},
+          cancelledDates: [],
+          dayOfWeek: parseInt(newClassData.dayOfWeek)
+        });
+        alert(`✅ Clase RECURRENTE de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
+      } else {
+        // Clase Puntual Extraordinaria (Enviada a Substitutions para que el profe la asuma un día concreto)
+        const subId = `extra-${Date.now()}`;
+        await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
+          originalClassId: 'extra',
+          originalTeacherUid: targetUid,
+          originalTeacherName: newClassData.teacher,
+          date: newClassData.specificDate,
+          time: newClassData.time,
+          sede: newClassData.sede || 'Tarragona',
+          sala: newClassData.sala || 'Sala 1',
+          subject: newClassData.subject,
+          capacity: newClassData.capacity || '',
+          duration: newClassData.duration || 60,
+          notes: 'Clase puntual creada por coordinación',
+          students: []
+        });
+        alert(`✅ Clase PUNTUAL de ${newClassData.subject} creada para el ${formatDateSpanish(newClassData.specificDate)}.\n\nAparecerá en el Tablón de Sustituciones de la App para que el profesor le dé a "Asumir Clase" ese día.`);
+      }
+
       setCreateClassModal(false);
-      setNewClassData({ dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, notes: '' });
+      setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, notes: '' });
     } catch (e) {
       alert("Error al crear la clase.");
     }
@@ -620,6 +636,74 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
+  // MODAL: EDITAR DATOS DEL ALUMNO (NUEVO)
+  const EditStudentModalOverlay = () => {
+    if (!editStudentModal) return null;
+    const [name, setName] = useState(editStudentModal.name || '');
+    const [email, setEmail] = useState(editStudentModal.email || '');
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+      if (!name.trim()) return alert("El nombre es obligatorio.");
+      setSaving(true);
+      try {
+        // 1. Actualizamos el perfil global del alumno
+        await updateDoc(doc(db, 'artifacts', appId, 'students', editStudentModal.id), { 
+          name: name.trim(), 
+          email: email.toLowerCase().trim() 
+        });
+
+        // 2. Buscamos todas las clases donde este alumno esté metido y le actualizamos el nombre/email allí también
+        const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === editStudentModal.id));
+        const batch = writeBatch(db);
+        
+        classesWithStudent.forEach(c => {
+          const updatedList = c.students.map(s => 
+            s.id === editStudentModal.id ? { ...s, name: name.trim(), email: email.toLowerCase().trim() } : s
+          );
+          batch.update(doc(db, c.refPath), { students: updatedList });
+        });
+        
+        await batch.commit();
+
+        alert('Datos del alumno actualizados en todo el sistema.');
+        setEditStudentModal(null);
+      } catch (e) {
+        alert('Error al actualizar: ' + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+          <button onClick={() => setEditStudentModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-slate-800 mb-6">
+            <Pencil className="w-8 h-8 text-black" />
+            <h2 className="text-xl font-black uppercase tracking-tight">Editar Alumno</h2>
+          </div>
+          
+          <div className="space-y-4 mb-6">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nombre del alumno</label>
+              <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo Electrónico (Acceso App)</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vacio@sin-correo.com" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
+              {!email && <p className="text-[10px] text-rose-500 font-bold mt-1">⚠️ Sin correo, el alumno no podrá entrar a la App.</p>}
+            </div>
+          </div>
+
+          <button onClick={handleSave} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50">
+            {saving ? 'Guardando cambios...' : 'Guardar Datos'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   // MODAL: CREAR CLASE GLOBAL
   const CreateClassModalOverlay = () => {
     if (!createClassModal) return null;
@@ -646,22 +730,37 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día</label>
-              <select value={newClassData.dayOfWeek} onChange={e => setNewClassData({...newClassData, dayOfWeek: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
-                {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
-              </select>
+          <div className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl mb-4">
+            <div className="flex items-center gap-4 mb-4">
+               <button onClick={() => setNewClassData({...newClassData, isRecurring: true})} className={`flex-1 py-2 rounded-lg text-xs font-black uppercase tracking-widest border-2 transition-all ${newClassData.isRecurring ? 'bg-black text-white border-black' : 'bg-white text-zinc-400 border-zinc-200'}`}>Recurrente</button>
+               <button onClick={() => setNewClassData({...newClassData, isRecurring: false})} className={`flex-1 py-2 rounded-lg text-xs font-black uppercase tracking-widest border-2 transition-all ${!newClassData.isRecurring ? 'bg-black text-white border-black' : 'bg-white text-zinc-400 border-zinc-200'}`}>Puntual</button>
             </div>
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Hora</label>
-              <input type="time" value={newClassData.time} onChange={e => setNewClassData({...newClassData, time: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
-            </div>
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede</label>
-              <select value={newClassData.sede} onChange={e => setNewClassData({...newClassData, sede: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
-                {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {newClassData.isRecurring ? (
+                <div>
+                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día de la semana</label>
+                  <select value={newClassData.dayOfWeek} onChange={e => setNewClassData({...newClassData, dayOfWeek: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                    {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-[10px] font-black uppercase text-rose-500 mb-1 block flex items-center gap-1"><AlertCircle className="w-3 h-3"/> Fecha Exacta</label>
+                  <input type="date" value={newClassData.specificDate} onChange={e => setNewClassData({...newClassData, specificDate: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+                </div>
+              )}
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Hora</label>
+                <input type="time" value={newClassData.time} onChange={e => setNewClassData({...newClassData, time: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede</label>
+                <select value={newClassData.sede} onChange={e => setNewClassData({...newClassData, sede: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                  {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
             </div>
           </div>
 
@@ -682,14 +781,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
           </div>
 
-          {/* 👇 NUEVO CHIVATO VISUAL PARA EL ADMINISTRADOR 👇 */}
-          {newClassData.teacher && newClassData.dayOfWeek && (
+          {/* CHIVATO VISUAL PARA EL ADMINISTRADOR */}
+          {newClassData.teacher && (newClassData.isRecurring ? newClassData.dayOfWeek : newClassData.specificDate) && (
            <div className="col-span-1 md:col-span-3 mt-[-10px] mb-4">
              <p className="text-[10px] font-bold text-blue-600 bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col gap-1">
-                <span className="uppercase tracking-widest text-blue-800">Horas libres de {newClassData.teacher} el {getDayName(newClassData.dayOfWeek)}:</span>
+                <span className="uppercase tracking-widest text-blue-800">
+                  Horas libres de {newClassData.teacher} el {getDayName(newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString())}:
+                </span>
                 <span className="font-black text-sm">
-                  {availabilities[newClassData.teacher.toLowerCase()]?.[newClassData.dayOfWeek]?.length > 0 
-                    ? availabilities[newClassData.teacher.toLowerCase()][newClassData.dayOfWeek].map(s => `${s.start}h a ${s.end}h`).join(' | ')
+                  {availabilities[newClassData.teacher.toLowerCase()]?.[newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString()]?.length > 0 
+                    ? availabilities[newClassData.teacher.toLowerCase()][newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString()].map(s => `${s.start}h a ${s.end}h`).join(' | ')
                     : 'Ninguna franja registrada.'}
                 </span>
              </p>
@@ -697,7 +798,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           )}
 
           <button onClick={handleCreateGlobalClass} className="w-full bg-black text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors">
-            Registrar Clase Oficial
+            {newClassData.isRecurring ? 'Registrar Clase Oficial' : 'Programar Clase Extraordinaria'}
           </button>
         </div>
       </div>
@@ -747,6 +848,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       {notesModal && <NotesModalOverlay />}
       {createClassModal && <CreateClassModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
+      {editStudentModal && <EditStudentModalOverlay />} {/* NUEVO MODAL RENDERIZADO */}
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -983,6 +1085,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                           <td className="p-4 text-center">
                             {/* NUEVOS BOTONES MODO DIOS */}
                             <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => setEditStudentModal(student)} className="flex items-center gap-1 p-2 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest" title="Editar datos del alumno">
+                                <Pencil className="w-3 h-3"/> Editar
+                              </button>
                               <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manualmente">
                                 <ArrowRightLeft className="w-3 h-3"/> Mover
                               </button>
@@ -1068,7 +1173,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <p className="text-zinc-500 font-medium text-sm">Visión global de todos los grupos activos por profesor.</p>
               </div>
               <button onClick={() => setCreateClassModal(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors">
-                <Plus className="w-4 h-4"/> Crear Clase Oficial
+                <Plus className="w-4 h-4"/> Crear Clase
               </button>
             </header>
 
@@ -1097,8 +1202,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               return (
                                 <div key={c.id} className="p-4 rounded-xl border border-zinc-100 bg-white shadow-sm flex justify-between items-center relative group">
                                   <div>
-                                    <div className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)} <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span></div>
-                                    <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{c.subject} • {c.sede}</div>
+                                    <div className="font-black text-sm uppercase">
+                                      {/* NUEVO: Mostramos fecha si es puntual, o día si es recurrente */}
+                                      {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
+                                      <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
+                                    </div>
+                                    <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+                                      {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
+                                    </div>
                                   </div>
                                   <div className="text-right">
                                     <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
@@ -1106,7 +1217,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                     </span>
                                     <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
                                   </div>
-                                  {/* Boton para borrar clase global (opcional/seguridad) */}
+                                  {/* Boton para borrar clase global */}
                                   <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                 </div>
                               );

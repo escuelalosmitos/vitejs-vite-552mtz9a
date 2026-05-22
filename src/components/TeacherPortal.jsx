@@ -224,6 +224,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
   
+  // 👇 NUEVO ESTADO: Disponibilidad del profesor
+  const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
+  const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
+
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: [],
@@ -269,6 +273,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const ticketsRef = collectionGroup(db, 'tickets');
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
+    const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase()); // NUEVO REPOSITORIO
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -277,9 +282,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let ticketsLoaded = false;
     let subsLoaded = false;
     let gestionesLoaded = false;
+    let availLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && availLoaded) setLoadingData(false);
     };
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
@@ -344,6 +350,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    // 👇 NUEVO LISTENER DE DISPONIBILIDAD
+    const unsubAvail = onSnapshot(availRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setAvailability(docSnap.data().slots || { 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
+      } else {
+        setAvailability({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
+      }
+      availLoaded = true;
+      checkLoading();
+    });
+
     return () => {
       unsubRecurring();
       unsubRecords();
@@ -353,6 +370,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubTickets();
       unsubSubs();
       unsubGestiones();
+      unsubAvail();
     };
   }, [user, db, appId]);
 
@@ -376,6 +394,46 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       });
     }
   }, [date, dailyReports]);
+
+  // --- FUNCIONES GESTIÓN DE HORARIO ---
+  const handleAddSlot = async (day) => {
+    if (!newSlot.start || !newSlot.end) return showNotification({type:'error', text: 'Debes rellenar inicio y fin.'});
+    if (newSlot.start >= newSlot.end) return showNotification({type:'error', text: 'La hora de inicio debe ser anterior al fin.'});
+    
+    const updatedSlots = { ...availability };
+    updatedSlots[day] = [...(updatedSlots[day] || []), { start: newSlot.start, end: newSlot.end }];
+    updatedSlots[day].sort((a,b) => a.start.localeCompare(b.start));
+
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'availability', getTeacherName().toLowerCase()), { slots: updatedSlots }, { merge: true });
+      setNewSlot({ day: null, start: '', end: '' });
+      showNotification({type:'success', text: 'Franja añadida a tu disponibilidad.'});
+    } catch(e) {
+      showNotification({type:'error', text: 'Error al guardar la franja.'});
+    }
+  };
+
+  const handleDeleteSlot = async (day, index) => {
+    const updatedDaySlots = availability[day].filter((_, i) => i !== index);
+    
+    // Escudo protector: Verificar si hay clases que se queden fuera
+    const classesThisDay = recurringClasses.filter(c => c.dayOfWeek === parseInt(day));
+    for(let c of classesThisDay) {
+       // Comprobamos si la hora de inicio de la clase (c.time) entra en CUALQUIERA de los huecos que quedarían
+       const isCovered = updatedDaySlots.some(slot => c.time >= slot.start && c.time <= slot.end);
+       if(!isCovered) {
+          return window.alert(`⚠️ ACCIÓN BLOQUEADA:\n\nTienes una clase oficial de ${c.subject} a las ${c.time}h que se quedaría fuera de tu horario.\n\nPara eliminar esta franja, primero debes hablar con Coordinación para que muevan esa clase.`);
+       }
+    }
+
+    const updatedSlots = { ...availability, [day]: updatedDaySlots };
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'availability', getTeacherName().toLowerCase()), { slots: updatedSlots }, { merge: true });
+      showNotification({type:'success', text: 'Franja eliminada.'});
+    } catch(e) {
+      showNotification({type:'error', text: 'Error al eliminar.'});
+    }
+  };
 
   // --- ZONA SEGURA DE HOOKS USEMEMO ---
   const notifications = useMemo(() => {
@@ -467,7 +525,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const diffHours = diffMs / (1000 * 60 * 60);
     return diffHours > 36;
   }, [date]);
-  // 👆 FIN DE LA ZONA SEGURA DE HOOKS 👆
 
   const showNotification = (msg) => {
     setNotification(msg);
@@ -544,7 +601,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     
-    // SEGURO ANTI-DESPISTES: Comprueba si hay clases pendientes antes de enviar
     const pendingClasses = dashboardItems.filter(item => item.type === 'pending' && !isSpecialDay);
     if (pendingClasses.length > 0) {
       const ok = window.confirm(`⚠️ ¡ATENCIÓN!\n\nTienes ${pendingClasses.length} clase(s) sin pasar lista hoy.\nSi envías el reporte ahora, esas horas no constarán en tu nómina.\n\n¿Seguro que quieres enviar el reporte ya?`);
@@ -588,13 +644,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const startSession = (scheduledClass = null) => {
-    if (!scheduledClass) return; // Ya no permitimos empezar sesiones vacías (crear)
+    if (!scheduledClass) return; // Cortado de raíz: ya no se pueden crear clases desde aquí.
     
     const exceptionsToday = scheduledClass.exceptions?.[date] || {};
 
     setCurrentSession({
       isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
-      isNew: false, // Forzamos que nunca sea nueva
+      isNew: false, // Siempre falso
       classId: scheduledClass.id,
       refPath: scheduledClass.refPath, 
       time: scheduledClass.time,
@@ -957,6 +1013,20 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
+  const deleteRecurringClass = async (classData) => {
+    if (!user) return;
+    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario permanentemente?');
+    if (!isConfirmed) return;
+
+    try {
+      await deleteDoc(doc(db, classData.refPath)); 
+      showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
+    } catch (error) {
+      console.error(error);
+      showNotification({ type: 'error', text: 'Error al borrar la clase.' });
+    }
+  };
+
   const saveDailyReport = async (silent = false) => {
     if (!user) return false;
     
@@ -1076,6 +1146,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
+            { id: 'availability', label: 'Horario', icon: Clock },
             { id: 'notifications', label: 'Avisos', icon: Bell }, 
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
@@ -1479,7 +1550,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <AlertCircle className="w-8 h-8 text-red-500 shrink-0" />
                       <div>
                         <h4 className="font-black text-red-800 uppercase tracking-widest text-sm">Aforo superado</h4>
-                        <p className="text-red-700 text-sm mt-1 font-medium leading-relaxed">El límite es de {currentSession.capacity} pero hay {currentCount} alumnos. Elimina alumnos o crea otra clase con más capacidad para poder guardar.</p>
+                        <p className="text-red-700 text-sm mt-1 font-medium leading-relaxed">El límite es de {currentSession.capacity} pero hay {currentCount} alumnos. Elimina alumnos o habla con coordinación para poder guardar.</p>
                       </div>
                     </div>
                   )}
@@ -1498,6 +1569,63 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {/* --- PESTAÑA 2: MI HORARIO (DISPONIBILIDAD) --- */}
+        {activeTab === 'availability' && (
+          <div className="space-y-6 animate-in fade-in">
+            <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mi Disponibilidad</h2>
+                <p className="text-zinc-500 font-medium text-sm">Configura tus horas libres para que Coordinación te asigne alumnos.</p>
+              </div>
+            </header>
+
+            <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
+              <div className="p-6 md:p-8 space-y-8">
+                {[1, 2, 3, 4, 5, 6].map(day => (
+                  <div key={day} className="border-b border-zinc-100 pb-6 last:border-0 last:pb-0">
+                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                      <div className="w-full md:w-1/4">
+                        <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{getDayName(day)}</h3>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+                           {(availability[day] || []).length} Franjas
+                        </p>
+                      </div>
+
+                      <div className="w-full md:w-3/4 space-y-3">
+                        {(availability[day] || []).map((slot, idx) => (
+                           <div key={idx} className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
+                             <div className="flex items-center gap-3">
+                               <Clock className="w-5 h-5 text-zinc-400"/>
+                               <span className="font-black text-slate-700">{slot.start}h - {slot.end}h</span>
+                             </div>
+                             <button onClick={() => handleDeleteSlot(day, idx)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors" title="Eliminar franja">
+                               <Trash2 className="w-5 h-5" />
+                             </button>
+                           </div>
+                        ))}
+
+                        {newSlot.day === day ? (
+                          <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-2xl border border-blue-100 shadow-sm animate-in fade-in zoom-in-95">
+                            <input type="time" value={newSlot.start} onChange={e => setNewSlot({...newSlot, start: e.target.value})} className="p-2 rounded-xl border border-blue-200 text-sm font-bold outline-none text-slate-700 bg-white" />
+                            <span className="font-black text-blue-300">-</span>
+                            <input type="time" value={newSlot.end} onChange={e => setNewSlot({...newSlot, end: e.target.value})} className="p-2 rounded-xl border border-blue-200 text-sm font-bold outline-none text-slate-700 bg-white" />
+                            <button onClick={() => handleAddSlot(day)} className="ml-auto bg-blue-600 text-white p-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-md active:scale-95">Guardar</button>
+                            <button onClick={() => setNewSlot({day: null, start:'', end:''})} className="p-3 text-zinc-400 hover:text-black rounded-xl hover:bg-blue-100 transition-colors"><X className="w-5 h-5"/></button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setNewSlot({day, start:'', end:''})} className="w-full p-4 border-2 border-dashed border-zinc-200 rounded-2xl text-zinc-400 hover:text-black hover:border-black hover:bg-zinc-50 font-bold text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2">
+                            <PlusCircle className="w-4 h-4" /> Añadir Franja Libre
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
@@ -1746,7 +1874,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
         <div className="flex justify-around p-2">
-          {[{id:'attendance', i:ClipboardList}, {id:'notifications', i:Bell}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
+          {[{id:'attendance', i:ClipboardList}, {id:'availability', i:Clock}, {id:'notifications', i:Bell}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-xl transition-all relative ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}>
               <t.i className="w-6 h-6"/>
               {t.id === 'notifications' && notifications.length > 0 && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
@@ -1757,7 +1885,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       </nav>
 
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-6 flex-col gap-4 z-40">
-        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'notifications', i:Bell, t:'Avisos'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
+        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'availability', i:Clock, t:'Horario'}, {id:'notifications', i:Bell, t:'Avisos'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all relative ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black border-2'}`} title={t.t}>
             <t.i/>
             {t.id === 'notifications' && notifications.length > 0 && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}

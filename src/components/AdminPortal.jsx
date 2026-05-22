@@ -45,12 +45,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [announcements, setAnnouncements] = useState([]);
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
+  const [availabilities, setAvailabilities] = useState({}); // <-- NUEVO: Guarda las disponibilidades de todos los profes
   
-  // Modificado: Ahora settings incluye teachersList
   const [settings, setSettings] = useState({ 
     festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [],
     prizes: { trimestral: '', anual: '' },
-    teachersList: [] // <-- El nuevo superpoder
+    teachersList: [] 
   });
 
   // --- ESTADOS LOCALES UI ---
@@ -76,7 +76,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 6) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 7) setLoading(false); }; // Ahora esperamos 7 cargas
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -102,8 +102,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setAllRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
       checkLoad();
     });
+    // 👇 NUEVO: Escuchador de disponibilidades de toda la plantilla
+    const unsubAvail = onSnapshot(collection(db, 'artifacts', appId, 'availability'), (snap) => {
+      const av = {};
+      snap.forEach(d => { av[d.id] = d.data().slots || {}; });
+      setAvailabilities(av);
+      checkLoad();
+    });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); };
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); };
   }, [appId, db]);
 
   const isLastDayOfMonth = useMemo(() => {
@@ -453,6 +460,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
     }
+
+    // --- 🛡️ VERIFICACIÓN DE DISPONIBILIDAD (BLOQUEO BLANDO) ---
+    const teacherKey = newClassData.teacher.toLowerCase();
+    const dayKey = newClassData.dayOfWeek;
+    const classTime = newClassData.time;
+    
+    const teacherSlots = availabilities[teacherKey]?.[dayKey] || [];
+    // Verificamos si la hora de inicio de la clase entra dentro de alguna de las franjas marcadas por el profe
+    const isCovered = teacherSlots.some(slot => classTime >= slot.start && classTime < slot.end);
+
+    if (!isCovered) {
+      const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} a las ${classTime}h.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
+      if (!confirmForce) return; // Si dice que no, abortamos la creación
+    }
+    // ------------------------------------------------------------
     
     const teacherEmail = `${newClassData.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`;
     const existingClass = allClasses.find(c => c.teacher === newClassData.teacher);
@@ -659,6 +681,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <input type="number" step="5" min="15" value={newClassData.duration} onChange={e => setNewClassData({...newClassData, duration: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
             </div>
           </div>
+
+          {/* 👇 NUEVO CHIVATO VISUAL PARA EL ADMINISTRADOR 👇 */}
+          {newClassData.teacher && newClassData.dayOfWeek && (
+           <div className="col-span-1 md:col-span-3 mt-[-10px] mb-4">
+             <p className="text-[10px] font-bold text-blue-600 bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col gap-1">
+                <span className="uppercase tracking-widest text-blue-800">Horas libres de {newClassData.teacher} el {getDayName(newClassData.dayOfWeek)}:</span>
+                <span className="font-black text-sm">
+                  {availabilities[newClassData.teacher.toLowerCase()]?.[newClassData.dayOfWeek]?.length > 0 
+                    ? availabilities[newClassData.teacher.toLowerCase()][newClassData.dayOfWeek].map(s => `${s.start}h a ${s.end}h`).join(' | ')
+                    : 'Ninguna franja registrada.'}
+                </span>
+             </p>
+           </div>
+          )}
 
           <button onClick={handleCreateGlobalClass} className="w-full bg-black text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors">
             Registrar Clase Oficial

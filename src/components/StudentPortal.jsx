@@ -172,10 +172,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
       snapshot.forEach(doc => {
         const data = doc.data();
         const classObj = { id: doc.id, refPath: doc.ref.path, ...data };
-        all.push(classObj); // Guardamos la clase para el motor Mitobox
+        all.push(classObj); 
         
         if (data.students && data.students.some(s => s.id === profile.id)) {
-          mine.push(classObj); // Guardamos la clase para la agenda personal
+          mine.push(classObj); 
         }
       });
       setAllClasses(all);
@@ -187,10 +187,24 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
+    // 👇 NUEVO: ESCUCHADOR EN TIEMPO REAL PARA LOS TICKETS 👇
+    const ticketsQuery = collectionGroup(db, 'tickets');
+    const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
+      let validTicketsCount = 0;
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.studentId === profile.id && !data.isUsed) {
+          validTicketsCount++;
+        }
+      });
+      setProfile(prev => prev ? { ...prev, activeTickets: validTicketsCount } : null);
+    });
+
     return () => {
       unsubProfile();
       unsubClasses(); 
       unsubGestiones();
+      unsubTickets(); // Limpiamos el escuchador
     };
   }, [profile?.id, db, appId]);
 
@@ -243,32 +257,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (!snapshot.empty) {
       const studentData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
       setProfile(studentData);
-      
-      if (studentData.claimed) {
-        await fetchRealStudentData(studentData.id);
-      }
+      // Ya no llamamos a fetchRealStudentData porque ahora está automatizado en el useEffect
     }
     setLoading(false);
-  };
-
-  const fetchRealStudentData = async (studentId) => {
-    try {
-      const ticketsQuery = collectionGroup(db, 'tickets');
-      const ticketsSnap = await getDocs(ticketsQuery);
-      
-      let validTicketsCount = 0;
-      ticketsSnap.forEach(doc => {
-        const data = doc.data();
-        if (data.studentId === studentId && !data.isUsed) {
-          validTicketsCount++;
-        }
-      });
-      
-      setProfile(prev => ({ ...prev, activeTickets: validTicketsCount }));
-
-    } catch (error) {
-      console.error("Error buscando datos:", error);
-    }
   };
 
   const handleOnboarding = async (e) => {
@@ -287,7 +278,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
     await setDoc(doc(db, 'artifacts', appId, 'students', studentId), data);
     setProfile({ id: studentId, ...data });
-    await fetchRealStudentData(studentId);
   };
 
   const openAbsenceModal = (clase) => {
@@ -362,7 +352,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
       setAbsenceModal(null);
       showToast('Aviso enviado correctamente al profesor.');
-      await fetchRealStudentData(profile.id);
 
     } catch (error) {
       showToast('Error al enviar el aviso.', 'error');
@@ -1117,7 +1106,7 @@ END:VCALENDAR`;
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">
-                  Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.
+                  Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada. Los tickets regalados por cortesía de la escuela aparecen automáticamente.
                 </p>
               </div>
             </div>

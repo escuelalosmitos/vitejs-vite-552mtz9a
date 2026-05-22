@@ -286,7 +286,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       const myClasses = [];
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
-        if (data.teacher === myName || data.originalTeacherUid === user.uid) { 
+        if ((data.teacher || '').toLowerCase() === myName.toLowerCase() || data.originalTeacherUid === user.uid) { 
             myClasses.push({ id: docSnap.id, refPath: docSnap.ref.path, ...data });
         }
       });
@@ -299,7 +299,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       const recs = [];
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
-        if (data.teacher === myName) recs.push({ id: docSnap.id, ...data });
+        if ((data.teacher || '').toLowerCase() === myName.toLowerCase()) recs.push({ id: docSnap.id, ...data });
       });
       recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);

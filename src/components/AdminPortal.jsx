@@ -45,10 +45,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [announcements, setAnnouncements] = useState([]);
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
-  const [teachersList, setTeachersList] = useState([]); // Lista de profesores derivada
+  
+  // Modificado: Ahora settings incluye teachersList
   const [settings, setSettings] = useState({ 
     festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [],
-    prizes: { trimestral: '', anual: '' }
+    prizes: { trimestral: '', anual: '' },
+    teachersList: [] // <-- El nuevo superpoder
   });
 
   // --- ESTADOS LOCALES UI ---
@@ -93,11 +95,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad(); 
     });
     const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
-      const classes = snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() }));
-      setAllClasses(classes);
-      // Extraemos nombres de profesores únicos
-      const teachers = [...new Set(classes.map(c => c.teacher))].filter(Boolean).sort();
-      setTeachersList(teachers);
+      setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
       checkLoad();
     });
     const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
@@ -306,7 +304,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // NUEVO: CAMBIO DE HORARIO UNILATERAL
+  // CAMBIO DE HORARIO UNILATERAL
   const executeDirectClassChange = async (student, targetClass) => {
     if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
     
@@ -338,19 +336,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // NUEVO: OTORGAR TICKET DE RECUPERACIÓN
+  // OTORGAR TICKET DE RECUPERACIÓN
   const grantRecoveryTicket = async (student) => {
     const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Se generarán para el mes próximo)`, "1");
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
 
     try {
       const { validFrom, validUntil } = generateTicketDates();
-      // Usamos el UID genérico 'admin' para no atarlo a un profesor específico si es un regalo global
-      // o buscamos el UID del primer profesor que le da clase. Por seguridad lo guardamos en un pool central
-      // pero como tu estructura los ata al profesor, crearemos un ref genérico o buscaremos su profesor principal.
       
       const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
-      const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool'; // Hack for routing
+      const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
 
       const promises = [];
       for (let i = 0; i < parseInt(num); i++) {
@@ -453,24 +448,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
-  // NUEVO: CREAR CLASE GLOBAL DESDE ADMIN
+  // CREAR CLASE GLOBAL DESDE ADMIN
   const handleCreateGlobalClass = async () => {
     if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
     }
     
-    // Necesitamos averiguar el UID del profesor basado en su email
-    // Como Firebase Admin no permite listar UIDs desde cliente fácilmente, lo pediremos o usaremos un hash temporal 
-    // Lo ideal es tener una colección 'teachers' con sus UIDs, pero usaremos el email como ID de documento contenedor si es nuevo
     const teacherEmail = `${newClassData.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`;
-    // Simplificación: Para no romper la estructura, guardaremos en un pool central o requeriremos que el profesor ya exista
     const existingClass = allClasses.find(c => c.teacher === newClassData.teacher);
     let targetUid = 'admin_generated'; 
     if (existingClass && existingClass.refPath) {
-      targetUid = existingClass.refPath.split('/')[3]; // Extraemos el UID del path: artifacts/appId/users/UID/recurringClasses/...
+      targetUid = existingClass.refPath.split('/')[3]; 
     } else {
-       alert("⚠️ Aviso: Este profesor no tiene clases previas. Se guardará bajo su email genérico.");
-       targetUid = teacherEmail.replace(/[@.]/g, '_'); // Fallback UID
+       alert("⚠️ Aviso: Este profesor no tiene clases previas registradas. Se le guardará bajo su correo del colegio.");
+       targetUid = teacherEmail.replace(/[@.]/g, '_');
     }
 
     const classId = Date.now().toString();
@@ -621,7 +612,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor asignado *</label>
               <select value={newClassData.teacher} onChange={e => setNewClassData({...newClassData, teacher: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
                 <option value="">Seleccionar...</option>
-                {teachersList.map(t => <option key={t} value={t}>{t}</option>)}
+                {(settings.teachersList || []).map(t => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
@@ -1336,6 +1327,36 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-medium text-xs text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Pega aquí el texto completo..." />
               <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm">Guardar Contrato</button>
             </div>
+
+            {/* 👇 NUEVO GESTOR DE PROFESORES 👇 */}
+            <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><User className="w-4 h-4 text-black"/> Plantilla de Profesores</h3>
+              <div className="flex gap-2 mb-4">
+                <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-2 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-lg font-bold" />
+                <button onClick={() => { 
+                  const val = document.getElementById('adminTeacherInput').value.trim(); 
+                  if(val) { 
+                    const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; 
+                    setSettings(s); 
+                    saveGlobalSettings(s); 
+                    document.getElementById('adminTeacherInput').value = ''; 
+                  } 
+                }} className="bg-black text-white px-4 rounded-lg font-bold uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
+              </div>
+              <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
+                {(settings.teachersList || []).map((t, i) => (
+                  <div key={i} className="flex justify-between items-center p-2 text-xs bg-zinc-50 border border-zinc-100 rounded-lg">
+                    <span className="font-medium font-black uppercase">{t}</span>
+                    <button onClick={() => { 
+                      const s = {...settings, teachersList: settings.teachersList.filter((_, idx) => idx !== i)}; 
+                      setSettings(s); 
+                      saveGlobalSettings(s); 
+                    }} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* 👆 FIN DEL GESTOR DE PROFESORES 👆 */}
 
             {/* MANTENIMIENTO DE BASE DE DATOS */}
             <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">

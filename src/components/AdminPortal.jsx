@@ -59,7 +59,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
-  const [editStudentModal, setEditStudentModal] = useState(null); // NUEVO: Estado para editar alumno
+  const [editStudentModal, setEditStudentModal] = useState(null); 
   
   // ESTADOS MODALES NUEVOS
   const [createClassModal, setCreateClassModal] = useState(false);
@@ -67,7 +67,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
-    isRecurring: true, specificDate: new Date().toISOString().split('T')[0], // NUEVO: Campos para recurrencia
+    isRecurring: true, specificDate: new Date().toISOString().split('T')[0], 
     dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1',
     teacher: '', subject: '', capacity: '', duration: 60, notes: ''
   });
@@ -132,7 +132,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         return;
       }
 
-      const { studentId, studentName, type, requestedClass } = gestionData;
+      const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData; // 👇 OBTENEMOS LA FECHA EXACTA
       const studentInfo = students.find(s => s.id === studentId);
 
       // CASO A: SOLICITUD DE BAJA DEFINITIVA
@@ -245,7 +245,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           email: studentInfo?.email || '',
           isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
           status: 'present',
-          isRecovery: type === 'recuperacion'
+          isRecovery: type === 'recuperacion',
+          recoveryDate: type === 'recuperacion' ? recoveryDate : null // 👇 INYECCIÓN DE LA FECHA INVISIBLE
         };
 
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
@@ -255,15 +256,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         logMessage += `✅ Ticket archivado con éxito.\n`;
 
+        // 👇 NUEVA NOTIFICACIÓN INTELIGENTE AL PROFESOR 👇
         try {
           const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
+          
+          let emailSubject = `🎉 ¡Nuevo alumno en tu clase de ${targetClass.subject}!`;
+          let emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`;
+
+          if (type === 'recuperacion') {
+            emailSubject = `🔄 Recuperación programada: ${studentName} (${targetClass.subject})`;
+            emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${studentName} para recuperar una clase de ${targetClass.subject} contigo el próximo ${formatDateSpanish(recoveryDate)} a las ${targetClass.time}h.\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`;
+          }
+
           await fetch(APPS_SCRIPT_URL, {
             method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({
               type: 'notificacion_profesor',
               teacherEmail: emailProfe,
-              subject: `🎉 ¡Nuevo alumno en tu clase de ${targetClass.subject}!`,
-              body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+              subject: emailSubject,
+              body: emailBody
             })
           });
         } catch(e) { }
@@ -636,7 +647,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // MODAL: EDITAR DATOS DEL ALUMNO (NUEVO)
+  // MODAL: EDITAR DATOS DEL ALUMNO
   const EditStudentModalOverlay = () => {
     if (!editStudentModal) return null;
     const [name, setName] = useState(editStudentModal.name || '');
@@ -647,13 +658,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       if (!name.trim()) return alert("El nombre es obligatorio.");
       setSaving(true);
       try {
-        // 1. Actualizamos el perfil global del alumno
         await updateDoc(doc(db, 'artifacts', appId, 'students', editStudentModal.id), { 
           name: name.trim(), 
           email: email.toLowerCase().trim() 
         });
 
-        // 2. Buscamos todas las clases donde este alumno esté metido y le actualizamos el nombre/email allí también
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === editStudentModal.id));
         const batch = writeBatch(db);
         
@@ -781,7 +790,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
           </div>
 
-          {/* CHIVATO VISUAL PARA EL ADMINISTRADOR */}
           {newClassData.teacher && (newClassData.isRecurring ? newClassData.dayOfWeek : newClassData.specificDate) && (
            <div className="col-span-1 md:col-span-3 mt-[-10px] mb-4">
              <p className="text-[10px] font-bold text-blue-600 bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col gap-1">
@@ -805,7 +813,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // MODAL: CAMBIAR ALUMNO DE CLASE
   const ChangeClassModalOverlay = () => {
     if (!changeClassModal) return null;
     const student = changeClassModal;
@@ -848,7 +855,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       {notesModal && <NotesModalOverlay />}
       {createClassModal && <CreateClassModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
-      {editStudentModal && <EditStudentModalOverlay />} {/* NUEVO MODAL RENDERIZADO */}
+      {editStudentModal && <EditStudentModalOverlay />} 
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -945,6 +952,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               {g.type.replace('_', ' ')}
                             </span>
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
+                            {/* 👇 NUEVO CHIVATO DE FECHA EXACTA 👇 */}
+                            {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                           </td>
                           <td className="p-4">
                             <div className="max-w-[150px] md:max-w-[250px] truncate text-xs" title={g.details}>{g.details}</div>
@@ -1083,7 +1092,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             </div>
                           </td>
                           <td className="p-4 text-center">
-                            {/* NUEVOS BOTONES MODO DIOS */}
                             <div className="flex items-center justify-center gap-2">
                               <button onClick={() => setEditStudentModal(student)} className="flex items-center gap-1 p-2 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest" title="Editar datos del alumno">
                                 <Pencil className="w-3 h-3"/> Editar
@@ -1203,7 +1211,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                 <div key={c.id} className="p-4 rounded-xl border border-zinc-100 bg-white shadow-sm flex justify-between items-center relative group">
                                   <div>
                                     <div className="font-black text-sm uppercase">
-                                      {/* NUEVO: Mostramos fecha si es puntual, o día si es recurrente */}
                                       {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
                                       <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
                                     </div>
@@ -1475,7 +1482,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm">Guardar Contrato</button>
             </div>
 
-            {/* 👇 NUEVO GESTOR DE PROFESORES 👇 */}
             <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><User className="w-4 h-4 text-black"/> Plantilla de Profesores</h3>
               <div className="flex gap-2 mb-4">
@@ -1503,9 +1509,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 ))}
               </div>
             </div>
-            {/* 👆 FIN DEL GESTOR DE PROFESORES 👆 */}
 
-            {/* MANTENIMIENTO DE BASE DE DATOS */}
             <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Trash2 className="w-4 h-4 text-black"/> Mantenimiento del Sistema</h3>
               <p className="text-xs text-zinc-500 font-medium mb-4">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos optimizada y rápida.</p>

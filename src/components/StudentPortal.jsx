@@ -1359,7 +1359,7 @@ END:VCALENDAR`;
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Comunidad</span>
                 </a>
                 <a href="https://www.youtube.com/@escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-red-500 transition-colors group">
-                  <PlaySquare className="w-6 h-6 text-zinc-400 group-hover:text-red-500"/>
+                  <Video className="w-6 h-6 text-zinc-400 group-hover:text-red-500"/>
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">YouTube</span>
                 </a>
                 <a href="https://www.facebook.com/Escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-blue-600 transition-colors group">

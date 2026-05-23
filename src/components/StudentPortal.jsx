@@ -106,6 +106,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [myClasses, setMyClasses] = useState([]);
   const [allClasses, setAllClasses] = useState([]); 
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
+  const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [] });
   const [announcements, setAnnouncements] = useState([]); 
   const [myGestiones, setMyGestiones] = useState([]); 
   const [activeTab, setActiveTab] = useState('home');
@@ -123,6 +124,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [gestionText, setGestionText] = useState('');
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
+  const [selectedRecoveryDate, setSelectedRecoveryDate] = useState(''); // 👇 NUEVO ESTADO PARA LA FECHA DE RECUPERACIÓN
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
 
@@ -144,8 +146,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   useEffect(() => {
     checkRegistration();
-    fetchAllClassesAndCalendar();
-    fetchContractText();
 
     const unsubAnnouncements = onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -153,7 +153,27 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setAnnouncements(data);
     });
 
-    return () => unsubAnnouncements();
+    // 👇 ESCUCHADOR DE SETTINGS (Contrato, Festivos y Vacaciones) 👇
+    const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setContractText(data.contract || 'El contrato aún no está disponible.');
+        const fest = data.festivos || [];
+        const vac = data.vacaciones || [];
+        setGlobalSettings({ festivos: fest, vacaciones: vac });
+        
+        // Sincronizamos el calendario escolar del alumno visualmente
+        const newCal = [];
+        fest.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Día Festivo' }));
+        vac.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones' }));
+        setSchoolCalendar(newCal);
+      }
+    });
+
+    return () => {
+      unsubAnnouncements();
+      unsubSettings();
+    };
   }, [user.email]);
 
   useEffect(() => {
@@ -187,7 +207,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
-    // 👇 NUEVO: ESCUCHADOR EN TIEMPO REAL PARA LOS TICKETS 👇
     const ticketsQuery = collectionGroup(db, 'tickets');
     const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
       let validTicketsCount = 0;
@@ -204,7 +223,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubProfile();
       unsubClasses(); 
       unsubGestiones();
-      unsubTickets(); // Limpiamos el escuchador
+      unsubTickets(); 
     };
   }, [profile?.id, db, appId]);
 
@@ -226,29 +245,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setTimeout(() => setNotification(null), 4000);
   };
 
-  const fetchContractText = async () => {
-    try {
-      const docSnap = await getDoc(doc(db, 'artifacts', appId, 'settings', 'global'));
-      if (docSnap.exists() && docSnap.data().contract) {
-        setContractText(docSnap.data().contract);
-      } else {
-        setContractText('El contrato de prestación de servicios aún no está disponible online. Por favor, contacta con administración.');
-      }
-    } catch (e) {
-      console.log("Error cargando el contrato", e);
-    }
-  };
-
-  const fetchAllClassesAndCalendar = async () => {
-    try {
-      const calSnap = await getDocs(collection(db, 'artifacts', appId, 'calendar'));
-      const calList = calSnap.docs.map(d => d.data());
-      setSchoolCalendar(calList);
-    } catch (e) {
-      console.log("No se pudo cargar calendario");
-    }
-  };
-
   const checkRegistration = async () => {
     setLoading(true);
     const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", user.email));
@@ -257,7 +253,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (!snapshot.empty) {
       const studentData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
       setProfile(studentData);
-      // Ya no llamamos a fetchRealStudentData porque ahora está automatizado en el useEffect
     }
     setLoading(false);
   };
@@ -295,9 +290,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
     try {
       const classRef = doc(db, absenceModal.clase.refPath);
       
-      // 🧠 LÓGICA DE CLASE VACÍA Y REGLA DE LAS 2 HORAS
       const currentExceptions = absenceModal.clase.exceptions?.[absenceModal.dateStr] || {};
-      currentExceptions[profile.id] = status; // Simulamos cómo quedará la clase tras este aviso
+      currentExceptions[profile.id] = status; 
       
       const activeStudents = (absenceModal.clase.students || []).filter(s => !s.isPaused);
       const allAbsentNow = activeStudents.length > 0 && activeStudents.every(s => {
@@ -305,16 +299,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
         return st === 'absent' || st === 'notified' || st === 'notified_no_ticket';
       });
 
-      // ¿Han faltado todos y quedan más de 2 horas para la clase?
       const isCancelledWithNotice = allAbsentNow && (absenceModal.diffHours >= 2);
 
-      // Guardamos la falta en Firebase (y la bandera de cancelación si aplica)
       await setDoc(classRef, { 
         exceptions: { [absenceModal.dateStr]: { [profile.id]: status } },
         ...(isCancelledWithNotice ? { autoCancelled: { [absenceModal.dateStr]: true } } : {})
       }, { merge: true });
       
-      // 2. Mandar Aviso a la bandeja del Profesor (Modo Dios)
       const gestionId = `falta-${Date.now()}`;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
@@ -328,14 +319,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
         date: new Date().toISOString()
       });
 
-      // 3. 🚀 DISPARADOR DEL EMAIL INTELIGENTE AL PROFESOR 🚀
       try {
         const emailProfe = `${absenceModal.clase.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
         
         let subjectEmail = `⚠️ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`;
         let bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado que NO asistirá a tu clase de ${absenceModal.clase.subject} el próximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\n${isLate ? '⚠️ IMPORTANTE: El aviso se ha realizado FUERA DE PLAZO (con menos de 16h de antelación).' : '✅ El aviso se ha realizado dentro de plazo.'}\n\nEl sistema ya ha actualizado tu lista de asistencia para que no le esperes.\n\nUn saludo,\nCoordinación Los Mitos.`;
 
-        // Si se vacía la clase, sobrescribimos el mail por uno más importante
         if (isCancelledWithNotice) {
           subjectEmail = `🚨 CLASE CANCELADA (+2h antelación): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
           bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nAl haberse vaciado la clase con MÁS DE 2 HORAS de antelación, esta sesión queda CANCELADA.\n\nSegún normativa, esta hora no requiere asistencia presencial, no se habilitará el protocolo de tareas y no computará en nómina.\n\nUn saludo,\nCoordinación Los Mitos.`;
@@ -377,6 +366,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         title: gestionModal.title,
         details: gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
+        recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, // 👇 ENVIAMOS LA FECHA EXACTA AL ADMIN
         targetMonth: (!isTicketRedemption && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
         isLateRequest: !isTicketRedemption && timeRules.isLate,
         status: 'pendiente',
@@ -387,8 +377,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setGestionModal(null);
       setGestionText('');
       setSelectedNewClass(null);
+      setSelectedRecoveryDate('');
       setAcceptLatePenalty(false);
-      setSelectedInst(''); // Limpiar para que no se quede guardado
+      setSelectedInst(''); 
       showToast('Solicitud enviada a Administración.');
     } catch (error) {
       showToast('Error al enviar la solicitud.', 'error');
@@ -442,11 +433,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
         reservationDate: mboxDate
       });
 
-      // --- INICIO MAGIA: Generación del archivo .ics ---
       const [y, m, d] = mboxDate.split('-');
       const [h, min] = mboxSelectedSlot.time.split(':');
       const startDate = new Date(y, m - 1, d, h, min);
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // Añade 1 hora de ensayo
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
 
       const formatDateICS = (date) => date.toISOString().replace(/-|:|\.\d+/g, '');
       const icsContent = `BEGIN:VCALENDAR
@@ -468,7 +458,6 @@ END:VCALENDAR`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      // --- FIN MAGIA ---
 
       setMitoboxModal(false);
       setMboxDate('');
@@ -521,14 +510,12 @@ END:VCALENDAR`;
   const pendingAbsences = [];
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.type !== 'alta_mitobox'); 
   
-  // 👇 NUEVO: Detectar si hay un trámite administrativo mayor en curso 👇
   const pendingAdminGestiones = myGestiones.filter(g => 
     g.status === 'pendiente' && 
     ['baja', 'mantenimiento', 'cambio_horario', 'ampliar_clases'].includes(g.type)
   );
   const hasPendingAdminGestion = pendingAdminGestiones.length > 0;
 
-  // 👇 NUEVO: Función escudo para evitar duplicidades 👇
   const handleAdminGestionClick = (gestionPayload) => {
     if (hasPendingAdminGestion) {
       showToast('Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.', 'error');
@@ -555,7 +542,26 @@ END:VCALENDAR`;
     });
   }
 
-  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
+  // 👇 NUEVO HELPER PARA CALCULAR FECHAS DE RECUPERACIÓN 👇
+  const getValidRecoveryDates = (dayOfWeekStr) => {
+    const targetDay = parseInt(dayOfWeekStr);
+    const validDates = [];
+    let currentDate = new Date();
+    currentDate.setDate(currentDate.getDate() + 1); // Empezamos a mirar desde mañana
+    
+    // Calculamos las próximas 4 semanas disponibles que no sean festivos ni vacaciones
+    while (validDates.length < 4 && validDates.length < 30) { // Limitador de seguridad
+      if (currentDate.getDay() === targetDay) {
+        const dateStr = currentDate.toISOString().split('T')[0];
+        if (!globalSettings.festivos.includes(dateStr) && !globalSettings.vacaciones.includes(dateStr)) {
+          validDates.push(dateStr);
+        }
+      }
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    return validDates;
+  };
+
   const renderAbsenceModal = () => {
     if (!absenceModal) return null;
     const isLate = absenceModal.diffHours < 16;
@@ -606,7 +612,7 @@ END:VCALENDAR`;
               </div>
               <div className="space-y-3">
                 <button onClick={() => confirmAbsence(true)} disabled={!healthCheck} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">Sí, quiero recuperarla</button>
-                <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
+                <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-300 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
                 <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
               </div>
             </>
@@ -619,38 +625,40 @@ END:VCALENDAR`;
     );
   };
 
-  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderGestionModal = () => {
     if (!gestionModal) return null;
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
     const isTicketRedemption = gestionModal.type === 'recuperacion';
 
+    const targetInstrument = gestionModal.type === 'ampliar_clases' ? selectedInst : (profile.instruments && profile.instruments[0]);
+
     let availableClasses = [];
-    if (isClassSearch) {
-      if (gestionModal.type === 'ampliar_clases' && !selectedInst) {
-        availableClasses = []; // Si no hay instrumento elegido, forzamos lista vacía
-      } else {
-        const targetInstrument = gestionModal.type === 'ampliar_clases' ? selectedInst : (selectedInst || profile.instruments[0]);
-        if (targetInstrument) {
-          availableClasses = allClasses.filter(c => {
-            if (c.subject !== targetInstrument) return false;
-            const maxCap = parseInt(c.capacity || 4);
-            const currentStudents = c.students?.length || 0;
-            if (currentStudents >= maxCap) return false;
-            if (c.students?.some(s => s.id === profile.id)) return false;
-            if (isTicketRedemption && targetInstrument === 'Guitarra') {
-              if (maxCap !== 8) return false;
-            }
-            return true;
-          });
+    if (isClassSearch && targetInstrument) {
+      availableClasses = allClasses.filter(c => {
+        if (c.subject !== targetInstrument) return false;
+        const maxCap = parseInt(c.capacity || 4);
+        const currentStudents = c.students?.length || 0;
+        if (currentStudents >= maxCap) return false;
+        if (c.students?.some(s => s.id === profile.id)) return false;
+        
+        if (isTicketRedemption && targetInstrument === 'Guitarra') {
+          if (maxCap !== 8) return false; 
         }
-      }
+        
+        return true;
+      });
     }
+
+    // 👇 CONTROL DEL BOTÓN ENVIAR 👇
+    const isSendDisabled = isSendingGestion || 
+      (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) || 
+      (isClassSearch && !selectedNewClass) || 
+      (isTicketRedemption && !selectedRecoveryDate); // Si es recuperar, obliga a elegir fecha
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
-          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedRecoveryDate(''); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
@@ -673,9 +681,10 @@ END:VCALENDAR`;
             </>
           )}
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
+          
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige el grupo para recuperar' : '1. Busca disponibilidad en directo'}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige grupo con disponibilidad' : '1. Busca disponibilidad en directo'}</p>
               
               {gestionModal.type === 'ampliar_clases' && (
                 <select value={selectedInst} onChange={e => {setSelectedInst(e.target.value); setSelectedNewClass(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
@@ -684,25 +693,45 @@ END:VCALENDAR`;
                 </select>
               )}
 
-              {/* AQUÍ ESTÁ EL TRUCO: Si es "ampliar_clases" y NO ha elegido instrumento, ocultamos la lista. En cualquier otro caso, la mostramos. */}
               {!(gestionModal.type === 'ampliar_clases' && !selectedInst) && (
                 availableClasses.length > 0 ? (
                   <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
                     {availableClasses.map(c => (
-                      <div key={c.id} onClick={() => setSelectedNewClass(c)} className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedNewClass?.id === c.id ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
+                      <div key={c.id} onClick={() => {setSelectedNewClass(c); setSelectedRecoveryDate('');}} className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedNewClass?.id === c.id ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex justify-between items-center mb-1"><span className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)}</span><span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded">{c.time}h</span></div>
                         <div className="text-xs text-zinc-500 font-medium">Prof: {c.teacher} • Quedan {parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas</div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-zinc-100"><p className="text-xs font-bold text-zinc-500">No hay grupos libres o compatibles. Escríbenos a gestiones@escuelalosmitos.com</p></div>
+                  <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100"><p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">No hay grupos libres disponibles en tu instrumento.</p></div>
                 )
+              )}
+
+              {/* 👇 NUEVO PASO 2: ELEGIR LA FECHA (Solo para recuperaciones) 👇 */}
+              {isTicketRedemption && selectedNewClass && (
+                <div className="mt-6 pt-4 border-t border-zinc-100 animate-in fade-in zoom-in-95">
+                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">2. Elige el día exacto de recuperación</p>
+                  <div className="space-y-2">
+                    {getValidRecoveryDates(selectedNewClass.dayOfWeek).map(d => (
+                      <div 
+                        key={d} 
+                        onClick={() => setSelectedRecoveryDate(d)} 
+                        className={`p-3 rounded-xl border-2 cursor-pointer transition-all flex items-center justify-between ${selectedRecoveryDate === d ? 'border-amber-500 bg-amber-50 text-amber-900' : 'border-zinc-100 hover:border-amber-300 text-slate-700'}`}
+                      >
+                        <span className="font-black text-sm uppercase">{formatDateSpanish(d)}</span>
+                        {selectedRecoveryDate === d && <CheckCircle className="w-5 h-5 text-amber-500"/>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
+
           <textarea placeholder={gestionModal.placeholder} value={gestionText} onChange={(e) => setGestionText(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-sm font-medium mb-6"/>
-          <button onClick={sendGestion} disabled={isSendingGestion || (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) || (isClassSearch && !selectedNewClass)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
+          
+          <button onClick={sendGestion} disabled={isSendDisabled} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
             {isSendingGestion ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar Solicitud</>}
           </button>
         </div>
@@ -710,7 +739,6 @@ END:VCALENDAR`;
     );
   };
 
-  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderMitoboxModal = () => {
     if (!mitoboxModal) return null;
     
@@ -718,7 +746,6 @@ END:VCALENDAR`;
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-    // MOTOR INTELIGENTE DE BÚSQUEDA DE SALAS
     let availableMboxSlots = [];
     if (mboxDate && mboxSede) {
       const targetDay = getDayOfWeek(mboxDate);
@@ -823,7 +850,6 @@ END:VCALENDAR`;
     );
   };
 
-  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderContract = () => {
     if (!showContract) return null;
     return (
@@ -843,7 +869,6 @@ END:VCALENDAR`;
     );
   };
 
-  // --- CONVERTIDO A FUNCIÓN RENDER PARA NO PERDER EL FOCO ---
   const renderTriviaModal = () => {
     if (!triviaModal) return null;
     return (
@@ -892,7 +917,6 @@ END:VCALENDAR`;
   
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
-  // 👇 AQUÍ EMPIEZA LO NUEVO: BLOQUEO PARA ALUMNOS DADOS DE BAJA 👇
   if (profile?.globalStatus === 'baja') {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
@@ -922,7 +946,6 @@ END:VCALENDAR`;
       </div>
     );
   }
-  // 👆 AQUÍ ACABA LO NUEVO 👆
 
   if (!profile) {
     return (
@@ -949,7 +972,6 @@ END:VCALENDAR`;
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 relative">
       
-      {/* 👇 AQUÍ ES DONDE AHORA LLAMAMOS A LAS FUNCIONES DIRECTAMENTE 👇 */}
       {renderAbsenceModal()}
       {renderGestionModal()}
       {renderMitoboxModal()}
@@ -1053,7 +1075,6 @@ END:VCALENDAR`;
                   );
                 }
 
-                // 👇 Detectamos si el alumno está congelado
                 const isCongelado = profile?.globalStatus === 'congelado';
 
                 return (
@@ -1066,7 +1087,6 @@ END:VCALENDAR`;
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
                       
-                      {/* 👇 NUEVA LÓGICA DE BOTONERA CONGELADA 👇 */}
                       {isCongelado ? (
                         <div className="w-full bg-blue-100 text-blue-800 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-3 uppercase text-[10px] sm:text-xs tracking-widest border border-blue-200 text-center leading-tight">
                           <Snowflake className="w-5 h-5 shrink-0" />
@@ -1102,7 +1122,6 @@ END:VCALENDAR`;
               >
                 {profile.activeTickets > 0 ? 'Canjear Ticket Libre' : 'No tienes tickets'}
               </button>
-              {/* 👇 NUEVO TEXTO INFORMATIVO BAJO EL BOTÓN 👇 */}
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">

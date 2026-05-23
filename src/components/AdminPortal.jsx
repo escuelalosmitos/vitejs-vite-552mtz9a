@@ -20,7 +20,6 @@ const formatDateSpanish = (dateString) => {
 
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
-// Helper: Generador de fechas para los Tickets (Mes + 1)
 const generateTicketDates = () => {
   const now = new Date();
   let nextY = now.getFullYear();
@@ -39,7 +38,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [activeTab, setActiveTab] = useState('gestiones');
   const [loading, setLoading] = useState(true);
 
-  // --- DATOS GLOBALES ---
   const [gestiones, setGestiones] = useState([]);
   const [students, setStudents] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
@@ -48,12 +46,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [availabilities, setAvailabilities] = useState({}); 
   
   const [settings, setSettings] = useState({ 
-    festivos: [], vacaciones: [], contract: '', hourlyRate: 17.33, generalTasks: [],
+    festivos: [], vacaciones: [], contract: '', teacherRules: '', hourlyRate: 17.33, generalTasks: [],
     prizes: { trimestral: '', anual: '' },
     teachersList: [] 
   });
 
-  // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
   const [filterStatus, setFilterStatus] = useState('activo');
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
@@ -61,7 +58,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   
-  // ESTADOS MODALES NUEVOS
   const [createClassModal, setCreateClassModal] = useState(false);
   const [changeClassModal, setChangeClassModal] = useState(null);
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
@@ -72,7 +68,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     teacher: '', subject: '', capacity: '', duration: 60, notes: ''
   });
 
-  // ESTADOS PARA EL RADAR MITOBOX
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
 
@@ -120,7 +115,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return tomorrow.getDate() === 1;
   }, []);
 
-  // --- FUNCIONES GESTIONES ---
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
     if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
@@ -132,10 +126,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         return;
       }
 
-      const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData; // 👇 OBTENEMOS LA FECHA EXACTA
+      const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData; 
       const studentInfo = students.find(s => s.id === studentId);
 
-      // CASO A: SOLICITUD DE BAJA DEFINITIVA
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
         
@@ -167,7 +160,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert(`✅ Baja ejecutada. Profesores avisados por correo. ${studentName} borrado de ${borradas} clases.`);
       }
 
-      // CASO B: SOLICITUD DE MANTENIMIENTO
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
         
@@ -197,7 +189,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores han sido avisados.`);
       }
 
-      // CASO C: CAMBIO DE HORARIO, AMPLIAR CLASES O RECUPERACIÓN
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
         
         if (!requestedClass) {
@@ -246,7 +237,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
           status: 'present',
           isRecovery: type === 'recuperacion',
-          recoveryDate: type === 'recuperacion' ? recoveryDate : null // 👇 INYECCIÓN DE LA FECHA INVISIBLE
+          recoveryDate: type === 'recuperacion' ? recoveryDate : null 
         };
 
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
@@ -256,7 +247,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         logMessage += `✅ Ticket archivado con éxito.\n`;
 
-        // 👇 NUEVA NOTIFICACIÓN INTELIGENTE AL PROFESOR 👇
         try {
           const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
           
@@ -290,7 +280,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // --- FUNCIONES ALUMNOS (CRM) ---
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';
     const newStatus = isStatusField ? (currentValue === 'congelado' ? 'activo' : 'congelado') : !currentValue;
@@ -459,7 +448,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
-  // CREAR CLASE GLOBAL DESDE ADMIN
   const handleCreateGlobalClass = async () => {
     if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
@@ -468,7 +456,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       return alert("Para una clase puntual, debes elegir una fecha.");
     }
 
-    // --- 🛡️ VERIFICACIÓN DE DISPONIBILIDAD (BLOQUEO BLANDO) ---
     const teacherKey = newClassData.teacher.toLowerCase();
     const dayKey = newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString();
     const classTime = newClassData.time;
@@ -480,7 +467,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} a las ${classTime}h.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
       if (!confirmForce) return; 
     }
-    // ------------------------------------------------------------
     
     const teacherEmail = `${newClassData.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`;
     const existingClass = allClasses.find(c => c.teacher === newClassData.teacher);
@@ -493,7 +479,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     try {
       if (newClassData.isRecurring) {
-        // Clase Recurrente de toda la vida
         const classId = Date.now().toString();
         await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
           ...newClassData,
@@ -505,7 +490,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         });
         alert(`✅ Clase RECURRENTE de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
       } else {
-        // Clase Puntual Extraordinaria (Enviada a Substitutions para que el profe la asuma un día concreto)
         const subId = `extra-${Date.now()}`;
         await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
           originalClassId: 'extra',
@@ -531,7 +515,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // --- CÁLCULOS ANALÍTICOS ---
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
@@ -577,7 +560,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     })).sort((a, b) => b.hours - a.hours);
   }, [allRecords, settings.hourlyRate]);
 
-  // RADAR MITOBOX
   const availableMboxSlotsAdmin = useMemo(() => {
     let slots = [];
     if (mboxAdminDate && mboxAdminSede) {
@@ -608,7 +590,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   }, [allClasses, mboxAdminDate, mboxAdminSede]);
 
 
-  // MODAL: BLOC DE NOTAS
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
     const globalStudentInfo = students.find(s => s.id === notesModal.id);
@@ -647,7 +628,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // MODAL: EDITAR DATOS DEL ALUMNO
   const EditStudentModalOverlay = () => {
     if (!editStudentModal) return null;
     const [name, setName] = useState(editStudentModal.name || '');
@@ -713,7 +693,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // MODAL: CREAR CLASE GLOBAL
   const CreateClassModalOverlay = () => {
     if (!createClassModal) return null;
     return (
@@ -897,7 +876,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
       <main className="flex-1 min-w-0 p-4 md:p-8 max-w-7xl mx-auto w-full">
         
-        {/* BANNER AVISO CIERRE MES (Si es el último día del mes) */}
         {isLastDayOfMonth && (
           <div className="mb-6 bg-gradient-to-r from-amber-400 to-amber-500 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-4 animate-pulse">
             <div className="flex items-center gap-3 text-amber-950">
@@ -952,7 +930,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               {g.type.replace('_', ' ')}
                             </span>
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
-                            {/* 👇 NUEVO CHIVATO DE FECHA EXACTA 👇 */}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                           </td>
                           <td className="p-4">
@@ -1224,7 +1201,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                     </span>
                                     <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
                                   </div>
-                                  {/* Boton para borrar clase global */}
                                   <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                 </div>
                               );
@@ -1261,7 +1237,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                 {dangerClasses.map(c => {
                   const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                  const isCritical = activeC <= 1; // 1 o 0 alumnos
+                  const isCritical = activeC <= 1; 
                   return (
                     <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm ${isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
                       <div className="flex justify-between items-start mb-3">
@@ -1419,49 +1395,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           <div className="space-y-6 animate-in fade-in">
              <header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración</h2>
-              <p className="text-zinc-500 font-medium text-sm">Ajustes globales y legales.</p>
+              <p className="text-zinc-500 font-medium text-sm">Ajustes globales y legales de la escuela.</p>
             </header>
             
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm">
-                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Lock className="w-4 h-4 text-black"/> Tarifa Convenio</h3>
-                <div className="flex items-center gap-4 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
-                  <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-xl font-bold w-24 p-1 border-b-2 border-black outline-none bg-transparent" />
-                  <span className="text-xl font-bold">€ / hora</span>
-                  <button onClick={() => saveGlobalSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-4 py-2 rounded-lg font-bold uppercase text-[10px] tracking-wider shadow-sm">Actualizar</button>
-                </div>
-              </div>
-
-              <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm">
-                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Check className="w-4 h-4 text-black"/> Tareas de Hora Muerta</h3>
-                <div className="flex gap-2 mb-4">
-                  <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras..." className="flex-1 p-2 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-lg" />
-                  <button onClick={() => { const val = document.getElementById('adminTaskInput').value; if(val) { const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTaskInput').value = ''; } }} className="bg-black text-white px-4 rounded-lg font-bold uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
-                </div>
-                <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
-                  {settings.generalTasks?.map((t, i) => (
-                    <div key={i} className="flex justify-between items-center p-2 text-xs bg-zinc-50 border border-zinc-100 rounded-lg"><span className="font-medium">{t}</span><button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded"><Trash2 className="w-4 h-4"/></button></div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Calendar className="w-4 h-4 text-black"/> Calendario Escolar</h3>
+            {/* 1. CALENDARIO ESCOLAR */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminDateInput" type="date" className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
                 <select id="adminDateType" className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-xs uppercase">
                   <option value="festivo">Festivo</option>
                   <option value="vacacion">Vacaciones</option>
                 </select>
-                <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if(d) { const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]); if(!arr.includes(d)) { const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl shadow-md font-black uppercase text-[10px]"><Plus className="w-4 h-4 inline"/></button>
+                <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if(d) { const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]); if(!arr.includes(d)) { const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl shadow-md font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4 inline"/></button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                   <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><PartyPopper className="w-3 h-3"/> Festivos</h4>
                   <div className="space-y-1">
                     {settings.festivos?.sort().map(f => (
-                      <div key={f} className="flex justify-between p-2 bg-amber-50 rounded-lg text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}}><Trash2 className="w-3 h-3 text-amber-400 hover:text-red-500"/></button></div>
+                      <div key={f} className="flex justify-between items-center p-2 bg-amber-50 rounded-lg text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-amber-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-amber-500 hover:text-red-500"/></button></div>
                     ))}
                   </div>
                 </div>
@@ -1469,23 +1422,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><Palmtree className="w-3 h-3"/> Vacaciones</h4>
                   <div className="space-y-1">
                     {settings.vacaciones?.sort().map(v => (
-                      <div key={v} className="flex justify-between p-2 bg-emerald-50 rounded-lg text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}}><Trash2 className="w-3 h-3 text-emerald-400 hover:text-red-500"/></button></div>
+                      <div key={v} className="flex justify-between items-center p-2 bg-emerald-50 rounded-lg text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-emerald-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-emerald-500 hover:text-red-500"/></button></div>
                     ))}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><FileText className="w-4 h-4 text-black"/> Contrato Legal de Servicios</h3>
-              <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-medium text-xs text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Pega aquí el texto completo..." />
-              <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm">Guardar Contrato</button>
-            </div>
-
-            <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><User className="w-4 h-4 text-black"/> Plantilla de Profesores</h3>
+            {/* 2. PLANTILLA DE PROFESORES */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
               <div className="flex gap-2 mb-4">
-                <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-2 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-lg font-bold" />
+                <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
                 <button onClick={() => { 
                   const val = document.getElementById('adminTeacherInput').value.trim(); 
                   if(val) { 
@@ -1494,29 +1442,80 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     saveGlobalSettings(s); 
                     document.getElementById('adminTeacherInput').value = ''; 
                   } 
-                }} className="bg-black text-white px-4 rounded-lg font-bold uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
+                }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
               </div>
-              <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
                 {(settings.teachersList || []).map((t, i) => (
-                  <div key={i} className="flex justify-between items-center p-2 text-xs bg-zinc-50 border border-zinc-100 rounded-lg">
-                    <span className="font-medium font-black uppercase">{t}</span>
+                  <div key={i} className="flex justify-between items-center p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <span className="font-black uppercase tracking-widest text-slate-700">{t}</span>
                     <button onClick={() => { 
                       const s = {...settings, teachersList: settings.teachersList.filter((_, idx) => idx !== i)}; 
                       setSettings(s); 
                       saveGlobalSettings(s); 
-                    }} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
+                    }} className="text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Trash2 className="w-4 h-4 text-black"/> Mantenimiento del Sistema</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-4">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos optimizada y rápida.</p>
+            {/* 3 & 4. TAREAS Y TARIFA (GRID) */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              
+              <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
+                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Check className="w-5 h-5 text-black"/> Tareas de Hora Muerta</h3>
+                <div className="flex gap-2 mb-4">
+                  <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-medium" />
+                  <button onClick={() => { const val = document.getElementById('adminTaskInput').value; if(val) { const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTaskInput').value = ''; } }} className="bg-black text-white px-4 rounded-xl font-bold uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
+                </div>
+                <div className="space-y-2 max-h-32 overflow-y-auto pr-2 flex-1">
+                  {settings.generalTasks?.map((t, i) => (
+                    <div key={i} className="flex justify-between items-center p-2.5 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
+                      <span className="font-medium text-slate-600">{t}</span>
+                      <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 className="w-3 h-3"/></button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
+                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Salario Convenio</h3>
+                <p className="text-xs text-zinc-500 font-medium mb-6">Precio por hora base utilizado para el cálculo en las nóminas estimadas de los profesores.</p>
+                <div className="flex items-center gap-4 bg-zinc-50 p-5 rounded-2xl border border-zinc-200 mt-auto">
+                  <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-black w-24 p-1 border-b-2 border-black outline-none bg-transparent" />
+                  <span className="text-xl font-bold text-slate-800">€ / hora</span>
+                  <button onClick={() => saveGlobalSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-sm transition-colors">Guardar</button>
+                </div>
+              </div>
+            </div>
+
+            {/* 5. NORMATIVA PARA PROFESORES (NUEVO) */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-4">Este reglamento aparecerá disponible en el panel de los profesores (App Profesores) para su consulta.</p>
+              <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Escribe aquí el reglamento interno, horarios, protocolos..." />
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-indigo-700 transition-colors">
+                Guardar Normativa Profesores
+              </button>
+            </div>
+
+            {/* 6. CONTRATO DE PRESTACIÓN DE SERVICIOS (ALUMNOS) */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-black"/> Contrato de Servicios (Alumnos)</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-4">Texto legal visible en la pestaña Gestiones del Portal del Alumno.</p>
+              <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-5 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Pega aquí el contrato completo..." />
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm hover:bg-zinc-800 transition-colors">
+                Guardar Contrato Alumnos
+              </button>
+            </div>
+
+            {/* 7. MANTENIMIENTO DE BASE DE DATOS */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Trash2 className="w-5 h-5 text-red-600"/> Mantenimiento del Sistema</h3>
+              <p className="text-sm text-zinc-500 font-medium mb-6">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos rápida y optimizada.</p>
               
               <button 
                 onClick={cleanExpiredTickets} 
-                className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm transition-colors w-max"
+                className="bg-red-50 hover:bg-red-100 text-red-700 px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max border border-red-200"
               >
                 <Trash2 className="w-4 h-4"/> Purgar Tickets Caducados
               </button>

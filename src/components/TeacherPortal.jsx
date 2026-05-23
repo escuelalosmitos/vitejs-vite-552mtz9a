@@ -224,7 +224,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
   
-  // 👇 NUEVO ESTADO: Disponibilidad del profesor
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
 
@@ -273,7 +272,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const ticketsRef = collectionGroup(db, 'tickets');
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
-    const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase()); // NUEVO REPOSITORIO
+    const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -350,7 +349,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
-    // 👇 NUEVO LISTENER DE DISPONIBILIDAD
     const unsubAvail = onSnapshot(availRef, (docSnap) => {
       if (docSnap.exists()) {
         setAvailability(docSnap.data().slots || { 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
@@ -416,10 +414,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const handleDeleteSlot = async (day, index) => {
     const updatedDaySlots = availability[day].filter((_, i) => i !== index);
     
-    // Escudo protector: Verificar si hay clases que se queden fuera
     const classesThisDay = recurringClasses.filter(c => c.dayOfWeek === parseInt(day));
     for(let c of classesThisDay) {
-       // Comprobamos si la hora de inicio de la clase (c.time) entra en CUALQUIERA de los huecos que quedarían
        const isCovered = updatedDaySlots.some(slot => c.time >= slot.start && c.time <= slot.end);
        if(!isCovered) {
           return window.alert(`⚠️ ACCIÓN BLOQUEADA:\n\nTienes una clase oficial de ${c.subject} a las ${c.time}h que se quedaría fuera de tu horario.\n\nPara eliminar esta franja, primero debes hablar con Coordinación para que muevan esa clase.`);
@@ -644,13 +640,29 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const startSession = (scheduledClass = null) => {
-    if (!scheduledClass) return; // Cortado de raíz: ya no se pueden crear clases desde aquí.
+    if (!scheduledClass) return; 
     
     const exceptionsToday = scheduledClass.exceptions?.[date] || {};
 
+    // 👇 FILTRO INVISIBLE: Guardamos a los alumnos que recuperan en el futuro en un bolsillo secreto
+    const visibleStudents = [];
+    const hiddenStudents = [];
+
+    (scheduledClass.students || []).forEach(s => {
+      if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
+        hiddenStudents.push(s); 
+      } else {
+        let currentStatus = s.isPaused ? 'paused' : 'present';
+        if (exceptionsToday[s.id]) {
+          currentStatus = exceptionsToday[s.id];
+        }
+        visibleStudents.push({ ...s, status: currentStatus });
+      }
+    });
+
     setCurrentSession({
       isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
-      isNew: false, // Siempre falso
+      isNew: false, 
       classId: scheduledClass.id,
       refPath: scheduledClass.refPath, 
       time: scheduledClass.time,
@@ -664,13 +676,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       dayOfWeek: scheduledClass.dayOfWeek,
       isRecurring: true,
       exceptions: scheduledClass.exceptions || {}, 
-      students: (scheduledClass.students || []).map(s => {
-        let currentStatus = s.isPaused ? 'paused' : 'present';
-        if (exceptionsToday[s.id]) {
-          currentStatus = exceptionsToday[s.id];
-        }
-        return { ...s, status: currentStatus };
-      }),
+      students: visibleStudents, // Solo mostramos los de hoy
+      hiddenStudents: hiddenStudents, // Guardamos los del futuro
       newStudentName: '',
       newStudentEmail: '',
       isAddingRecovery: false,
@@ -695,6 +702,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       isRecurring: false, 
       exceptions: {},
       students: sub.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
+      hiddenStudents: [],
       newStudentName: '',
       newStudentEmail: '',
       isAddingRecovery: false,
@@ -780,6 +788,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           email: studentEmail,
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
+          recoveryDate: currentSession.isAddingRecovery ? date : null, // Lo añadimos para que no se pierda
           isPaused: existingStudent?.globalStatus === 'congelado' || false
         }
       ],
@@ -801,12 +810,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
 
     const dayToSave = currentSession.dayOfWeek;
-    const classIdToSave = currentSession.classId;
 
     try {
-      const templateStudents = currentSession.students
-        .filter(s => !s.isRecovery)
-        .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
+      // 👇 JUNTAMOS LOS ALUMNOS DE HOY CON LOS ESCONDIDOS DEL FUTURO 👇
+      const templateStudents = [
+        ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
+        ...(currentSession.hiddenStudents || [])
+      ];
 
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
@@ -943,9 +953,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       });
 
       if (!currentSession.isSubstitution) {
-        const templateStudents = currentSession.students
-          .filter(s => !s.isRecovery)
-          .map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false }));
+        // 👇 JUNTAMOS LOS ALUMNOS DE HOY CON LOS ESCONDIDOS DEL FUTURO 👇
+        const templateStudents = [
+          ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
+          ...(currentSession.hiddenStudents || [])
+        ];
 
         const targetPath = doc(db, currentSession.refPath);
           
@@ -1010,20 +1022,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     } catch (error) {
       console.error(error);
       showNotification({ type: 'error', text: 'Error al cancelar la clase temporalmente.' });
-    }
-  };
-
-  const deleteRecurringClass = async (classData) => {
-    if (!user) return;
-    const isConfirmed = window.confirm('¿Seguro que quieres borrar esta clase de tu horario permanentemente?');
-    if (!isConfirmed) return;
-
-    try {
-      await deleteDoc(doc(db, classData.refPath)); 
-      showNotification({ type: 'success', text: 'Clase eliminada del horario.' });
-    } catch (error) {
-      console.error(error);
-      showNotification({ type: 'error', text: 'Error al borrar la clase.' });
     }
   };
 
@@ -1207,7 +1205,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </label>
                     <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700 transition-colors" />
                   </div>
-                  {/* BOTÓN DE NUEVA CLASE ELIMINADO POR SEGURIDAD */}
                 </div>
               </>
             )}
@@ -1235,7 +1232,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {dashboardItems.map((item, idx) => (
+                    {dashboardItems.map((item, idx) => {
+                      // 👇 MOSTRAMOS SOLO A LOS ALUMNOS VISIBLES HOY EN EL DASHBOARD
+                      const visibleCount = item.data.students?.filter(s => !s.isRecovery || s.recoveryDate === date).length || 0;
+                      return (
                       <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
                         <div className="flex items-center gap-4">
                           <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
@@ -1251,19 +1251,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               <span className="mx-1">•</span> 
                               <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               <span className="mx-1">•</span> 
-                              {item.data.students.length} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
+                              {visibleCount} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
                             </p>
                           </div>
                         </div>
                         <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
                           
-                          {/* 👇 BLOQUE PROTEGIDO DEL PASADO 👇 */}
                           {isSpecialDay ? (
                             <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">No Laborable</span>
                           ) : item.type === 'completed' ? (
-                            <button onClick={() => viewSummary(item.record)} className="w-full sm:w-auto bg-emerald-100 hover:bg-emerald-200 text-emerald-800 py-3 px-5 rounded-xl font-black uppercase text-[10px] tracking-widest transition-colors shadow-sm">
-                              Ver Resumen
-                            </button>
+                            <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-4 py-2 rounded-lg font-black border border-emerald-200 uppercase tracking-widest">
+                              <Check className="w-4 h-4" /> Completado
+                            </span>
                           ) : isExpiredDate ? (
                             <div className="w-full sm:w-auto bg-rose-50 text-rose-500 py-2.5 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest border border-rose-100 flex items-center justify-center gap-2 cursor-not-allowed">
                               <AlertCircle className="w-4 h-4"/> Plazo Expirado
@@ -1279,11 +1278,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               </button>
                             </>
                           )}
-                          {/* 👆 FIN DEL BLOQUE PROTEGIDO 👆 */}
 
                         </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 )}
               </div>

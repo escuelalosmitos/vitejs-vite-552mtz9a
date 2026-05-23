@@ -124,7 +124,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [gestionText, setGestionText] = useState('');
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
-  const [selectedRecoveryDate, setSelectedRecoveryDate] = useState(''); // 👇 NUEVO ESTADO PARA LA FECHA DE RECUPERACIÓN
+  const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
 
@@ -139,7 +139,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [triviaModal, setTriviaModal] = useState(false);
   const [triviaTime, setTriviaTime] = useState(10);
   const [triviaSelected, setTriviaSelected] = useState(null);
-  const [triviaResult, setTriviaResult] = useState(null); // 'win', 'lose', 'timeout'
+  const [triviaResult, setTriviaResult] = useState(null); 
 
   const timeRules = getMonthNames();
   const todayStr = new Date().toISOString().split('T')[0];
@@ -153,7 +153,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setAnnouncements(data);
     });
 
-    // 👇 ESCUCHADOR DE SETTINGS (Contrato, Festivos y Vacaciones) 👇
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -162,7 +161,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
         const vac = data.vacaciones || [];
         setGlobalSettings({ festivos: fest, vacaciones: vac });
         
-        // Sincronizamos el calendario escolar del alumno visualmente
         const newCal = [];
         fest.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Día Festivo' }));
         vac.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones' }));
@@ -227,7 +225,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
   }, [profile?.id, db, appId]);
 
-  // LÓGICA DEL TEMPORIZADOR DEL RETO DIARIO
   useEffect(() => {
     let timer;
     if (triviaModal && triviaTime > 0 && triviaResult === null) {
@@ -235,7 +232,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         setTriviaTime(prev => prev - 1);
       }, 1000);
     } else if (triviaTime === 0 && triviaResult === null) {
-      handleTriviaAnswer(-1); // Tiempo agotado
+      handleTriviaAnswer(-1);
     }
     return () => clearInterval(timer);
   }, [triviaModal, triviaTime, triviaResult]);
@@ -348,9 +345,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const sendGestion = async () => {
+    // 👇 LOGICA DE EXENCIÓN VIP: Recuperación y Ampliar Clases no sufren la penalización del día 20 👇
     const isTicketRedemption = gestionModal.type === 'recuperacion';
+    const isAmpliarClases = gestionModal.type === 'ampliar_clases';
+    const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
     
-    if (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) {
+    if (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) {
       showToast('Debes aceptar las condiciones de plazo marcando la casilla.', 'error');
       return;
     }
@@ -366,9 +366,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
         title: gestionModal.title,
         details: gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
-        recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, // 👇 ENVIAMOS LA FECHA EXACTA AL ADMIN
-        targetMonth: (!isTicketRedemption && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
-        isLateRequest: !isTicketRedemption && timeRules.isLate,
+        recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, 
+        targetMonth: (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
+        isLateRequest: !isExemptFromLateRule && timeRules.isLate,
         status: 'pendiente',
         date: new Date().toISOString()
       };
@@ -542,15 +542,13 @@ END:VCALENDAR`;
     });
   }
 
-  // 👇 NUEVO HELPER PARA CALCULAR FECHAS DE RECUPERACIÓN 👇
   const getValidRecoveryDates = (dayOfWeekStr) => {
     const targetDay = parseInt(dayOfWeekStr);
     const validDates = [];
     let currentDate = new Date();
-    currentDate.setDate(currentDate.getDate() + 1); // Empezamos a mirar desde mañana
+    currentDate.setDate(currentDate.getDate() + 1); 
     
-    // Calculamos las próximas 4 semanas disponibles que no sean festivos ni vacaciones
-    while (validDates.length < 4 && validDates.length < 30) { // Limitador de seguridad
+    while (validDates.length < 4 && validDates.length < 30) { 
       if (currentDate.getDay() === targetDay) {
         const dateStr = currentDate.toISOString().split('T')[0];
         if (!globalSettings.festivos.includes(dateStr) && !globalSettings.vacaciones.includes(dateStr)) {
@@ -628,7 +626,11 @@ END:VCALENDAR`;
   const renderGestionModal = () => {
     if (!gestionModal) return null;
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
+    
+    // 👇 NUEVAS VARIABLES DE EXENCIÓN 👇
     const isTicketRedemption = gestionModal.type === 'recuperacion';
+    const isAmpliarClases = gestionModal.type === 'ampliar_clases';
+    const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     const targetInstrument = gestionModal.type === 'ampliar_clases' ? selectedInst : (profile.instruments && profile.instruments[0]);
 
@@ -649,11 +651,10 @@ END:VCALENDAR`;
       });
     }
 
-    // 👇 CONTROL DEL BOTÓN ENVIAR 👇
     const isSendDisabled = isSendingGestion || 
-      (!isTicketRedemption && timeRules.isLate && !acceptLatePenalty) || 
+      (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
       (isClassSearch && !selectedNewClass) || 
-      (isTicketRedemption && !selectedRecoveryDate); // Si es recuperar, obliga a elegir fecha
+      (isTicketRedemption && !selectedRecoveryDate);
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
@@ -663,7 +664,9 @@ END:VCALENDAR`;
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
           </div>
-          {!isTicketRedemption && (
+          
+          {/* 👇 LÓGICA DE AVISOS CONDICIONALES 👇 */}
+          {!isExemptFromLateRule && (
             <>
               <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2"><Clock className="w-4 h-4"/> Normativa del día 20</div>
               {timeRules.isLate ? (
@@ -680,6 +683,17 @@ END:VCALENDAR`;
               )}
             </>
           )}
+
+          {isAmpliarClases && (
+            <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+              <p className="text-xs font-bold text-emerald-800 flex items-start gap-2 leading-relaxed">
+                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5"/> 
+                ¡Genial! Tu nueva plaza quedará reservada directamente para {timeRules.next} sin restricciones de fecha límite.
+              </p>
+            </div>
+          )}
+          {/* 👆 FIN LOGICA AVISOS 👆 */}
+
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
           
           {isClassSearch && (
@@ -708,7 +722,6 @@ END:VCALENDAR`;
                 )
               )}
 
-              {/* 👇 NUEVO PASO 2: ELEGIR LA FECHA (Solo para recuperaciones) 👇 */}
               {isTicketRedemption && selectedNewClass && (
                 <div className="mt-6 pt-4 border-t border-zinc-100 animate-in fade-in zoom-in-95">
                   <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">2. Elige el día exacto de recuperación</p>

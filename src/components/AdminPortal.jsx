@@ -38,6 +38,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [activeTab, setActiveTab] = useState('gestiones');
   const [loading, setLoading] = useState(true);
 
+  // --- DATOS GLOBALES ---
   const [gestiones, setGestiones] = useState([]);
   const [students, setStudents] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
@@ -51,6 +52,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     teachersList: [] 
   });
 
+  // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
   const [filterStatus, setFilterStatus] = useState('activo');
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
@@ -58,6 +60,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   
+  // ESTADOS MODALES NUEVOS
   const [createClassModal, setCreateClassModal] = useState(false);
   const [changeClassModal, setChangeClassModal] = useState(null);
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
@@ -70,6 +73,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
+
+  // --- ESTADOS IMPORTADOR MASIVO ---
+  const [importText, setImportText] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
     let loaded = 0;
@@ -375,57 +382,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // --- IMPORTADOR MASIVO DESDE EXCEL ---
-  const [importText, setImportText] = useState('');
-  const [isImporting, setIsImporting] = useState(false);
-
-  const handleMassImport = async () => {
-    if (!importText.trim()) return alert("Pega los datos del Excel primero.");
-    if (!window.confirm("⚠️ ATENCIÓN: Vas a importar alumnos masivamente. ¿Están las columnas ordenadas como Nombre | Email?")) return;
-    
-    setIsImporting(true);
-    try {
-      const rows = importText.trim().split('\n');
-      const batch = writeBatch(db);
-      let count = 0;
-
-      rows.forEach((row, index) => {
-        // Al copiar de Excel, las columnas se separan por un tabulador (\t)
-        const cols = row.split('\t');
-        if (cols.length > 0 && cols[0].trim() !== '') {
-          const name = cols[0].trim();
-          const email = cols[1] ? cols[1].trim().toLowerCase() : '';
-          
-          const studentId = `imp-${Date.now()}-${index}`; // ID único
-          const docRef = doc(db, 'artifacts', appId, 'students', studentId);
-          
-          batch.set(docRef, {
-            name: name,
-            email: email,
-            globalStatus: 'activo',
-            claimed: false,
-            instruments: [],
-            classes: [],
-            hasMitobox: false,
-            hasMitoverso: false,
-            triviaPoints: 0,
-            triviaVictories: 0,
-            internalNotes: 'Importado masivamente de Tadosi'
-          });
-          count++;
-        }
-      });
-
-      await batch.commit();
-      alert(`🎉 ¡BOOM! Se han importado ${count} alumnos correctamente.`);
-      setImportText('');
-    } catch (error) {
-      alert(`❌ Error en la importación: ${error.message}`);
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
   const cleanExpiredTickets = async () => {
     const today = new Date().toISOString().split('T')[0];
     if (!window.confirm(`🧹 LIMPIEZA DE BASE DE DATOS\n\n¿Borrar definitivamente todos los tickets cuya validez expiró antes de hoy (${formatDateSpanish(today)})?`)) return;
@@ -563,6 +519,53 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, notes: '' });
     } catch (e) {
       alert("Error al crear la clase.");
+    }
+  };
+
+  // --- IMPORTADOR MASIVO DESDE EXCEL ---
+  const handleMassImport = async () => {
+    if (!importText.trim()) return alert("Pega los datos del Excel primero.");
+    if (!window.confirm("⚠️ ATENCIÓN: Vas a importar alumnos masivamente. ¿Están las columnas ordenadas como Nombre | Email?")) return;
+    
+    setIsImporting(true);
+    try {
+      const rows = importText.trim().split('\n');
+      const batch = writeBatch(db);
+      let count = 0;
+
+      rows.forEach((row, index) => {
+        const cols = row.split('\t');
+        if (cols.length > 0 && cols[0].trim() !== '') {
+          const name = cols[0].trim();
+          const email = cols[1] ? cols[1].trim().toLowerCase() : '';
+          
+          const studentId = `imp-${Date.now()}-${index}`;
+          const docRef = doc(db, 'artifacts', appId, 'students', studentId);
+          
+          batch.set(docRef, {
+            name: name,
+            email: email,
+            globalStatus: 'activo',
+            claimed: false,
+            instruments: [],
+            classes: [],
+            hasMitobox: false,
+            hasMitoverso: false,
+            triviaPoints: 0,
+            triviaVictories: 0,
+            internalNotes: 'Importado masivamente de Tadosi'
+          });
+          count++;
+        }
+      });
+
+      await batch.commit();
+      alert(`🎉 ¡BOOM! Se han importado ${count} alumnos correctamente.`);
+      setImportText('');
+    } catch (error) {
+      alert(`❌ Error en la importación: ${error.message}`);
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -1559,6 +1562,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </button>
             </div>
 
+            {/* 7. MANTENIMIENTO DE BASE DE DATOS */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-6">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Trash2 className="w-5 h-5 text-red-600"/> Mantenimiento del Sistema</h3>
+              <p className="text-sm text-zinc-500 font-medium mb-6">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos rápida y optimizada.</p>
+              
+              <button 
+                onClick={cleanExpiredTickets} 
+                className="bg-red-50 hover:bg-red-100 text-red-700 px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max border border-red-200"
+              >
+                <Trash2 className="w-4 h-4"/> Purgar Tickets Caducados
+              </button>
+            </div>
+
             {/* 8. IMPORTADOR MASIVO DE TADOSI */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Importador Masivo (Excel)</h3>
@@ -1577,19 +1593,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max disabled:opacity-50"
               >
                 {isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}
-              </button>
-            </div>
-
-            {/* 7. MANTENIMIENTO DE BASE DE DATOS */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Trash2 className="w-5 h-5 text-red-600"/> Mantenimiento del Sistema</h3>
-              <p className="text-sm text-zinc-500 font-medium mb-6">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos rápida y optimizada.</p>
-              
-              <button 
-                onClick={cleanExpiredTickets} 
-                className="bg-red-50 hover:bg-red-100 text-red-700 px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max border border-red-200"
-              >
-                <Trash2 className="w-4 h-4"/> Purgar Tickets Caducados
               </button>
             </div>
 

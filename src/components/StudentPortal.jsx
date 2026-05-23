@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Instagram, Facebook, Youtube, MessageCircle, Link as LinkIcon } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -1351,7 +1351,7 @@ END:VCALENDAR`;
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Nuestra Web</span>
                 </a>
                 <a href="https://instagram.com/losmitosescuelademusica/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-pink-500 transition-colors group">
-                  <Instagram className="w-6 h-6 text-zinc-400 group-hover:text-pink-500"/>
+                  <Camera className="w-6 h-6 text-zinc-400 group-hover:text-pink-500"/>
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Instagram</span>
                 </a>
                 <a href="https://chat.whatsapp.com/DyygFclRX8DDGLAUNgq16A" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-emerald-500 transition-colors group">
@@ -1359,11 +1359,11 @@ END:VCALENDAR`;
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Comunidad</span>
                 </a>
                 <a href="https://www.youtube.com/@escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-red-500 transition-colors group">
-                  <Youtube className="w-6 h-6 text-zinc-400 group-hover:text-red-500"/>
+                  <PlaySquare className="w-6 h-6 text-zinc-400 group-hover:text-red-500"/>
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">YouTube</span>
                 </a>
                 <a href="https://www.facebook.com/Escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-blue-600 transition-colors group">
-                  <Facebook className="w-6 h-6 text-zinc-400 group-hover:text-blue-600"/>
+                  <ThumbsUp className="w-6 h-6 text-zinc-400 group-hover:text-blue-600"/>
                   <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Facebook</span>
                 </a>
                 <button onClick={() => setShowReviewModal(true)} className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:bg-amber-100 transition-colors group">

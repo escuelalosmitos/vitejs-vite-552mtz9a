@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Instagram, Facebook, Youtube, MessageCircle, Link as LinkIcon } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -140,6 +140,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [triviaTime, setTriviaTime] = useState(10);
   const [triviaSelected, setTriviaSelected] = useState(null);
   const [triviaResult, setTriviaResult] = useState(null); 
+
+  // ESTADO PARA EL MODAL DE RESEÑAS
+  const [showReviewModal, setShowReviewModal] = useState(false);
 
   const timeRules = getMonthNames();
   const todayStr = new Date().toISOString().split('T')[0];
@@ -345,7 +348,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const sendGestion = async () => {
-    // 👇 LOGICA DE EXENCIÓN VIP: Recuperación y Ampliar Clases no sufren la penalización del día 20 👇
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
@@ -610,7 +612,7 @@ END:VCALENDAR`;
               </div>
               <div className="space-y-3">
                 <button onClick={() => confirmAbsence(true)} disabled={!healthCheck} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">Sí, quiero recuperarla</button>
-                <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-300 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
+                <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
                 <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
               </div>
             </>
@@ -627,7 +629,6 @@ END:VCALENDAR`;
     if (!gestionModal) return null;
     const isClassSearch = gestionModal.type === 'cambio_horario' || gestionModal.type === 'ampliar_clases' || gestionModal.type === 'recuperacion';
     
-    // 👇 NUEVAS VARIABLES DE EXENCIÓN 👇
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
@@ -665,7 +666,6 @@ END:VCALENDAR`;
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
           </div>
           
-          {/* 👇 LÓGICA DE AVISOS CONDICIONALES 👇 */}
           {!isExemptFromLateRule && (
             <>
               <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2"><Clock className="w-4 h-4"/> Normativa del día 20</div>
@@ -692,7 +692,6 @@ END:VCALENDAR`;
               </p>
             </div>
           )}
-          {/* 👆 FIN LOGICA AVISOS 👆 */}
 
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
           
@@ -990,6 +989,28 @@ END:VCALENDAR`;
       {renderMitoboxModal()}
       {renderContract()}
       {renderTriviaModal()}
+
+      {/* 👇 MODAL DE RESEÑAS 👇 */}
+      {showReviewModal && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+            <button onClick={() => setShowReviewModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+            <div className="flex flex-col items-center text-center mb-6">
+              <Star className="w-12 h-12 text-amber-400 fill-amber-400 mb-3" />
+              <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Déjanos tu reseña</h2>
+              <p className="text-xs font-bold text-zinc-500 mt-2">¡Nos ayuda muchísimo a seguir creciendo! ¿De qué centro eres alumno?</p>
+            </div>
+            <div className="space-y-3">
+              <a href="https://g.page/r/CbRESEBKdg37EBM/review" target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+                <MapPin className="w-4 h-4"/> Sede Tarragona
+              </a>
+              <a href="https://g.page/r/CaVY9dFy-cmjEBM/review" target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+                <MapPin className="w-4 h-4"/> Sede Reus
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
       
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
@@ -1316,15 +1337,46 @@ END:VCALENDAR`;
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
                 <h2 className="text-2xl font-black uppercase tracking-tight">Tablón de Avisos</h2>
-                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Novedades de la escuela</p>
+                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Novedades y Enlaces</p>
               </div>
-              <Bell className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
+              <Megaphone className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
+            {/* 👇 NUEVA SECCIÓN DE ENLACES FIJOS 👇 */}
+            <div className="mb-8">
+              <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><LinkIcon className="w-4 h-4"/> Enlaces de Interés</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <a href="https://www.escuelalosmitos.com/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-black transition-colors group">
+                  <Globe className="w-6 h-6 text-zinc-400 group-hover:text-black"/>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Nuestra Web</span>
+                </a>
+                <a href="https://instagram.com/losmitosescuelademusica/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-pink-500 transition-colors group">
+                  <Instagram className="w-6 h-6 text-zinc-400 group-hover:text-pink-500"/>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Instagram</span>
+                </a>
+                <a href="https://chat.whatsapp.com/DyygFclRX8DDGLAUNgq16A" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-emerald-500 transition-colors group">
+                  <MessageCircle className="w-6 h-6 text-zinc-400 group-hover:text-emerald-500"/>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Comunidad</span>
+                </a>
+                <a href="https://www.youtube.com/@escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-red-500 transition-colors group">
+                  <Youtube className="w-6 h-6 text-zinc-400 group-hover:text-red-500"/>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">YouTube</span>
+                </a>
+                <a href="https://www.facebook.com/Escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-blue-600 transition-colors group">
+                  <Facebook className="w-6 h-6 text-zinc-400 group-hover:text-blue-600"/>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Facebook</span>
+                </a>
+                <button onClick={() => setShowReviewModal(true)} className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:bg-amber-100 transition-colors group">
+                  <Star className="w-6 h-6 text-amber-500"/>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-900">Valóranos</span>
+                </button>
+              </div>
+            </div>
+
+            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Últimas Noticias</h3>
             {announcements.length === 0 ? (
                <div className="p-10 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
-                <Megaphone className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
-                <p className="font-black text-slate-800 uppercase tracking-widest text-lg">El tablón está vacío</p>
+                <p className="font-black text-slate-800 uppercase tracking-widest text-sm">El tablón está vacío</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -1438,7 +1490,7 @@ END:VCALENDAR`;
             {id:'home', i:LayoutGrid, label:'Inicio'}, 
             {id:'calendar', i:Calendar, label:'Calendario'}, 
             {id:'extras', i:Sparkles, label:'Extras'},
-            {id:'news', i:Info, label:'Avisos'}, 
+            {id:'news', i:Megaphone, label:'Tablón'}, 
             {id:'contact', i:MessageSquare, label:'Gestiones'}
           ].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>

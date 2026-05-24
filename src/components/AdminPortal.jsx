@@ -63,7 +63,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // ESTADOS MODALES CLASES
   const [createClassModal, setCreateClassModal] = useState(false);
   const [changeClassModal, setChangeClassModal] = useState(null);
-  const [resurrectClassModal, setResurrectClassModal] = useState(null); // 👇 NUEVO: Modal de resurrección
+  const [resurrectClassModal, setResurrectClassModal] = useState(null); 
+  const [viewClassModal, setViewClassModal] = useState(null); // 👇 NUEVO: Modal para entrar en la clase
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
@@ -116,6 +117,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); };
   }, [appId, db]);
+
+  // 👇 NUEVO EFFECT: Mantiene el modal de la clase sincronizado en tiempo real
+  useEffect(() => {
+    if (viewClassModal) {
+      const updatedClass = allClasses.find(c => c.id === viewClassModal.id);
+      if (updatedClass) {
+        setViewClassModal(updatedClass);
+      }
+    }
+  }, [allClasses, viewClassModal?.id]);
 
   const isLastDayOfMonth = useMemo(() => {
     const tomorrow = new Date();
@@ -317,6 +328,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
     } catch (error) {
       alert("Hubo un error al procesar el cambio.");
+    }
+  };
+
+  // 👇 NUEVA FUNCIÓN: Borrar un alumno SOLO de una clase específica
+  const handleRemoveFromSpecificClass = async (classData, studentId, studentName) => {
+    if (!window.confirm(`¿Seguro que quieres borrar a ${studentName} SOLO de esta clase de ${classData.subject}?\n\nSeguirá activo en la escuela y en sus otras clases (si las tiene).`)) return;
+    try {
+      const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
+      await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+      // No hace falta alert, el useEffect lo actualiza en tiempo real y es más fluido
+    } catch (e) {
+      alert('Error al borrar alumno de la clase: ' + e.message);
     }
   };
 
@@ -594,7 +617,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const dangerClasses = useMemo(() => {
     return allClasses.filter(c => {
       const activeCount = (c.students || []).filter(s => !s.isPaused).length;
-      if (activeCount === 0) return true; // 👇 SIEMPRE MUESTRA LAS HIBERNADAS
+      if (activeCount === 0) return true; // SIEMPRE MUESTRA LAS HIBERNADAS
       const cap = parseInt(c.capacity) || 0;
       if (cap <= 1) return false; 
       return activeCount <= (cap / 2);
@@ -645,6 +668,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return slots;
   }, [allClasses, mboxAdminDate, mboxAdminSede]);
 
+
+  // ==========================================
+  // MODALES
+  // ==========================================
 
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
@@ -883,7 +910,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // 👇 NUEVO MODAL: RESURRECCIÓN DE CLASE 👇
   const ResurrectClassModalOverlay = () => {
     if (!resurrectClassModal) return null;
     const [searchName, setSearchName] = useState('');
@@ -964,7 +990,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 placeholder="Escribe para buscar o crear..."
                 className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" 
               />
-              {/* Autocomplete sugerencias */}
               {searchName.length >= 2 && (
                 <div className="absolute left-0 right-0 mt-1 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-40 overflow-y-auto">
                   {students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).length === 0 ? (
@@ -993,6 +1018,53 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
+  // 👇 NUEVO MODAL: GESTIÓN QUIRÚRGICA DE ALUMNOS DENTRO DE UNA CLASE 👇
+  const ViewClassModalOverlay = () => {
+    if (!viewClassModal) return null;
+    const c = viewClassModal;
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
+          <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+
+          <div className="flex items-center gap-3 mb-6 shrink-0">
+            <BookOpen className="w-8 h-8 text-indigo-600"/>
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight">Gestión de Clase</h2>
+              <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{c.subject} • {c.teacher} • {getDayName(c.dayOfWeek)} {c.time}h</p>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto pr-2 space-y-3">
+            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">Alumnos Matriculados ({c.students?.length || 0}/{c.capacity})</h3>
+
+            {(!c.students || c.students.length === 0) ? (
+              <div className="p-4 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-xl text-center text-xs font-bold text-zinc-400 uppercase tracking-widest">
+                Clase vacía (Hibernada)
+              </div>
+            ) : (
+              c.students.map(s => (
+                <div key={s.id} className="flex items-center justify-between p-3 bg-zinc-50 border border-zinc-100 rounded-xl hover:border-indigo-200 transition-colors">
+                  <div>
+                    <p className={`font-bold text-sm ${s.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>{s.name}</p>
+                    <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{s.email || 'Sin email'}</p>
+                  </div>
+                  <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.name)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
+                    <UserMinus className="w-4 h-4"/>
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="mt-6 pt-4 border-t border-zinc-100 shrink-0 text-center">
+             <p className="text-[10px] font-bold text-zinc-400">Si sacas a todos los alumnos, la clase se hibernará automáticamente.</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
 
   return (
@@ -1002,6 +1074,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       {changeClassModal && <ChangeClassModalOverlay />}
       {editStudentModal && <EditStudentModalOverlay />} 
       {resurrectClassModal && <ResurrectClassModalOverlay />}
+      {viewClassModal && <ViewClassModalOverlay />}
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -1316,7 +1389,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES POR PROFESOR (CON DETECCIÓN DE HIBERNACIÓN) --- */}
+        {/* --- 4. CLASES POR PROFESOR (CON GESTIÓN QUIRÚRGICA) --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1354,34 +1427,46 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               const isHibernated = activeC === 0;
 
                               return (
-                                <div key={c.id} className={`p-4 rounded-xl border ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : 'border-zinc-100 bg-white'} shadow-sm flex justify-between items-center relative group transition-colors`}>
-                                  <div>
-                                    <div className={`font-black text-sm uppercase flex items-center ${isHibernated ? 'text-zinc-400' : ''}`}>
-                                      {isHibernated && <Ghost className="w-4 h-4 mr-1 text-zinc-400" />}
-                                      {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
-                                      <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
-                                    </div>
-                                    <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
-                                      {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
-                                    </div>
-                                  </div>
+                                <div key={c.id} className={`p-4 rounded-xl border ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : 'border-zinc-100 bg-white'} shadow-sm flex flex-col relative group transition-colors`}>
                                   
-                                  <div className="text-right pr-6">
-                                    {isHibernated ? (
-                                      <button onClick={() => setResurrectClassModal(c)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1 shadow-sm">
-                                        <PlusCircle className="w-3 h-3"/> Reactivar
-                                      </button>
-                                    ) : (
-                                      <>
-                                        <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                          {activeC} / {c.capacity || '?'}
-                                        </span>
-                                        <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
-                                      </>
-                                    )}
+                                  <div className="flex justify-between items-center">
+                                    <div>
+                                      <div className={`font-black text-sm uppercase flex items-center ${isHibernated ? 'text-zinc-400' : ''}`}>
+                                        {isHibernated && <Ghost className="w-4 h-4 mr-1 text-zinc-400" />}
+                                        {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
+                                        <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
+                                      </div>
+                                      <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+                                        {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
+                                      </div>
+                                    </div>
+                                    
+                                    <div className="text-right pr-6">
+                                      {isHibernated ? (
+                                        <button onClick={() => setResurrectClassModal(c)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1 shadow-sm">
+                                          <PlusCircle className="w-3 h-3"/> Reactivar
+                                        </button>
+                                      ) : (
+                                        <>
+                                          <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                            {activeC} / {c.capacity || '?'}
+                                          </span>
+                                          <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
+                                        </>
+                                      )}
+                                    </div>
+                                    <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                   </div>
 
-                                  <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
+                                  {/* 👇 NUEVO BOTÓN: ENTRAR A LA CLASE 👇 */}
+                                  {!isHibernated && (
+                                    <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-end">
+                                      <button onClick={() => setViewClassModal(c)} className="bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1.5">
+                                        <Users className="w-3 h-3"/> Gestionar Alumnos
+                                      </button>
+                                    </div>
+                                  )}
+
                                 </div>
                               );
                             })}
@@ -1432,9 +1517,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       <p className="text-xs font-bold text-slate-600 mb-2">{getDayName(c.dayOfWeek)} a las {c.time}h</p>
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block">Prof: {c.teacher}</div>
                       
-                      {isHibernated && (
+                      {isHibernated ? (
                          <button onClick={() => setResurrectClassModal(c)} className="w-full mt-4 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
                            <PlusCircle className="w-3 h-3"/> Reactivar Grupo
+                         </button>
+                      ) : (
+                         <button onClick={() => setViewClassModal(c)} className="w-full mt-4 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
+                           <Users className="w-3 h-3"/> Ver Alumnos
                          </button>
                       )}
                     </div>

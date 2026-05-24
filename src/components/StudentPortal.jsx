@@ -5,7 +5,6 @@ import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, coll
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
-// 👇 AQUÍ IMPORTAS LAS PREGUNTAS DESDE EL NUEVO ARCHIVO 👇
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
 
 const getDayOfYear = () => {
@@ -20,7 +19,7 @@ const getDayName = (dayIndex) => {
   const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
   return days[dayIndex];
 };
-// --- HELPERS FALTANTES PARA LAS CLASES Y NÓMINAS ---
+
 const getDayOfWeek = (dateString) => {
   if (!dateString) return 0;
   const [year, month, day] = dateString.split('-');
@@ -87,7 +86,6 @@ const getNextClassInfo = (dayOfWeek, timeStr) => {
   return { date, dateStr, diffHours };
 };
 
-// HELPER: Calcula los meses para las gestiones
 const getMonthNames = () => {
   const today = new Date();
   const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -96,7 +94,7 @@ const getMonthNames = () => {
   return {
     next: nextMonth.toLocaleString('es-ES', { month: 'long' }),
     nextNext: nextNextMonth.toLocaleString('es-ES', { month: 'long' }),
-    isLate: today.getDate() > 20 // Del 21 en adelante es tarde
+    isLate: today.getDate() > 20
   };
 };
 
@@ -119,7 +117,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [onboarding, setOnboarding] = useState({ name: '', instrument: 'Guitarra', classId: '' });
   const [healthCheck, setHealthCheck] = useState(false); 
 
-  // ESTADOS PARA GESTIONES GLOBALES
   const [gestionModal, setGestionModal] = useState(null);
   const [gestionText, setGestionText] = useState('');
   const [selectedInst, setSelectedInst] = useState('');
@@ -128,20 +125,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
 
-  // ESTADOS PARA MITOBOX
   const [mitoboxModal, setMitoboxModal] = useState(false);
   const [mboxDate, setMboxDate] = useState('');
   const [mboxSede, setMboxSede] = useState('Tarragona');
   const [mboxInst, setMboxInst] = useState('');
   const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
 
-  // ESTADOS PARA TRIVIA (RETO DIARIO)
   const [triviaModal, setTriviaModal] = useState(false);
   const [triviaTime, setTriviaTime] = useState(10);
   const [triviaSelected, setTriviaSelected] = useState(null);
   const [triviaResult, setTriviaResult] = useState(null); 
 
-  // ESTADO PARA EL MODAL DE RESEÑAS
   const [showReviewModal, setShowReviewModal] = useState(false);
 
   const timeRules = getMonthNames();
@@ -390,7 +384,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
   };
 
-  // --- FUNCIONES EXTRAS (MITOBOX / MITOVERSO) ---
   const requestMitoverso = () => {
     const ok = window.confirm('Serás redirigido al portal de inscripciones de Tadosi.\n\n⚠️ MUY IMPORTANTE: Cuando rellenes tus datos, no olvides marcar la casilla "Tengo una suscripción y quiero otra" para que el sistema reconozca tu descuento de alumno.');
     if (ok) window.open('https://qow.es/GKidLP', '_blank');
@@ -473,7 +466,6 @@ END:VCALENDAR`;
     }
   };
 
-  // --- LÓGICA DE TRIVIA ---
   const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
   const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
@@ -507,7 +499,6 @@ END:VCALENDAR`;
       setTriviaModal(false);
     }, 2500); 
   };
-
 
   const pendingAbsences = [];
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.type !== 'alta_mitobox'); 
@@ -639,6 +630,11 @@ END:VCALENDAR`;
     if (isClassSearch && targetInstrument) {
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
+        
+        // 👇 PROTECCIÓN HIBERNACIÓN: Los alumnos no ven clases a cero alumnos 👇
+        const activeStudents = (c.students || []).filter(s => !s.isPaused).length;
+        if (activeStudents === 0) return false;
+
         const maxCap = parseInt(c.capacity || 4);
         const currentStudents = c.students?.length || 0;
         if (currentStudents >= maxCap) return false;
@@ -990,7 +986,6 @@ END:VCALENDAR`;
       {renderContract()}
       {renderTriviaModal()}
 
-      {/* 👇 MODAL DE RESEÑAS 👇 */}
       {showReviewModal && (
         <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
@@ -1030,7 +1025,6 @@ END:VCALENDAR`;
 
       <main className="max-w-3xl mx-auto p-4 md:p-8 space-y-6 animate-in fade-in duration-300">
         
-        {/* --- PESTAÑA 1: INICIO --- */}
         {activeTab === 'home' && (
           <div className="space-y-6">
             
@@ -1059,7 +1053,6 @@ END:VCALENDAR`;
               </div>
             </div>
 
-            {/* BANNER DEL RETO DIARIO */}
             {!hasPlayedToday ? (
               <div className="bg-gradient-to-r from-amber-400 to-orange-500 rounded-3xl p-1 text-white shadow-xl relative overflow-hidden transform hover:scale-[1.02] transition-transform cursor-pointer" onClick={startTrivia}>
                 <div className="bg-black/10 absolute inset-0"></div>
@@ -1164,7 +1157,6 @@ END:VCALENDAR`;
               </div>
             </div>
 
-            {/* --- SECCIÓN: EN TRÁMITE --- */}
             {(pendingProcedures.length > 0 || pendingAbsences.length > 0) && (
               <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200 mt-6">
                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg mb-4 flex items-center gap-2">
@@ -1342,7 +1334,6 @@ END:VCALENDAR`;
               <Megaphone className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
-            {/* 👇 NUEVA SECCIÓN DE ENLACES FIJOS 👇 */}
             <div className="mb-8">
               <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><LinkIcon className="w-4 h-4"/> Enlaces de Interés</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">

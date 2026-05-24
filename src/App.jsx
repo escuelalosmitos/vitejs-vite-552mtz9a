@@ -98,7 +98,13 @@ export default function App() {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4 font-sans text-slate-800">
         <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md text-center border border-zinc-100">
-          <div className="bg-black text-white p-4 rounded-2xl mb-6 inline-block rotate-3"><Music className="w-8 h-8"/></div>
+          <div className="flex justify-center mx-auto mb-8">
+  <img 
+    src="/logo.png" 
+    alt="Logo Escuela Los Mitos" 
+    className="w-32 h-auto object-contain" 
+  />
+</div>
           <h1 className="text-3xl font-black uppercase tracking-tighter mb-1">Los Mitos</h1>
           <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-8">
             {isLoginMode ? 'Acceso al portal' : 'Reivindicar cuenta de alumno'}

@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -60,9 +60,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   
-  // ESTADOS MODALES NUEVOS
+  // ESTADOS MODALES CLASES
   const [createClassModal, setCreateClassModal] = useState(false);
   const [changeClassModal, setChangeClassModal] = useState(null);
+  const [resurrectClassModal, setResurrectClassModal] = useState(null); // 👇 NUEVO: Modal de resurrección
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
@@ -592,9 +593,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const dangerClasses = useMemo(() => {
     return allClasses.filter(c => {
+      const activeCount = (c.students || []).filter(s => !s.isPaused).length;
+      if (activeCount === 0) return true; // 👇 SIEMPRE MUESTRA LAS HIBERNADAS
       const cap = parseInt(c.capacity) || 0;
       if (cap <= 1) return false; 
-      const activeCount = (c.students || []).filter(s => !s.isPaused).length;
       return activeCount <= (cap / 2);
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
   }, [allClasses]);
@@ -881,6 +883,116 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
+  // 👇 NUEVO MODAL: RESURRECCIÓN DE CLASE 👇
+  const ResurrectClassModalOverlay = () => {
+    if (!resurrectClassModal) return null;
+    const [searchName, setSearchName] = useState('');
+    const [email, setEmail] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const handleResurrect = async () => {
+      if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
+      setSaving(true);
+      try {
+        let studentId;
+        let existingStudent = students.find(s => 
+          s.name.toLowerCase() === searchName.trim().toLowerCase() || 
+          (email && s.email === email.trim().toLowerCase())
+        );
+
+        if (existingStudent) {
+          studentId = existingStudent.id;
+        } else {
+          studentId = Date.now().toString();
+          await setDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+            name: searchName.trim(),
+            email: email.trim().toLowerCase(),
+            globalStatus: 'activo',
+            claimed: false,
+            instruments: [resurrectClassModal.subject],
+            classes: [resurrectClassModal.id],
+            hasMitobox: false,
+            hasMitoverso: false,
+            triviaPoints: 0,
+            triviaVictories: 0,
+            internalNotes: 'Añadido al reactivar grupo'
+          });
+        }
+
+        const newStudentPayload = {
+          id: studentId,
+          name: searchName.trim(),
+          email: email.trim().toLowerCase(),
+          isPaused: existingStudent?.globalStatus === 'congelado' || false,
+          status: 'present',
+          isRecovery: false
+        };
+
+        const targetPath = doc(db, resurrectClassModal.refPath);
+        const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
+        
+        await updateDoc(targetPath, { students: updatedStudents });
+        alert("🎉 ¡Clase reactivada! El profesor ya la tiene operativa en su tablet y empezará a computar en nómina cuando pase lista.");
+        setResurrectClassModal(null);
+      } catch (e) {
+        alert("Error al reactivar: " + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+          <button onClick={() => setResurrectClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-indigo-600 mb-6">
+            <PlusCircle className="w-8 h-8" />
+            <h2 className="text-xl font-black uppercase tracking-tight">Reactivar Grupo</h2>
+          </div>
+          
+          <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6 text-indigo-800 text-xs font-medium">
+            Al añadir un alumno, esta clase saldrá del modo hibernación automáticamente.
+          </div>
+
+          <div className="space-y-4 mb-6 relative">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nombre del alumno *</label>
+              <input 
+                type="text" 
+                value={searchName} 
+                onChange={e => setSearchName(e.target.value)} 
+                placeholder="Escribe para buscar o crear..."
+                className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" 
+              />
+              {/* Autocomplete sugerencias */}
+              {searchName.length >= 2 && (
+                <div className="absolute left-0 right-0 mt-1 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-40 overflow-y-auto">
+                  {students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).length === 0 ? (
+                    <div className="p-3 text-xs font-bold text-zinc-500 bg-zinc-50">Se creará como alumno nuevo.</div>
+                  ) : (
+                    students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).map(st => (
+                      <div key={st.id} onClick={() => setSearchName(st.name)} className="p-3 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 transition-colors">
+                        {st.name}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo Electrónico (Opcional)</label>
+              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Solo si es alumno nuevo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" />
+            </div>
+          </div>
+
+          <button onClick={handleResurrect} disabled={saving || !searchName} className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
+            {saving ? 'Guardando...' : 'Reactivar Clase'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
 
   return (
@@ -889,6 +1001,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       {createClassModal && <CreateClassModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
       {editStudentModal && <EditStudentModalOverlay />} 
+      {resurrectClassModal && <ResurrectClassModalOverlay />}
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -1203,7 +1316,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES POR PROFESOR --- */}
+        {/* --- 4. CLASES POR PROFESOR (CON DETECCIÓN DE HIBERNACIÓN) --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1235,13 +1348,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       
                       {isExpanded && (
                         <div className="p-4 border-t border-zinc-200">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                             {classes.map(c => {
                               const activeC = (c.students || []).filter(s => !s.isPaused).length;
+                              const isHibernated = activeC === 0;
+
                               return (
-                                <div key={c.id} className="p-4 rounded-xl border border-zinc-100 bg-white shadow-sm flex justify-between items-center relative group">
+                                <div key={c.id} className={`p-4 rounded-xl border ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : 'border-zinc-100 bg-white'} shadow-sm flex justify-between items-center relative group transition-colors`}>
                                   <div>
-                                    <div className="font-black text-sm uppercase">
+                                    <div className={`font-black text-sm uppercase flex items-center ${isHibernated ? 'text-zinc-400' : ''}`}>
+                                      {isHibernated && <Ghost className="w-4 h-4 mr-1 text-zinc-400" />}
                                       {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
                                       <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
                                     </div>
@@ -1249,12 +1365,22 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                       {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
                                     </div>
                                   </div>
-                                  <div className="text-right">
-                                    <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                      {activeC} / {c.capacity || '?'}
-                                    </span>
-                                    <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
+                                  
+                                  <div className="text-right pr-6">
+                                    {isHibernated ? (
+                                      <button onClick={() => setResurrectClassModal(c)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1 shadow-sm">
+                                        <PlusCircle className="w-3 h-3"/> Reactivar
+                                      </button>
+                                    ) : (
+                                      <>
+                                        <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                          {activeC} / {c.capacity || '?'}
+                                        </span>
+                                        <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
+                                      </>
+                                    )}
                                   </div>
+
                                   <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                 </div>
                               );
@@ -1270,14 +1396,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 5. CLASES EN PELIGRO --- */}
+        {/* --- 5. CLASES EN PELIGRO (INCLUYE HIBERNADAS) --- */}
         {activeTab === 'danger' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex items-center gap-3">
               <div className="bg-red-100 p-3 rounded-xl"><AlertTriangle className="w-6 h-6 text-red-600"/></div>
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Grupos en Peligro</h2>
-                <p className="text-zinc-500 font-medium text-sm">Clases grupales al 50% de ocupación o menos.</p>
+                <p className="text-zinc-500 font-medium text-sm">Clases grupales al 50% de ocupación, o totalmente hibernadas.</p>
               </div>
             </header>
 
@@ -1291,18 +1417,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                 {dangerClasses.map(c => {
                   const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                  const isCritical = activeC <= 1; 
+                  const isHibernated = activeC === 0;
+                  const isCritical = activeC === 1; 
+
                   return (
-                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm ${isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
                       <div className="flex justify-between items-start mb-3">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
-                          {isCritical ? 'Crítico' : 'Revisar'}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
+                          {isHibernated ? 'Hibernada' : isCritical ? 'Crítico' : 'Revisar'}
                         </span>
-                        <span className="font-black text-lg">{activeC} / {c.capacity}</span>
+                        {isHibernated ? <Ghost className="w-5 h-5 text-zinc-400"/> : <span className="font-black text-lg">{activeC} / {c.capacity}</span>}
                       </div>
                       <h4 className="font-black uppercase tracking-tight text-slate-900">{c.subject}</h4>
                       <p className="text-xs font-bold text-slate-600 mb-2">{getDayName(c.dayOfWeek)} a las {c.time}h</p>
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block">Prof: {c.teacher}</div>
+                      
+                      {isHibernated && (
+                         <button onClick={() => setResurrectClassModal(c)} className="w-full mt-4 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
+                           <PlusCircle className="w-3 h-3"/> Reactivar Grupo
+                         </button>
+                      )}
                     </div>
                   );
                 })}
@@ -1542,7 +1676,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             </div>
 
-            {/* 5. NORMATIVA PARA PROFESORES (NUEVO) */}
+            {/* 5. NORMATIVA PARA PROFESORES */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
               <p className="text-xs text-zinc-500 font-medium mb-4">Este reglamento aparecerá disponible en el panel de los profesores (App Profesores) para su consulta.</p>

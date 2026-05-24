@@ -64,7 +64,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [createClassModal, setCreateClassModal] = useState(false);
   const [changeClassModal, setChangeClassModal] = useState(null);
   const [resurrectClassModal, setResurrectClassModal] = useState(null); 
-  const [viewClassModal, setViewClassModal] = useState(null); // 👇 NUEVO: Modal para entrar en la clase
+  const [viewClassModal, setViewClassModal] = useState(null); 
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
@@ -118,7 +118,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); };
   }, [appId, db]);
 
-  // 👇 NUEVO EFFECT: Mantiene el modal de la clase sincronizado en tiempo real
+  // Mantiene el modal de la clase sincronizado en tiempo real
   useEffect(() => {
     if (viewClassModal) {
       const updatedClass = allClasses.find(c => c.id === viewClassModal.id);
@@ -331,13 +331,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // 👇 NUEVA FUNCIÓN: Borrar un alumno SOLO de una clase específica
+  // Borrar un alumno SOLO de una clase específica
   const handleRemoveFromSpecificClass = async (classData, studentId, studentName) => {
     if (!window.confirm(`¿Seguro que quieres borrar a ${studentName} SOLO de esta clase de ${classData.subject}?\n\nSeguirá activo en la escuela y en sus otras clases (si las tiene).`)) return;
     try {
       const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
       await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
-      // No hace falta alert, el useEffect lo actualiza en tiempo real y es más fluido
+      // No alert necesario, se actualiza muy rápido y queda mejor
     } catch (e) {
       alert('Error al borrar alumno de la clase: ' + e.message);
     }
@@ -546,7 +546,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // --- IMPORTADOR MASIVO DESDE EXCEL ---
   const handleMassImport = async () => {
     if (!importText.trim()) return alert("Pega los datos del Excel primero.");
     if (!window.confirm("⚠️ ATENCIÓN: Vas a importar alumnos masivamente. ¿Están las columnas ordenadas como Nombre | Email?")) return;
@@ -617,7 +616,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const dangerClasses = useMemo(() => {
     return allClasses.filter(c => {
       const activeCount = (c.students || []).filter(s => !s.isPaused).length;
-      if (activeCount === 0) return true; // SIEMPRE MUESTRA LAS HIBERNADAS
+      if (activeCount === 0) return true; 
       const cap = parseInt(c.capacity) || 0;
       if (cap <= 1) return false; 
       return activeCount <= (cap / 2);
@@ -1018,14 +1017,85 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // 👇 NUEVO MODAL: GESTIÓN QUIRÚRGICA DE ALUMNOS DENTRO DE UNA CLASE 👇
+  // 👇 MODAL MEJORADO: GESTIÓN DE CLASE CON BUSCADOR INTELIGENTE 👇
   const ViewClassModalOverlay = () => {
     if (!viewClassModal) return null;
     const c = viewClassModal;
 
+    const [searchName, setSearchName] = useState('');
+    const [emailInput, setEmailInput] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const maxCap = parseInt(c.capacity, 10) || 0;
+    const currentCount = c.students?.length || 0;
+    const isFull = maxCap > 0 && currentCount >= maxCap;
+
+    const handleAddStudent = async () => {
+      if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
+      
+      if (isFull) {
+        if (!window.confirm(`⚠️ AVISO MODO DIOS:\n\nEl aforo de esta clase está completo (${currentCount}/${maxCap}).\n¿Quieres forzar la matriculación saltándote el límite?`)) return;
+      }
+
+      setSaving(true);
+      try {
+        let studentId;
+        let existingStudent = students.find(s => 
+          s.name.toLowerCase() === searchName.trim().toLowerCase() || 
+          (emailInput && s.email === emailInput.trim().toLowerCase())
+        );
+
+        if (existingStudent) {
+          studentId = existingStudent.id;
+        } else {
+          studentId = Date.now().toString();
+          await setDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+            name: searchName.trim(),
+            email: emailInput.trim().toLowerCase(),
+            globalStatus: 'activo',
+            claimed: false,
+            instruments: [c.subject],
+            classes: [c.id],
+            hasMitobox: false,
+            hasMitoverso: false,
+            triviaPoints: 0,
+            triviaVictories: 0,
+            internalNotes: 'Añadido desde panel de clase'
+          });
+        }
+
+        if ((c.students || []).some(s => s.id === studentId)) {
+          alert("Este alumno ya está dentro de esta clase.");
+          setSaving(false);
+          return;
+        }
+
+        const newStudentPayload = {
+          id: studentId,
+          name: searchName.trim(),
+          email: emailInput.trim().toLowerCase(),
+          isPaused: existingStudent?.globalStatus === 'congelado' || false,
+          status: 'present',
+          isRecovery: false
+        };
+
+        const targetPath = doc(db, c.refPath);
+        const updatedStudents = [...(c.students || []), newStudentPayload];
+        
+        await updateDoc(targetPath, { students: updatedStudents });
+        
+        setSearchName('');
+        setEmailInput('');
+      } catch (e) {
+        alert("Error al matricular: " + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
+        <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
           <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
 
           <div className="flex items-center gap-3 mb-6 shrink-0">
@@ -1036,8 +1106,52 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
           </div>
 
+          <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl shrink-0">
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-3">Añadir Alumno al Grupo</h3>
+            <div className="flex flex-col sm:flex-row gap-2 relative">
+              <div className="flex-1 relative">
+                <input 
+                  type="text" 
+                  value={searchName} 
+                  onChange={e => setSearchName(e.target.value)} 
+                  placeholder="Nombre..."
+                  className="w-full p-3 bg-white border border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500" 
+                />
+                {searchName.length >= 2 && (
+                  <div className="absolute left-0 right-0 mt-1 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-40 overflow-y-auto">
+                    {students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).length === 0 ? (
+                      <div className="p-3 text-xs font-bold text-zinc-500 bg-zinc-50">Crear alumno nuevo.</div>
+                    ) : (
+                      students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).map(st => (
+                        <div key={st.id} onClick={() => setSearchName(st.name)} className="p-3 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 transition-colors">
+                          {st.name}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+              <input 
+                type="email" 
+                value={emailInput} 
+                onChange={e => setEmailInput(e.target.value)} 
+                placeholder="Email..."
+                className="flex-1 p-3 bg-white border border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500" 
+              />
+              <button 
+                onClick={handleAddStudent} 
+                disabled={saving || !searchName} 
+                className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all disabled:opacity-50"
+              >
+                {saving ? '...' : 'Añadir'}
+              </button>
+            </div>
+          </div>
+
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
-            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">Alumnos Matriculados ({c.students?.length || 0}/{c.capacity})</h3>
+            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
+              Alumnos Matriculados ({currentCount}/{c.capacity})
+            </h3>
 
             {(!c.students || c.students.length === 0) ? (
               <div className="p-4 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-xl text-center text-xs font-bold text-zinc-400 uppercase tracking-widest">
@@ -1045,7 +1159,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             ) : (
               c.students.map(s => (
-                <div key={s.id} className="flex items-center justify-between p-3 bg-zinc-50 border border-zinc-100 rounded-xl hover:border-indigo-200 transition-colors">
+                <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-zinc-200 shadow-sm rounded-xl hover:border-indigo-200 transition-colors">
                   <div>
                     <p className={`font-bold text-sm ${s.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>{s.name}</p>
                     <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{s.email || 'Sin email'}</p>
@@ -1056,9 +1170,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
               ))
             )}
-          </div>
-          <div className="mt-6 pt-4 border-t border-zinc-100 shrink-0 text-center">
-             <p className="text-[10px] font-bold text-zinc-400">Si sacas a todos los alumnos, la clase se hibernará automáticamente.</p>
           </div>
         </div>
       </div>
@@ -1458,7 +1569,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                     <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                   </div>
 
-                                  {/* 👇 NUEVO BOTÓN: ENTRAR A LA CLASE 👇 */}
                                   {!isHibernated && (
                                     <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-end">
                                       <button onClick={() => setViewClassModal(c)} className="bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1.5">

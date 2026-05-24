@@ -35,7 +35,8 @@ import {
   CheckCircle,
   ShieldAlert,
   LayoutGrid,
-  FileText
+  FileText,
+  Ghost
 } from 'lucide-react';
 
 import {
@@ -48,12 +49,10 @@ import {
   collectionGroup 
 } from 'firebase/firestore';
 
-// --- CONSTANTES DEL NEGOCIO (V2.0) ---
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
-// --- HELPERS ---
 const getDayOfWeek = (dateString) => {
   if (!dateString) return 0;
   const [year, month, day] = dateString.split('-');
@@ -75,7 +74,6 @@ const normalizeNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
-// Generador de fechas para los Tickets (Mes + 1)
 const generateTicketDates = (dateString) => {
   if (!dateString) return { validFrom: '', validUntil: '' };
   const [y, m] = dateString.split('-').map(Number);
@@ -91,7 +89,6 @@ const generateTicketDates = (dateString) => {
   return { validFrom, validUntil };
 };
 
-// Helper para sacar el mes anterior (para calcular vacaciones)
 const getPreviousMonthStr = (currentMonthStr) => { 
   const [y, m] = currentMonthStr.split('-').map(Number);
   let prevM = m - 1;
@@ -103,9 +100,6 @@ const getPreviousMonthStr = (currentMonthStr) => {
   return `${prevY}-${String(prevM).padStart(2, '0')}`;
 };
 
-// ============================================================================
-// COMPONENTES MODALES AUXILIARES
-// ============================================================================
 const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
   const [note, setNote] = useState('');
   const [selectedTask, setSelectedTask] = useState('');
@@ -211,9 +205,6 @@ const NotesModalComponent = ({ notesModal, onClose, globalStudents, db, appId, s
   );
 };
 
-// ============================================================================
-// COMPONENTE PRINCIPAL (Módulo de Profesores)
-// ============================================================================
 export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL, switchToAdmin }) {
   const [loadingData, setLoadingData] = useState(true);
   const [recurringClasses, setRecurringClasses] = useState([]);
@@ -232,7 +223,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     generalTasks: [],
     festivos: [],
     vacaciones: [],
-    teacherRules: '' // 👇 NUEVA VARIABLE DE CONFIGURACIÓN
+    teacherRules: ''
   });
 
   const [activeTab, setActiveTab] = useState('attendance');
@@ -243,7 +234,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   
   const [deadHourModal, setDeadHourModal] = useState(null);
   const [notesModal, setNotesModal] = useState(null);
-  const [showRulesModal, setShowRulesModal] = useState(false); // 👇 NUEVO MODAL DE NORMATIVA
+  const [showRulesModal, setShowRulesModal] = useState(false);
 
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
@@ -395,7 +386,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   }, [date, dailyReports]);
 
-  // --- FUNCIONES GESTIÓN DE HORARIO ---
   const handleAddSlot = async (day) => {
     if (!newSlot.start || !newSlot.end) return showNotification({type:'error', text: 'Debes rellenar inicio y fin.'});
     if (newSlot.start >= newSlot.end) return showNotification({type:'error', text: 'La hora de inicio debe ser anterior al fin.'});
@@ -433,7 +423,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   };
 
-  // --- ZONA SEGURA DE HOOKS USEMEMO ---
   const notifications = useMemo(() => {
     if (isAdmin) {
       return gestiones.filter(g => g.status === 'pendiente');
@@ -497,10 +486,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const items = [];
     const recordsToday = records.filter(r => r.date === date);
     
-    const scheduledToday = recurringClasses.filter(rc => 
-      rc.dayOfWeek === selectedDayOfWeek && 
-      !(rc.cancelledDates && rc.cancelledDates.includes(date))
-    );
+    const scheduledToday = recurringClasses.filter(rc => {
+      if (rc.dayOfWeek !== selectedDayOfWeek) return false;
+      if (rc.cancelledDates && rc.cancelledDates.includes(date)) return false;
+      return true;
+    });
 
     scheduledToday.forEach(rc => {
       const recordExists = recordsToday.find(r => r.classId === rc.id);
@@ -599,7 +589,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     
-    const pendingClasses = dashboardItems.filter(item => item.type === 'pending' && !isSpecialDay);
+    // 👇 Validamos que no queden clases pendientes (ignorando las hibernadas a 0 alumnos)
+    const pendingClasses = dashboardItems.filter(item => {
+      if (item.type !== 'pending' || isSpecialDay) return false;
+      const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
+      return activeCount > 0;
+    });
+
     if (pendingClasses.length > 0) {
       const ok = window.confirm(`⚠️ ¡ATENCIÓN!\n\nTienes ${pendingClasses.length} clase(s) sin pasar lista hoy.\nSi envías el reporte ahora, esas horas no constarán en tu nómina.\n\n¿Seguro que quieres enviar el reporte ya?`);
       if (!ok) return;
@@ -1052,7 +1048,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
-  // 👇 NUEVO MODAL: REGLAS DEL PROFESOR 👇
   const renderRulesModal = () => {
     if (!showRulesModal) return null;
     return (
@@ -1072,7 +1067,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     );
   };
 
-  // --- RENDER DE CARGA E INICIO DE SESIÓN ---
   if (loadingData) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-sans">
@@ -1160,7 +1154,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       )}
 
       <main className="max-w-5xl mx-auto p-4 md:p-8 mt-2">
-        {/* TABS (MENÚ SUPERIOR) */}
         <div className="flex gap-2 mb-8 bg-white p-2 rounded-2xl shadow-sm border border-zinc-200 overflow-x-auto no-scrollbar">
           {[
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
@@ -1253,24 +1246,32 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 ) : (
                   <div className="space-y-4">
                     {dashboardItems.map((item, idx) => {
+                      // 👇 DETECCIÓN DE CLASE HIBERNADA (Aparece pero desactivada) 👇
                       const visibleCount = item.data.students?.filter(s => !s.isRecovery || s.recoveryDate === date).length || 0;
+                      const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
+                      const isHibernated = item.type === 'pending' && activeCount === 0;
+
                       return (
-                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
+                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isSpecialDay || isHibernated ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
                         <div className="flex items-center gap-4">
-                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isSpecialDay ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
+                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isSpecialDay || isHibernated ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
                            <span className="text-sm leading-none">{(item.data.time || '00:00').split(':')[0]}</span>
                             <span className="text-[10px] opacity-70">{(item.data.time || '00:00').split(':')[1]}</span>
                           </div>
                           <div>
-                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' || isSpecialDay ? 'text-zinc-500' : 'text-slate-800'}`}>
+                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' || isSpecialDay || isHibernated ? 'text-zinc-500' : 'text-slate-800'}`}>
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
                               <MapPin className="w-3 h-3" /> {item.data.sede || 'Tarragona'} ({item.data.sala || 'Sala 1'})
                               <span className="mx-1">•</span> 
                               <User className="w-3 h-3" /> Prof: {item.data.teacher} 
-                              <span className="mx-1">•</span> 
-                              {visibleCount} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
+                              {!isHibernated && (
+                                <>
+                                  <span className="mx-1">•</span> 
+                                  {visibleCount} {item.data.capacity ? `/ ${item.data.capacity}` : ''} alumnos
+                                </>
+                              )}
                             </p>
                           </div>
                         </div>
@@ -1278,6 +1279,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           
                           {isSpecialDay ? (
                             <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">No Laborable</span>
+                          ) : isHibernated ? (
+                            <div className="w-full sm:w-auto bg-zinc-100 text-zinc-400 py-2.5 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest border-2 border-dashed border-zinc-200 flex items-center justify-center gap-2 cursor-not-allowed">
+                               <Ghost className="w-4 h-4"/> Clase Hibernada
+                            </div>
                           ) : item.type === 'completed' ? (
                             <span className="inline-flex w-full justify-center sm:w-auto items-center gap-1 bg-emerald-100 text-emerald-700 text-xs px-4 py-2 rounded-lg font-black border border-emerald-200 uppercase tracking-widest">
                               <Check className="w-4 h-4" /> Completado
@@ -1297,19 +1302,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               </button>
                             </>
                           )}
+
                         </div>
                       </div>
                     )})}
                   </div>
                 )}
-                
-                {/* 👇 ENLACE A LA NORMATIVA 👇 */}
+
                 <div className="text-center mt-8 pt-6 border-t border-zinc-100">
                   <button onClick={() => setShowRulesModal(true)} className="text-[10px] font-bold text-indigo-400 hover:text-indigo-600 uppercase tracking-widest flex items-center justify-center gap-1.5 mx-auto transition-colors">
                      <FileText className="w-3.5 h-3.5"/> Consultar Normativa de la Escuela
                   </button>
                 </div>
-
               </div>
             ) : (
               <>
@@ -1341,6 +1345,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
 
+                  {/* AVISO DE AUTO-CANCELACIÓN (+2 HORAS) */}
                   {currentSession.isAutoCancelled && (
                     <div className="mb-6 p-4 bg-red-50 border-2 border-red-200 rounded-xl flex items-center gap-3">
                       <AlertCircle className="text-red-600 w-6 h-6 shrink-0"/>
@@ -1472,6 +1477,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         )}
                       </div>
 
+                      {/* --- CAMPO EMAIL NUEVO --- */}
                       <div className="w-full sm:flex-1 relative">
                         <input
                           type="email"
@@ -1528,6 +1534,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             )}
                           </div>
                           
+                          {/* BOTONES MÓVIL: NOTAS */}
                           <div className="flex gap-2 sm:hidden">
                             <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
                               <FileText className="w-5 h-5" />
@@ -1535,6 +1542,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </div>
                         </div>
 
+                        {/* BOTONERA ASISTENCIA / MANTENIMIENTO */}
                         <div className="flex items-center gap-2 w-full sm:w-auto">
                           {student.isPaused ? (
                             <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
@@ -1555,6 +1563,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           )}
                         </div>
 
+                        {/* BOTONES PC: NOTAS */}
                         <div className="hidden sm:flex items-center gap-2">
                           <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
                             <FileText className="w-5 h-5" />

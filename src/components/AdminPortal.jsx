@@ -337,7 +337,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     try {
       const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
       await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
-      // No alert necesario, se actualiza muy rápido y queda mejor
     } catch (e) {
       alert('Error al borrar alumno de la clase: ' + e.message);
     }
@@ -447,32 +446,110 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
+
+  // ==========================================
+  // LÓGICA DE GAMIFICACIÓN EN CASCADA
+  // ==========================================
+
   const handleCerrarRetoMensual = async () => {
     const players = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints);
     if(players.length === 0) return alert("Nadie ha jugado este mes.");
+    
     const maxScore = players[0].triviaPoints;
     const winners = players.filter(s => s.triviaPoints === maxScore);
-    if(!window.confirm(`¿Confirmas el cierre del mes? Hay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
+    
+    if(!window.confirm(`¿Confirmas el cierre del MES?\n\nLos puntos pasarán al acumulado del Trimestre y del Año, y el mes quedará a cero.\n\nHay ${winners.length} ganadores este mes con ${maxScore} puntos.`)) return;
+    
+    setLoading(true);
     try {
-      const winnerNames = [];
-      const updatePromises = [];
-      winners.forEach(w => {
+      const winnerNames = winners.map(w => {
         const nameParts = w.name.split(' ');
-        const initial = nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : '';
-        winnerNames.push(`${nameParts[0]} ${initial}`);
-        updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', w.id), { triviaVictories: (w.triviaVictories || 0) + 1 }));
+        return `${nameParts[0]} ${nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : ''}`;
       });
-      players.forEach(p => {
-        const currentTotal = p.triviaTotalPoints || 0;
-        updatePromises.push(updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { triviaTotalPoints: currentTotal + p.triviaPoints, triviaPoints: 0 }));
+
+      const updatePromises = players.map(p => {
+        const docRef = doc(db, 'artifacts', appId, 'students', p.id);
+        return updateDoc(docRef, { 
+          // Pasamos los puntos mensuales a los sacos Trimestral y Anual
+          triviaPointsQuarterly: (p.triviaPointsQuarterly || 0) + p.triviaPoints,
+          triviaPointsAnnual: (p.triviaPointsAnnual || 0) + p.triviaPoints,
+          triviaPoints: 0 // Reseteamos el mes
+        });
       });
+
       await Promise.all(updatePromises);
-      const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} aciertos!\n\nTodos los contadores vuelven a cero. ¡El reto de este mes ya ha empezado! Recuerda que el vencedor anual obtendrá premios por fidelidad y mérito.`;
+
+      const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} puntos!\n\nEl contador mensual vuelve a cero, pero vuestros puntos se acumulan para el Ranking Trimestral y Anual. ¡A por todas!`;
       const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "🏆 ¡Ganadores del Reto del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
-      alert("Mes cerrado con éxito.");
-    } catch (e) { alert("Error al cerrar el mes."); }
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "🏆 ¡Ganadores del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
+      
+      alert("Mes cerrado con éxito. Puntos volcados a los rankings superiores.");
+    } catch (e) { 
+      alert("Error al cerrar el mes: " + e.message); 
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const handleCerrarRetoTrimestral = async () => {
+    const players = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0)
+      .sort((a,b) => ((b.triviaPointsQuarterly || 0) + (b.triviaPoints || 0)) - ((a.triviaPointsQuarterly || 0) + (a.triviaPoints || 0)));
+    
+    if(players.length === 0) return alert("Nadie ha acumulado puntos en el trimestre.");
+    
+    const maxScore = (players[0].triviaPointsQuarterly || 0) + (players[0].triviaPoints || 0);
+    const winners = players.filter(s => ((s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0)) === maxScore);
+
+    if(!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nLos puntos trimestrales se pondrán a cero (los anuales seguirán intactos).\n\nHay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
+
+    setLoading(true);
+    try {
+      const winnerNames = winners.map(w => {
+        const nameParts = w.name.split(' ');
+        return `${nameParts[0]} ${nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : ''}`;
+      });
+
+      const updatePromises = players.map(p => {
+        return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
+          triviaPointsQuarterly: 0 // Solo vaciamos el saco del trimestre
+        });
+      });
+
+      await Promise.all(updatePromises);
+
+      const msg = `¡Felicidades a ${winnerNames.join(', ')} por coronarse como los campeones del Trimestre con ${maxScore} puntos!\n\nPasaros por coordinación a recoger vuestro premio. El contador trimestral se reinicia, ¡pero la carrera por el Gran Premio Anual sigue activa!`;
+      const id = Date.now().toString();
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "👑 ¡Campeones del Trimestre!", content: msg, date: new Date().toISOString().split('T')[0] });
+      
+      alert("Trimestre cerrado con éxito. Puedes proceder a dar los premios.");
+    } catch (e) { 
+      alert("Error al cerrar el trimestre: " + e.message); 
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCerrarRetoAnual = async () => {
+    if(!window.confirm(`⚠️ PELIGRO: ¿Seguro que quieres CERRAR EL AÑO?\n\nEsto pondrá a CERO el ranking anual de todos los alumnos de forma definitiva. Asegúrate de haber entregado el Gran Premio Anual primero.`)) return;
+    
+    setLoading(true);
+    try {
+      const players = students.filter(s => (s.triviaPointsAnnual || 0) > 0);
+      const updatePromises = players.map(p => {
+        return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
+          triviaPointsAnnual: 0 
+        });
+      });
+
+      await Promise.all(updatePromises);
+      alert("Año cerrado con éxito. El sistema está limpio para la nueva temporada.");
+    } catch (e) { 
+      alert("Error al cerrar el año: " + e.message); 
+    } finally {
+      setLoading(false);
+    }
+  };
+
 
   const saveGlobalSettings = async (newSettings) => {
     await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSettings, { merge: true });
@@ -594,11 +671,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
+  
+  // CALCULOS EN VIVO PARA LOS RANKINGS (Sumamos el mes actual no cerrado)
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
-  const rankAnnual = students.filter(s => s.triviaVictories > 0).sort((a,b) => b.triviaVictories - a.triviaVictories).slice(0,10);
-  const rankGlobal = students.filter(s => (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) > 0)
-    .map(s => ({ ...s, liveTotal: (s.triviaTotalPoints || 0) + (s.triviaPoints || 0) }))
-    .sort((a,b) => b.liveTotal - a.liveTotal).slice(0,10);
+  
+  const rankQuarterly = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0)
+    .map(s => ({ ...s, liveQuarterly: (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) }))
+    .sort((a,b) => b.liveQuarterly - a.liveQuarterly).slice(0,10);
+    
+  const rankAnnual = students.filter(s => (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) > 0)
+    .map(s => ({ ...s, liveAnnual: (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) }))
+    .sort((a,b) => b.liveAnnual - a.liveAnnual).slice(0,10);
 
   const classesByTeacher = useMemo(() => {
     const grouped = {};
@@ -947,7 +1030,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const newStudentPayload = {
           id: studentId,
           name: searchName.trim(),
-          email: email.trim().toLowerCase(),
+          email: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
           isRecovery: false
@@ -1017,7 +1100,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // 👇 MODAL MEJORADO: GESTIÓN DE CLASE CON BUSCADOR INTELIGENTE 👇
   const ViewClassModalOverlay = () => {
     if (!viewClassModal) return null;
     const c = viewClassModal;
@@ -1073,7 +1155,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const newStudentPayload = {
           id: studentId,
           name: searchName.trim(),
-          email: emailInput.trim().toLowerCase(),
+          email: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
           isRecovery: false
@@ -1158,17 +1240,22 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 Clase vacía (Hibernada)
               </div>
             ) : (
-              c.students.map(s => (
-                <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-zinc-200 shadow-sm rounded-xl hover:border-indigo-200 transition-colors">
-                  <div>
-                    <p className={`font-bold text-sm ${s.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>{s.name}</p>
-                    <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{s.email || 'Sin email'}</p>
+              c.students.map(s => {
+                const globalSt = students.find(g => g.id === s.id);
+                const displayEmail = globalSt?.email || s.email;
+
+                return (
+                  <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-zinc-200 shadow-sm rounded-xl hover:border-indigo-200 transition-colors">
+                    <div>
+                      <p className={`font-bold text-sm ${s.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>{s.name}</p>
+                      <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{displayEmail || 'Sin email'}</p>
+                    </div>
+                    <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.name)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
+                      <UserMinus className="w-4 h-4"/>
+                    </button>
                   </div>
-                  <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.name)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
-                    <UserMinus className="w-4 h-4"/>
-                  </button>
-                </div>
-              ))
+                )
+              })
             )}
           </div>
         </div>
@@ -1500,7 +1587,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES POR PROFESOR (CON GESTIÓN QUIRÚRGICA) --- */}
+        {/* --- 4. CLASES POR PROFESOR --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1591,7 +1678,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 5. CLASES EN PELIGRO (INCLUYE HIBERNADAS) --- */}
+        {/* --- 5. CLASES EN PELIGRO --- */}
         {activeTab === 'danger' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex items-center gap-3">
@@ -1717,7 +1804,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 8. GAMIFICACIÓN --- */}
+        {/* --- 8. GAMIFICACIÓN (Rankings en Cascada) --- */}
         {activeTab === 'gamification' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -1725,46 +1812,60 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Retos y Rankings</h2>
                 <p className="text-zinc-500 font-medium text-sm">Gestiona la competición del trivial.</p>
               </div>
-              <button onClick={handleCerrarRetoMensual} className="bg-amber-500 hover:bg-amber-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center gap-2 shadow-md transition-colors">
-                <Award className="w-4 h-4"/> Cerrar Mes
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                <button onClick={handleCerrarRetoMensual} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
+                  <Timer className="w-3 h-3"/> Cerrar Mes
+                </button>
+                <button onClick={handleCerrarRetoTrimestral} className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
+                  <Award className="w-3 h-3"/> Cerrar Trimestre
+                </button>
+                <button onClick={handleCerrarRetoAnual} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
+                  <Star className="w-3 h-3"/> Cerrar Año
+                </button>
+              </div>
             </header>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-white rounded-2xl shadow-sm border border-amber-200 flex flex-col h-96">
-                <div className="bg-amber-50 p-4 border-b border-amber-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-amber-900 flex items-center gap-2"><Timer className="w-4 h-4"/> Mensual</h3><span className="bg-amber-200 text-amber-800 px-2 py-0.5 rounded text-[10px] font-black uppercase animate-pulse">En curso</span></div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-amber-50/20">
+              {/* RANKING MENSUAL */}
+              <div className="bg-white rounded-2xl shadow-sm border border-emerald-200 flex flex-col h-96">
+                <div className="bg-emerald-50 p-4 border-b border-emerald-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-emerald-900 flex items-center gap-2"><Timer className="w-4 h-4"/> Mensual</h3><span className="bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded text-[10px] font-black uppercase animate-pulse">En curso</span></div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-emerald-50/20">
                   {rankMonthly.map((s, i) => (
+                    <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-emerald-100 rounded-lg shadow-sm">
+                      <div className="flex items-center gap-2"><span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-emerald-500 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span><span className="font-bold text-xs text-slate-700 truncate">{s.name.split(' ')[0]}</span></div>
+                      <span className="font-black text-emerald-600 text-xs">{s.triviaPoints}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* RANKING TRIMESTRAL */}
+              <div className="bg-white rounded-2xl shadow-sm border border-amber-200 flex flex-col h-96">
+                <div className="bg-amber-50 p-4 border-b border-amber-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-amber-900 flex items-center gap-2"><Award className="w-4 h-4"/> Trimestral</h3></div>
+                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-amber-50/20">
+                  {rankQuarterly.map((s, i) => (
                     <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-amber-100 rounded-lg shadow-sm">
-                      <div className="flex items-center gap-2"><span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-amber-400 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span><span className="font-bold text-xs text-slate-700 truncate">{s.name.split(' ')[0]}</span></div>
-                      <span className="font-black text-amber-600 text-xs">{s.triviaPoints}</span>
+                      <div className="flex items-center gap-2"><span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-amber-500 text-white' : 'text-zinc-400'}`}>{i+1}</span><span className="font-bold text-xs text-slate-700 truncate">{s.name.split(' ')[0]}</span></div>
+                      <span className="font-black text-amber-600 text-xs">{s.liveQuarterly} <span className="text-[8px] uppercase">pts</span></span>
                     </div>
                   ))}
                 </div>
               </div>
-              <div className="bg-white rounded-2xl shadow-sm border border-indigo-200 flex flex-col h-96">
-                <div className="bg-indigo-50 p-4 border-b border-indigo-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-indigo-900 flex items-center gap-2"><Star className="w-4 h-4"/> Anual</h3></div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-indigo-50/20">
-                  {rankAnnual.map((s, i) => (
-                    <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-indigo-100 rounded-lg shadow-sm">
-                      <div className="flex items-center gap-2"><span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-indigo-500 text-white' : 'text-zinc-400'}`}>{i+1}</span><span className="font-bold text-xs text-slate-700 truncate">{s.name.split(' ')[0]}</span></div>
-                      <span className="font-black text-indigo-600 text-xs">{s.triviaVictories} <span className="text-[8px] uppercase">Vic.</span></span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+
+              {/* RANKING ANUAL */}
               <div className="bg-zinc-900 rounded-2xl shadow-sm border border-zinc-800 flex flex-col h-96">
-                <div className="bg-black p-4 border-b border-zinc-800 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-white flex items-center gap-2"><Target className="w-4 h-4 text-zinc-400"/> Global</h3></div>
+                <div className="bg-black p-4 border-b border-zinc-800 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-white flex items-center gap-2"><Star className="w-4 h-4 text-zinc-400"/> Anual</h3></div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-zinc-900/50">
-                  {rankGlobal.map((s, i) => (
+                  {rankAnnual.map((s, i) => (
                     <div key={s.id} className="flex items-center justify-between p-2 bg-zinc-800 border border-zinc-700 rounded-lg">
                       <div className="flex items-center gap-2"><span className="font-black text-zinc-500 text-[10px] w-3">{i+1}.</span><span className="font-bold text-xs text-zinc-300 truncate">{s.name.split(' ')[0]}</span></div>
-                      <span className="font-black text-white text-xs">{s.liveTotal} <span className="text-[8px] text-zinc-500 uppercase">pts</span></span>
+                      <span className="font-black text-white text-xs">{s.liveAnnual} <span className="text-[8px] text-zinc-500 uppercase">pts</span></span>
                     </div>
                   ))}
                 </div>
               </div>
             </div>
+
             {/* PREMIOS INTERNOS */}
             <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Gift className="w-4 h-4"/> Premios Internos</h3>

@@ -224,11 +224,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   useEffect(() => {
     let timer;
-    if (triviaModal && triviaTime > 0 && triviaResult === null) {
+    if (triviaModal && triviaTime > 0 && !triviaResult) {
       timer = setInterval(() => {
         setTriviaTime(prev => prev - 1);
       }, 1000);
-    } else if (triviaTime === 0 && triviaResult === null) {
+    } else if (triviaTime === 0 && !triviaResult) {
       handleTriviaAnswer(-1);
     }
     return () => clearInterval(timer);
@@ -466,9 +466,30 @@ END:VCALENDAR`;
     }
   };
 
+  // ==========================================
+  // NUEVA LÓGICA DE GAMIFICACIÓN (TRIVIAL)
+  // ==========================================
+
   const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
   const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
+
+  // Calculamos la dificultad basada en el día para que sea igual para todos
+  const difficultyLevel = dailyQuestionIndex % 3; 
+  const difficulties = [
+    { label: 'Fácil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
+    { label: 'Medio', points: 6, color: 'text-amber-700', bg: 'bg-amber-100', border: 'border-amber-500' },
+    { label: 'Difícil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
+  ];
+  const currentDifficulty = difficulties[difficultyLevel];
+
+  // Comprobar la racha (streak) respecto a ayer
+  const getYesterdayStr = () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().split('T')[0];
+  };
+  const yesterdayStr = getYesterdayStr();
 
   const startTrivia = () => {
     setTriviaSelected(null);
@@ -478,26 +499,64 @@ END:VCALENDAR`;
   };
 
   const handleTriviaAnswer = async (index) => {
-    if (triviaResult !== null) return;
+    if (triviaResult) return;
     setTriviaSelected(index);
     
     let isCorrect = index === currentQuestion.correct;
-    let newResult = isCorrect ? 'win' : (index === -1 ? 'timeout' : 'lose');
-    setTriviaResult(newResult);
+    let newResultStatus = isCorrect ? 'win' : (index === -1 ? 'timeout' : 'lose');
     
-    let newPoints = profile.triviaPoints || 0;
-    if (isCorrect) newPoints += 1;
+    let pointsEarned = 0;
+    let speedBonus = 0;
+    let streakBonus = 0;
+    let newStreak = profile.triviaStreak || 0;
+
+    if (isCorrect) {
+      // 1. Puntos Base
+      pointsEarned += currentDifficulty.points;
+      
+      // 2. Bono de Velocidad (Si contesta en 3s o menos, el reloj marca 7, 8, 9 o 10)
+      if (triviaTime >= 7) {
+        speedBonus = 2;
+        pointsEarned += speedBonus;
+      }
+      
+      // 3. Calculamos la Racha (Streak)
+      if (profile.triviaLastPlayed === yesterdayStr) {
+        newStreak += 1;
+      } else {
+        newStreak = 1;
+      }
+
+      // 4. Bono de Racha (Cada 3 días seguidos, premio)
+      if (newStreak > 0 && newStreak % 3 === 0) {
+         streakBonus = 5;
+         pointsEarned += streakBonus;
+      }
+    } else {
+       newStreak = 0; // Si falla, la racha se rompe
+    }
+
+    setTriviaResult({
+       status: newResultStatus,
+       points: pointsEarned,
+       speed: speedBonus,
+       streak: streakBonus,
+       newStreakCount: newStreak
+    });
+
+    let newTotalPoints = (profile.triviaPoints || 0) + pointsEarned;
 
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
         triviaLastPlayed: todayStr,
-        triviaPoints: newPoints
+        triviaPoints: newTotalPoints,
+        triviaStreak: newStreak
       });
     } catch (e) { console.error("Error guardando trivia", e); }
 
     setTimeout(() => {
       setTriviaModal(false);
-    }, 2500); 
+    }, 3500); // Un pelín más de tiempo para que puedan leer el desglose
   };
 
   const pendingAbsences = [];
@@ -631,7 +690,6 @@ END:VCALENDAR`;
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
         
-        // 👇 PROTECCIÓN HIBERNACIÓN: Los alumnos no ven clases a cero alumnos 👇
         const activeStudents = (c.students || []).filter(s => !s.isPaused).length;
         if (activeStudents === 0) return false;
 
@@ -895,7 +953,7 @@ END:VCALENDAR`;
           <div className="w-full space-y-3">
             {currentQuestion.options.map((opt, idx) => {
               let btnClass = "bg-white border-2 border-zinc-200 text-slate-700 hover:border-black";
-              if (triviaResult !== null) {
+              if (triviaResult) {
                 if (idx === currentQuestion.correct) btnClass = "bg-emerald-500 border-emerald-500 text-white"; 
                 else if (idx === triviaSelected) btnClass = "bg-rose-500 border-rose-500 text-white"; 
                 else btnClass = "bg-zinc-100 border-zinc-200 text-zinc-400 opacity-50"; 
@@ -904,7 +962,7 @@ END:VCALENDAR`;
               return (
                 <button 
                   key={idx} 
-                  disabled={triviaResult !== null}
+                  disabled={!!triviaResult}
                   onClick={() => handleTriviaAnswer(idx)}
                   className={`w-full p-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${btnClass}`}
                 >
@@ -914,9 +972,29 @@ END:VCALENDAR`;
             })}
           </div>
 
-          {triviaResult === 'win' && <p className="mt-6 text-emerald-600 font-black animate-bounce uppercase tracking-widest text-sm">¡Correcto! +1 Punto</p>}
-          {triviaResult === 'lose' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Incorrecto!</p>}
-          {triviaResult === 'timeout' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Se acabó el tiempo!</p>}
+          {/* 👇 NUEVO DESGLOSE DE PUNTUACIÓN DE GAMIFICACIÓN 👇 */}
+          {triviaResult?.status === 'win' && (
+            <div className="mt-6 text-center animate-in slide-in-from-bottom-2">
+              <p className="text-emerald-600 font-black uppercase tracking-widest text-lg mb-3">¡Correcto!</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                <span className="bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm">
+                  +{currentDifficulty.points} {currentDifficulty.label}
+                </span>
+                {triviaResult.speed > 0 && (
+                  <span className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm">
+                    +{triviaResult.speed} Rápido
+                  </span>
+                )}
+                {triviaResult.streak > 0 && (
+                  <span className="bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm">
+                    +{triviaResult.streak} Racha x{triviaResult.newStreakCount} 🔥
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          {triviaResult?.status === 'lose' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Incorrecto! Pierdes la racha.</p>}
+          {triviaResult?.status === 'timeout' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Se acabó el tiempo!</p>}
 
         </div>
       </div>
@@ -1058,8 +1136,14 @@ END:VCALENDAR`;
                 <div className="bg-black/10 absolute inset-0"></div>
                 <div className="relative z-10 p-6 flex flex-col sm:flex-row items-center justify-between gap-6">
                   <div>
-                    <h3 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2 mb-1"><Trophy className="w-6 h-6 text-amber-200"/> Reto del Día</h3>
-                    <p className="text-xs font-bold text-amber-100 uppercase tracking-widest">¡Responde rápido, suma puntos y gana premios!</p>
+                    <div className="flex items-center gap-2 mb-2">
+                       <h3 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2 text-white"><Trophy className="w-6 h-6 text-amber-200"/> Reto del Día</h3>
+                       <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest border border-white/20 ${currentDifficulty.bg} ${currentDifficulty.color}`}>{currentDifficulty.label} ({currentDifficulty.points} pts)</span>
+                    </div>
+                    <p className="text-xs font-bold text-amber-100 uppercase tracking-widest flex items-center flex-wrap gap-2">
+                       {(profile.triviaStreak || 0) > 0 && <span className="bg-orange-600 px-2 py-1 rounded text-white shadow-sm">🔥 Racha x{profile.triviaStreak}</span>}
+                       ¡Responde rápido para bonus!
+                    </p>
                   </div>
                   <button className="w-full sm:w-auto bg-white text-orange-600 px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg flex items-center justify-center gap-2 pointer-events-none">
                     <Timer className="w-4 h-4"/> Jugar Ahora

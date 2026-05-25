@@ -474,16 +474,16 @@ END:VCALENDAR`;
   const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
 
-  // Calculamos la dificultad basada en el día para que sea igual para todos
-  const difficultyLevel = dailyQuestionIndex % 3; 
-  const difficulties = [
-    { label: 'Fácil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
-    { label: 'Medio', points: 6, color: 'text-amber-700', bg: 'bg-amber-100', border: 'border-amber-500' },
-    { label: 'Difícil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
-  ];
-  const currentDifficulty = difficulties[difficultyLevel];
+  // 👇 LECTURA DE DIFICULTAD DESDE EL ARCHIVO DE PREGUNTAS 👇
+  const diffMap = {
+    'facil': { label: 'Fácil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
+    'medio': { label: 'Medio', points: 6, color: 'text-amber-700', bg: 'bg-amber-100', border: 'border-amber-500' },
+    'dificil': { label: 'Difícil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
+  };
+  
+  // Si no has puesto "difficulty" en alguna pregunta, le pondrá Fácil por defecto para que no se rompa
+  const currentDifficulty = diffMap[currentQuestion.difficulty || 'facil'];
 
-  // Comprobar la racha (streak) respecto a ayer
   const getYesterdayStr = () => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
@@ -511,29 +511,25 @@ END:VCALENDAR`;
     let newStreak = profile.triviaStreak || 0;
 
     if (isCorrect) {
-      // 1. Puntos Base
       pointsEarned += currentDifficulty.points;
       
-      // 2. Bono de Velocidad (Si contesta en 3s o menos, el reloj marca 7, 8, 9 o 10)
       if (triviaTime >= 7) {
         speedBonus = 2;
         pointsEarned += speedBonus;
       }
       
-      // 3. Calculamos la Racha (Streak)
       if (profile.triviaLastPlayed === yesterdayStr) {
         newStreak += 1;
       } else {
         newStreak = 1;
       }
 
-      // 4. Bono de Racha (Cada 3 días seguidos, premio)
       if (newStreak > 0 && newStreak % 3 === 0) {
          streakBonus = 5;
          pointsEarned += streakBonus;
       }
     } else {
-       newStreak = 0; // Si falla, la racha se rompe
+       newStreak = 0; 
     }
 
     setTriviaResult({
@@ -556,7 +552,7 @@ END:VCALENDAR`;
 
     setTimeout(() => {
       setTriviaModal(false);
-    }, 3500); // Un pelín más de tiempo para que puedan leer el desglose
+    }, 3500); 
   };
 
   const pendingAbsences = [];
@@ -972,7 +968,6 @@ END:VCALENDAR`;
             })}
           </div>
 
-          {/* 👇 NUEVO DESGLOSE DE PUNTUACIÓN DE GAMIFICACIÓN 👇 */}
           {triviaResult?.status === 'win' && (
             <div className="mt-6 text-center animate-in slide-in-from-bottom-2">
               <p className="text-emerald-600 font-black uppercase tracking-widest text-lg mb-3">¡Correcto!</p>

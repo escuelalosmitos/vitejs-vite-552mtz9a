@@ -46,8 +46,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allRecords, setAllRecords] = useState([]);
   const [availabilities, setAvailabilities] = useState({}); 
   
+  // 👇 FIX: Añadimos festivosTarragona y festivosReus al estado inicial
   const [settings, setSettings] = useState({ 
-    festivos: [], vacaciones: [], contract: '', teacherRules: '', hourlyRate: 17.33, generalTasks: [],
+    festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', hourlyRate: 17.33, generalTasks: [],
     prizes: { trimestral: '', anual: '' },
     teachersList: [] 
   });
@@ -1587,7 +1588,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES POR PROFESOR --- */}
+        {/* --- 4. CLASES POR PROFESOR (CON GESTIÓN QUIRÚRGICA) --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1886,31 +1887,70 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <p className="text-zinc-500 font-medium text-sm">Ajustes globales y legales de la escuela.</p>
             </header>
             
-            {/* 1. CALENDARIO ESCOLAR */}
+            {/* 1. CALENDARIO ESCOLAR MEJORADO CON SEDES */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
+              
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
-                <input id="adminDateInput" type="date" className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
-                <select id="adminDateType" className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-xs uppercase">
-                  <option value="festivo">Festivo</option>
-                  <option value="vacacion">Vacaciones</option>
+                <input id="adminDateInput" type="date" className="flex-1 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
+                <select id="adminDateType" className="flex-[2] p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-xs uppercase">
+                  <option value="vacaciones">Vacaciones (Ambas sedes)</option>
+                  <option value="festivos">Festivo (Ambas sedes)</option>
+                  <option value="festivosTarragona">Festivo Local (Solo Tarragona)</option>
+                  <option value="festivosReus">Festivo Local (Solo Reus)</option>
                 </select>
-                <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if(d) { const arr = t === 'festivo' ? (settings.festivos||[]) : (settings.vacaciones||[]); if(!arr.includes(d)) { const s = {...settings, [t === 'festivo' ? 'festivos' : 'vacaciones']: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl shadow-md font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4 inline"/></button>
+                <button onClick={() => { 
+                    const d = document.getElementById('adminDateInput').value; 
+                    const t = document.getElementById('adminDateType').value; 
+                    if(d) { 
+                      const arr = settings[t] || []; 
+                      if(!arr.includes(d)) { 
+                        const s = {...settings, [t]: [...arr, d]}; 
+                        setSettings(s); 
+                        saveGlobalSettings(s); 
+                      } 
+                    } 
+                  }} 
+                  className="bg-black text-white px-6 py-3 rounded-xl shadow-md font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"
+                >
+                  <Plus className="w-4 h-4 inline"/>
+                </button>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {/* VACACIONES */}
                 <div>
-                  <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><PartyPopper className="w-3 h-3"/> Festivos</h4>
+                  <h4 className="font-black text-purple-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><Palmtree className="w-3 h-3"/> Vacaciones</h4>
                   <div className="space-y-1">
-                    {settings.festivos?.sort().map(f => (
+                    {(settings.vacaciones || []).sort().map(v => (
+                      <div key={v} className="flex justify-between items-center p-2 bg-purple-50 rounded-lg text-xs font-bold text-purple-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-purple-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-purple-500 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                {/* FESTIVOS GLOBALES */}
+                <div>
+                  <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><PartyPopper className="w-3 h-3"/> Festivos (Global)</h4>
+                  <div className="space-y-1">
+                    {(settings.festivos || []).sort().map(f => (
                       <div key={f} className="flex justify-between items-center p-2 bg-amber-50 rounded-lg text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-amber-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-amber-500 hover:text-red-500"/></button></div>
                     ))}
                   </div>
                 </div>
+                {/* FESTIVOS TARRAGONA */}
                 <div>
-                  <h4 className="font-black text-emerald-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><Palmtree className="w-3 h-3"/> Vacaciones</h4>
+                  <h4 className="font-black text-blue-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Tarragona</h4>
                   <div className="space-y-1">
-                    {settings.vacaciones?.sort().map(v => (
-                      <div key={v} className="flex justify-between items-center p-2 bg-emerald-50 rounded-lg text-xs font-bold text-emerald-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-emerald-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-emerald-500 hover:text-red-500"/></button></div>
+                    {(settings.festivosTarragona || []).sort().map(f => (
+                      <div key={f} className="flex justify-between items-center p-2 bg-blue-50 rounded-lg text-xs font-bold text-blue-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosTarragona: settings.festivosTarragona.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                {/* FESTIVOS REUS */}
+                <div>
+                  <h4 className="font-black text-rose-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Reus</h4>
+                  <div className="space-y-1">
+                    {(settings.festivosReus || []).sort().map(f => (
+                      <div key={f} className="flex justify-between items-center p-2 bg-rose-50 rounded-lg text-xs font-bold text-rose-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosReus: settings.festivosReus.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-rose-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-rose-500 hover:text-red-500"/></button></div>
                     ))}
                   </div>
                 </div>

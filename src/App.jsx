@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, Lock, RefreshCw, UserPlus } from 'lucide-react';
+import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react'; // 👈 FIX: Añadidos los iconos del ojo
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
@@ -33,6 +33,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false); // 👈 FIX: Estado para controlar el ojito
   
   // ESTADOS DE AUTENTICACIÓN Y ERRORES
   const [isLoginMode, setIsLoginMode] = useState(true); 
@@ -125,14 +126,27 @@ export default function App() {
               onChange={e => setEmail(e.target.value)} 
               className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium transition-colors" 
             />
-            <input 
-              type="password" 
-              placeholder="Contraseña" 
-              required 
-              value={password} 
-              onChange={e => setPassword(e.target.value)} 
-              className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium transition-colors" 
-            />
+            
+            {/* 👇 FIX: Input de contraseña con el ojito de mostrar/ocultar */}
+            <div className="relative w-full">
+              <input 
+                type={showPassword ? "text" : "password"} 
+                placeholder={isLoginMode ? "Contraseña" : "Crea tu contraseña (Mínimo 6 letras)"}
+                required 
+                value={password} 
+                onChange={e => setPassword(e.target.value)} 
+                className="w-full p-4 pr-12 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium transition-colors" 
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-black transition-colors"
+                tabIndex="-1"
+              >
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
+
             <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-sm mt-4 flex justify-center items-center gap-2 transition-all active:scale-95 shadow-md">
               {isLoginMode ? <Lock className="w-4 h-4"/> : <UserPlus className="w-4 h-4"/>} 
               {isLoginMode ? 'Entrar al Ecosistema' : 'Crear mi Contraseña'}

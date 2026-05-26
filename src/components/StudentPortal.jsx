@@ -104,7 +104,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [myClasses, setMyClasses] = useState([]);
   const [allClasses, setAllClasses] = useState([]); 
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
-  const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [] });
+  const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [] });
   const [announcements, setAnnouncements] = useState([]); 
   const [myGestiones, setMyGestiones] = useState([]); 
   const [activeTab, setActiveTab] = useState('home');
@@ -154,14 +154,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setContractText(data.contract || 'El contrato aún no está disponible.');
-        const fest = data.festivos || [];
-        const vac = data.vacaciones || [];
-        setGlobalSettings({ festivos: fest, vacaciones: vac });
-        
-        const newCal = [];
-        fest.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Día Festivo' }));
-        vac.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones' }));
-        setSchoolCalendar(newCal);
+        setGlobalSettings({
+          festivos: data.festivos || [],
+          vacaciones: data.vacaciones || [],
+          festivosTarragona: data.festivosTarragona || [],
+          festivosReus: data.festivosReus || []
+        });
       }
     });
 
@@ -170,6 +168,35 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubSettings();
     };
   }, [user.email]);
+
+  // 👇 NUEVO: Generar Calendario Escolar Específico del Alumno basado en sus sedes
+  useEffect(() => {
+    if (!profile || myClasses.length === 0) return;
+
+    const misSedes = new Set();
+    myClasses.forEach(c => misSedes.add(c.sede || 'Tarragona'));
+
+    const newCal = [];
+    
+    globalSettings.vacaciones.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones' }));
+    globalSettings.festivos.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Festivo Global' }));
+
+    if (misSedes.has('Tarragona')) {
+      globalSettings.festivosTarragona.forEach(d => {
+        if (!newCal.some(c => c.date === d)) newCal.push({ date: d, type: 'festivo', title: 'Festivo Local (Tarragona)' });
+      });
+    }
+
+    if (misSedes.has('Reus')) {
+      globalSettings.festivosReus.forEach(d => {
+        if (!newCal.some(c => c.date === d)) newCal.push({ date: d, type: 'festivo', title: 'Festivo Local (Reus)' });
+      });
+    }
+
+    setSchoolCalendar(newCal);
+
+  }, [globalSettings, myClasses, profile]);
+
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -467,21 +494,19 @@ END:VCALENDAR`;
   };
 
   // ==========================================
-  // NUEVA LÓGICA DE GAMIFICACIÓN (TRIVIAL)
+  // LÓGICA DE GAMIFICACIÓN 2.0 (TRIVIAL)
   // ==========================================
 
   const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
   const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
 
-  // 👇 LECTURA DE DIFICULTAD DESDE EL ARCHIVO DE PREGUNTAS 👇
   const diffMap = {
     'facil': { label: 'Fácil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
     'medio': { label: 'Medio', points: 6, color: 'text-amber-700', bg: 'bg-amber-100', border: 'border-amber-500' },
     'dificil': { label: 'Difícil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
   };
   
-  // Si no has puesto "difficulty" en alguna pregunta, le pondrá Fácil por defecto para que no se rompa
   const currentDifficulty = diffMap[currentQuestion.difficulty || 'facil'];
 
   const getYesterdayStr = () => {
@@ -596,10 +621,15 @@ END:VCALENDAR`;
     let currentDate = new Date();
     currentDate.setDate(currentDate.getDate() + 1); 
     
+    // 👇 FIX: Ahora también comprobamos los festivos locales al pedir recuperación
     while (validDates.length < 4 && validDates.length < 30) { 
       if (currentDate.getDay() === targetDay) {
         const dateStr = currentDate.toISOString().split('T')[0];
-        if (!globalSettings.festivos.includes(dateStr) && !globalSettings.vacaciones.includes(dateStr)) {
+        const isGlobalBlocked = globalSettings.festivos.includes(dateStr) || globalSettings.vacaciones.includes(dateStr);
+        const isTarragonaBlocked = selectedNewClass?.sede === 'Tarragona' && globalSettings.festivosTarragona?.includes(dateStr);
+        const isReusBlocked = selectedNewClass?.sede === 'Reus' && globalSettings.festivosReus?.includes(dateStr);
+
+        if (!isGlobalBlocked && !isTarragonaBlocked && !isReusBlocked) {
           validDates.push(dateStr);
         }
       }

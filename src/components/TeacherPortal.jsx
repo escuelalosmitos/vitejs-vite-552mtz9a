@@ -891,6 +891,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
+    // 👇 AQUÍ ESTÁ LA NUEVA BARRERA DE FRICCIÓN 👇
+    const confirmacion = window.confirm("⚠️ ATENCIÓN: ESTA ACCIÓN NO SE PUEDE DESHACER.\n\nRevisa bien quién está presente, quién avisó y quién ha faltado sin avisar.\n\n¿Estás seguro de que quieres guardar la lista definitivamente?");
+    
+    if (!confirmacion) return; // Si le da a cancelar, detenemos el proceso aquí mismo.
+
     const activeStudents = currentSession.students.filter(s => !s.isPaused);
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     

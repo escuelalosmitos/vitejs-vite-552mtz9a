@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -34,6 +34,19 @@ const generateTicketDates = () => {
   return { validFrom, validUntil };
 };
 
+// 👇 NUEVO: Generador de meses para el Admin
+const generateLast12Months = () => {
+  const months = [];
+  const d = new Date();
+  for (let i = 0; i < 12; i++) {
+    const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const labelStr = d.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+    months.push({ value: monthStr, label: labelStr.charAt(0).toUpperCase() + labelStr.slice(1) });
+    d.setMonth(d.getMonth() - 1);
+  }
+  return months;
+};
+
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
   const [loading, setLoading] = useState(true);
@@ -46,7 +59,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allRecords, setAllRecords] = useState([]);
   const [availabilities, setAvailabilities] = useState({}); 
   
-  // 👇 FIX: Añadimos festivosTarragona y festivosReus al estado inicial
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', hourlyRate: 17.33, generalTasks: [],
     prizes: { trimestral: '', anual: '' },
@@ -76,6 +88,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
+
+  // 👇 NUEVO: Selector de meses para las nóminas en el Admin
+  const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
+  const availableMonths = useMemo(() => generateLast12Months(), []);
 
   // --- ESTADOS IMPORTADOR MASIVO ---
   const [importText, setImportText] = useState('');
@@ -338,6 +354,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     try {
       const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
       await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+      // No alert necesario, se actualiza muy rápido y queda mejor
     } catch (e) {
       alert('Error al borrar alumno de la clase: ' + e.message);
     }
@@ -707,9 +724,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
   }, [allClasses]);
 
+  // 👇 FIX: Nómina calcula en base al MES SELECCIONADO en el desplegable
   const teachersPayroll = useMemo(() => {
-    const currentMonth = new Date().toISOString().substring(0, 7);
-    const thisMonthRecords = allRecords.filter(r => r.date.startsWith(currentMonth) && !r.isRenounced);
+    const targetMonth = selectedPayrollMonth;
+    const thisMonthRecords = allRecords.filter(r => r.date.startsWith(targetMonth) && !r.isRenounced);
     const payroll = {};
     thisMonthRecords.forEach(r => {
       const tName = r.teacher || 'Desconocido';
@@ -720,7 +738,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return Object.entries(payroll).map(([name, hours]) => ({
       name, hours: hours.toFixed(2), earnings: (hours * (settings.hourlyRate || 17.33)).toFixed(2)
     })).sort((a, b) => b.hours - a.hours);
-  }, [allRecords, settings.hourlyRate]);
+  }, [allRecords, settings.hourlyRate, selectedPayrollMonth]);
 
   const availableMboxSlotsAdmin = useMemo(() => {
     let slots = [];
@@ -1732,17 +1750,23 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 6. PROFESORES (NÓMINAS) --- */}
+        {/* --- 6. PROFESORES (NÓMINAS) CON SELECTOR --- */}
         {activeTab === 'teachers' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Estado de Profesores</h2>
-                <p className="text-zinc-500 font-medium text-sm">Resumen de horas impartidas y nómina proyectada del mes actual.</p>
+                <p className="text-zinc-500 font-medium text-sm">Resumen de horas impartidas y nómina proyectada.</p>
               </div>
-              <div className="bg-white border border-zinc-200 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest text-zinc-500 shadow-sm">
-                Mes en curso: <span className="text-black">{new Date().toLocaleString('es-ES', { month: 'long' })}</span>
-              </div>
+              <select 
+                value={selectedPayrollMonth} 
+                onChange={(e) => setSelectedPayrollMonth(e.target.value)}
+                className="bg-white border border-zinc-200 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest text-slate-800 shadow-sm outline-none cursor-pointer hover:border-black transition-colors"
+              >
+                {availableMonths.map(m => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
             </header>
 
             <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
@@ -1756,7 +1780,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </thead>
                 <tbody className="text-sm font-medium text-slate-700">
                   {teachersPayroll.length === 0 ? (
-                    <tr><td colSpan="3" className="p-8 text-center text-zinc-400 italic">No hay registros de clases este mes.</td></tr>
+                    <tr><td colSpan="3" className="p-8 text-center text-zinc-400 italic">No hay registros de clases para este mes.</td></tr>
                   ) : (
                     teachersPayroll.map((t, idx) => (
                       <tr key={idx} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">

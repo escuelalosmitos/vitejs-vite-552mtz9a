@@ -100,6 +100,19 @@ const getPreviousMonthStr = (currentMonthStr) => {
   return `${prevY}-${String(prevM).padStart(2, '0')}`;
 };
 
+// Genera lista de los últimos 12 meses para el selector
+const generateLast12Months = () => {
+  const months = [];
+  const d = new Date();
+  for (let i = 0; i < 12; i++) {
+    const monthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const labelStr = d.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+    months.push({ value: monthStr, label: labelStr.charAt(0).toUpperCase() + labelStr.slice(1) });
+    d.setMonth(d.getMonth() - 1);
+  }
+  return months;
+};
+
 const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
   const [note, setNote] = useState('');
   const [selectedTask, setSelectedTask] = useState('');
@@ -218,10 +231,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
 
+  // 👇 FIX: Añadido festivosTarragona y festivosReus
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: [],
     festivos: [],
+    festivosTarragona: [],
+    festivosReus: [],
     vacaciones: [],
     teacherRules: ''
   });
@@ -229,6 +245,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [activeTab, setActiveTab] = useState('attendance');
   const [notification, setNotification] = useState(null);
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  
+  // 👇 NUEVO: Selector de meses para nóminas
+  const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
+  const availableMonths = useMemo(() => generateLast12Months(), []);
+
   const [currentSession, setCurrentSession] = useState(null);
   const [isSendingReport, setIsSendingReport] = useState(false);
   
@@ -452,11 +473,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
+  // 👇 FIX: Nómina calcula en base al MES SELECCIONADO en el desplegable
   const monthlyPayroll = useMemo(() => {
-    const currentMonth = date.substring(0, 7); 
-    const prevMonth = getPreviousMonthStr(currentMonth);
+    const targetMonth = selectedPayrollMonth; 
+    const prevMonth = getPreviousMonthStr(targetMonth);
 
-    const currentRecords = records.filter(r => r.date && r.date.startsWith(currentMonth) && !r.isRenounced);
+    const currentRecords = records.filter(r => r.date && r.date.startsWith(targetMonth) && !r.isRenounced);
     const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
     const currentHours = currentMinutes / 60;
 
@@ -465,7 +487,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const prevUniqueDays = new Set(prevRecords.map(r => r.date)).size;
     const avgDailyMins = prevUniqueDays > 0 ? (prevTotalMinutes / prevUniqueDays) : 0;
 
-    const vacationsThisMonth = (settings.vacaciones || []).filter(d => d.startsWith(currentMonth)).length;
+    const vacationsThisMonth = (settings.vacaciones || []).filter(d => d.startsWith(targetMonth)).length;
     const projectedMinutes = vacationsThisMonth * avgDailyMins;
     const projectedHours = projectedMinutes / 60;
 
@@ -479,7 +501,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       totalHours: totalHours.toFixed(2), 
       earnings: earnings.toFixed(2) 
     };
-  }, [records, date, settings]);
+  }, [records, selectedPayrollMonth, settings]);
 
   const dashboardItems = useMemo(() => {
     const selectedDayOfWeek = getDayOfWeek(date);
@@ -589,9 +611,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     
-    // 👇 Validamos que no queden clases pendientes (ignorando las hibernadas a 0 alumnos)
+    // 👇 Validamos que no queden clases pendientes (ignorando las hibernadas a 0 alumnos y los festivos locales de esta sede)
     const pendingClasses = dashboardItems.filter(item => {
-      if (item.type !== 'pending' || isSpecialDay) return false;
+      if (item.type !== 'pending') return false;
+      
+      const isGlobalSpecial = settings.festivos?.includes(date) || settings.vacaciones?.includes(date);
+      const isTarragonaSpecial = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
+      const isReusSpecial = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
+      if (isGlobalSpecial || isTarragonaSpecial || isReusSpecial) return false;
+
       const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
       return activeCount > 0;
     });
@@ -782,7 +810,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {
           id: studentId,
           name: studentName,
-          email: studentEmail,
+          // 👇 FIX: Cogemos su email real del CRM Global si existe
+          email: existingStudent ? existingStudent.email : studentEmail,
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
           recoveryDate: currentSession.isAddingRecovery ? date : null, 
@@ -1089,9 +1118,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const todayISO = new Date().toISOString().split('T')[0];
   const isFutureDate = date > todayISO;
   
-  const isFestivo = settings.festivos?.includes(date);
+  // 👇 FIX: Solo bloqueamos por festivo si es GLOBAL o si afecta a la SEDE de las clases de ese día
+  // En la vista general, decimos que es SpecialDay si hay algún festivo global.
+  const isGlobalFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
-  const isSpecialDay = isFestivo || isVacacion;
+  const isSpecialDay = isGlobalFestivo || isVacacion;
 
   const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
@@ -1229,10 +1260,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 </h3>
 
                 {isSpecialDay && (
-                  <div className={`p-6 rounded-2xl mb-8 flex items-center gap-4 ${isFestivo ? 'bg-amber-100 text-amber-900 border-2 border-amber-200' : 'bg-emerald-100 text-emerald-900 border-2 border-emerald-200'}`}>
-                    {isFestivo ? <PartyPopper className="w-10 h-10 shrink-0"/> : <Palmtree className="w-10 h-10 shrink-0"/>}
+                  <div className={`p-6 rounded-2xl mb-8 flex items-center gap-4 ${isGlobalFestivo ? 'bg-amber-100 text-amber-900 border-2 border-amber-200' : 'bg-emerald-100 text-emerald-900 border-2 border-emerald-200'}`}>
+                    {isGlobalFestivo ? <PartyPopper className="w-10 h-10 shrink-0"/> : <Palmtree className="w-10 h-10 shrink-0"/>}
                     <div>
-                      <h4 className="font-black uppercase tracking-widest text-lg">{isFestivo ? 'Día Festivo' : 'Día de Vacaciones'}</h4>
+                      <h4 className="font-black uppercase tracking-widest text-lg">{isGlobalFestivo ? 'Día Festivo (Global)' : 'Día de Vacaciones'}</h4>
                       <p className="text-sm font-medium mt-1">El centro está cerrado hoy. No es necesario pasar lista ni enviar el reporte diario.</p>
                     </div>
                   </div>
@@ -1246,20 +1277,24 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 ) : (
                   <div className="space-y-4">
                     {dashboardItems.map((item, idx) => {
-                      // 👇 DETECCIÓN DE CLASE HIBERNADA (Aparece pero desactivada) 👇
                       const visibleCount = item.data.students?.filter(s => !s.isRecovery || s.recoveryDate === date).length || 0;
                       const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 
+                      // 👇 FIX: Comprobamos si esta clase específica está bloqueada por festivo local
+                      const isTarragonaFestivo = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
+                      const isReusFestivo = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
+                      const isThisClassBlocked = isSpecialDay || isTarragonaFestivo || isReusFestivo;
+
                       return (
-                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isSpecialDay || isHibernated ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
+                      <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isThisClassBlocked || isHibernated ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
                         <div className="flex items-center gap-4">
-                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isSpecialDay || isHibernated ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
+                          <div className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-black ${item.type === 'completed' || isThisClassBlocked || isHibernated ? 'bg-zinc-200 text-zinc-500' : 'bg-black text-white'}`}>
                            <span className="text-sm leading-none">{(item.data.time || '00:00').split(':')[0]}</span>
                             <span className="text-[10px] opacity-70">{(item.data.time || '00:00').split(':')[1]}</span>
                           </div>
                           <div>
-                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' || isSpecialDay || isHibernated ? 'text-zinc-500' : 'text-slate-800'}`}>
+                            <p className={`font-black uppercase tracking-wide text-sm ${item.type === 'completed' || isThisClassBlocked || isHibernated ? 'text-zinc-500' : 'text-slate-800'}`}>
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
@@ -1277,8 +1312,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         </div>
                         <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
                           
-                          {isSpecialDay ? (
-                            <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">No Laborable</span>
+                          {isThisClassBlocked ? (
+                            <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">
+                              {(isTarragonaFestivo || isReusFestivo) ? 'Festivo Local' : 'No Laborable'}
+                            </span>
                           ) : isHibernated ? (
                             <div className="w-full sm:w-auto bg-zinc-100 text-zinc-400 py-2.5 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest border-2 border-dashed border-zinc-200 flex items-center justify-center gap-2 cursor-not-allowed">
                                <Ghost className="w-4 h-4"/> Clase Hibernada
@@ -1515,18 +1552,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </div>
 
                   <div className="space-y-4">
-                    {currentSession.students.map((student) => (
+                    {currentSession.students.map((student) => {
+                      // 👇 FIX: Cruce de datos con el CRM para ver el email en tiempo real
+                      const globalSt = globalStudents.find(g => g.id === student.id);
+                      const displayEmail = globalSt?.email || student.email;
+
+                      return (
                       <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
                           <div className="flex flex-col">
                             <span className={`font-bold text-lg ${student.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
                               {student.name}
                             </span>
-                            {student.email && (
-                              <span className="text-[10px] text-zinc-400 font-bold">
-                                {student.email}
-                              </span>
-                            )}
+                            <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
+                                {displayEmail || 'Sin email'}
+                            </span>
                             {student.isRecovery && !student.isPaused && (
                               <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
                                 <CornerDownRight className="w-3 h-3" /> Recuperación
@@ -1570,7 +1610,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </button>
                         </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
 
                   {isOverCapacity && (
@@ -1722,7 +1762,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
             {isSpecialDay ? (
               <div className="p-16 text-center">
-                {isFestivo ? <PartyPopper className="w-20 h-20 text-amber-300 mx-auto mb-6"/> : <Palmtree className="w-20 h-20 text-emerald-300 mx-auto mb-6"/>}
+                {isGlobalFestivo ? <PartyPopper className="w-20 h-20 text-amber-300 mx-auto mb-6"/> : <Palmtree className="w-20 h-20 text-emerald-300 mx-auto mb-6"/>}
                 <h3 className="text-2xl font-black uppercase tracking-widest text-slate-800">Día No Laborable</h3>
                 <p className="text-zinc-500 font-bold mt-2">Hoy es un día especial marcado en el calendario de la escuela. <br/>No es necesario que rellenes ni envíes el reporte diario.</p>
               </div>
@@ -1824,15 +1864,22 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
         {/* --- PESTAÑA REPORTES Y NÓMINA --- */}
         {activeTab === 'reports' && (
-          <div className="space-y-8">
+          <div className="space-y-8 animate-in fade-in">
             <div className="bg-black text-white p-8 md:p-10 rounded-3xl shadow-2xl relative overflow-hidden">
                <div className="relative z-10">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
                     <div>
                       <h2 className="text-3xl font-black uppercase tracking-tighter">Mi Nómina</h2>
-                      <p className="text-zinc-400 font-bold uppercase text-xs tracking-widest mt-1">
-                        {new Date().toLocaleString('es-ES', { month: 'long', year: 'numeric' })}
-                      </p>
+                      {/* 👇 NUEVO: Selector de meses 👇 */}
+                      <select 
+                        value={selectedPayrollMonth} 
+                        onChange={(e) => setSelectedPayrollMonth(e.target.value)}
+                        className="mt-2 bg-zinc-800 text-white border-2 border-zinc-700 p-2 rounded-xl text-xs font-bold uppercase tracking-widest outline-none focus:border-white transition-colors cursor-pointer"
+                      >
+                        {availableMonths.map(m => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
+                      </select>
                     </div>
                     <div className="bg-zinc-800/80 backdrop-blur border border-zinc-700 px-5 py-3 rounded-2xl text-xs font-black uppercase tracking-widest text-zinc-300 shadow-inner">
                       Tarifa Convenio: <span className="text-white">{settings.hourlyRate}€/h</span>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -169,7 +169,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
   }, [user.email]);
 
-  // 👇 NUEVO: Generar Calendario Escolar Específico del Alumno basado en sus sedes
   useEffect(() => {
     if (!profile || myClasses.length === 0) return;
 
@@ -621,7 +620,6 @@ END:VCALENDAR`;
     let currentDate = new Date();
     currentDate.setDate(currentDate.getDate() + 1); 
     
-    // 👇 FIX: Ahora también comprobamos los festivos locales al pedir recuperación
     while (validDates.length < 4 && validDates.length < 30) { 
       if (currentDate.getDay() === targetDay) {
         const dateStr = currentDate.toISOString().split('T')[0];
@@ -1222,6 +1220,16 @@ END:VCALENDAR`;
                       <div className={`flex flex-col sm:flex-row gap-3 text-sm font-medium mb-8 p-4 rounded-2xl border ${isCongelado ? 'bg-zinc-300/50 border-zinc-300 text-zinc-600' : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300'}`}>
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
+
+                      {/* TAREAS DE LA SEMANA */}
+                      {clase.notes && (
+                        <div className={`mb-8 p-5 rounded-2xl border ${isCongelado ? 'bg-zinc-300/30 border-zinc-300/50 text-zinc-600' : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'}`}>
+                          <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${isCongelado ? 'text-zinc-500' : 'text-amber-400'}`}>
+                            <BookOpen className="w-4 h-4"/> Tareas de la semana
+                          </h4>
+                          <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">{clase.notes}</p>
+                        </div>
+                      )}
                       
                       {isCongelado ? (
                         <div className="w-full bg-blue-100 text-blue-800 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-3 uppercase text-[10px] sm:text-xs tracking-widest border border-blue-200 text-center leading-tight">

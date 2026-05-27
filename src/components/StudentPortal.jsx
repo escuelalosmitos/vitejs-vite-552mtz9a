@@ -139,7 +139,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showReviewModal, setShowReviewModal] = useState(false);
 
   const timeRules = getMonthNames();
-  const todayStr = new Date().toISOString().split('T')[0];
+  const dToday = new Date();
+  const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
 
   useEffect(() => {
     checkRegistration();
@@ -504,10 +505,10 @@ END:VCALENDAR`;
   
   const currentDifficulty = diffMap[currentQuestion.difficulty || 'facil'];
 
-  const getYesterdayStr = () => {
+ const getYesterdayStr = () => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0];
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   };
   const yesterdayStr = getYesterdayStr();
 

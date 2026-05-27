@@ -357,7 +357,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
           method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({ type: 'notificacion_profesor', teacherEmail: emailProfe, subject: subjectEmail, body: bodyEmail })
         });
-      } catch(e) { console.log("Fallo silencioso del mailer", e); }
+      } catch(e) {}
 
       setAbsenceModal(null);
       showToast('Aviso enviado correctamente al profesor.');
@@ -492,10 +492,6 @@ END:VCALENDAR`;
     }
   };
 
-  // ==========================================
-  // LÓGICA DE GAMIFICACIÓN 2.0 (TRIVIAL)
-  // ==========================================
-
   const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
   const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
@@ -572,7 +568,7 @@ END:VCALENDAR`;
         triviaPoints: newTotalPoints,
         triviaStreak: newStreak
       });
-    } catch (e) { console.error("Error guardando trivia", e); }
+    } catch (e) {}
 
     setTimeout(() => {
       setTriviaModal(false);

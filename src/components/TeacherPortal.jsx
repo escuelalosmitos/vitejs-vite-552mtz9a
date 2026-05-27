@@ -100,7 +100,6 @@ const getPreviousMonthStr = (currentMonthStr) => {
   return `${prevY}-${String(prevM).padStart(2, '0')}`;
 };
 
-// Genera lista de los últimos 12 meses para el selector
 const generateLast12Months = () => {
   const months = [];
   const d = new Date();
@@ -231,7 +230,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
 
-  // 👇 FIX: Añadido festivosTarragona y festivosReus
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
     generalTasks: [],
@@ -246,7 +244,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [notification, setNotification] = useState(null);
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   
-  // 👇 NUEVO: Selector de meses para nóminas
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
   const availableMonths = useMemo(() => generateLast12Months(), []);
 
@@ -473,7 +470,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
-  // 👇 FIX: Nómina calcula en base al MES SELECCIONADO en el desplegable
   const monthlyPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth; 
     const prevMonth = getPreviousMonthStr(targetMonth);
@@ -508,9 +504,20 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const items = [];
     const recordsToday = records.filter(r => r.date === date);
     
+    // 👇 FIX: Filtrado inteligente para las clases puntuales y recurrentes
     const scheduledToday = recurringClasses.filter(rc => {
-      if (rc.dayOfWeek !== selectedDayOfWeek) return false;
+      // Si la clase es PUNTUAL (tiene 'date' guardado de origen)
+      if (rc.date) {
+        if (rc.date !== date) return false;
+      } 
+      // Si es RECURRENTE (tiene 'dayOfWeek')
+      else {
+        if (rc.dayOfWeek !== selectedDayOfWeek) return false;
+      }
+      
+      // Filtramos si la clase se canceló manualmente un día suelto
       if (rc.cancelledDates && rc.cancelledDates.includes(date)) return false;
+      
       return true;
     });
 
@@ -611,7 +618,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const sendReportByEmail = async (formData = null) => {
     if (!user) return;
     
-    // 👇 Validamos que no queden clases pendientes (ignorando las hibernadas a 0 alumnos y los festivos locales de esta sede)
     const pendingClasses = dashboardItems.filter(item => {
       if (item.type !== 'pending') return false;
       
@@ -699,7 +705,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       duration: scheduledClass.duration || 60,
       notes: scheduledClass.notes || '',
       dayOfWeek: scheduledClass.dayOfWeek,
-      isRecurring: true,
+      date: scheduledClass.date || null, // Guardamos la fecha si es puntual
+      isRecurring: !scheduledClass.date, // Si tiene fecha explícita, NO es recurrente
       exceptions: scheduledClass.exceptions || {}, 
       students: visibleStudents, 
       hiddenStudents: hiddenStudents, 
@@ -710,31 +717,40 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  const assumeSubstitution = (sub) => {
-    setDate(sub.date);
-    setCurrentSession({
-      isNew: false, 
-      classId: `sub-${sub.originalClassId}`,
-      time: sub.time,
-      sede: sub.sede || 'Tarragona',
-      sala: sub.sala || 'Sala 1',
-      teacher: getTeacherName(), 
-      subject: sub.subject,
-      capacity: sub.capacity,
-      duration: sub.duration,
-      notes: sub.notes,
-      dayOfWeek: getDayOfWeek(sub.date),
-      isRecurring: false, 
-      exceptions: {},
-      students: sub.students.map(s => ({ ...s, status: s.isPaused ? 'paused' : 'present' })),
-      hiddenStudents: [],
-      newStudentName: '',
-      newStudentEmail: '',
-      isAddingRecovery: false,
-      cancelledDates: [],
-      isSubstitution: true, 
-      substitutionId: sub.id
-    });
+  // 👇 FIX: Asumir Sustitución ahora la convierte en una "Clase Puntual" en tu agenda y la borra de sustituciones
+  const assumeSubstitution = async (sub) => {
+    if (!window.confirm(`¿Asumir la sustitución de ${sub.subject} el ${formatDateSpanish(sub.date)} a las ${sub.time}h?\n\nEsta clase pasará a tu agenda y serás el profesor responsable.`)) return;
+
+    try {
+      const newClassId = `assumed-${sub.id}`;
+      const targetUid = user.uid;
+
+      await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', newClassId), {
+        id: newClassId,
+        isRecurring: false,
+        date: sub.date,
+        dayOfWeek: getDayOfWeek(sub.date),
+        time: sub.time,
+        sede: sub.sede || 'Tarragona',
+        sala: sub.sala || 'Sala 1',
+        teacher: getTeacherName(), // The new teacher
+        subject: sub.subject,
+        capacity: sub.capacity || '',
+        duration: sub.duration || 60,
+        notes: sub.notes || '',
+        students: sub.students || [],
+        exceptions: {},
+        cancelledDates: [],
+        isWebVisible: false
+      });
+
+      // Remove from substitutions pool
+      await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', sub.id));
+
+      showNotification({ type: 'success', text: 'Clase añadida a tu agenda. Puedes seleccionarla el día que corresponda.' });
+    } catch (e) {
+      showNotification({ type: 'error', text: 'Error al asumir la clase.' });
+    }
   };
 
   const handleSessionFieldChange = (field, value) => {
@@ -810,7 +826,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {
           id: studentId,
           name: studentName,
-          // 👇 FIX: Cogemos su email real del CRM Global si existe
           email: existingStudent ? existingStudent.email : studentEmail,
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
@@ -846,7 +861,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
 
-      if (isFutureDate && !currentSession.isSubstitution) {
+      if (isFutureDate) {
         const exceptionsForDate = { ...(currentSession.exceptions?.[date] || {}) }; 
         currentSession.students.forEach(s => {
            if (s.status !== 'present' && s.status !== 'paused') {
@@ -860,6 +875,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         
       await setDoc(targetPath, {
         dayOfWeek: dayToSave,
+        date: currentSession.date || null, // Mantenerlo si es puntual
         time: currentSession.time,
         sede: currentSession.sede || 'Tarragona',
         sala: currentSession.sala || 'Sala 1',
@@ -891,10 +907,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    // 👇 AQUÍ ESTÁ LA NUEVA BARRERA DE FRICCIÓN 👇
+    // 👇 LA BARRERA DE FRICCIÓN QUE PEDISTE 👇
     const confirmacion = window.confirm("⚠️ ATENCIÓN: ESTA ACCIÓN NO SE PUEDE DESHACER.\n\nRevisa bien quién está presente, quién avisó y quién ha faltado sin avisar.\n\n¿Estás seguro de que quieres guardar la lista definitivamente?");
-    
-    if (!confirmacion) return; // Si le da a cancelar, detenemos el proceso aquí mismo.
+    if (!confirmacion) return;
 
     const activeStudents = currentSession.students.filter(s => !s.isPaused);
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
@@ -982,33 +997,29 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      if (!currentSession.isSubstitution) {
-        const templateStudents = [
-          ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
-          ...(currentSession.hiddenStudents || [])
-        ];
+      // Ahora siempre actualizamos la plantilla (Incluso si es una clase puntual en su agenda)
+      const templateStudents = [
+        ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
+        ...(currentSession.hiddenStudents || [])
+      ];
 
-        const targetPath = doc(db, currentSession.refPath);
-          
-        await setDoc(targetPath, {
-          dayOfWeek: currentSession.dayOfWeek,
-          time: currentSession.time,
-          sede: currentSession.sede || 'Tarragona',
-          sala: currentSession.sala || 'Sala 1',
-          teacher: currentSession.teacher,
-          subject: currentSession.subject,
-          capacity: currentSession.capacity,
-          duration: currentSession.duration || 60,
-          notes: currentSession.notes,
-          cancelledDates: currentSession.cancelledDates || [],
-          students: templateStudents,
-          exceptions: currentSession.exceptions || {}
-        }, { merge: true });
-      }
-
-      if (currentSession.isSubstitution && currentSession.substitutionId) {
-        await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', currentSession.substitutionId));
-      }
+      const targetPath = doc(db, currentSession.refPath);
+        
+      await setDoc(targetPath, {
+        dayOfWeek: currentSession.dayOfWeek,
+        date: currentSession.date || null,
+        time: currentSession.time,
+        sede: currentSession.sede || 'Tarragona',
+        sala: currentSession.sala || 'Sala 1',
+        teacher: currentSession.teacher,
+        subject: currentSession.subject,
+        capacity: currentSession.capacity,
+        duration: currentSession.duration || 60,
+        notes: currentSession.notes,
+        cancelledDates: currentSession.cancelledDates || [],
+        students: templateStudents,
+        exceptions: currentSession.exceptions || {}
+      }, { merge: true });
 
       showNotification({ type: 'success', text: isRenounced ? 'Renuncia registrada con éxito.' : 'Lista guardada correctamente.' });
       setCurrentSession(null);
@@ -1019,19 +1030,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
+  // 👇 FIX: "Cancelar solo por hoy" ahora sabe diferenciar entre Clases Recurrentes y Puntuales
   const cancelClassForToday = async (classData) => {
     if (!user) return;
     const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
     if (!isConfirmed) return;
 
     try {
-      const updatedCancelledDates = [...(classData.cancelledDates || []), date];
-      await setDoc(doc(db, classData.refPath), {
-        ...classData,
-        cancelledDates: updatedCancelledDates
-      });
-
       const subId = `${classData.id}-${date}`;
+      
+      // Creamos la sustitución en el tablón amarillo
       await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
         originalClassId: classData.id,
         originalTeacherUid: user.uid,
@@ -1046,6 +1054,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         notes: classData.notes || '',
         students: classData.students || []
       });
+
+      if (classData.date) {
+        // Es una clase puntual. La borramos de la agenda de este profe para que quede libre.
+        await deleteDoc(doc(db, classData.refPath));
+      } else {
+        // Es una clase recurrente. Le ponemos el parche de cancelledDate.
+        const updatedCancelledDates = [...(classData.cancelledDates || []), date];
+        await setDoc(doc(db, classData.refPath), {
+          ...classData,
+          cancelledDates: updatedCancelledDates
+        });
+      }
 
       showNotification({ type: 'success', text: 'Clase enviada a la Bolsa de Sustituciones.' });
     } catch (error) {
@@ -1123,8 +1143,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const todayISO = new Date().toISOString().split('T')[0];
   const isFutureDate = date > todayISO;
   
-  // 👇 FIX: Solo bloqueamos por festivo si es GLOBAL o si afecta a la SEDE de las clases de ese día
-  // En la vista general, decimos que es SpecialDay si hay algún festivo global.
   const isGlobalFestivo = settings.festivos?.includes(date);
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isGlobalFestivo || isVacacion;
@@ -1286,7 +1304,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 
-                      // 👇 FIX: Comprobamos si esta clase específica está bloqueada por festivo local
                       const isTarragonaFestivo = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
                       const isReusFestivo = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
                       const isThisClassBlocked = isSpecialDay || isTarragonaFestivo || isReusFestivo;
@@ -1373,14 +1390,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </button>
                   </div>
 
-                  {currentSession.isSubstitution && (
+                  {!currentSession.isRecurring && (
                     <div className="mb-6 p-4 bg-zinc-100 border-2 border-zinc-300 rounded-xl flex items-center gap-3">
                       <AlertCircle className="text-black w-6 h-6 shrink-0"/>
-                      <p className="text-xs font-bold text-slate-800">Estás pasando lista como profesor sustituto. Esta clase solo se guardará en tu agenda para el día de hoy.</p>
+                      <p className="text-xs font-bold text-slate-800">Esta es una <b>clase puntual</b>. Solo existe en tu agenda para la fecha de hoy. Si le das a "Cancelar solo por hoy", se devolverá al tablón de sustituciones.</p>
                     </div>
                   )}
 
-                  {isFutureDate && !currentSession.isSubstitution && (
+                  {isFutureDate && (
                     <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
                       <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
                       <p className="text-xs font-bold text-purple-900">Estás viendo una fecha futura. El botón de pasar lista está bloqueado, pero puedes marcar alumnos que ya te han avisado y darle a <b>"Guardar Previsión"</b>.</p>
@@ -1519,7 +1536,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         )}
                       </div>
 
-                      {/* --- CAMPO EMAIL NUEVO --- */}
                       <div className="w-full sm:flex-1 relative">
                         <input
                           type="email"
@@ -1558,7 +1574,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                   <div className="space-y-4">
                     {currentSession.students.map((student) => {
-                      // 👇 FIX: Cruce de datos con el CRM para ver el email en tiempo real
                       const globalSt = globalStudents.find(g => g.id === student.id);
                       const displayEmail = globalSt?.email || student.email;
 
@@ -1579,7 +1594,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             )}
                           </div>
                           
-                          {/* BOTONES MÓVIL: NOTAS */}
                           <div className="flex gap-2 sm:hidden">
                             <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
                               <FileText className="w-5 h-5" />
@@ -1587,7 +1601,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </div>
                         </div>
 
-                        {/* BOTONERA ASISTENCIA / MANTENIMIENTO */}
                         <div className="flex items-center gap-2 w-full sm:w-auto">
                           {student.isPaused ? (
                             <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
@@ -1608,7 +1621,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           )}
                         </div>
 
-                        {/* BOTONES PC: NOTAS */}
                         <div className="hidden sm:flex items-center gap-2">
                           <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
                             <FileText className="w-5 h-5" />
@@ -1629,13 +1641,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   )}
 
                   <div className="mt-10 flex flex-col sm:flex-row gap-4 pt-8 border-t border-zinc-100">
-                    {!currentSession.isSubstitution && isFutureDate && (
+                    {isFutureDate && (
                       <button onClick={saveClassOnly} disabled={isOverCapacity} className={`w-full sm:w-1/2 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-sm ${isOverCapacity ? 'bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed' : 'bg-white border-2 border-zinc-200 hover:bg-zinc-50 text-black active:scale-95'}`}>
                         <Calendar className="w-5 h-5" /> 
                         Guardar Previsión
                       </button>
                     )}
-                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate} className={`${(currentSession.isSubstitution || !isFutureDate) ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
+                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate} className={`${!isFutureDate ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
                       <Save className="w-5 h-5" /> Guardar Asistencia
                     </button>
                   </div>
@@ -1875,7 +1887,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-4">
                     <div>
                       <h2 className="text-3xl font-black uppercase tracking-tighter">Mi Nómina</h2>
-                      {/* 👇 NUEVO: Selector de meses 👇 */}
                       <select 
                         value={selectedPayrollMonth} 
                         onChange={(e) => setSelectedPayrollMonth(e.target.value)}

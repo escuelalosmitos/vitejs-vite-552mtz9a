@@ -427,9 +427,23 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
+  // 👇 FIX: Generador de Texto para Redes pulido y super compacto
   const handleGenerateSocialText = () => {
     let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";
     let foundAny = false;
+
+    // Herramientas para ordenar bien el día (Domingo = 7) y dejar la hora bonita (19:00 -> 19h)
+    const getDaySortIndex = (dayVal) => {
+      const num = parseInt(dayVal, 10);
+      return num === 0 ? 7 : num;
+    };
+
+    const formatTimeCompact = (timeStr) => {
+      if (!timeStr) return '';
+      const [h, m] = timeStr.split(':');
+      if (m === '00') return `${parseInt(h, 10)}h`; // 19:00 -> 19h (y quita el cero a la izquierda)
+      return `${parseInt(h, 10)}:${m}h`; // 17:30 -> 17:30h
+    };
 
     SEDES.forEach(sede => {
       const clasesSede = allClasses.filter(c => (c.sede || 'Tarragona') === sede && c.isWebVisible === true);
@@ -444,15 +458,24 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const instrumentosEnSede = [...new Set(filteredWithSpots.map(c => c.subject))].sort();
         
         instrumentosEnSede.forEach(inst => {
-          t += `  🔹 *${inst}:*\n`;
+          t += `🔹 *${inst.toUpperCase()}:*\n`;
+          
           const grupos = filteredWithSpots.filter(c => c.subject === inst);
           
+          // Ordenamos por día real (L-D) y luego por hora
+          grupos.sort((a, b) => {
+            const dayA = getDaySortIndex(a.dayOfWeek);
+            const dayB = getDaySortIndex(b.dayOfWeek);
+            if (dayA !== dayB) return dayA - dayB;
+            return (a.time || '').localeCompare(b.time || '');
+          });
+
           grupos.forEach(c => {
             const activeCount = (c.students || []).filter(s => !s.isPaused).length;
             const libres = (parseInt(c.capacity, 10) || 4) - activeCount;
-            const tagPlazas = libres === 1 ? "⚠️ ¡ÚLTIMA PLAZA!" : `(Quedan ${libres} plazas)`;
+            const tagPlazas = libres === 1 ? " - Última plaza" : "";
             
-            t += `    • ${getDayName(c.dayOfWeek)} a las ${c.time}h → ${tagPlazas}\n`;
+            t += `• ${getDayName(c.dayOfWeek)} ${formatTimeCompact(c.time)}${tagPlazas}\n`;
           });
         });
         t += "\n";
@@ -1721,7 +1744,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                     <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                   </div>
 
-                                  {/* 👇 FIX: Botón Web ahora aparece siempre, incluso si está hibernada */}
                                   <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
                                     {!isHibernated && (
                                       <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5">
@@ -1783,7 +1805,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       <p className="text-xs font-bold text-slate-600 mb-2">{getDayName(c.dayOfWeek)} a las {c.time}h</p>
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {c.teacher}</div>
                       
-                      {/* 👇 FIX: Botón Web añadido también en las clases en peligro */}
                       <div className="mt-auto pt-4 flex gap-2">
                         {isHibernated ? (
                            <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">

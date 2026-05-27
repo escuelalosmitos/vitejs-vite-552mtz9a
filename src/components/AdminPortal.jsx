@@ -77,7 +77,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [changeClassModal, setChangeClassModal] = useState(null);
   const [resurrectClassModal, setResurrectClassModal] = useState(null); 
   const [viewClassModal, setViewClassModal] = useState(null); 
-  const [editWebModal, setEditWebModal] = useState(null); // 👇 NUEVO MODAL WEB
+  const [editWebModal, setEditWebModal] = useState(null); 
+  const [socialModalText, setSocialModalText] = useState(''); 
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
@@ -182,7 +183,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} se ha dado de BAJA de tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
                 })
               });
-            } catch(e) { }
+            } catch(e) { console.log("Fallo correo baja", e); }
           }
         }
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
@@ -206,7 +207,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} ha CONGELADO su plaza de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h) durante este mes.\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
                 })
               });
-            } catch(e) { }
+            } catch(e) { console.log("Fallo correo congelar", e); }
           }
         }
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
@@ -426,6 +427,47 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
+  const handleGenerateSocialText = () => {
+    let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";
+    let foundAny = false;
+
+    SEDES.forEach(sede => {
+      const clasesSede = allClasses.filter(c => (c.sede || 'Tarragona') === sede && c.isWebVisible === true);
+      const filteredWithSpots = clasesSede.filter(c => {
+        const activeStudents = (c.students || []).filter(s => !s.isPaused).length;
+        return (parseInt(c.capacity, 10) || 4) - activeStudents > 0;
+      });
+
+      if (filteredWithSpots.length > 0) {
+        foundAny = true;
+        t += `📍 **SEDE ${sede.toUpperCase()}**\n`;
+        const instrumentosEnSede = [...new Set(filteredWithSpots.map(c => c.subject))].sort();
+        
+        instrumentosEnSede.forEach(inst => {
+          t += `  🔹 *${inst}:*\n`;
+          const grupos = filteredWithSpots.filter(c => c.subject === inst);
+          
+          grupos.forEach(c => {
+            const activeCount = (c.students || []).filter(s => !s.isPaused).length;
+            const libres = (parseInt(c.capacity, 10) || 4) - activeCount;
+            const tagPlazas = libres === 1 ? "⚠️ ¡ÚLTIMA PLAZA!" : `(Quedan ${libres} plazas)`;
+            
+            t += `    • ${getDayName(c.dayOfWeek)} a las ${c.time}h → ${tagPlazas}\n`;
+          });
+        });
+        t += "\n";
+      }
+    });
+
+    if (!foundAny) {
+      t = "📢 ¡Todos nuestros grupos web están completos en este momento! No hay plazas libres publicadas.";
+    } else {
+      t += "📲 ¡Reserva tu plaza directamente desde el formulario de nuestra web o escríbenos un mensaje privado antes de que se agoten! 🚀";
+    }
+
+    setSocialModalText(t);
+  };
+
   const handleCerrarRetoMensual = async () => {
     const players = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints);
     if(players.length === 0) return alert("Nadie ha jugado este mes.");
@@ -541,7 +583,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
        targetUid = teacherEmail.replace(/[@.]/g, '_');
     }
 
-    // 👇 FIX: Guardamos los campos web iniciales por defecto (apagados)
     const baseWebConfig = {
       isWebVisible: false,
       tadosiUrl: '',
@@ -592,7 +633,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const handleMassImport = async () => {
     if (!importText.trim()) return alert("Pega los datos del Excel primero.");
     if (!window.confirm("⚠️ ATENCIÓN: Vas a importar alumnos masivamente. ¿Están las columnas ordenadas como Nombre | Email?")) return;
-    
     setIsImporting(true);
     try {
       const rows = importText.trim().split('\n');
@@ -659,7 +699,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return allClasses.filter(c => {
       const activeCount = (c.students || []).filter(s => !s.isPaused).length;
       if (activeCount === 0) return true; 
-      const cap = parseInt(c.capacity) || 0;
+      const cap = parseInt(c.capacity, 10) || 0;
       if (cap <= 1) return false; 
       return activeCount <= (cap / 2);
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
@@ -685,7 +725,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (mboxAdminDate && mboxAdminSede) {
       const targetDay = new Date(`${mboxAdminDate}T00:00:00`).getDay();
       const allScheduledClasses = allClasses.filter(c => c.dayOfWeek === targetDay && (c.sede || 'Tarragona') === mboxAdminSede);
-
       const aliveClasses = allScheduledClasses.filter(c => {
         if (c.cancelledDates?.includes(mboxAdminDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxAdminDate] || {};
@@ -697,7 +736,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         });
         return activeStudents.length > 0;
       });
-
       const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
       activeTimes.forEach(t => {
         const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala || 'Sala 1');
@@ -719,7 +757,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const globalStudentInfo = students.find(s => s.id === notesModal.id);
     const [text, setText] = useState(globalStudentInfo?.internalNotes || '');
     const [saving, setSaving] = useState(false);
-
     const handleSave = async () => {
       setSaving(true);
       try {
@@ -730,7 +767,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert('Error al guardar las notas.');
       } finally { setSaving(false); }
     };
-
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
@@ -766,19 +802,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           name: name.trim(), 
           email: email.toLowerCase().trim() 
         });
-
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === editStudentModal.id));
         const batch = writeBatch(db);
-        
         classesWithStudent.forEach(c => {
           const updatedList = c.students.map(s => 
             s.id === editStudentModal.id ? { ...s, name: name.trim(), email: email.toLowerCase().trim() } : s
           );
           batch.update(doc(db, c.refPath), { students: updatedList });
         });
-        
         await batch.commit();
-
         alert('Datos del alumno actualizados en todo el sistema.');
         setEditStudentModal(null);
       } catch (e) {
@@ -796,7 +828,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             <Pencil className="w-8 h-8 text-black" />
             <h2 className="text-xl font-black uppercase tracking-tight">Editar Alumno</h2>
           </div>
-          
           <div className="space-y-4 mb-6">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nombre del alumno</label>
@@ -808,7 +839,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               {!email && <p className="text-[10px] text-rose-500 font-bold mt-1">⚠️ Sin correo, el alumno no podrá entrar a la App.</p>}
             </div>
           </div>
-
           <button onClick={handleSave} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando cambios...' : 'Guardar Datos'}
           </button>
@@ -817,10 +847,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
-  // 👇 NUEVO MODAL: CONFIGURACIÓN WEB DE LA CLASE
   const EditWebModalOverlay = () => {
     if (!editWebModal) return null;
-
     const [formData, setFormData] = useState({
       isWebVisible: editWebModal.isWebVisible || false,
       tadosiUrl: editWebModal.tadosiUrl || '',
@@ -829,7 +857,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       publicDetails: editWebModal.publicDetails || ''
     });
     const [saving, setSaving] = useState(false);
-
     const handleSave = async () => {
       setSaving(true);
       try {
@@ -842,12 +869,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         setSaving(false);
       }
     };
-
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
           <button onClick={() => setEditWebModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          
           <div className="flex items-center gap-3 text-blue-600 mb-6">
             <Globe className="w-8 h-8" />
             <div>
@@ -855,7 +880,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{editWebModal.subject} • {getDayName(editWebModal.dayOfWeek)} {editWebModal.time}h</p>
             </div>
           </div>
-          
           <div className="space-y-4 mb-8">
             <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl flex items-center justify-between">
               <div>
@@ -867,12 +891,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <div className="w-11 h-6 bg-zinc-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
               </label>
             </div>
-
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">URL de inscripción (Tadosi) *</label>
               <input type="text" value={formData.tadosiUrl} onChange={e => setFormData({...formData, tadosiUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
             </div>
-
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Precio / Cuota</label>
@@ -883,16 +905,49 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
               </div>
             </div>
-
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
               <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Especial para adultos, incluye material..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500 transition-colors" />
             </div>
           </div>
-
           <button onClick={handleSave} disabled={saving} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-blue-700 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando...' : 'Guardar Configuración Web'}
           </button>
+        </div>
+      </div>
+    );
+  };
+
+  const SocialModalOverlay = () => {
+    if (!socialModalText) return null;
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
+          <button onClick={() => setSocialModalText('')} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-indigo-600 mb-4">
+            <Megaphone className="w-8 h-8" />
+            <h2 className="text-xl font-black uppercase tracking-tight">Texto para Redes</h2>
+          </div>
+          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-4">Copiado directo listo para Instagram, FB o WhatsApp:</p>
+          
+          <textarea 
+            readOnly 
+            value={socialModalText} 
+            className="w-full p-4 bg-zinc-900 text-zinc-100 font-sans text-xs rounded-2xl min-h-[220px] outline-none border-0 shadow-inner leading-relaxed select-all"
+          />
+          
+          <div className="mt-6 flex gap-3">
+            <button onClick={() => setSocialModalText('')} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200 transition-colors">Cerrar</button>
+            <button 
+              onClick={() => {
+                navigator.clipboard.writeText(socialModalText);
+                alert("📋 ¡Texto copiado al portapapeles con éxito!");
+              }} 
+              className="flex-1 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-all shadow-md"
+            >
+              Copiar Todo
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -905,7 +960,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative my-8">
           <button onClick={() => setCreateClassModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <h2 className="text-xl font-black uppercase tracking-tight mb-6 flex items-center gap-2"><BookOpen className="text-indigo-600"/> Crear Clase Oficial</h2>
-          
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor asignado *</label>
@@ -922,13 +976,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </select>
             </div>
           </div>
-
           <div className="p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl mb-4">
             <div className="flex items-center gap-4 mb-4">
                <button onClick={() => setNewClassData({...newClassData, isRecurring: true})} className={`flex-1 py-2 rounded-lg text-xs font-black uppercase tracking-widest border-2 transition-all ${newClassData.isRecurring ? 'bg-black text-white border-black' : 'bg-white text-zinc-400 border-zinc-200'}`}>Recurrente</button>
                <button onClick={() => setNewClassData({...newClassData, isRecurring: false})} className={`flex-1 py-2 rounded-lg text-xs font-black uppercase tracking-widest border-2 transition-all ${!newClassData.isRecurring ? 'bg-black text-white border-black' : 'bg-white text-zinc-400 border-zinc-200'}`}>Puntual</button>
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {newClassData.isRecurring ? (
                 <div>
@@ -943,7 +995,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   <input type="date" value={newClassData.specificDate} onChange={e => setNewClassData({...newClassData, specificDate: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
                 </div>
               )}
-
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Hora</label>
                 <input type="time" value={newClassData.time} onChange={e => setNewClassData({...newClassData, time: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
@@ -956,7 +1007,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             </div>
           </div>
-
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sala</label>
@@ -973,7 +1023,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <input type="number" step="5" min="15" value={newClassData.duration} onChange={e => setNewClassData({...newClassData, duration: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
             </div>
           </div>
-
           {newClassData.teacher && (newClassData.isRecurring ? newClassData.dayOfWeek : newClassData.specificDate) && (
            <div className="col-span-1 md:col-span-3 mt-[-10px] mb-4">
              <p className="text-[10px] font-bold text-blue-600 bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col gap-1">
@@ -988,7 +1037,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
              </p>
            </div>
           )}
-
           <button onClick={handleCreateGlobalClass} className="w-full bg-black text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors">
             {newClassData.isRecurring ? 'Registrar Clase Oficial' : 'Programar Clase Extraordinaria'}
           </button>
@@ -1002,19 +1050,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const student = changeClassModal;
     const targetInstrument = selectedInstForChange || (student.instruments && student.instruments[0]);
     const availableClasses = targetInstrument ? allClasses.filter(c => c.subject === targetInstrument && (c.students?.length || 0) < parseInt(c.capacity || 4)) : [];
-
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
           <button onClick={() => setChangeClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 mb-6"><ArrowRightLeft className="w-8 h-8 text-blue-600"/><h2 className="text-xl font-black uppercase">Cambiar de Grupo</h2></div>
           <p className="text-xs text-zinc-500 font-bold mb-4 uppercase tracking-widest">Alumno: <span className="text-black">{student.name}</span></p>
-          
           <select value={selectedInstForChange} onChange={e => setSelectedInstForChange(e.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 rounded-xl font-bold text-sm">
             <option value="">Selecciona Instrumento...</option>
             {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
           </select>
-
           <div className="max-h-64 overflow-y-auto space-y-2 pr-2">
             {availableClasses.length === 0 ? (
               <p className="text-center text-xs text-zinc-400 font-bold p-4 border-2 border-dashed rounded-xl">No hay grupos libres para este instrumento.</p>
@@ -1037,7 +1082,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const [searchName, setSearchName] = useState('');
     const [email, setEmail] = useState('');
     const [saving, setSaving] = useState(false);
-
     const handleResurrect = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
       setSaving(true);
@@ -1047,7 +1091,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           s.name.toLowerCase() === searchName.trim().toLowerCase() || 
           (email && s.email === email.trim().toLowerCase())
         );
-
         if (existingStudent) {
           studentId = existingStudent.id;
         } else {
@@ -1066,7 +1109,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             internalNotes: 'Añadido al reactivar grupo'
           });
         }
-
         const newStudentPayload = {
           id: studentId,
           name: searchName.trim(),
@@ -1075,10 +1117,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           status: 'present',
           isRecovery: false
         };
-
         const targetPath = doc(db, resurrectClassModal.refPath);
         const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
-        
         await updateDoc(targetPath, { students: updatedStudents });
         alert("🎉 ¡Clase reactivada! El profesor ya la tiene operativa en su tablet y empezará a computar en nómina cuando pase lista.");
         setResurrectClassModal(null);
@@ -1088,7 +1128,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         setSaving(false);
       }
     };
-
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
@@ -1097,11 +1136,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             <PlusCircle className="w-8 h-8" />
             <h2 className="text-xl font-black uppercase tracking-tight">Reactivar Grupo</h2>
           </div>
-          
           <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6 text-indigo-800 text-xs font-medium">
             Al añadir un alumno, esta clase saldrá del modo hibernación automáticamente.
           </div>
-
           <div className="space-y-4 mb-6 relative">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nombre del alumno *</label>
@@ -1131,7 +1168,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Solo si es alumno nuevo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" />
             </div>
           </div>
-
           <button onClick={handleResurrect} disabled={saving || !searchName} className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando...' : 'Reactivar Clase'}
           </button>
@@ -1143,22 +1179,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const ViewClassModalOverlay = () => {
     if (!viewClassModal) return null;
     const c = viewClassModal;
-
     const [searchName, setSearchName] = useState('');
     const [emailInput, setEmailInput] = useState('');
     const [saving, setSaving] = useState(false);
-
     const maxCap = parseInt(c.capacity, 10) || 0;
     const currentCount = c.students?.length || 0;
     const isFull = maxCap > 0 && currentCount >= maxCap;
 
     const handleAddStudent = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
-      
       if (isFull) {
         if (!window.confirm(`⚠️ AVISO MODO DIOS:\n\nEl aforo de esta clase está completo (${currentCount}/${maxCap}).\n¿Quieres forzar la matriculación saltándote el límite?`)) return;
       }
-
       setSaving(true);
       try {
         let studentId;
@@ -1166,7 +1198,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           s.name.toLowerCase() === searchName.trim().toLowerCase() || 
           (emailInput && s.email === emailInput.trim().toLowerCase())
         );
-
         if (existingStudent) {
           studentId = existingStudent.id;
         } else {
@@ -1185,13 +1216,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             internalNotes: 'Añadido desde panel de clase'
           });
         }
-
-        if ((c.students || []).some(s => s.id === studentId)) {
-          alert("Este alumno ya está dentro de esta clase.");
-          setSaving(false);
-          return;
-        }
-
         const newStudentPayload = {
           id: studentId,
           name: searchName.trim(),
@@ -1200,12 +1224,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           status: 'present',
           isRecovery: false
         };
-
         const targetPath = doc(db, c.refPath);
         const updatedStudents = [...(c.students || []), newStudentPayload];
-        
         await updateDoc(targetPath, { students: updatedStudents });
-        
         setSearchName('');
         setEmailInput('');
       } catch (e) {
@@ -1219,7 +1240,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
         <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
           <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-
           <div className="flex items-center gap-3 mb-6 shrink-0">
             <BookOpen className="w-8 h-8 text-indigo-600"/>
             <div>
@@ -1227,7 +1247,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{c.subject} • {c.teacher} • {getDayName(c.dayOfWeek)} {c.time}h</p>
             </div>
           </div>
-
           <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl shrink-0">
             <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-3">Añadir Alumno al Grupo</h3>
             <div className="flex flex-col sm:flex-row gap-2 relative">
@@ -1269,12 +1288,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </button>
             </div>
           </div>
-
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
               Alumnos Matriculados ({currentCount}/{c.capacity})
             </h3>
-
             {(!c.students || c.students.length === 0) ? (
               <div className="p-4 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-xl text-center text-xs font-bold text-zinc-400 uppercase tracking-widest">
                 Clase vacía (Hibernada)
@@ -1283,7 +1300,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               c.students.map(s => {
                 const globalSt = students.find(g => g.id === s.id);
                 const displayEmail = globalSt?.email || s.email;
-
                 return (
                   <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-zinc-200 shadow-sm rounded-xl hover:border-indigo-200 transition-colors">
                     <div>
@@ -1314,8 +1330,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       {resurrectClassModal && <ResurrectClassModalOverlay />}
       {viewClassModal && <ViewClassModalOverlay />}
       {editWebModal && <EditWebModalOverlay />}
+      {socialModalText && <SocialModalOverlay />}
       
-      {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
           <div>
@@ -1628,7 +1644,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES POR PROFESOR (CON GESTIÓN QUIRÚRGICA) --- */}
+        {/* --- 4. CLASES POR PROFESOR (CON BOTÓN DE REDES) --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1636,9 +1652,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mapa de Clases</h2>
                 <p className="text-zinc-500 font-medium text-sm">Visión global de todos los grupos activos por profesor.</p>
               </div>
-              <button onClick={() => setCreateClassModal(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors">
-                <Plus className="w-4 h-4"/> Crear Clase
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleGenerateSocialText} 
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors"
+                >
+                  <Megaphone className="w-4 h-4"/> Texto para Redes
+                </button>
+                <button onClick={() => setCreateClassModal(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors">
+                  <Plus className="w-4 h-4"/> Crear Clase
+                </button>
+              </div>
             </header>
 
             <div className="space-y-4">
@@ -1697,16 +1721,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                     <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
                                   </div>
 
-                                  {!isHibernated && (
-                                    <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
+                                  {/* 👇 FIX: Botón Web ahora aparece siempre, incluso si está hibernada */}
+                                  <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
+                                    {!isHibernated && (
                                       <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5">
                                         <Users className="w-3 h-3"/> Alumnos
                                       </button>
-                                      <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                                        <Globe className="w-3 h-3"/> Web
-                                      </button>
-                                    </div>
-                                  )}
+                                    )}
+                                    <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                                      <Globe className="w-3 h-3"/> Web
+                                    </button>
+                                  </div>
 
                                 </div>
                               );
@@ -1747,7 +1772,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   const isCritical = activeC === 1; 
 
                   return (
-                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
                       <div className="flex justify-between items-start mb-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
                           {isHibernated ? 'Hibernada' : isCritical ? 'Crítico' : 'Revisar'}
@@ -1756,17 +1781,23 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       </div>
                       <h4 className="font-black uppercase tracking-tight text-slate-900">{c.subject}</h4>
                       <p className="text-xs font-bold text-slate-600 mb-2">{getDayName(c.dayOfWeek)} a las {c.time}h</p>
-                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block">Prof: {c.teacher}</div>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {c.teacher}</div>
                       
-                      {isHibernated ? (
-                         <button onClick={() => setResurrectClassModal(c)} className="w-full mt-4 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
-                           <PlusCircle className="w-3 h-3"/> Reactivar Grupo
-                         </button>
-                      ) : (
-                         <button onClick={() => setViewClassModal(c)} className="w-full mt-4 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
-                           <Users className="w-3 h-3"/> Ver Alumnos
-                         </button>
-                      )}
+                      {/* 👇 FIX: Botón Web añadido también en las clases en peligro */}
+                      <div className="mt-auto pt-4 flex gap-2">
+                        {isHibernated ? (
+                           <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
+                             <PlusCircle className="w-3 h-3"/> Reactivar
+                           </button>
+                        ) : (
+                           <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
+                             <Users className="w-3 h-3"/> Alumnos
+                           </button>
+                        )}
+                        <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                          <Globe className="w-3 h-3"/> Web
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

@@ -301,7 +301,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setAbsenceModal({ clase, ...info });
   };
 
- const confirmAbsence = async (wantsTicket) => {
+  const confirmAbsence = async (wantsTicket) => {
     if (!absenceModal || !profile) return;
     
     const isLate = absenceModal.diffHours < 16;
@@ -1221,7 +1221,7 @@ END:VCALENDAR`;
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
 
-                      {/* TAREAS DE LA SEMANA */}
+                      {/* 👇 AQUÍ ESTÁ EL CÓDIGO DE LA BITÁCORA QUE FALTABA 👇 */}
                       {clase.notes && (
                         <div className={`mb-8 p-5 rounded-2xl border ${isCongelado ? 'bg-zinc-300/30 border-zinc-300/50 text-zinc-600' : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'}`}>
                           <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${isCongelado ? 'text-zinc-500' : 'text-amber-400'}`}>

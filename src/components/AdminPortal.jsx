@@ -427,12 +427,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
-  // 👇 FIX: Generador de Texto para Redes pulido y super compacto
   const handleGenerateSocialText = () => {
     let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";
     let foundAny = false;
 
-    // Herramientas para ordenar bien el día (Domingo = 7) y dejar la hora bonita (19:00 -> 19h)
     const getDaySortIndex = (dayVal) => {
       const num = parseInt(dayVal, 10);
       return num === 0 ? 7 : num;
@@ -441,8 +439,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const formatTimeCompact = (timeStr) => {
       if (!timeStr) return '';
       const [h, m] = timeStr.split(':');
-      if (m === '00') return `${parseInt(h, 10)}h`; // 19:00 -> 19h (y quita el cero a la izquierda)
-      return `${parseInt(h, 10)}:${m}h`; // 17:30 -> 17:30h
+      if (m === '00') return `${parseInt(h, 10)}h`;
+      return `${parseInt(h, 10)}:${m}h`;
     };
 
     SEDES.forEach(sede => {
@@ -462,7 +460,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           
           const grupos = filteredWithSpots.filter(c => c.subject === inst);
           
-          // Ordenamos por día real (L-D) y luego por hora
           grupos.sort((a, b) => {
             const dayA = getDaySortIndex(a.dayOfWeek);
             const dayB = getDaySortIndex(b.dayOfWeek);
@@ -615,36 +612,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     };
 
     try {
-      if (newClassData.isRecurring) {
-        const classId = Date.now().toString();
-        await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
-          ...newClassData,
-          ...baseWebConfig,
-          id: classId,
-          students: [],
-          exceptions: {},
-          cancelledDates: [],
-          dayOfWeek: parseInt(newClassData.dayOfWeek)
-        });
-        alert(`✅ Clase RECURRENTE de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
-      } else {
-        const subId = `extra-${Date.now()}`;
-        await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
-          originalClassId: 'extra',
-          originalTeacherUid: targetUid,
-          originalTeacherName: newClassData.teacher,
-          date: newClassData.specificDate,
-          time: newClassData.time,
-          sede: newClassData.sede || 'Tarragona',
-          sala: newClassData.sala || 'Sala 1',
-          subject: newClassData.subject,
-          capacity: newClassData.capacity || '',
-          duration: newClassData.duration || 60,
-          notes: 'Clase puntual creada por coordinación',
-          students: []
-        });
-        alert(`✅ Clase PUNTUAL de ${newClassData.subject} creada para el ${formatDateSpanish(newClassData.specificDate)}.\n\nAparecerá en el Tablón de Sustituciones de la App para que el profesor le dé a "Asumir Clase" ese día.`);
-      }
+      const classId = Date.now().toString();
+      // 👇 FIX: Guardamos la clase puntual DIRECTAMENTE en el profesor asignado (no en sustituciones)
+      const targetDay = newClassData.isRecurring ? parseInt(newClassData.dayOfWeek) : new Date(newClassData.specificDate).getDay();
+
+      await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
+        ...newClassData,
+        ...baseWebConfig,
+        id: classId,
+        students: [],
+        exceptions: {},
+        cancelledDates: [],
+        dayOfWeek: targetDay,
+        date: newClassData.isRecurring ? null : newClassData.specificDate
+      });
+      alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
 
       setCreateClassModal(false);
       setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, notes: '' });
@@ -747,7 +729,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     let slots = [];
     if (mboxAdminDate && mboxAdminSede) {
       const targetDay = new Date(`${mboxAdminDate}T00:00:00`).getDay();
-      const allScheduledClasses = allClasses.filter(c => c.dayOfWeek === targetDay && (c.sede || 'Tarragona') === mboxAdminSede);
+      const allScheduledClasses = allClasses.filter(c => {
+         // 👇 FIX: Radar Mitobox soporta clases puntuales 
+         if (c.date && c.date !== mboxAdminDate) return false;
+         if (!c.date && c.dayOfWeek !== targetDay) return false;
+         return (c.sede || 'Tarragona') === mboxAdminSede;
+      });
       const aliveClasses = allScheduledClasses.filter(c => {
         if (c.cancelledDates?.includes(mboxAdminDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxAdminDate] || {};
@@ -1591,7 +1578,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               <button onClick={() => setEditStudentModal(student)} className="flex items-center gap-1 p-2 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest" title="Editar datos del alumno">
                                 <Pencil className="w-3 h-3"/> Editar
                               </button>
-                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manualmente">
+                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manually">
                                 <ArrowRightLeft className="w-3 h-3"/> Mover
                               </button>
                               <button onClick={() => grantRecoveryTicket(student)} className="flex items-center gap-1 p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors text-[10px] font-black uppercase tracking-widest" title="Regalar Ticket de Recuperación">

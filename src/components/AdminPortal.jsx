@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -34,7 +34,6 @@ const generateTicketDates = () => {
   return { validFrom, validUntil };
 };
 
-// 👇 NUEVO: Generador de meses para el Admin
 const generateLast12Months = () => {
   const months = [];
   const d = new Date();
@@ -78,6 +77,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [changeClassModal, setChangeClassModal] = useState(null);
   const [resurrectClassModal, setResurrectClassModal] = useState(null); 
   const [viewClassModal, setViewClassModal] = useState(null); 
+  const [editWebModal, setEditWebModal] = useState(null); // 👇 NUEVO MODAL WEB
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
@@ -89,11 +89,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
 
-  // 👇 NUEVO: Selector de meses para las nóminas en el Admin
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
   const availableMonths = useMemo(() => generateLast12Months(), []);
 
-  // --- ESTADOS IMPORTADOR MASIVO ---
   const [importText, setImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
 
@@ -135,7 +133,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); };
   }, [appId, db]);
 
-  // Mantiene el modal de la clase sincronizado en tiempo real
   useEffect(() => {
     if (viewClassModal) {
       const updatedClass = allClasses.find(c => c.id === viewClassModal.id);
@@ -167,16 +164,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
-        
         let borradas = 0;
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-        
         for (let c of classesWithStudent) {
           const updatedList = c.students.filter(s => s.id !== studentId);
           if (c.refPath) {
             await updateDoc(doc(db, c.refPath), { students: updatedList });
             borradas++;
-
             try {
               const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
               await fetch(APPS_SCRIPT_URL, {
@@ -188,24 +182,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} se ha dado de BAJA de tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
                 })
               });
-            } catch(e) { console.log("Fallo correo baja", e); }
+            } catch(e) { }
           }
         }
-        
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         alert(`✅ Baja ejecutada. Profesores avisados por correo. ${studentName} borrado de ${borradas} clases.`);
       }
-
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
-        
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-        
         for (let c of classesWithStudent) {
           if (c.refPath) {
             const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: true } : s);
             await updateDoc(doc(db, c.refPath), { students: updatedList });
-
             try {
               const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
               await fetch(APPS_SCRIPT_URL, {
@@ -217,39 +206,31 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} ha CONGELADO su plaza de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h) durante este mes.\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
                 })
               });
-            } catch(e) { console.log("Fallo correo congelar", e); }
+            } catch(e) { }
           }
         }
-
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores han sido avisados.`);
       }
-
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
-        
         if (!requestedClass) {
           alert("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se archivará el ticket.");
           await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
           return;
         }
-
         const targetClass = allClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
           alert(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
           return;
         }
-
         let logMessage = `Iniciando proceso para ${studentName}:\n\n`;
-
         if (type === 'cambio_horario') {
           const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
-          
           for (let c of oldClasses) {
             const updatedList = c.students.filter(s => s.id !== studentId);
             if (c.refPath) {
               await updateDoc(doc(db, c.refPath), { students: updatedList });
               logMessage += `➖ Borrado de la clase de ${c.subject} (${c.time}h).\n`;
-
               try {
                 const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
                 await fetch(APPS_SCRIPT_URL, {
@@ -265,7 +246,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             }
           }
         }
-
         const newStudentPayload = {
           id: studentId,
           name: studentName,
@@ -275,25 +255,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           isRecovery: type === 'recuperacion',
           recoveryDate: type === 'recuperacion' ? recoveryDate : null 
         };
-
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
         await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
-
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         logMessage += `✅ Ticket archivado con éxito.\n`;
-
         try {
           const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-          
           let emailSubject = `🎉 ¡Nuevo alumno en tu clase de ${targetClass.subject}!`;
           let emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`;
-
           if (type === 'recuperacion') {
             emailSubject = `🔄 Recuperación programada: ${studentName} (${targetClass.subject})`;
             emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${studentName} para recuperar una clase de ${targetClass.subject} contigo el próximo ${formatDateSpanish(recoveryDate)} a las ${targetClass.time}h.\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`;
           }
-
           await fetch(APPS_SCRIPT_URL, {
             method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({
@@ -304,13 +278,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             })
           });
         } catch(e) { }
-
         alert(logMessage);
       } else {
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         alert("✅ Trámite genérico archivado correctamente.");
       }
-
     } catch (error) {
       alert(`❌ ERROR DEL SISTEMA:\n\n${error.message}`);
     }
@@ -348,13 +320,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
-  // Borrar un alumno SOLO de una clase específica
   const handleRemoveFromSpecificClass = async (classData, studentId, studentName) => {
     if (!window.confirm(`¿Seguro que quieres borrar a ${studentName} SOLO de esta clase de ${classData.subject}?\n\nSeguirá activo en la escuela y en sus otras clases (si las tiene).`)) return;
     try {
       const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
       await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
-      // No alert necesario, se actualiza muy rápido y queda mejor
     } catch (e) {
       alert('Error al borrar alumno de la clase: ' + e.message);
     }
@@ -362,14 +332,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const executeDirectClassChange = async (student, targetClass) => {
     if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
-    
     try {
       const oldClasses = allClasses.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
       for (let c of oldClasses) {
         const updatedList = c.students.filter(s => s.id !== student.id);
         if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
       }
-
       const newStudentPayload = {
         id: student.id,
         name: student.name,
@@ -378,10 +346,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         status: 'present',
         isRecovery: false
       };
-
       const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== student.id), newStudentPayload];
       await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-
       alert(`✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}.`);
       setChangeClassModal(null);
     } catch (error) {
@@ -392,12 +358,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const grantRecoveryTicket = async (student) => {
     const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Se generarán para el mes próximo)`, "1");
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
-
     try {
       const { validFrom, validUntil } = generateTicketDates();
       const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
       const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
-
       const promises = [];
       for (let i = 0; i < parseInt(num); i++) {
         const ticketId = `gift-${Date.now()}-${i}`;
@@ -419,7 +383,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       alert(`🎁 Se han otorgado ${num} tickets a ${student.name}. Serán válidos desde el 1 del mes que viene.`);
     } catch(e) {
       alert("Error al otorgar tickets.");
-      console.error(e);
     }
   };
 
@@ -432,7 +395,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const snapshot = await getDocs(ticketsQuery);
       const batch = writeBatch(db);
       let count = 0;
-
       snapshot.forEach((ticketDoc) => {
         const t = ticketDoc.data();
         if (t.validUntil < today) {
@@ -440,7 +402,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           count++;
         }
       });
-
       if (count === 0) alert("✨ Todo reluciente. No hay tickets caducados que limpiar.");
       else {
         await batch.commit();
@@ -460,47 +421,35 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     setNewAnnounce({ title: '', content: '' });
     alert('Aviso publicado.');
   };
+
   const deleteAnnouncement = async (id) => { 
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
-
-  // ==========================================
-  // LÓGICA DE GAMIFICACIÓN EN CASCADA
-  // ==========================================
-
   const handleCerrarRetoMensual = async () => {
     const players = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints);
     if(players.length === 0) return alert("Nadie ha jugado este mes.");
-    
     const maxScore = players[0].triviaPoints;
     const winners = players.filter(s => s.triviaPoints === maxScore);
-    
     if(!window.confirm(`¿Confirmas el cierre del MES?\n\nLos puntos pasarán al acumulado del Trimestre y del Año, y el mes quedará a cero.\n\nHay ${winners.length} ganadores este mes con ${maxScore} puntos.`)) return;
-    
     setLoading(true);
     try {
       const winnerNames = winners.map(w => {
         const nameParts = w.name.split(' ');
         return `${nameParts[0]} ${nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : ''}`;
       });
-
       const updatePromises = players.map(p => {
         const docRef = doc(db, 'artifacts', appId, 'students', p.id);
         return updateDoc(docRef, { 
-          // Pasamos los puntos mensuales a los sacos Trimestral y Anual
           triviaPointsQuarterly: (p.triviaPointsQuarterly || 0) + p.triviaPoints,
           triviaPointsAnnual: (p.triviaPointsAnnual || 0) + p.triviaPoints,
-          triviaPoints: 0 // Reseteamos el mes
+          triviaPoints: 0
         });
       });
-
       await Promise.all(updatePromises);
-
       const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} puntos!\n\nEl contador mensual vuelve a cero, pero vuestros puntos se acumulan para el Ranking Trimestral y Anual. ¡A por todas!`;
       const id = Date.now().toString();
       await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "🏆 ¡Ganadores del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
-      
       alert("Mes cerrado con éxito. Puntos volcados a los rankings superiores.");
     } catch (e) { 
       alert("Error al cerrar el mes: " + e.message); 
@@ -512,33 +461,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const handleCerrarRetoTrimestral = async () => {
     const players = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0)
       .sort((a,b) => ((b.triviaPointsQuarterly || 0) + (b.triviaPoints || 0)) - ((a.triviaPointsQuarterly || 0) + (a.triviaPoints || 0)));
-    
     if(players.length === 0) return alert("Nadie ha acumulado puntos en el trimestre.");
-    
     const maxScore = (players[0].triviaPointsQuarterly || 0) + (players[0].triviaPoints || 0);
     const winners = players.filter(s => ((s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0)) === maxScore);
-
     if(!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nLos puntos trimestrales se pondrán a cero (los anuales seguirán intactos).\n\nHay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
-
     setLoading(true);
     try {
       const winnerNames = winners.map(w => {
         const nameParts = w.name.split(' ');
         return `${nameParts[0]} ${nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : ''}`;
       });
-
       const updatePromises = players.map(p => {
         return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
-          triviaPointsQuarterly: 0 // Solo vaciamos el saco del trimestre
+          triviaPointsQuarterly: 0
         });
       });
-
       await Promise.all(updatePromises);
-
       const msg = `¡Felicidades a ${winnerNames.join(', ')} por coronarse como los campeones del Trimestre con ${maxScore} puntos!\n\nPasaros por coordinación a recoger vuestro premio. El contador trimestral se reinicia, ¡pero la carrera por el Gran Premio Anual sigue activa!`;
       const id = Date.now().toString();
       await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "👑 ¡Campeones del Trimestre!", content: msg, date: new Date().toISOString().split('T')[0] });
-      
       alert("Trimestre cerrado con éxito. Puedes proceder a dar los premios.");
     } catch (e) { 
       alert("Error al cerrar el trimestre: " + e.message); 
@@ -549,7 +490,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const handleCerrarRetoAnual = async () => {
     if(!window.confirm(`⚠️ PELIGRO: ¿Seguro que quieres CERRAR EL AÑO?\n\nEsto pondrá a CERO el ranking anual de todos los alumnos de forma definitiva. Asegúrate de haber entregado el Gran Premio Anual primero.`)) return;
-    
     setLoading(true);
     try {
       const players = students.filter(s => (s.triviaPointsAnnual || 0) > 0);
@@ -558,7 +498,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           triviaPointsAnnual: 0 
         });
       });
-
       await Promise.all(updatePromises);
       alert("Año cerrado con éxito. El sistema está limpio para la nueva temporada.");
     } catch (e) { 
@@ -567,7 +506,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setLoading(false);
     }
   };
-
 
   const saveGlobalSettings = async (newSettings) => {
     await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSettings, { merge: true });
@@ -603,11 +541,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
        targetUid = teacherEmail.replace(/[@.]/g, '_');
     }
 
+    // 👇 FIX: Guardamos los campos web iniciales por defecto (apagados)
+    const baseWebConfig = {
+      isWebVisible: false,
+      tadosiUrl: '',
+      startDate: '',
+      price: '',
+      publicDetails: ''
+    };
+
     try {
       if (newClassData.isRecurring) {
         const classId = Date.now().toString();
         await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
           ...newClassData,
+          ...baseWebConfig,
           id: classId,
           students: [],
           exceptions: {},
@@ -650,16 +598,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const rows = importText.trim().split('\n');
       const batch = writeBatch(db);
       let count = 0;
-
       rows.forEach((row, index) => {
         const cols = row.split('\t');
         if (cols.length > 0 && cols[0].trim() !== '') {
           const name = cols[0].trim();
           const email = cols[1] ? cols[1].trim().toLowerCase() : '';
-          
           const studentId = `imp-${Date.now()}-${index}`;
           const docRef = doc(db, 'artifacts', appId, 'students', studentId);
-          
           batch.set(docRef, {
             name: name,
             email: email,
@@ -676,7 +621,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           count++;
         }
       });
-
       await batch.commit();
       alert(`🎉 ¡BOOM! Se han importado ${count} alumnos correctamente.`);
       setImportText('');
@@ -690,13 +634,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
   
-  // CALCULOS EN VIVO PARA LOS RANKINGS (Sumamos el mes actual no cerrado)
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
-  
   const rankQuarterly = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0)
     .map(s => ({ ...s, liveQuarterly: (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) }))
     .sort((a,b) => b.liveQuarterly - a.liveQuarterly).slice(0,10);
-    
   const rankAnnual = students.filter(s => (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) > 0)
     .map(s => ({ ...s, liveAnnual: (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) }))
     .sort((a,b) => b.liveAnnual - a.liveAnnual).slice(0,10);
@@ -724,7 +665,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
   }, [allClasses]);
 
-  // 👇 FIX: Nómina calcula en base al MES SELECCIONADO en el desplegable
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
     const thisMonthRecords = allRecords.filter(r => r.date.startsWith(targetMonth) && !r.isRenounced);
@@ -871,6 +811,87 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
           <button onClick={handleSave} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando cambios...' : 'Guardar Datos'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // 👇 NUEVO MODAL: CONFIGURACIÓN WEB DE LA CLASE
+  const EditWebModalOverlay = () => {
+    if (!editWebModal) return null;
+
+    const [formData, setFormData] = useState({
+      isWebVisible: editWebModal.isWebVisible || false,
+      tadosiUrl: editWebModal.tadosiUrl || '',
+      startDate: editWebModal.startDate || '',
+      price: editWebModal.price || '',
+      publicDetails: editWebModal.publicDetails || ''
+    });
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+      setSaving(true);
+      try {
+        await updateDoc(doc(db, editWebModal.refPath), formData);
+        alert("Configuración web guardada correctamente.");
+        setEditWebModal(null);
+      } catch(e) {
+        alert("Error al guardar: " + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+          <button onClick={() => setEditWebModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          
+          <div className="flex items-center gap-3 text-blue-600 mb-6">
+            <Globe className="w-8 h-8" />
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight">Escaparate Web</h2>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{editWebModal.subject} • {getDayName(editWebModal.dayOfWeek)} {editWebModal.time}h</p>
+            </div>
+          </div>
+          
+          <div className="space-y-4 mb-8">
+            <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl flex items-center justify-between">
+              <div>
+                <p className="text-sm font-black text-blue-900 uppercase">Visible en la Web</p>
+                <p className="text-[10px] font-bold text-blue-700">Permite que WordPress lea esta clase.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={formData.isWebVisible} onChange={e => setFormData({...formData, isWebVisible: e.target.checked})} className="sr-only peer" />
+                <div className="w-11 h-6 bg-zinc-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">URL de inscripción (Tadosi) *</label>
+              <input type="text" value={formData.tadosiUrl} onChange={e => setFormData({...formData, tadosiUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Precio / Cuota</label>
+                <input type="text" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} placeholder="Ej: 75€/mes" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día exacto de Inicio</label>
+                <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
+              <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Especial para adultos, incluye material..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500 transition-colors" />
+            </div>
+          </div>
+
+          <button onClick={handleSave} disabled={saving} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-blue-700 transition-all shadow-md disabled:opacity-50">
+            {saving ? 'Guardando...' : 'Guardar Configuración Web'}
           </button>
         </div>
       </div>
@@ -1292,6 +1313,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       {editStudentModal && <EditStudentModalOverlay />} 
       {resurrectClassModal && <ResurrectClassModalOverlay />}
       {viewClassModal && <ViewClassModalOverlay />}
+      {editWebModal && <EditWebModalOverlay />}
       
       {/* SIDEBAR NAVEGACIÓN */}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -1676,9 +1698,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                   </div>
 
                                   {!isHibernated && (
-                                    <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-end">
-                                      <button onClick={() => setViewClassModal(c)} className="bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1.5">
-                                        <Users className="w-3 h-3"/> Gestionar Alumnos
+                                    <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
+                                      <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5">
+                                        <Users className="w-3 h-3"/> Alumnos
+                                      </button>
+                                      <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                                        <Globe className="w-3 h-3"/> Web
                                       </button>
                                     </div>
                                   )}

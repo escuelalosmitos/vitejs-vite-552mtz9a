@@ -193,8 +193,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const ingresos = numAlumnos * cuota;
       
       const duracionHoras = (Number(c.duration) || 60) / 60;
-      const coste = duracionHoras * 4 * (settings.costeEmpresa || 22);
-      const beneficio = ingresos - coste;
+      const coste = (c.teacher === 'Paco') ? 0 : (duracionHoras * 4 * (settings.costeEmpresa || 22));      const beneficio = ingresos - coste;
 
       totalIngresos += ingresos;
       costeTotalProfesores += coste;

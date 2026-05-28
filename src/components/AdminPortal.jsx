@@ -193,7 +193,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const ingresos = numAlumnos * cuota;
       
       const duracionHoras = (Number(c.duration) || 60) / 60;
-      const coste = (c.teacher === 'Paco') ? 0 : (duracionHoras * 4 * (settings.costeEmpresa || 22));      const beneficio = ingresos - coste;
+      // EXCEPCIÓN PACO: Si el profesor es Paco, el coste es 0€ (ya está en gastos fijos).
+      const coste = (c.teacher?.toLowerCase() === 'paco') ? 0 : (duracionHoras * 4 * (settings.costeEmpresa || 22));      
+      const beneficio = ingresos - coste;
 
       totalIngresos += ingresos;
       costeTotalProfesores += coste;
@@ -204,10 +206,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       });
 
       const sedeKey = c.sede || 'Tarragona';
-      if (porSede[sedeKey]) {
-        porSede[sedeKey].ingresos += ingresos;
-        porSede[sedeKey].costesProf += coste;
-      }
+      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, costesProf: 0 };
+      porSede[sedeKey].ingresos += ingresos;
+      porSede[sedeKey].costesProf += coste;
 
       const profKey = c.teacher || 'Sin Asignar';
       if (!porProfe[profKey]) porProfe[profKey] = { ingresos: 0, costes: 0, horasSemanales: 0 };
@@ -970,7 +971,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       tadosiUrl: editWebModal.tadosiUrl || '',
       startDate: editWebModal.startDate || '',
       price: editWebModal.price || '',
-      cuotaBase: editWebModal.cuotaBase || 60, // 👈 Nuevo: Cuota Matemática para BI
+      cuotaBase: editWebModal.cuotaBase || 60, 
       publicDetails: editWebModal.publicDetails || ''
     });
     const [saving, setSaving] = useState(false);
@@ -1193,7 +1194,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           <p className="text-xs text-zinc-500 font-bold mb-4 uppercase tracking-widest">Alumno: <span className="text-black">{student.name}</span></p>
           <select value={selectedInstForChange} onChange={e => setSelectedInstForChange(e.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 rounded-xl font-bold text-sm">
             <option value="">Selecciona Instrumento...</option>
-            {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
+            {(settings.instrumentos || defaultInstrumentos).map(i => <option key={i} value={i}>{i}</option>)}
           </select>
           <div className="max-h-64 overflow-y-auto space-y-2 pr-2">
             {availableClasses.length === 0 ? (
@@ -1557,15 +1558,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
                 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
-                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
+                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Calculator className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Personal</h3></div>
                   <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
-                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Horas impartidas × Coste Empresa ({settings.costeEmpresa}€)</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Nóminas a Coste Empresa (Paco = 0€)</p>
                 </div>
 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
-                  <div className="flex items-center gap-2 text-rose-600 mb-2"><MapPin className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
+                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Settings className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
                   <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}€</p>
-                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Suma de todos los centros</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Locales y costes compartidos</p>
                 </div>
 
                 <div className="bg-black text-white p-6 rounded-3xl shadow-xl relative overflow-hidden">
@@ -1656,7 +1657,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                        <tbody className="text-sm font-bold text-slate-700">
                           {businessIntelligence.porProfe.map(p => (
                              <tr key={p.name} className="border-b hover:bg-zinc-50">
-                                <td className="p-4 uppercase font-black text-slate-900">{p.name}</td>
+                                <td className="p-4 uppercase font-black text-slate-900">
+                                  {p.name}
+                                  {p.name.toLowerCase() === 'paco' && <span className="ml-2 bg-zinc-200 text-zinc-500 text-[9px] px-2 py-0.5 rounded">Socio</span>}
+                                </td>
                                 <td className="p-4 text-center">{p.horasSemanales.toFixed(1)} h/sem</td>
                                 <td className="p-4 text-right text-emerald-600">+{p.ingresos}€</td>
                                 <td className="p-4 text-right text-rose-500">-{p.costes.toFixed(0)}€</td>
@@ -1695,7 +1699,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       {businessIntelligence.clasesRentabilidad.map(c => {
                         const isGreen = c.beneficio > 50;
                         const isYellow = c.beneficio > 0 && c.beneficio <= 50;
-                        const isRed = c.beneficio <= 0;
                         
                         return (
                           <tr key={c.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
@@ -1705,7 +1708,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             </td>
                             <td className="p-4">
                               <div className="font-bold text-slate-700">{c.sede}</div>
-                              <div className="text-[10px] text-zinc-400 uppercase mt-0.5">{getDayName(c.dayOfWeek)} {c.time}</div>
+                              <div className="text-[10px] text-zinc-400 mt-0.5 uppercase">{getDayName(c.dayOfWeek)} {c.time}</div>
                             </td>
                             <td className="p-4 text-center">
                               <span className={`px-2.5 py-1 rounded text-xs font-black ${c.numAlumnos > 0 ? 'bg-zinc-200 text-black' : 'bg-red-100 text-red-700'}`}>
@@ -1715,7 +1718,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <td className="p-4 text-right font-black text-emerald-600">+{c.ingresos}€</td>
                             <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}€</td>
                             <td className="p-4 text-right">
-                              <span className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${isGreen ? 'bg-emerald-100 text-emerald-800' : isYellow ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
+                              <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest ${isGreen ? 'bg-emerald-100 text-emerald-800' : isYellow ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
                                 {c.beneficio > 0 ? '+' : ''}{c.beneficio.toFixed(0)}€
                               </span>
                             </td>
@@ -2005,11 +2008,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     <LayoutGrid className="w-3 h-3 inline mr-1" /> Salas (Arquitecto)
                   </button>
                 </div>
+                
                 {classesViewMode === 'profesores' && (
                   <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                     <Megaphone className="w-3 h-3"/> Redes
                   </button>
                 )}
+                
                 <button onClick={() => setCreateClassModal(true)} className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                   <Plus className="w-3 h-3"/> Crear Clase
                 </button>
@@ -2117,40 +2122,45 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
             {/* VISTA CLÁSICA (POR LISTADO DE PROFESORES) */}
             {classesViewMode === 'profesores' && (
-              <div className="space-y-4 animate-in fade-in">
-                {Object.entries(classesByTeacher).map(([teacher, classes]) => {
-                  const isExpanded = expandedTeacher === teacher;
-                  return (
-                    <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                      <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
-                          <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher} ({classes.length} Clases)</h3>
-                        </div>
-                        {isExpanded ? <ChevronUp/> : <ChevronDown/>}
-                      </button>
-                      {isExpanded && (
-                        <div className="p-4 border-t grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          {classes.map(c => {
-                            const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                            const isHibernated = activeC === 0;
-                            return (
-                              <div key={c.id} className={`p-4 rounded-xl border relative group ${isHibernated ? 'bg-zinc-50 border-dashed' : 'bg-white'}`}>
-                                <div className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)} <span className="bg-zinc-100 p-1 rounded">{c.time}</span></div>
-                                <div className="text-xs text-zinc-400 font-bold uppercase mt-1">{c.subject} • {c.sede} ({c.sala})</div>
-                                <div className="text-right text-xs font-black mt-2">{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
-                                <div className="flex gap-2 mt-3">
-                                  <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>
-                                  <button onClick={() => setEditWebModal(c)} className={`flex-1 p-1 text-[10px] font-black uppercase rounded ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`}><Globe className="w-3 h-3 inline"/> Config</button>
+              <div className="space-y-4 animate-in fade-in slide-in-from-left-4">
+                {Object.keys(classesByTeacher).length === 0 ? (
+                  <div className="p-8 text-center text-zinc-400 font-bold uppercase tracking-widest">No hay clases registradas.</div>
+                ) : (
+                  Object.entries(classesByTeacher).map(([teacher, classes]) => {
+                    const isExpanded = expandedTeacher === teacher;
+                    return (
+                      <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
+                        <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
+                            <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher} ({classes.length} Clases)</h3>
+                          </div>
+                          {isExpanded ? <ChevronUp/> : <ChevronDown/>}
+                        </button>
+                        
+                        {isExpanded && (
+                          <div className="p-4 border-t grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            {classes.map(c => {
+                              const activeC = (c.students || []).filter(s => !s.isPaused).length;
+                              const isHibernated = activeC === 0;
+                              return (
+                                <div key={c.id} className={`p-4 rounded-xl border relative group ${isHibernated ? 'bg-zinc-50 border-dashed' : 'bg-white'}`}>
+                                  <div className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)} <span className="bg-zinc-100 p-1 rounded">{c.time}</span></div>
+                                  <div className="text-xs text-zinc-400 font-bold uppercase mt-1">{c.subject} • {c.sede} ({c.sala})</div>
+                                  <div className="text-right text-xs font-black mt-2">{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
+                                  <div className="flex gap-2 mt-3">
+                                    <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>
+                                    <button onClick={() => setEditWebModal(c)} className={`flex-1 p-1 text-[10px] font-black uppercase rounded ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`}><Globe className="w-3 h-3 inline"/> Config</button>
+                                  </div>
                                 </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
               </div>
             )}
           </div>
@@ -2377,21 +2387,27 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             
             {/* PANELS DE FINANZAS Y GASTOS (GRID) */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Coste Empresa */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Personal</h3>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Lo que el profe ve VS lo que te cuesta a ti.</p>
+                
                 <div className="space-y-4 mt-auto">
                   <div className="flex items-center justify-between bg-zinc-50 p-4 rounded-xl border border-zinc-100">
                     <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-slate-800">Tarifa Convenio (Nómina Profe)</p>
+                      <p className="text-xs font-black uppercase tracking-widest text-slate-800">Tarifa Convenio (Visible profe)</p>
+                      <p className="text-[10px] font-bold text-zinc-400">Calcula su nómina estimada.</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-black outline-none bg-transparent text-right" />
                       <span className="text-sm font-bold text-slate-800">€/h</span>
                     </div>
                   </div>
+
                   <div className="flex items-center justify-between bg-rose-50 p-4 rounded-xl border border-rose-100">
                     <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-rose-900">Coste Empresa Real (Informes)</p>
+                      <p className="text-xs font-black uppercase tracking-widest text-rose-900">Coste Empresa (Oculto)</p>
+                      <p className="text-[10px] font-bold text-rose-700">Calcula informes de rentabilidad.</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <input type="number" step="0.01" value={settings.costeEmpresa} onChange={e => setSettings({...settings, costeEmpresa: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-rose-500 outline-none bg-transparent text-right text-rose-900" />
@@ -2401,33 +2417,37 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
               </div>
 
+              {/* Gastos Fijos */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Activity className="w-5 h-5 text-black"/> Gastos Fijos Mensuales</h3>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Alquileres, luz, agua, cuota de gestoría, etc.</p>
+                
                 <div className="space-y-3 mt-auto">
                   <div className="flex items-center justify-between bg-zinc-50 p-3 rounded-xl border border-zinc-100">
                     <p className="text-xs font-black uppercase tracking-widest text-slate-800">Gastos Compartidos (Global)</p>
                     <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.global || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, global: e.target.value}})} className="text-sm font-black w-20 p-2 border border-zinc-200 rounded-lg text-right animate-in fade-in" />
+                      <input type="number" value={settings.gastosFijos?.global || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, global: e.target.value}})} className="text-sm font-black w-20 p-2 border border-zinc-200 rounded-lg outline-none focus:border-black text-right" />
                       <span className="text-xs font-bold text-zinc-500">€</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between bg-blue-50 p-3 rounded-xl border border-blue-100">
                     <p className="text-xs font-black uppercase tracking-widest text-blue-900">Sede Tarragona</p>
                     <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg text-right text-blue-900" />
+                      <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg outline-none focus:border-blue-500 text-right text-blue-900" />
                       <span className="text-xs font-bold text-blue-600">€</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between bg-rose-50 p-3 rounded-xl border border-rose-100">
                     <p className="text-xs font-black uppercase tracking-widest text-rose-900">Sede Reus</p>
                     <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg text-right text-rose-900" />
+                      <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg outline-none focus:border-rose-500 text-right text-rose-900" />
                       <span className="text-xs font-bold text-rose-600">€</span>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
+            
             <button onClick={() => saveGlobalSettings(settings)} className="w-full bg-black hover:bg-zinc-800 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-md transition-colors flex items-center justify-center gap-2">
               <Save className="w-4 h-4"/> Guardar Ajustes Financieros
             </button>
@@ -2457,8 +2477,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
 
             {/* AFOROS FÍSICOS DE LAS SALAS */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
+              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                  {SEDES.map(sede => (
                     <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
@@ -2480,8 +2502,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
-            {/* CALENDARIO, COPIAS EXCEL, CONTRATOS RECURRENTES (RESTO DEL PANEL ORIGINAL) */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            {/* CALENDARIO ESCOLAR */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminDateInput" type="date" className="flex-1 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
@@ -2493,33 +2515,77 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </select>
                 <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if(d) { const arr = settings[t] || []; if(!arr.includes(d)) { const s = {...settings, [t]: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4 inline"/></button>
               </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div>
+                  <h4 className="font-black text-purple-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><Palmtree className="w-3 h-3"/> Vacaciones</h4>
+                  <div className="space-y-1">
+                    {(settings.vacaciones || []).sort().map(v => (
+                      <div key={v} className="flex justify-between items-center p-2 bg-purple-50 rounded-lg text-xs font-bold text-purple-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-purple-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-purple-500 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><PartyPopper className="w-3 h-3"/> Festivos (Global)</h4>
+                  <div className="space-y-1">
+                    {(settings.festivos || []).sort().map(f => (
+                      <div key={f} className="flex justify-between items-center p-2 bg-amber-50 rounded-lg text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-amber-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-amber-500 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-black text-blue-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Tarragona</h4>
+                  <div className="space-y-1">
+                    {(settings.festivosTarragona || []).sort().map(f => (
+                      <div key={f} className="flex justify-between items-center p-2 bg-blue-50 rounded-lg text-xs font-bold text-blue-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosTarragona: settings.festivosTarragona.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-black text-rose-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Reus</h4>
+                  <div className="space-y-1">
+                    {(settings.festivosReus || []).sort().map(f => (
+                      <div key={f} className="flex justify-between items-center p-2 bg-rose-50 rounded-lg text-xs font-bold text-rose-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosReus: settings.festivosReus.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-rose-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-rose-500 hover:text-red-500"/></button></div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
               <div className="flex gap-2 mb-4">
                 <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
                 <button onClick={() => { const val = document.getElementById('adminTeacherInput').value.trim(); if(val) { const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTeacherInput').value = ''; } }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
               </div>
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                {(settings.teachersList || []).map((t, i) => (
+                  <div key={i} className="flex justify-between items-center p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <span className="font-black uppercase tracking-widest text-slate-700">{t}</span>
+                    <button onClick={() => { const s = {...settings, teachersList: settings.teachersList.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
+                  </div>
+                ))}
+              </div>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
               <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />
               <button onClick={() => saveGlobalSettings(settings)} className="mt-4 bg-indigo-600 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Guardar Normativa</button>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-black"/> Contrato de Servicios (Alumnos)</h3>
               <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-5 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />
               <button onClick={() => saveGlobalSettings(settings)} className="mt-4 bg-black text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Guardar Contrato</button>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-6">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Importador Masivo (Excel)</h3>
               <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquí las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl font-mono text-xs text-slate-700 min-h-[120px] mb-4"/>
               <button onClick={handleMassImport} disabled={isImporting || !importText} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest disabled:opacity-50">{isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}</button>
             </div>
+
           </div>
         )}
 

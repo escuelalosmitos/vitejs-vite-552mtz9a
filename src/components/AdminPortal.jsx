@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -11,6 +11,11 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
+
+const defaultRoomCapacities = {
+  Tarragona: { 'Sala 1': 10, 'Sala 2': 8, 'Sala 3': 4 },
+  Reus: { 'Sala 1': 8, 'Sala 2': 5, 'Sala 3': 4 }
+};
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -61,7 +66,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', hourlyRate: 17.33, generalTasks: [],
     prizes: { trimestral: '', anual: '' },
-    teachersList: [] 
+    teachersList: [],
+    roomCapacities: defaultRoomCapacities
   });
 
   // --- ESTADOS LOCALES UI ---
@@ -72,6 +78,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   
+  // VISTA ARQUITECTO
+  const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
+  const [archDay, setArchDay] = useState('1'); // Lunes por defecto
+  const [archTime, setArchTime] = useState('17:00');
+  const [archSede, setArchSede] = useState('Tarragona');
+
   // ESTADOS MODALES CLASES
   const [createClassModal, setCreateClassModal] = useState(false);
   const [changeClassModal, setChangeClassModal] = useState(null);
@@ -113,7 +125,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad(); 
     });
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => { 
-      if (docSnap.exists()) setSettings(prev => ({ ...prev, ...docSnap.data() })); 
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setSettings(prev => ({ 
+          ...prev, 
+          ...data,
+          roomCapacities: data.roomCapacities || defaultRoomCapacities 
+        }));
+      }
       checkLoad(); 
     });
     const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
@@ -613,7 +632,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     try {
       const classId = Date.now().toString();
-      // 👇 FIX: Guardamos la clase puntual DIRECTAMENTE en el profesor asignado (no en sustituciones)
       const targetDay = newClassData.isRecurring ? parseInt(newClassData.dayOfWeek) : new Date(newClassData.specificDate).getDay();
 
       await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
@@ -730,7 +748,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (mboxAdminDate && mboxAdminSede) {
       const targetDay = new Date(`${mboxAdminDate}T00:00:00`).getDay();
       const allScheduledClasses = allClasses.filter(c => {
-         // 👇 FIX: Radar Mitobox soporta clases puntuales 
          if (c.date && c.date !== mboxAdminDate) return false;
          if (!c.date && c.dayOfWeek !== targetDay) return false;
          return (c.sede || 'Tarragona') === mboxAdminSede;
@@ -1578,7 +1595,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               <button onClick={() => setEditStudentModal(student)} className="flex items-center gap-1 p-2 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest" title="Editar datos del alumno">
                                 <Pencil className="w-3 h-3"/> Editar
                               </button>
-                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manually">
+                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manualmente">
                                 <ArrowRightLeft className="w-3 h-3"/> Mover
                               </button>
                               <button onClick={() => grantRecoveryTicket(student)} className="flex items-center gap-1 p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors text-[10px] font-black uppercase tracking-widest" title="Regalar Ticket de Recuperación">
@@ -1654,105 +1671,178 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 4. CLASES POR PROFESOR (CON BOTÓN DE REDES) --- */}
+        {/* --- 4. CLASES GLOBALES (VISTA PROFESOR Y ARQUITECTO) --- */}
         {activeTab === 'classes' && (
           <div className="space-y-6 animate-in fade-in">
-            <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <header className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mapa de Clases</h2>
-                <p className="text-zinc-500 font-medium text-sm">Visión global de todos los grupos activos por profesor.</p>
+                <p className="text-zinc-500 font-medium text-sm">Visión global de la escuela y planificación de espacios.</p>
               </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={handleGenerateSocialText} 
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors"
-                >
-                  <Megaphone className="w-4 h-4"/> Texto para Redes
-                </button>
-                <button onClick={() => setCreateClassModal(true)} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg flex items-center gap-2 transition-colors">
-                  <Plus className="w-4 h-4"/> Crear Clase
+              <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                <div className="flex bg-zinc-200 p-1 rounded-xl w-full sm:w-auto">
+                  <button onClick={() => setClassesViewMode('profesores')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'profesores' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
+                    <User className="w-3 h-3 inline mr-1" /> Profesores
+                  </button>
+                  <button onClick={() => setClassesViewMode('salas')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'salas' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
+                    <LayoutGrid className="w-3 h-3 inline mr-1" /> Salas
+                  </button>
+                </div>
+                
+                {classesViewMode === 'profesores' && (
+                  <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                    <Megaphone className="w-3 h-3"/> Redes
+                  </button>
+                )}
+                
+                <button onClick={() => setCreateClassModal(true)} className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                  <Plus className="w-3 h-3"/> Crear
                 </button>
               </div>
             </header>
 
-            <div className="space-y-4">
-              {Object.keys(classesByTeacher).length === 0 ? (
-                <div className="p-8 text-center text-zinc-400 font-bold uppercase tracking-widest">No hay clases registradas.</div>
-              ) : (
-                Object.entries(classesByTeacher).map(([teacher, classes]) => {
-                  const isExpanded = expandedTeacher === teacher;
-                  return (
-                    <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                      <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
-                          <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher}</h3>
-                          <span className="bg-zinc-200 text-zinc-600 px-2 py-0.5 rounded text-xs font-black">{classes.length} Clases</span>
-                        </div>
-                        {isExpanded ? <ChevronUp className="w-5 h-5 text-zinc-400"/> : <ChevronDown className="w-5 h-5 text-zinc-400"/>}
-                      </button>
-                      
-                      {isExpanded && (
-                        <div className="p-4 border-t border-zinc-200">
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {classes.map(c => {
-                              const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                              const isHibernated = activeC === 0;
+            {/* VISTA ARQUITECTO (POR SALAS) */}
+            {classesViewMode === 'salas' && (
+               <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+                  <div className="bg-white p-4 rounded-2xl flex flex-col sm:flex-row gap-4 shadow-sm border border-zinc-200 items-center justify-center">
+                     <select value={archSede} onChange={e=>setArchSede(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none focus:border-black rounded-xl font-black text-sm uppercase tracking-widest">
+                       {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+                     </select>
+                     <select value={archDay} onChange={e=>setArchDay(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none focus:border-black rounded-xl font-black text-sm uppercase tracking-widest">
+                       {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
+                     </select>
+                     <input type="time" value={archTime} onChange={e=>setArchTime(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none focus:border-black rounded-xl font-black text-sm uppercase tracking-widest"/>
+                  </div>
 
-                              return (
-                                <div key={c.id} className={`p-4 rounded-xl border ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : 'border-zinc-100 bg-white'} shadow-sm flex flex-col relative group transition-colors`}>
-                                  
-                                  <div className="flex justify-between items-center">
-                                    <div>
-                                      <div className={`font-black text-sm uppercase flex items-center ${isHibernated ? 'text-zinc-400' : ''}`}>
-                                        {isHibernated && <Ghost className="w-4 h-4 mr-1 text-zinc-400" />}
-                                        {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
-                                        <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
-                                      </div>
-                                      <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
-                                        {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
-                                      </div>
-                                    </div>
-                                    
-                                    <div className="text-right pr-6">
-                                      {isHibernated ? (
-                                        <button onClick={() => setResurrectClassModal(c)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1 shadow-sm">
-                                          <PlusCircle className="w-3 h-3"/> Reactivar
-                                        </button>
-                                      ) : (
-                                        <>
-                                          <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                            {activeC} / {c.capacity || '?'}
-                                          </span>
-                                          <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
-                                        </>
-                                      )}
-                                    </div>
-                                    <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
-                                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                     {SALAS.map(sala => {
+                        const maxCapFisica = settings.roomCapacities?.[archSede]?.[sala] || 0;
+                        const claseAsignada = allClasses.find(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.time === archTime && c.sala === sala);
 
-                                  <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
-                                    {!isHibernated && (
-                                      <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5">
-                                        <Users className="w-3 h-3"/> Alumnos
-                                      </button>
-                                    )}
-                                    <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                                      <Globe className="w-3 h-3"/> Web
-                                    </button>
-                                  </div>
+                        if (claseAsignada) {
+                           const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
+                           return (
+                              <div key={sala} className="bg-zinc-900 text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border border-zinc-800 transform hover:scale-[1.02] transition-transform">
+                                 <h3 className="font-black text-3xl uppercase tracking-tighter mb-1 opacity-20 absolute top-4 right-4">{sala.replace('Sala ', 'S')}</h3>
+                                 <h3 className="font-black text-xl uppercase tracking-widest mb-1 text-zinc-400">{sala}</h3>
+                                 
+                                 <div className="flex-1 mt-2 z-10">
+                                    <span className="bg-blue-500 text-white px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Ocupada</span>
+                                    <h4 className="font-black text-2xl mt-3 tracking-tight">{claseAsignada.subject}</h4>
+                                    <p className="text-zinc-400 text-xs font-bold uppercase mt-1 tracking-widest flex items-center gap-1"><User className="w-3 h-3"/> Prof: {claseAsignada.teacher}</p>
+                                 </div>
+                                 <div className="mt-4 pt-4 border-t border-zinc-800 flex justify-between items-center z-10">
+                                    <span className="text-xs font-black text-zinc-300">Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-400' : 'text-emerald-400'}>{activeC}/{claseAsignada.capacity}</span></span>
+                                    <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors">Ver Clase</button>
+                                 </div>
+                              </div>
+                           );
+                        } else {
+                           return (
+                              <div key={sala} className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-3xl shadow-sm relative flex flex-col min-h-[220px] hover:border-emerald-400 transition-colors transform hover:scale-[1.02]">
+                                 <h3 className="font-black text-xl uppercase tracking-widest text-emerald-900 mb-1">{sala}</h3>
+                                 <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600/70 mb-4 bg-emerald-100 px-2 py-1 rounded w-max">Capacidad real: {maxCapFisica} pax</p>
+                                 
+                                 <div className="flex-1 flex flex-col items-center justify-center gap-2">
+                                    <DoorOpen className="w-8 h-8 text-emerald-300"/>
+                                    <span className="text-emerald-600 font-black uppercase tracking-widest text-lg">SALA LIBRE</span>
+                                 </div>
+                                 
+                                 <button onClick={() => {
+                                    setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: archTime, sede: archSede, sala: sala});
+                                    setCreateClassModal(true);
+                                 }} className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-all shadow-md flex items-center justify-center gap-2">
+                                    <PlusCircle className="w-4 h-4"/> Crear Clase Aquí
+                                 </button>
+                              </div>
+                           );
+                        }
+                     })}
+                  </div>
+               </div>
+            )}
 
-                                </div>
-                              );
-                            })}
+            {/* VISTA CLÁSICA (POR PROFESOR) */}
+            {classesViewMode === 'profesores' && (
+              <div className="space-y-4 animate-in fade-in slide-in-from-left-4">
+                {Object.keys(classesByTeacher).length === 0 ? (
+                  <div className="p-8 text-center text-zinc-400 font-bold uppercase tracking-widest">No hay clases registradas.</div>
+                ) : (
+                  Object.entries(classesByTeacher).map(([teacher, classes]) => {
+                    const isExpanded = expandedTeacher === teacher;
+                    return (
+                      <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
+                        <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
+                          <div className="flex items-center gap-3">
+                            <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
+                            <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher}</h3>
+                            <span className="bg-zinc-200 text-zinc-600 px-2 py-0.5 rounded text-xs font-black">{classes.length} Clases</span>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })
-              )}
-            </div>
+                          {isExpanded ? <ChevronUp className="w-5 h-5 text-zinc-400"/> : <ChevronDown className="w-5 h-5 text-zinc-400"/>}
+                        </button>
+                        
+                        {isExpanded && (
+                          <div className="p-4 border-t border-zinc-200">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                              {classes.map(c => {
+                                const activeC = (c.students || []).filter(s => !s.isPaused).length;
+                                const isHibernated = activeC === 0;
+
+                                return (
+                                  <div key={c.id} className={`p-4 rounded-xl border ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : 'border-zinc-100 bg-white'} shadow-sm flex flex-col relative group transition-colors`}>
+                                    
+                                    <div className="flex justify-between items-center">
+                                      <div>
+                                        <div className={`font-black text-sm uppercase flex items-center ${isHibernated ? 'text-zinc-400' : ''}`}>
+                                          {isHibernated && <Ghost className="w-4 h-4 mr-1 text-zinc-400" />}
+                                          {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
+                                          <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
+                                        </div>
+                                        <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+                                          {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
+                                        </div>
+                                      </div>
+                                      
+                                      <div className="text-right pr-6">
+                                        {isHibernated ? (
+                                          <button onClick={() => setResurrectClassModal(c)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1 shadow-sm">
+                                            <PlusCircle className="w-3 h-3"/> Reactivar
+                                          </button>
+                                        ) : (
+                                          <>
+                                            <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                              {activeC} / {c.capacity || '?'}
+                                            </span>
+                                            <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
+                                          </>
+                                        )}
+                                      </div>
+                                      <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
+                                    </div>
+
+                                    <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
+                                      {!isHibernated && (
+                                        <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5">
+                                          <Users className="w-3 h-3"/> Alumnos
+                                        </button>
+                                      )}
+                                      <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                                        <Globe className="w-3 h-3"/> Web
+                                      </button>
+                                    </div>
+
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -2102,6 +2192,46 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   <button onClick={() => saveGlobalSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-sm transition-colors">Guardar</button>
                 </div>
               </div>
+            </div>
+
+            {/* NUEVO: AFOROS FÍSICOS (LOCALES) */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                 {SEDES.map(sede => (
+                    <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
+                       <h4 className="font-black uppercase tracking-widest text-slate-800 mb-4">{sede}</h4>
+                       <div className="space-y-4">
+                         {SALAS.map(sala => (
+                            <div key={sala} className="flex items-center justify-between bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
+                               <label className="text-xs font-black uppercase tracking-widest text-zinc-500">{sala}</label>
+                               <div className="flex items-center gap-2">
+                                 <input 
+                                    type="number" 
+                                    min="1" 
+                                    value={settings.roomCapacities?.[sede]?.[sala] || ''} 
+                                    onChange={e => {
+                                      const val = parseInt(e.target.value) || 0;
+                                      const newCaps = JSON.parse(JSON.stringify(settings.roomCapacities || defaultRoomCapacities));
+                                      if (!newCaps[sede]) newCaps[sede] = {};
+                                      newCaps[sede][sala] = val;
+                                      setSettings({...settings, roomCapacities: newCaps});
+                                    }} 
+                                    className="w-16 p-2 text-center font-black text-sm bg-zinc-100 border border-zinc-200 rounded-lg outline-none focus:border-emerald-500 transition-colors"
+                                 />
+                                 <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">pax</span>
+                               </div>
+                            </div>
+                         ))}
+                       </div>
+                    </div>
+                 ))}
+              </div>
+              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-emerald-700 transition-colors">
+                <Save className="w-4 h-4"/> Guardar Aforos Físicos
+              </button>
             </div>
 
             {/* 5. NORMATIVA PARA PROFESORES */}

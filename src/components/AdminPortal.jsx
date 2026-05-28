@@ -3,12 +3,11 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 
-const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
@@ -18,6 +17,8 @@ const defaultRoomCapacities = {
   Tarragona: { 'Sala 1': 10, 'Sala 2': 8, 'Sala 3': 4 },
   Reus: { 'Sala 1': 8, 'Sala 2': 5, 'Sala 3': 4 }
 };
+
+const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -66,10 +67,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [availabilities, setAvailabilities] = useState({}); 
   
   const [settings, setSettings] = useState({ 
-    festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', hourlyRate: 17.33, generalTasks: [],
-    prizes: { trimestral: '', anual: '' },
-    teachersList: [],
-    roomCapacities: defaultRoomCapacities
+    festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
+    hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 },
+    generalTasks: [], prizes: { trimestral: '', anual: '' }, teachersList: [],
+    roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos
   });
 
   // --- ESTADOS LOCALES UI ---
@@ -98,7 +99,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [newClassData, setNewClassData] = useState({
     isRecurring: true, specificDate: new Date().toISOString().split('T')[0], 
     dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1',
-    teacher: '', subject: '', capacity: '', duration: 60, notes: ''
+    teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: ''
   });
 
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
@@ -132,7 +133,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         setSettings(prev => ({ 
           ...prev, 
           ...data,
-          roomCapacities: data.roomCapacities || defaultRoomCapacities 
+          roomCapacities: data.roomCapacities || defaultRoomCapacities,
+          instrumentos: data.instrumentos || defaultInstrumentos,
+          costeEmpresa: data.costeEmpresa || 22,
+          gastosFijos: data.gastosFijos || { global: 0, tarragona: 0, reus: 0 }
         }));
       }
       checkLoad(); 
@@ -169,6 +173,47 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     tomorrow.setDate(tomorrow.getDate() + 1);
     return tomorrow.getDate() === 1;
   }, []);
+
+  // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE)
+  const businessIntelligence = useMemo(() => {
+    let totalIngresos = 0;
+    let costeTotalProfesores = 0;
+    const clasesRentabilidad = [];
+
+    const activeRecurring = allClasses.filter(c => !c.date);
+
+    activeRecurring.forEach(c => {
+      const numAlumnos = (c.students || []).filter(s => !s.isPaused).length;
+      const cuota = Number(c.cuotaBase) || 0;
+      const ingresosMensualesClase = numAlumnos * cuota;
+      
+      const duracionHoras = (Number(c.duration) || 60) / 60;
+      const costeMensualClase = duracionHoras * 4 * (settings.costeEmpresa || 22);
+      
+      const beneficio = ingresosMensualesClase - costeMensualClase;
+
+      totalIngresos += ingresosMensualesClase;
+      costeTotalProfesores += costeMensualClase;
+
+      clasesRentabilidad.push({
+        id: c.id, subject: c.subject, teacher: c.teacher, sede: c.sede, time: c.time, dayOfWeek: c.dayOfWeek,
+        numAlumnos, ingresos: ingresosMensualesClase, coste: costeMensualClase, beneficio
+      });
+    });
+
+    clasesRentabilidad.sort((a,b) => b.beneficio - a.beneficio);
+
+    const fijos = settings.gastosFijos || { global: 0, tarragona: 0, reus: 0 };
+    const totalFijos = Number(fijos.global) + Number(fijos.tarragona) + Number(fijos.reus);
+    
+    return {
+      totalIngresos,
+      costeTotalProfesores,
+      totalFijos,
+      beneficioNeto: totalIngresos - costeTotalProfesores - totalFijos,
+      clasesRentabilidad
+    };
+  }, [allClasses, settings]);
 
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
@@ -616,13 +661,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       if (!confirmForce) return; 
     }
 
-    // --- 2. Aviso de Solapamiento Físico de Sala (Vista Arquitecto) ---
+    // --- 2. Aviso de Solapamiento Físico de Sala ---
     const collidingClasses = allClasses.filter(c => {
       if (c.sede !== newClassData.sede) return false;
       if (c.sala !== newClassData.sala) return false;
       if (c.time !== newClassData.time) return false;
 
-      // Cruce de días (Recurrente vs Puntual)
       if (newClassData.isRecurring) {
         if (c.isRecurring && c.dayOfWeek === dayKey) return true;
         if (!c.isRecurring && new Date(c.date).getDay() === dayKey) return true; 
@@ -662,6 +706,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
         ...newClassData,
         ...baseWebConfig,
+        cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
         id: classId,
         students: [],
         exceptions: {},
@@ -672,7 +717,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
 
       setCreateClassModal(false);
-      setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, notes: '' });
+      setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: '' });
     } catch (e) {
       alert("Error al crear la clase.");
     }
@@ -723,12 +768,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
   
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
-  const rankQuarterly = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0)
-    .map(s => ({ ...s, liveQuarterly: (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) }))
-    .sort((a,b) => b.liveQuarterly - a.liveQuarterly).slice(0,10);
-  const rankAnnual = students.filter(s => (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) > 0)
-    .map(s => ({ ...s, liveAnnual: (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) }))
-    .sort((a,b) => b.liveAnnual - a.liveAnnual).slice(0,10);
+  const rankQuarterly = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0).map(s => ({ ...s, liveQuarterly: (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) })).sort((a,b) => b.liveQuarterly - a.liveQuarterly).slice(0,10);
+  const rankAnnual = students.filter(s => (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) > 0).map(s => ({ ...s, liveAnnual: (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) })).sort((a,b) => b.liveAnnual - a.liveAnnual).slice(0,10);
 
   const classesByTeacher = useMemo(() => {
     const grouped = {};
@@ -906,20 +947,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       tadosiUrl: editWebModal.tadosiUrl || '',
       startDate: editWebModal.startDate || '',
       price: editWebModal.price || '',
+      cuotaBase: editWebModal.cuotaBase || 60, // 👈 Nuevo: Cuota Matemática para BI
       publicDetails: editWebModal.publicDetails || ''
     });
     const [saving, setSaving] = useState(false);
     const handleSave = async () => {
       setSaving(true);
       try {
-        await updateDoc(doc(db, editWebModal.refPath), formData);
-        alert("Configuración web guardada correctamente.");
+        await updateDoc(doc(db, editWebModal.refPath), {
+          ...formData,
+          cuotaBase: Number(formData.cuotaBase) || 0
+        });
+        alert("Configuración web e informes guardada correctamente.");
         setEditWebModal(null);
-      } catch(e) {
-        alert("Error al guardar: " + e.message);
-      } finally {
-        setSaving(false);
-      }
+      } catch(e) { alert("Error al guardar: " + e.message); } finally { setSaving(false); }
     };
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
@@ -928,42 +969,61 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           <div className="flex items-center gap-3 text-blue-600 mb-6">
             <Globe className="w-8 h-8" />
             <div>
-              <h2 className="text-xl font-black uppercase tracking-tight">Escaparate Web</h2>
+              <h2 className="text-xl font-black uppercase tracking-tight">Configurar Clase</h2>
               <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{editWebModal.subject} • {getDayName(editWebModal.dayOfWeek)} {editWebModal.time}h</p>
             </div>
           </div>
+          
           <div className="space-y-4 mb-8">
-            <div className="bg-blue-50 border border-blue-200 p-4 rounded-xl flex items-center justify-between">
+            {/* ZONA DE NEGOCIO (BI) */}
+            <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6">
+              <h4 className="text-[10px] font-black uppercase text-emerald-800 tracking-widest mb-3 flex items-center gap-1"><DollarSign className="w-4 h-4"/> Datos Internos (Informes)</h4>
               <div>
-                <p className="text-sm font-black text-blue-900 uppercase">Visible en la Web</p>
-                <p className="text-[10px] font-bold text-blue-700">Permite que WordPress lea esta clase.</p>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={formData.isWebVisible} onChange={e => setFormData({...formData, isWebVisible: e.target.checked})} className="sr-only peer" />
-                <div className="w-11 h-6 bg-zinc-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-              </label>
-            </div>
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">URL de inscripción (Tadosi) *</label>
-              <input type="text" value={formData.tadosiUrl} onChange={e => setFormData({...formData, tadosiUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Precio / Cuota</label>
-                <input type="text" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} placeholder="Ej: 75€/mes" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
-              </div>
-              <div>
-                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día exacto de Inicio</label>
-                <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500 transition-colors" />
+                <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 block">Cuota Base Matemática (€) *</label>
+                <input type="number" value={formData.cuotaBase} onChange={e => setFormData({...formData, cuotaBase: e.target.value})} placeholder="60" className="w-full p-3 bg-white border-2 border-emerald-100 rounded-xl font-black text-sm outline-none focus:border-emerald-500 transition-colors" />
+                <p className="text-[9px] text-emerald-600 mt-1 font-bold">Se usa para calcular la rentabilidad en la pestaña Informes (Alumnos activos x Cuota = Ingresos).</p>
               </div>
             </div>
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
-              <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Especial para adultos, incluye material..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500 transition-colors" />
+
+            {/* ZONA PÚBLICA (WEB) */}
+            <div className="bg-zinc-50 border border-zinc-200 p-4 rounded-xl">
+               <h4 className="text-[10px] font-black uppercase text-zinc-500 tracking-widest mb-3 flex items-center gap-1"><Globe className="w-4 h-4"/> Escaparate Web</h4>
+               
+               <div className="flex items-center justify-between mb-4 border-b border-zinc-200 pb-4">
+                  <div>
+                    <p className="text-sm font-black text-slate-800 uppercase">Visible en la Web</p>
+                    <p className="text-[10px] font-bold text-zinc-500">Publica esta clase en WordPress.</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" checked={formData.isWebVisible} onChange={e => setFormData({...formData, isWebVisible: e.target.checked})} className="sr-only peer" />
+                    <div className="w-11 h-6 bg-zinc-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+               </div>
+
+               <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">URL de inscripción (Tadosi) *</label>
+                    <input type="text" value={formData.tadosiUrl} onChange={e => setFormData({...formData, tadosiUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Precio Display (Texto)</label>
+                      <input type="text" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} placeholder="Ej: 60€/mes" className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día exacto de Inicio</label>
+                      <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
+                    <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Nivel iniciación..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500" />
+                  </div>
+               </div>
             </div>
           </div>
           <button onClick={handleSave} disabled={saving} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-blue-700 transition-all shadow-md disabled:opacity-50">
-            {saving ? 'Guardando...' : 'Guardar Configuración Web'}
+            {saving ? 'Guardando...' : 'Guardar Toda la Configuración'}
           </button>
         </div>
       </div>
@@ -1024,7 +1084,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Instrumento *</label>
               <select value={newClassData.subject} onChange={e => setNewClassData({...newClassData, subject: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
                 <option value="">Seleccionar...</option>
-                {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
+                {(settings.instrumentos || defaultInstrumentos).map(i => <option key={i} value={i}>{i}</option>)}
               </select>
             </div>
           </div>
@@ -1071,8 +1131,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <input type="number" min="1" value={newClassData.capacity} onChange={e => setNewClassData({...newClassData, capacity: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" placeholder="Ej: 4" />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Minutos</label>
-              <input type="number" step="5" min="15" value={newClassData.duration} onChange={e => setNewClassData({...newClassData, duration: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+              <label className="text-[10px] font-black uppercase text-emerald-600 mb-1 block">Cuota Alumno (€)</label>
+              <input type="number" min="0" value={newClassData.cuotaBase} onChange={e => setNewClassData({...newClassData, cuotaBase: e.target.value})} className="w-full p-3 bg-emerald-50 border-2 border-emerald-200 rounded-xl font-black text-sm outline-none text-emerald-900" placeholder="Ej: 60" />
             </div>
           </div>
           {newClassData.teacher && (newClassData.isRecurring ? newClassData.dayOfWeek : newClassData.specificDate) && (
@@ -1402,6 +1462,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
             { id: 'announcements', icon: Megaphone, label: 'Tablón' },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
+            { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, // 👈 NUEVA PESTAÑA
             { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
@@ -1435,6 +1496,100 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             <button onClick={() => setActiveTab('gamification')} className="bg-amber-950 text-amber-400 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors whitespace-nowrap">
               Ir a cerrar mes
             </button>
+          </div>
+        )}
+
+        {/* --- PESTAÑA: INFORMES (BUSINESS INTELLIGENCE) --- */}
+        {activeTab === 'informes' && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
+            <header className="mb-6">
+              <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Business Intelligence</h2>
+              <p className="text-zinc-500 font-bold text-sm mt-1 uppercase tracking-widest">Rentabilidad Estimada Mensual (Clases Recurrentes Vivas)</p>
+            </header>
+
+            {/* NIVEL 1: RESUMEN GLOBAL */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
+                <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
+                <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
+                <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Alumnos Activos × Cuota Base</p>
+              </div>
+              
+              <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
+                <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
+                <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
+                <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Horas impartidas × Coste Empresa ({settings.costeEmpresa}€)</p>
+              </div>
+
+              <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
+                <div className="flex items-center gap-2 text-rose-600 mb-2"><MapPin className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
+                <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}€</p>
+                <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Suma de todos los centros</p>
+              </div>
+
+              <div className="bg-black text-white p-6 rounded-3xl shadow-xl relative overflow-hidden">
+                <div className="relative z-10">
+                  <div className="flex items-center gap-2 text-zinc-400 mb-2"><DollarSign className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Beneficio Neto</h3></div>
+                  <p className={`text-4xl font-black tracking-tighter ${businessIntelligence.beneficioNeto >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
+                    {businessIntelligence.beneficioNeto >= 0 ? '+' : ''}{businessIntelligence.beneficioNeto.toLocaleString('es-ES', {maximumFractionDigits:0})}€
+                  </p>
+                </div>
+                <PieChart className="absolute -bottom-6 -right-6 w-32 h-32 text-zinc-800 opacity-50 pointer-events-none" />
+              </div>
+            </div>
+
+            {/* NIVEL 3: SEMÁFORO DE AULAS */}
+            <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-zinc-100 bg-zinc-50 flex items-center justify-between">
+                <h3 className="font-black uppercase tracking-widest text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5"/> Rentabilidad por Aula (Semáforo)</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[800px]">
+                  <thead>
+                    <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-500 border-b border-zinc-200">
+                      <th className="p-4 font-black">Clase</th>
+                      <th className="p-4 font-black">Centro y Horario</th>
+                      <th className="p-4 font-black text-center">Alumnos</th>
+                      <th className="p-4 font-black text-right text-emerald-600">Ingresos</th>
+                      <th className="p-4 font-black text-right text-rose-600">Coste (Prof)</th>
+                      <th className="p-4 font-black text-right">Beneficio/Mes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-sm font-medium text-slate-700">
+                    {businessIntelligence.clasesRentabilidad.map(c => {
+                      const isGreen = c.beneficio > 50;
+                      const isYellow = c.beneficio > 0 && c.beneficio <= 50;
+                      const isRed = c.beneficio <= 0;
+                      
+                      return (
+                        <tr key={c.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
+                          <td className="p-4">
+                            <div className="font-black text-black uppercase">{c.subject}</div>
+                            <div className="text-[10px] text-zinc-500 font-bold uppercase mt-0.5">Prof: {c.teacher}</div>
+                          </td>
+                          <td className="p-4">
+                            <div className="font-bold text-slate-700">{c.sede}</div>
+                            <div className="text-[10px] text-zinc-400 uppercase mt-0.5">{getDayName(c.dayOfWeek)} {c.time}</div>
+                          </td>
+                          <td className="p-4 text-center">
+                            <span className={`px-2.5 py-1 rounded text-xs font-black ${c.numAlumnos > 0 ? 'bg-zinc-200 text-black' : 'bg-red-100 text-red-700'}`}>
+                              {c.numAlumnos} pax
+                            </span>
+                          </td>
+                          <td className="p-4 text-right font-black text-emerald-600">{c.ingresos}€</td>
+                          <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}€</td>
+                          <td className="p-4 text-right">
+                            <span className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${isGreen ? 'bg-emerald-100 text-emerald-800' : isYellow ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
+                              {c.beneficio > 0 ? '+' : ''}{c.beneficio.toFixed(0)}€
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1785,7 +1940,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                      })}
                   </div>
 
-                  {/* NUEVO: CUADRANTE HORARIO ESTILO EXCEL */}
+                  {/* CUADRANTE HORARIO ESTILO EXCEL */}
                   <div className="mt-12">
                      <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2">
                         <Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo
@@ -1805,7 +1960,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
                                     {SALAS.map(sala => {
-                                       // Buscamos si hay clases que empiezan en esta hora (ej: 17:00 o 17:30)
                                        const classesInSlot = allClasses.filter(c => 
                                           c.sede === archSede && 
                                           c.dayOfWeek === parseInt(archDay) && 
@@ -1912,7 +2066,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                         </button>
                                       )}
                                       <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                                        <Globe className="w-3 h-3"/> Web
+                                        <Globe className="w-3 h-3"/> Configurar / Web
                                       </button>
                                     </div>
 
@@ -1978,7 +2132,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                            </button>
                         )}
                         <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                          <Globe className="w-3 h-3"/> Web
+                          <Globe className="w-3 h-3"/> Configurar / Web
                         </button>
                       </div>
                     </div>
@@ -2150,10 +2304,145 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <p className="text-zinc-500 font-medium text-sm">Ajustes globales y legales de la escuela.</p>
             </header>
             
-            {/* 1. CALENDARIO ESCOLAR MEJORADO CON SEDES */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
+            {/* NUEVO: FINANZAS Y GASTOS (GRID) */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Coste Empresa */}
+              <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
+                <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Profesorado</h3>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Lo que el profe ve VS lo que te cuesta a ti.</p>
+                
+                <div className="space-y-4 mt-auto">
+                  <div className="flex items-center justify-between bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-widest text-slate-800">Tarifa Convenio (Visible profe)</p>
+                      <p className="text-[10px] font-bold text-zinc-400">Calcula su nómina estimada.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-black outline-none bg-transparent text-right" />
+                      <span className="text-sm font-bold text-slate-800">€/h</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between bg-rose-50 p-4 rounded-xl border border-rose-100">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-widest text-rose-900">Coste Empresa (Oculto)</p>
+                      <p className="text-[10px] font-bold text-rose-700">Calcula informes de rentabilidad.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input type="number" step="0.01" value={settings.costeEmpresa} onChange={e => setSettings({...settings, costeEmpresa: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-rose-500 outline-none bg-transparent text-right text-rose-900" />
+                      <span className="text-sm font-bold text-rose-800">€/h</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Gastos Fijos */}
+              <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
+                <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Activity className="w-5 h-5 text-black"/> Gastos Fijos Mensuales</h3>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Alquileres, luz, agua, cuota de gestoría, etc.</p>
+                
+                <div className="space-y-3 mt-auto">
+                  <div className="flex items-center justify-between bg-zinc-50 p-3 rounded-xl border border-zinc-100">
+                    <p className="text-xs font-black uppercase tracking-widest text-slate-800">Global / Compartidos</p>
+                    <div className="flex items-center gap-2">
+                      <input type="number" value={settings.gastosFijos?.global || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, global: e.target.value}})} className="text-sm font-black w-20 p-2 border border-zinc-200 rounded-lg outline-none focus:border-black text-right" />
+                      <span className="text-xs font-bold text-zinc-500">€</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between bg-blue-50 p-3 rounded-xl border border-blue-100">
+                    <p className="text-xs font-black uppercase tracking-widest text-blue-900">Sede Tarragona</p>
+                    <div className="flex items-center gap-2">
+                      <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg outline-none focus:border-blue-500 text-right text-blue-900" />
+                      <span className="text-xs font-bold text-blue-600">€</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between bg-rose-50 p-3 rounded-xl border border-rose-100">
+                    <p className="text-xs font-black uppercase tracking-widest text-rose-900">Sede Reus</p>
+                    <div className="flex items-center gap-2">
+                      <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg outline-none focus:border-rose-500 text-right text-rose-900" />
+                      <span className="text-xs font-bold text-rose-600">€</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <button onClick={() => saveGlobalSettings(settings)} className="w-full bg-black hover:bg-zinc-800 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-md transition-colors flex items-center justify-center gap-2">
+              <Save className="w-4 h-4"/> Guardar Ajustes Financieros
+            </button>
+
+            {/* NUEVO: OFERTA DE INSTRUMENTOS DINÁMICA */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Music className="w-5 h-5 text-black"/> Oferta de Instrumentos</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-4">Añade o quita disciplinas musicales. Esto actualizará el desplegable de "Crear Clase".</p>
               
+              <div className="flex gap-2 mb-4">
+                <input id="adminInstInput" type="text" placeholder="Ej: Violonchelo" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
+                <button onClick={() => { 
+                  const val = document.getElementById('adminInstInput').value.trim(); 
+                  if(val) { 
+                    const s = {...settings, instrumentos: [...(settings.instrumentos||[]), val]}; 
+                    setSettings(s); saveGlobalSettings(s); 
+                    document.getElementById('adminInstInput').value = ''; 
+                  } 
+                }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(settings.instrumentos || defaultInstrumentos).map((inst, i) => (
+                  <span key={i} className="bg-zinc-100 p-2 text-xs font-black uppercase tracking-widest rounded-lg border flex items-center gap-2 text-slate-700">
+                    {inst}
+                    <button onClick={() => { 
+                      const s = {...settings, instrumentos: settings.instrumentos.filter((_, idx) => idx !== i)}; 
+                      setSettings(s); saveGlobalSettings(s); 
+                    }} className="text-red-500 hover:bg-red-50 p-1 rounded"><X className="w-3 h-3"/></button>
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* RESTO DE CONFIGURACIONES */}
+            
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                 {SEDES.map(sede => (
+                    <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
+                       <h4 className="font-black uppercase tracking-widest text-slate-800 mb-4">{sede}</h4>
+                       <div className="space-y-4">
+                         {SALAS.map(sala => (
+                            <div key={sala} className="flex items-center justify-between bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
+                               <label className="text-xs font-black uppercase tracking-widest text-zinc-500">{sala}</label>
+                               <div className="flex items-center gap-2">
+                                 <input 
+                                    type="number" 
+                                    min="1" 
+                                    value={settings.roomCapacities?.[sede]?.[sala] || ''} 
+                                    onChange={e => {
+                                      const val = parseInt(e.target.value) || 0;
+                                      const newCaps = JSON.parse(JSON.stringify(settings.roomCapacities || defaultRoomCapacities));
+                                      if (!newCaps[sede]) newCaps[sede] = {};
+                                      newCaps[sede][sala] = val;
+                                      setSettings({...settings, roomCapacities: newCaps});
+                                    }} 
+                                    className="w-16 p-2 text-center font-black text-sm bg-zinc-100 border border-zinc-200 rounded-lg outline-none focus:border-emerald-500 transition-colors"
+                                 />
+                                 <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">pax</span>
+                               </div>
+                            </div>
+                         ))}
+                       </div>
+                    </div>
+                 ))}
+              </div>
+              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-emerald-700 transition-colors">
+                <Save className="w-4 h-4"/> Guardar Aforos Físicos
+              </button>
+            </div>
+
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminDateInput" type="date" className="flex-1 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
                 <select id="adminDateType" className="flex-[2] p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-xs uppercase">
@@ -2220,8 +2509,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             </div>
 
-            {/* 2. PLANTILLA DE PROFESORES */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
               <div className="flex gap-2 mb-4">
                 <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
@@ -2249,128 +2537,46 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             </div>
 
-            {/* 3 & 4. TAREAS Y TARIFA (GRID) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              
-              <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
-                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Check className="w-5 h-5 text-black"/> Tareas de Hora Muerta</h3>
-                <div className="flex gap-2 mb-4">
-                  <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-medium" />
-                  <button onClick={() => { const val = document.getElementById('adminTaskInput').value; if(val) { const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTaskInput').value = ''; } }} className="bg-black text-white px-4 rounded-xl font-bold uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
-                </div>
-                <div className="space-y-2 max-h-32 overflow-y-auto pr-2 flex-1">
-                  {settings.generalTasks?.map((t, i) => (
-                    <div key={i} className="flex justify-between items-center p-2.5 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
-                      <span className="font-medium text-slate-600">{t}</span>
-                      <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 className="w-3 h-3"/></button>
-                    </div>
-                  ))}
-                </div>
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8 flex flex-col h-full">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Check className="w-5 h-5 text-black"/> Tareas de Hora Muerta</h3>
+              <div className="flex gap-2 mb-4">
+                <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-medium" />
+                <button onClick={() => { const val = document.getElementById('adminTaskInput').value; if(val) { const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTaskInput').value = ''; } }} className="bg-black text-white px-4 rounded-xl font-bold uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
               </div>
-
-              <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
-                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Salario Convenio</h3>
-                <p className="text-xs text-zinc-500 font-medium mb-6">Precio por hora base utilizado para el cálculo en las nóminas estimadas de los profesores.</p>
-                <div className="flex items-center gap-4 bg-zinc-50 p-5 rounded-2xl border border-zinc-200 mt-auto">
-                  <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-2xl font-black w-24 p-1 border-b-2 border-black outline-none bg-transparent" />
-                  <span className="text-xl font-bold text-slate-800">€ / hora</span>
-                  <button onClick={() => saveGlobalSettings(settings)} className="ml-auto bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-sm transition-colors">Guardar</button>
-                </div>
+              <div className="space-y-2 max-h-32 overflow-y-auto pr-2 flex-1">
+                {settings.generalTasks?.map((t, i) => (
+                  <div key={i} className="flex justify-between items-center p-2.5 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <span className="font-medium text-slate-600">{t}</span>
+                    <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 className="w-3 h-3"/></button>
+                  </div>
+                ))}
               </div>
             </div>
 
-            {/* NUEVO: AFOROS FÍSICOS (LOCALES) */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                 {SEDES.map(sede => (
-                    <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
-                       <h4 className="font-black uppercase tracking-widest text-slate-800 mb-4">{sede}</h4>
-                       <div className="space-y-4">
-                         {SALAS.map(sala => (
-                            <div key={sala} className="flex items-center justify-between bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
-                               <label className="text-xs font-black uppercase tracking-widest text-zinc-500">{sala}</label>
-                               <div className="flex items-center gap-2">
-                                 <input 
-                                    type="number" 
-                                    min="1" 
-                                    value={settings.roomCapacities?.[sede]?.[sala] || ''} 
-                                    onChange={e => {
-                                      const val = parseInt(e.target.value) || 0;
-                                      const newCaps = JSON.parse(JSON.stringify(settings.roomCapacities || defaultRoomCapacities));
-                                      if (!newCaps[sede]) newCaps[sede] = {};
-                                      newCaps[sede][sala] = val;
-                                      setSettings({...settings, roomCapacities: newCaps});
-                                    }} 
-                                    className="w-16 p-2 text-center font-black text-sm bg-zinc-100 border border-zinc-200 rounded-lg outline-none focus:border-emerald-500 transition-colors"
-                                 />
-                                 <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">pax</span>
-                               </div>
-                            </div>
-                         ))}
-                       </div>
-                    </div>
-                 ))}
-              </div>
-              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-emerald-700 transition-colors">
-                <Save className="w-4 h-4"/> Guardar Aforos Físicos
-              </button>
-            </div>
-
-            {/* 5. NORMATIVA PARA PROFESORES */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-4">Este reglamento aparecerá disponible en el panel de los profesores (App Profesores) para su consulta.</p>
               <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Escribe aquí el reglamento interno, horarios, protocolos..." />
-              <button onClick={() => saveGlobalSettings(settings)} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-indigo-700 transition-colors">
-                Guardar Normativa Profesores
-              </button>
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-indigo-700 transition-colors">Guardar Normativa Profesores</button>
             </div>
 
-            {/* 6. CONTRATO DE PRESTACIÓN DE SERVICIOS (ALUMNOS) */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-black"/> Contrato de Servicios (Alumnos)</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-4">Texto legal visible en la pestaña Gestiones del Portal del Alumno.</p>
               <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-5 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Pega aquí el contrato completo..." />
-              <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm hover:bg-zinc-800 transition-colors">
-                Guardar Contrato Alumnos
-              </button>
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm hover:bg-zinc-800 transition-colors">Guardar Contrato Alumnos</button>
             </div>
 
-            {/* 7. MANTENIMIENTO DE BASE DE DATOS */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-6">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Trash2 className="w-5 h-5 text-red-600"/> Mantenimiento del Sistema</h3>
               <p className="text-sm text-zinc-500 font-medium mb-6">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos rápida y optimizada.</p>
-              
-              <button 
-                onClick={cleanExpiredTickets} 
-                className="bg-red-50 hover:bg-red-100 text-red-700 px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max border border-red-200"
-              >
+              <button onClick={cleanExpiredTickets} className="bg-red-50 hover:bg-red-100 text-red-700 px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max border border-red-200">
                 <Trash2 className="w-4 h-4"/> Purgar Tickets Caducados
               </button>
             </div>
 
-            {/* 8. IMPORTADOR MASIVO DE TADOSI */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-6">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Importador Masivo (Excel)</h3>
-              <p className="text-sm text-zinc-500 font-medium mb-4">Copia dos columnas de tu Excel (<strong>Nombre</strong> y <strong>Email</strong>) y pégalas en este cuadro de texto. El sistema creará sus perfiles base automáticamente.</p>
-              
-              <textarea 
-                value={importText} 
-                onChange={(e) => setImportText(e.target.value)} 
-                placeholder="Pega aquí las filas del Excel..." 
-                className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-mono text-xs text-slate-700 min-h-[150px] resize-y mb-4 whitespace-pre"
-              />
-              
-              <button 
-                onClick={handleMassImport} 
-                disabled={isImporting || !importText}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max disabled:opacity-50"
-              >
-                {isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}
-              </button>
+              <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquí las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-mono text-xs text-slate-700 min-h-[150px] resize-y mb-4 whitespace-pre"/>
+              <button onClick={handleMassImport} disabled={isImporting || !importText} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max disabled:opacity-50">{isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}</button>
             </div>
 
           </div>

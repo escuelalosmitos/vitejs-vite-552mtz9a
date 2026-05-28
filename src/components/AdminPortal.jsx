@@ -81,11 +81,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   
-  // VISTA ARQUITECTO
+  // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
   const [archDay, setArchDay] = useState('1'); // Lunes por defecto
   const [archTime, setArchTime] = useState('17:00');
   const [archSede, setArchSede] = useState('Tarragona');
+  const [informeSubTab, setInformeSubTab] = useState('resumen'); // 'resumen', 'sedes', 'instrumentos', 'profesores', 'semaforo'
 
   // ESTADOS MODALES CLASES
   const [createClassModal, setCreateClassModal] = useState(false);
@@ -174,31 +175,52 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return tomorrow.getDate() === 1;
   }, []);
 
-  // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE)
+  // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const businessIntelligence = useMemo(() => {
     let totalIngresos = 0;
     let costeTotalProfesores = 0;
+    
     const clasesRentabilidad = [];
+    const porSede = { Tarragona: { ingresos: 0, costesProf: 0 }, Reus: { ingresos: 0, costesProf: 0 } };
+    const porProfe = {};
+    const porInstrumento = {};
 
     const activeRecurring = allClasses.filter(c => !c.date);
 
     activeRecurring.forEach(c => {
       const numAlumnos = (c.students || []).filter(s => !s.isPaused).length;
       const cuota = Number(c.cuotaBase) || 0;
-      const ingresosMensualesClase = numAlumnos * cuota;
+      const ingresos = numAlumnos * cuota;
       
       const duracionHoras = (Number(c.duration) || 60) / 60;
-      const costeMensualClase = duracionHoras * 4 * (settings.costeEmpresa || 22);
-      
-      const beneficio = ingresosMensualesClase - costeMensualClase;
+      const coste = duracionHoras * 4 * (settings.costeEmpresa || 22);
+      const beneficio = ingresos - coste;
 
-      totalIngresos += ingresosMensualesClase;
-      costeTotalProfesores += costeMensualClase;
+      totalIngresos += ingresos;
+      costeTotalProfesores += coste;
 
       clasesRentabilidad.push({
         id: c.id, subject: c.subject, teacher: c.teacher, sede: c.sede, time: c.time, dayOfWeek: c.dayOfWeek,
-        numAlumnos, ingresos: ingresosMensualesClase, coste: costeMensualClase, beneficio
+        numAlumnos, ingresos, coste, beneficio
       });
+
+      const sedeKey = c.sede || 'Tarragona';
+      if (porSede[sedeKey]) {
+        porSede[sedeKey].ingresos += ingresos;
+        porSede[sedeKey].costesProf += coste;
+      }
+
+      const profKey = c.teacher || 'Sin Asignar';
+      if (!porProfe[profKey]) porProfe[profKey] = { ingresos: 0, costes: 0, horasSemanales: 0 };
+      porProfe[profKey].ingresos += ingresos;
+      porProfe[profKey].costes += coste;
+      porProfe[profKey].horasSemanales += duracionHoras;
+
+      const instKey = c.subject || 'Otros';
+      if (!porInstrumento[instKey]) porInstrumento[instKey] = { ingresos: 0, costes: 0, numGrupos: 0 };
+      porInstrumento[instKey].ingresos += ingresos;
+      porInstrumento[instKey].costes += coste;
+      porInstrumento[instKey].numGrupos += 1;
     });
 
     clasesRentabilidad.sort((a,b) => b.beneficio - a.beneficio);
@@ -211,7 +233,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       costeTotalProfesores,
       totalFijos,
       beneficioNeto: totalIngresos - costeTotalProfesores - totalFijos,
-      clasesRentabilidad
+      clasesRentabilidad,
+      porSede,
+      porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
+      porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
   }, [allClasses, settings]);
 
@@ -640,7 +665,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
-  // 👇 FIX: Advertencia Anti-Solapamientos (No bloqueante)
   const handleCreateGlobalClass = async () => {
     if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
@@ -1023,7 +1047,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             </div>
           </div>
           <button onClick={handleSave} disabled={saving} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-blue-700 transition-all shadow-md disabled:opacity-50">
-            {saving ? 'Guardando...' : 'Guardar Toda la Configuración'}
+            {saving ? 'Guardando...' : 'Guardar Configuración Web'}
           </button>
         </div>
       </div>
@@ -1435,13 +1459,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
+      <EditWebModalOverlay />
+      <CreateClassModalOverlay />
       {notesModal && <NotesModalOverlay />}
-      {createClassModal && <CreateClassModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
       {editStudentModal && <EditStudentModalOverlay />} 
       {resurrectClassModal && <ResurrectClassModalOverlay />}
       {viewClassModal && <ViewClassModalOverlay />}
-      {editWebModal && <EditWebModalOverlay />}
       {socialModalText && <SocialModalOverlay />}
       
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -1462,7 +1486,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
             { id: 'announcements', icon: Megaphone, label: 'Tablón' },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
-            { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, // 👈 NUEVA PESTAÑA
+            { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
             { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
@@ -1502,94 +1526,208 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         {/* --- PESTAÑA: INFORMES (BUSINESS INTELLIGENCE) --- */}
         {activeTab === 'informes' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
-            <header className="mb-6">
-              <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Business Intelligence</h2>
-              <p className="text-zinc-500 font-bold text-sm mt-1 uppercase tracking-widest">Rentabilidad Estimada Mensual (Clases Recurrentes Vivas)</p>
+            <header className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Business Intelligence</h2>
+                <p className="text-zinc-500 font-bold text-sm mt-1 uppercase tracking-widest">Información estratégica y análisis de márgenes</p>
+              </div>
             </header>
 
-            {/* NIVEL 1: RESUMEN GLOBAL */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
-                <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
-                <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
-                <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Alumnos Activos × Cuota Base</p>
-              </div>
-              
-              <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
-                <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
-                <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
-                <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Horas impartidas × Coste Empresa ({settings.costeEmpresa}€)</p>
-              </div>
+            {/* SELECTOR DE SUBVISTAS FINANCIERAS */}
+            <div className="flex bg-zinc-200 p-1 rounded-2xl w-full max-w-2xl shadow-sm border border-zinc-300 overflow-x-auto no-scrollbar mb-6">
+              {[
+                { id: 'resumen', label: 'Resumen Global', icon: PieChart },
+                { id: 'sedes', label: 'Por Sede', icon: MapPin },
+                { id: 'instrumentos', label: 'Por Instrumento', icon: Music },
+                { id: 'profesores', label: 'Por Profesor', icon: User },
+                { id: 'semaforo', label: 'Semáforo Aulas', icon: Activity }
+              ].map(sub => (
+                <button key={sub.id} onClick={() => setInformeSubTab(sub.id)} className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider whitespace-nowrap transition-all ${informeSubTab === sub.id ? 'bg-white text-slate-900 shadow-sm' : 'text-zinc-500 hover:text-slate-800'}`}>
+                   <sub.icon className="w-3.5 h-3.5"/> {sub.label}
+                </button>
+              ))}
+            </div>
 
-              <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
-                <div className="flex items-center gap-2 text-rose-600 mb-2"><MapPin className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
-                <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}€</p>
-                <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Suma de todos los centros</p>
-              </div>
-
-              <div className="bg-black text-white p-6 rounded-3xl shadow-xl relative overflow-hidden">
-                <div className="relative z-10">
-                  <div className="flex items-center gap-2 text-zinc-400 mb-2"><DollarSign className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Beneficio Neto</h3></div>
-                  <p className={`text-4xl font-black tracking-tighter ${businessIntelligence.beneficioNeto >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
-                    {businessIntelligence.beneficioNeto >= 0 ? '+' : ''}{businessIntelligence.beneficioNeto.toLocaleString('es-ES', {maximumFractionDigits:0})}€
-                  </p>
+            {/* SUBVISTA 1: RESUMEN GLOBAL */}
+            {informeSubTab === 'resumen' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
+                <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
+                  <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
+                  <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
+                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Alumnos Activos × Cuota Base</p>
                 </div>
-                <PieChart className="absolute -bottom-6 -right-6 w-32 h-32 text-zinc-800 opacity-50 pointer-events-none" />
-              </div>
-            </div>
+                
+                <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
+                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
+                  <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Horas impartidas × Coste Empresa ({settings.costeEmpresa}€)</p>
+                </div>
 
-            {/* NIVEL 3: SEMÁFORO DE AULAS */}
-            <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-zinc-100 bg-zinc-50 flex items-center justify-between">
-                <h3 className="font-black uppercase tracking-widest text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5"/> Rentabilidad por Aula (Semáforo)</h3>
+                <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
+                  <div className="flex items-center gap-2 text-rose-600 mb-2"><MapPin className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
+                  <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}€</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Suma de todos los centros</p>
+                </div>
+
+                <div className="bg-black text-white p-6 rounded-3xl shadow-xl relative overflow-hidden">
+                  <div className="relative z-10">
+                    <div className="flex items-center gap-2 text-zinc-400 mb-2"><DollarSign className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Beneficio Neto</h3></div>
+                    <p className={`text-4xl font-black tracking-tighter ${businessIntelligence.beneficioNeto >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
+                      {businessIntelligence.beneficioNeto >= 0 ? '+' : ''}{businessIntelligence.beneficioNeto.toLocaleString('es-ES', {maximumFractionDigits:0})}€
+                    </p>
+                  </div>
+                  <PieChart className="absolute -bottom-6 -right-6 w-32 h-32 text-zinc-800 opacity-50 pointer-events-none" />
+                </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[800px]">
-                  <thead>
-                    <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-500 border-b border-zinc-200">
-                      <th className="p-4 font-black">Clase</th>
-                      <th className="p-4 font-black">Centro y Horario</th>
-                      <th className="p-4 font-black text-center">Alumnos</th>
-                      <th className="p-4 font-black text-right text-emerald-600">Ingresos</th>
-                      <th className="p-4 font-black text-right text-rose-600">Coste (Prof)</th>
-                      <th className="p-4 font-black text-right">Beneficio/Mes</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-sm font-medium text-slate-700">
-                    {businessIntelligence.clasesRentabilidad.map(c => {
-                      const isGreen = c.beneficio > 50;
-                      const isYellow = c.beneficio > 0 && c.beneficio <= 50;
-                      const isRed = c.beneficio <= 0;
-                      
-                      return (
-                        <tr key={c.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-                          <td className="p-4">
-                            <div className="font-black text-black uppercase">{c.subject}</div>
-                            <div className="text-[10px] text-zinc-500 font-bold uppercase mt-0.5">Prof: {c.teacher}</div>
-                          </td>
-                          <td className="p-4">
-                            <div className="font-bold text-slate-700">{c.sede}</div>
-                            <div className="text-[10px] text-zinc-400 uppercase mt-0.5">{getDayName(c.dayOfWeek)} {c.time}</div>
-                          </td>
-                          <td className="p-4 text-center">
-                            <span className={`px-2.5 py-1 rounded text-xs font-black ${c.numAlumnos > 0 ? 'bg-zinc-200 text-black' : 'bg-red-100 text-red-700'}`}>
-                              {c.numAlumnos} pax
-                            </span>
-                          </td>
-                          <td className="p-4 text-right font-black text-emerald-600">{c.ingresos}€</td>
-                          <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}€</td>
-                          <td className="p-4 text-right">
-                            <span className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${isGreen ? 'bg-emerald-100 text-emerald-800' : isYellow ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
-                              {c.beneficio > 0 ? '+' : ''}{c.beneficio.toFixed(0)}€
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            )}
+
+            {/* SUBVISTA 2: RENTABILIDAD POR SEDE */}
+            {informeSubTab === 'sedes' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
+                 {SEDES.map(sede => {
+                    const dataSede = businessIntelligence.porSede[sede];
+                    const gastoFijoSede = Number(settings.gastosFijos?.[sede.toLowerCase()]) || 0;
+                    const beneficioSede = dataSede.ingresos - dataSede.costesProf - gastoFijoSede;
+                    return (
+                       <div key={sede} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col">
+                          <h3 className="font-black text-2xl uppercase text-slate-800 tracking-tight border-b pb-3 flex items-center gap-2"><MapPin className="text-blue-500"/> Sede {sede}</h3>
+                          <div className="mt-4 space-y-3 flex-1 text-sm font-bold">
+                             <div className="flex justify-between text-slate-600"><span>Ingresos Alumnos:</span><span className="text-emerald-600">+{dataSede.ingresos}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}€</span></div>
+                          </div>
+                          <div className="mt-6 pt-4 border-t border-zinc-100 flex justify-between items-center bg-zinc-50 p-4 rounded-xl">
+                             <span className="text-xs font-black uppercase text-zinc-400">Beneficio Neto Local:</span>
+                             <span className={`text-xl font-black ${beneficioSede >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{beneficioSede >= 0 ? '+' : ''}{beneficioSede.toFixed(0)}€</span>
+                          </div>
+                       </div>
+                    );
+                 })}
               </div>
-            </div>
+            )}
+
+            {/* SUBVISTA 3: RENTABILIDAD POR INSTRUMENTO */}
+            {informeSubTab === 'instrumentos' && (
+              <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden animate-in fade-in">
+                 <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                       <thead>
+                          <tr className="bg-zinc-50 text-[10px] uppercase font-black tracking-widest text-zinc-400 border-b">
+                             <th className="p-4">Instrumento</th>
+                             <th className="p-4 text-center">Nº Grupos</th>
+                             <th className="p-4 text-right text-emerald-600">Ingresos Mensuales</th>
+                             <th className="p-4 text-right text-rose-600">Costes Empresa</th>
+                             <th className="p-4 text-right">Margen Limpio</th>
+                          </tr>
+                       </thead>
+                       <tbody className="text-sm font-bold text-slate-700">
+                          {businessIntelligence.porInstrumento.map(inst => (
+                             <tr key={inst.name} className="border-b hover:bg-zinc-50">
+                                <td className="p-4 uppercase font-black text-slate-900">{inst.name}</td>
+                                <td className="p-4 text-center">{inst.numGrupos} clases</td>
+                                <td className="p-4 text-right text-emerald-600">+{inst.ingresos}€</td>
+                                <td className="p-4 text-right text-rose-500">-{inst.costes.toFixed(0)}€</td>
+                                <td className="p-4 text-right">
+                                   <span className={`px-2.5 py-1 rounded-lg ${inst.beneficio >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                      {inst.beneficio > 0 ? '+' : ''}{inst.beneficio.toFixed(0)}€
+                                   </span>
+                                </td>
+                             </tr>
+                          ))}
+                       </tbody>
+                    </table>
+                 </div>
+              </div>
+            )}
+
+            {/* SUBVISTA 4: RENTABILIDAD POR PROFESOR */}
+            {informeSubTab === 'profesores' && (
+              <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden animate-in fade-in">
+                 <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                       <thead>
+                          <tr className="bg-zinc-50 text-[10px] uppercase font-black tracking-widest text-zinc-400 border-b">
+                             <th className="p-4">Profesor</th>
+                             <th className="p-4 text-center">Horas/Semana</th>
+                             <th className="p-4 text-right text-emerald-600">Ingresos Generados</th>
+                             <th className="p-4 text-right text-rose-600">Coste Empresa Real</th>
+                             <th className="p-4 text-right">Beneficio Neto</th>
+                          </tr>
+                       </thead>
+                       <tbody className="text-sm font-bold text-slate-700">
+                          {businessIntelligence.porProfe.map(p => (
+                             <tr key={p.name} className="border-b hover:bg-zinc-50">
+                                <td className="p-4 uppercase font-black text-slate-900">{p.name}</td>
+                                <td className="p-4 text-center">{p.horasSemanales.toFixed(1)} h/sem</td>
+                                <td className="p-4 text-right text-emerald-600">+{p.ingresos}€</td>
+                                <td className="p-4 text-right text-rose-500">-{p.costes.toFixed(0)}€</td>
+                                <td className="p-4 text-right">
+                                   <span className={`px-2.5 py-1 rounded-lg ${p.beneficio >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                      {p.beneficio > 0 ? '+' : ''}{p.beneficio.toFixed(0)}€
+                                   </span>
+                                </td>
+                             </tr>
+                          ))}
+                       </tbody>
+                    </table>
+                 </div>
+              </div>
+            )}
+
+            {/* SUBVISTA 5: EL SEMÁFORO INDIVIDUAL */}
+            {informeSubTab === 'semaforo' && (
+              <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden animate-in fade-in">
+                <div className="p-6 border-b border-zinc-100 bg-zinc-50 flex items-center justify-between">
+                  <h3 className="font-black uppercase tracking-widest text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5"/> Rentabilidad por Aula (Semáforo)</h3>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[800px]">
+                    <thead>
+                      <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-500 border-b border-zinc-200">
+                        <th className="p-4 font-black">Clase</th>
+                        <th className="p-4 font-black">Centro y Horario</th>
+                        <th className="p-4 font-black text-center">Alumnos</th>
+                        <th className="p-4 font-black text-right text-emerald-600">Ingresos</th>
+                        <th className="p-4 font-black text-right text-rose-600">Coste (Prof)</th>
+                        <th className="p-4 font-black text-right">Beneficio/Mes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-sm font-medium text-slate-700">
+                      {businessIntelligence.clasesRentabilidad.map(c => {
+                        const isGreen = c.beneficio > 50;
+                        const isYellow = c.beneficio > 0 && c.beneficio <= 50;
+                        const isRed = c.beneficio <= 0;
+                        
+                        return (
+                          <tr key={c.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
+                            <td className="p-4">
+                              <div className="font-black text-slate-900 uppercase">{c.subject}</div>
+                              <div className="text-[10px] text-zinc-500 font-bold uppercase mt-0.5">Prof: {c.teacher}</div>
+                            </td>
+                            <td className="p-4">
+                              <div className="font-bold text-slate-700">{c.sede}</div>
+                              <div className="text-[10px] text-zinc-400 uppercase mt-0.5">{getDayName(c.dayOfWeek)} {c.time}</div>
+                            </td>
+                            <td className="p-4 text-center">
+                              <span className={`px-2.5 py-1 rounded text-xs font-black ${c.numAlumnos > 0 ? 'bg-zinc-200 text-black' : 'bg-red-100 text-red-700'}`}>
+                                {c.numAlumnos} pax
+                              </span>
+                            </td>
+                            <td className="p-4 text-right font-black text-emerald-600">+{c.ingresos}€</td>
+                            <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}€</td>
+                            <td className="p-4 text-right">
+                              <span className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest ${isGreen ? 'bg-emerald-100 text-emerald-800' : isYellow ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
+                                {c.beneficio > 0 ? '+' : ''}{c.beneficio.toFixed(0)}€
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1865,33 +2003,31 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     <User className="w-3 h-3 inline mr-1" /> Profesores
                   </button>
                   <button onClick={() => setClassesViewMode('salas')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'salas' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
-                    <LayoutGrid className="w-3 h-3 inline mr-1" /> Salas
+                    <LayoutGrid className="w-3 h-3 inline mr-1" /> Salas (Arquitecto)
                   </button>
                 </div>
-                
                 {classesViewMode === 'profesores' && (
                   <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                     <Megaphone className="w-3 h-3"/> Redes
                   </button>
                 )}
-                
                 <button onClick={() => setCreateClassModal(true)} className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
-                  <Plus className="w-3 h-3"/> Crear
+                  <Plus className="w-3 h-3"/> Crear Clase
                 </button>
               </div>
             </header>
 
-            {/* VISTA ARQUITECTO (POR SALAS) */}
+            {/* VISTA ARQUITECTO (POR SALAS EN BLANCO/OCUPADO + CUADRANTE) */}
             {classesViewMode === 'salas' && (
-               <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+               <div className="space-y-6 animate-in fade-in">
                   <div className="bg-white p-4 rounded-2xl flex flex-col sm:flex-row gap-4 shadow-sm border border-zinc-200 items-center justify-center">
-                     <select value={archSede} onChange={e=>setArchSede(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none focus:border-black rounded-xl font-black text-sm uppercase tracking-widest">
+                     <select value={archSede} onChange={e=>setArchSede(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest">
                        {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
                      </select>
-                     <select value={archDay} onChange={e=>setArchDay(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none focus:border-black rounded-xl font-black text-sm uppercase tracking-widest">
+                     <select value={archDay} onChange={e=>setArchDay(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest">
                        {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
                      </select>
-                     <input type="time" value={archTime} onChange={e=>setArchTime(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none focus:border-black rounded-xl font-black text-sm uppercase tracking-widest"/>
+                     <input type="time" value={archTime} onChange={e=>setArchTime(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest"/>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -1902,10 +2038,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                         if (claseAsignada) {
                            const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
                            return (
-                              <div key={sala} className="bg-zinc-900 text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border border-zinc-800 transform hover:scale-[1.02] transition-transform">
+                              <div key={sala} className="bg-zinc-900 text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border border-zinc-800">
                                  <h3 className="font-black text-3xl uppercase tracking-tighter mb-1 opacity-20 absolute top-4 right-4">{sala.replace('Sala ', 'S')}</h3>
                                  <h3 className="font-black text-xl uppercase tracking-widest mb-1 text-zinc-400">{sala}</h3>
-                                 
                                  <div className="flex-1 mt-2 z-10">
                                     <span className="bg-blue-500 text-white px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Ocupada</span>
                                     <h4 className="font-black text-2xl mt-3 tracking-tight">{claseAsignada.subject}</h4>
@@ -1913,21 +2048,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                  </div>
                                  <div className="mt-4 pt-4 border-t border-zinc-800 flex justify-between items-center z-10">
                                     <span className="text-xs font-black text-zinc-300">Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-400' : 'text-emerald-400'}>{activeC}/{claseAsignada.capacity}</span></span>
-                                    <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors">Ver Clase</button>
+                                    <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
                                  </div>
                               </div>
                            );
                         } else {
                            return (
-                              <div key={sala} className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-3xl shadow-sm relative flex flex-col min-h-[220px] hover:border-emerald-400 transition-colors transform hover:scale-[1.02]">
+                              <div key={sala} className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-3xl shadow-sm relative flex flex-col min-h-[220px] hover:border-emerald-400 transition-colors">
                                  <h3 className="font-black text-xl uppercase tracking-widest text-emerald-900 mb-1">{sala}</h3>
                                  <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600/70 mb-4 bg-emerald-100 px-2 py-1 rounded w-max">Capacidad real: {maxCapFisica} pax</p>
-                                 
                                  <div className="flex-1 flex flex-col items-center justify-center gap-2">
                                     <DoorOpen className="w-8 h-8 text-emerald-300"/>
                                     <span className="text-emerald-600 font-black uppercase tracking-widest text-lg">SALA LIBRE</span>
                                  </div>
-                                 
                                  <button onClick={() => {
                                     setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: archTime, sede: archSede, sala: sala});
                                     setCreateClassModal(true);
@@ -1940,19 +2073,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                      })}
                   </div>
 
-                  {/* CUADRANTE HORARIO ESTILO EXCEL */}
+                  {/* TABLA COMPLETA DE CASILLAS EXCEL INTERACTIVAS */}
                   <div className="mt-12">
-                     <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2">
-                        <Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo
-                     </h3>
+                     <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo</h3>
                      <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden overflow-x-auto">
                         <table className="w-full text-left border-collapse min-w-[600px]">
                            <thead>
                               <tr>
                                  <th className="p-4 bg-zinc-100 border-b border-r border-zinc-200 w-24 text-center text-xs font-black text-zinc-500 uppercase tracking-widest">Hora</th>
-                                 {SALAS.map(sala => (
-                                    <th key={sala} className="p-4 bg-zinc-100 border-b border-r border-zinc-200 text-center text-sm font-black text-slate-800 uppercase tracking-widest">{sala}</th>
-                                 ))}
+                                 {SALAS.map(sala => ( <th key={sala} className="p-4 bg-zinc-100 border-b border-r border-zinc-200 text-center text-sm font-black text-slate-800 uppercase tracking-widest">{sala}</th> ))}
                               </tr>
                            </thead>
                            <tbody>
@@ -1960,26 +2089,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
                                     {SALAS.map(sala => {
-                                       const classesInSlot = allClasses.filter(c => 
-                                          c.sede === archSede && 
-                                          c.dayOfWeek === parseInt(archDay) && 
-                                          c.sala === sala && 
-                                          (c.time || '').startsWith(time.split(':')[0])
-                                       );
-                                       
+                                       const classesInSlot = allClasses.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.sala === sala && (c.time || '').startsWith(time.split(':')[0]));
                                        return (
-                                          <td 
-                                             key={sala} 
-                                             className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" 
-                                             onClick={(e) => {
-                                                if(e.target.closest('button') || classesInSlot.length > 0) return; 
-                                                setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala});
-                                                setCreateClassModal(true);
-                                             }}
-                                          >
+                                          <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
                                              {classesInSlot.length > 0 ? (
                                                 classesInSlot.map(c => (
-                                                   <div key={c.id} className="bg-zinc-800 text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm cursor-pointer hover:bg-black transition-colors" onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
+                                                   <div key={c.id} className="bg-zinc-800 text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm hover:bg-black transition-colors" onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
                                                       <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}</div>
                                                       <div className="text-[10px] text-zinc-400 font-bold truncate mt-1">Prof: {c.teacher}</div>
                                                    </div>
@@ -2001,85 +2116,42 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                </div>
             )}
 
-            {/* VISTA CLÁSICA (POR PROFESOR) */}
+            {/* VISTA CLÁSICA (POR LISTADO DE PROFESORES) */}
             {classesViewMode === 'profesores' && (
-              <div className="space-y-4 animate-in fade-in slide-in-from-left-4">
-                {Object.keys(classesByTeacher).length === 0 ? (
-                  <div className="p-8 text-center text-zinc-400 font-bold uppercase tracking-widest">No hay clases registradas.</div>
-                ) : (
-                  Object.entries(classesByTeacher).map(([teacher, classes]) => {
-                    const isExpanded = expandedTeacher === teacher;
-                    return (
-                      <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                        <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
-                          <div className="flex items-center gap-3">
-                            <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
-                            <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher}</h3>
-                            <span className="bg-zinc-200 text-zinc-600 px-2 py-0.5 rounded text-xs font-black">{classes.length} Clases</span>
-                          </div>
-                          {isExpanded ? <ChevronUp className="w-5 h-5 text-zinc-400"/> : <ChevronDown className="w-5 h-5 text-zinc-400"/>}
-                        </button>
-                        
-                        {isExpanded && (
-                          <div className="p-4 border-t border-zinc-200">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                              {classes.map(c => {
-                                const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                                const isHibernated = activeC === 0;
-
-                                return (
-                                  <div key={c.id} className={`p-4 rounded-xl border ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : 'border-zinc-100 bg-white'} shadow-sm flex flex-col relative group transition-colors`}>
-                                    
-                                    <div className="flex justify-between items-center">
-                                      <div>
-                                        <div className={`font-black text-sm uppercase flex items-center ${isHibernated ? 'text-zinc-400' : ''}`}>
-                                          {isHibernated && <Ghost className="w-4 h-4 mr-1 text-zinc-400" />}
-                                          {c.date ? formatDateSpanish(c.date) : getDayName(c.dayOfWeek)} 
-                                          <span className="text-black bg-zinc-100 px-1.5 py-0.5 rounded ml-1">{c.time}</span>
-                                        </div>
-                                        <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
-                                          {c.subject} • {c.sede} {c.date && <span className="text-amber-500 ml-1">(PUNTUAL)</span>}
-                                        </div>
-                                      </div>
-                                      
-                                      <div className="text-right pr-6">
-                                        {isHibernated ? (
-                                          <button onClick={() => setResurrectClassModal(c)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-1 shadow-sm">
-                                            <PlusCircle className="w-3 h-3"/> Reactivar
-                                          </button>
-                                        ) : (
-                                          <>
-                                            <span className={`text-sm font-black ${activeC >= (c.capacity || 4) ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                              {activeC} / {c.capacity || '?'}
-                                            </span>
-                                            <div className="text-[9px] uppercase font-bold text-zinc-400 tracking-widest">Alumnos</div>
-                                          </>
-                                        )}
-                                      </div>
-                                      <button onClick={() => {if(window.confirm('¿Borrar definitivamente esta clase oficial de la escuela?')) deleteDoc(doc(db, c.refPath))}} className="absolute top-2 right-2 p-1.5 bg-red-100 text-red-600 rounded opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3 h-3"/></button>
-                                    </div>
-
-                                    <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between gap-2">
-                                      {!isHibernated && (
-                                        <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-600 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5">
-                                          <Users className="w-3 h-3"/> Alumnos
-                                        </button>
-                                      )}
-                                      <button onClick={() => setEditWebModal(c)} className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                                        <Globe className="w-3 h-3"/> Configurar / Web
-                                      </button>
-                                    </div>
-
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })
-                )}
+              <div className="space-y-4 animate-in fade-in">
+                {Object.entries(classesByTeacher).map(([teacher, classes]) => {
+                  const isExpanded = expandedTeacher === teacher;
+                  return (
+                    <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
+                      <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                          <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
+                          <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher} ({classes.length} Clases)</h3>
+                        </div>
+                        {isExpanded ? <ChevronUp/> : <ChevronDown/>}
+                      </button>
+                      {isExpanded && (
+                        <div className="p-4 border-t grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          {classes.map(c => {
+                            const activeC = (c.students || []).filter(s => !s.isPaused).length;
+                            const isHibernated = activeC === 0;
+                            return (
+                              <div key={c.id} className={`p-4 rounded-xl border relative group ${isHibernated ? 'bg-zinc-50 border-dashed' : 'bg-white'}`}>
+                                <div className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)} <span className="bg-zinc-100 p-1 rounded">{c.time}</span></div>
+                                <div className="text-xs text-zinc-400 font-bold uppercase mt-1">{c.subject} • {c.sede} ({c.sala})</div>
+                                <div className="text-right text-xs font-black mt-2">{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
+                                <div className="flex gap-2 mt-3">
+                                  <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>
+                                  <button onClick={() => setEditWebModal(c)} className={`flex-1 p-1 text-[10px] font-black uppercase rounded ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`}><Globe className="w-3 h-3 inline"/> Config</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -2296,37 +2368,31 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
         )}
 
-        {/* --- 9. SETTINGS --- */}
+        {/* --- 9. CONFIGURACIÓN COMPLETA (TARIFA, FIJOS E INSTRUMENTOS) --- */}
         {activeTab === 'settings' && (
           <div className="space-y-6 animate-in fade-in">
              <header className="mb-6">
-              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración</h2>
-              <p className="text-zinc-500 font-medium text-sm">Ajustes globales y legales de la escuela.</p>
+              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración Global</h2>
+              <p className="text-zinc-500 font-medium text-sm">Ajustes estratégicos de la infraestructura escolar.</p>
             </header>
             
-            {/* NUEVO: FINANZAS Y GASTOS (GRID) */}
+            {/* PANELS DE FINANZAS Y GASTOS (GRID) */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Coste Empresa */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
-                <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Profesorado</h3>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Lo que el profe ve VS lo que te cuesta a ti.</p>
-                
+                <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Personal</h3>
                 <div className="space-y-4 mt-auto">
                   <div className="flex items-center justify-between bg-zinc-50 p-4 rounded-xl border border-zinc-100">
                     <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-slate-800">Tarifa Convenio (Visible profe)</p>
-                      <p className="text-[10px] font-bold text-zinc-400">Calcula su nómina estimada.</p>
+                      <p className="text-xs font-black uppercase tracking-widest text-slate-800">Tarifa Convenio (Nómina Profe)</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-black outline-none bg-transparent text-right" />
                       <span className="text-sm font-bold text-slate-800">€/h</span>
                     </div>
                   </div>
-
                   <div className="flex items-center justify-between bg-rose-50 p-4 rounded-xl border border-rose-100">
                     <div>
-                      <p className="text-xs font-black uppercase tracking-widest text-rose-900">Coste Empresa (Oculto)</p>
-                      <p className="text-[10px] font-bold text-rose-700">Calcula informes de rentabilidad.</p>
+                      <p className="text-xs font-black uppercase tracking-widest text-rose-900">Coste Empresa Real (Informes)</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <input type="number" step="0.01" value={settings.costeEmpresa} onChange={e => setSettings({...settings, costeEmpresa: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-rose-500 outline-none bg-transparent text-right text-rose-900" />
@@ -2336,37 +2402,33 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
               </div>
 
-              {/* Gastos Fijos */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Activity className="w-5 h-5 text-black"/> Gastos Fijos Mensuales</h3>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Alquileres, luz, agua, cuota de gestoría, etc.</p>
-                
                 <div className="space-y-3 mt-auto">
                   <div className="flex items-center justify-between bg-zinc-50 p-3 rounded-xl border border-zinc-100">
-                    <p className="text-xs font-black uppercase tracking-widest text-slate-800">Global / Compartidos</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-slate-800">Gastos Compartidos (Global)</p>
                     <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.global || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, global: e.target.value}})} className="text-sm font-black w-20 p-2 border border-zinc-200 rounded-lg outline-none focus:border-black text-right" />
+                      <input type="number" value={settings.gastosFijos?.global || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, global: e.target.value}})} className="text-sm font-black w-20 p-2 border border-zinc-200 rounded-lg text-right animate-in fade-in" />
                       <span className="text-xs font-bold text-zinc-500">€</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between bg-blue-50 p-3 rounded-xl border border-blue-100">
                     <p className="text-xs font-black uppercase tracking-widest text-blue-900">Sede Tarragona</p>
                     <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg outline-none focus:border-blue-500 text-right text-blue-900" />
+                      <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg text-right text-blue-900" />
                       <span className="text-xs font-bold text-blue-600">€</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between bg-rose-50 p-3 rounded-xl border border-rose-100">
                     <p className="text-xs font-black uppercase tracking-widest text-rose-900">Sede Reus</p>
                     <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg outline-none focus:border-rose-500 text-right text-rose-900" />
+                      <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg text-right text-rose-900" />
                       <span className="text-xs font-bold text-rose-600">€</span>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-            
             <button onClick={() => saveGlobalSettings(settings)} className="w-full bg-black hover:bg-zinc-800 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-md transition-colors flex items-center justify-center gap-2">
               <Save className="w-4 h-4"/> Guardar Ajustes Financieros
             </button>
@@ -2374,38 +2436,30 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             {/* NUEVO: OFERTA DE INSTRUMENTOS DINÁMICA */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Music className="w-5 h-5 text-black"/> Oferta de Instrumentos</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-4">Añade o quita disciplinas musicales. Esto actualizará el desplegable de "Crear Clase".</p>
-              
               <div className="flex gap-2 mb-4">
-                <input id="adminInstInput" type="text" placeholder="Ej: Violonchelo" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
+                <input id="adminInstInput" type="text" placeholder="Ej: Saxofón..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
                 <button onClick={() => { 
                   const val = document.getElementById('adminInstInput').value.trim(); 
                   if(val) { 
-                    const s = {...settings, instrumentos: [...(settings.instrumentos||[]), val]}; 
+                    const s = {...settings, instrumentos: [...(settings.instrumentos||defaultInstrumentos), val]}; 
                     setSettings(s); saveGlobalSettings(s); 
                     document.getElementById('adminInstInput').value = ''; 
                   } 
-                }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
+                }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {(settings.instrumentos || defaultInstrumentos).map((inst, i) => (
                   <span key={i} className="bg-zinc-100 p-2 text-xs font-black uppercase tracking-widest rounded-lg border flex items-center gap-2 text-slate-700">
                     {inst}
-                    <button onClick={() => { 
-                      const s = {...settings, instrumentos: settings.instrumentos.filter((_, idx) => idx !== i)}; 
-                      setSettings(s); saveGlobalSettings(s); 
-                    }} className="text-red-500 hover:bg-red-50 p-1 rounded"><X className="w-3 h-3"/></button>
+                    <button onClick={() => { const s = {...settings, instrumentos: settings.instrumentos.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded"><X className="w-3 h-3"/></button>
                   </span>
                 ))}
               </div>
             </div>
 
-            {/* RESTO DE CONFIGURACIONES */}
-            
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            {/* AFOROS FÍSICOS DE LAS SALAS */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
-              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                  {SEDES.map(sede => (
                     <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
@@ -2415,19 +2469,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <div key={sala} className="flex items-center justify-between bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
                                <label className="text-xs font-black uppercase tracking-widest text-zinc-500">{sala}</label>
                                <div className="flex items-center gap-2">
-                                 <input 
-                                    type="number" 
-                                    min="1" 
-                                    value={settings.roomCapacities?.[sede]?.[sala] || ''} 
-                                    onChange={e => {
-                                      const val = parseInt(e.target.value) || 0;
-                                      const newCaps = JSON.parse(JSON.stringify(settings.roomCapacities || defaultRoomCapacities));
-                                      if (!newCaps[sede]) newCaps[sede] = {};
-                                      newCaps[sede][sala] = val;
-                                      setSettings({...settings, roomCapacities: newCaps});
-                                    }} 
-                                    className="w-16 p-2 text-center font-black text-sm bg-zinc-100 border border-zinc-200 rounded-lg outline-none focus:border-emerald-500 transition-colors"
-                                 />
+                                 <input type="number" min="1" value={settings.roomCapacities?.[sede]?.[sala] || ''} onChange={e => { const val = parseInt(e.target.value) || 0; const newCaps = JSON.parse(JSON.stringify(settings.roomCapacities || defaultRoomCapacities)); if (!newCaps[sede]) newCaps[sede] = {}; newCaps[sede][sala] = val; setSettings({...settings, roomCapacities: newCaps}); }} className="w-16 p-2 text-center font-black text-sm bg-zinc-100 border border-zinc-200 rounded-lg outline-none" />
                                  <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">pax</span>
                                </div>
                             </div>
@@ -2436,149 +2478,49 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     </div>
                  ))}
               </div>
-              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-emerald-700 transition-colors">
-                <Save className="w-4 h-4"/> Guardar Aforos Físicos
-              </button>
+              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            {/* CALENDARIO, COPIAS EXCEL, CONTRATOS RECURRENTES (RESTO DEL PANEL ORIGINAL) */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminDateInput" type="date" className="flex-1 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
-                <select id="adminDateType" className="flex-[2] p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-xs uppercase">
+                <select id="adminDateType" className="flex-[2] p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-black uppercase">
                   <option value="vacaciones">Vacaciones (Ambas sedes)</option>
                   <option value="festivos">Festivo (Ambas sedes)</option>
                   <option value="festivosTarragona">Festivo Local (Solo Tarragona)</option>
                   <option value="festivosReus">Festivo Local (Solo Reus)</option>
                 </select>
-                <button onClick={() => { 
-                    const d = document.getElementById('adminDateInput').value; 
-                    const t = document.getElementById('adminDateType').value; 
-                    if(d) { 
-                      const arr = settings[t] || []; 
-                      if(!arr.includes(d)) { 
-                        const s = {...settings, [t]: [...arr, d]}; 
-                        setSettings(s); 
-                        saveGlobalSettings(s); 
-                      } 
-                    } 
-                  }} 
-                  className="bg-black text-white px-6 py-3 rounded-xl shadow-md font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"
-                >
-                  <Plus className="w-4 h-4 inline"/>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                {/* VACACIONES */}
-                <div>
-                  <h4 className="font-black text-purple-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><Palmtree className="w-3 h-3"/> Vacaciones</h4>
-                  <div className="space-y-1">
-                    {(settings.vacaciones || []).sort().map(v => (
-                      <div key={v} className="flex justify-between items-center p-2 bg-purple-50 rounded-lg text-xs font-bold text-purple-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-purple-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-purple-500 hover:text-red-500"/></button></div>
-                    ))}
-                  </div>
-                </div>
-                {/* FESTIVOS GLOBALES */}
-                <div>
-                  <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><PartyPopper className="w-3 h-3"/> Festivos (Global)</h4>
-                  <div className="space-y-1">
-                    {(settings.festivos || []).sort().map(f => (
-                      <div key={f} className="flex justify-between items-center p-2 bg-amber-50 rounded-lg text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-amber-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-amber-500 hover:text-red-500"/></button></div>
-                    ))}
-                  </div>
-                </div>
-                {/* FESTIVOS TARRAGONA */}
-                <div>
-                  <h4 className="font-black text-blue-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Tarragona</h4>
-                  <div className="space-y-1">
-                    {(settings.festivosTarragona || []).sort().map(f => (
-                      <div key={f} className="flex justify-between items-center p-2 bg-blue-50 rounded-lg text-xs font-bold text-blue-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosTarragona: settings.festivosTarragona.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
-                    ))}
-                  </div>
-                </div>
-                {/* FESTIVOS REUS */}
-                <div>
-                  <h4 className="font-black text-rose-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Reus</h4>
-                  <div className="space-y-1">
-                    {(settings.festivosReus || []).sort().map(f => (
-                      <div key={f} className="flex justify-between items-center p-2 bg-rose-50 rounded-lg text-xs font-bold text-rose-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosReus: settings.festivosReus.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-rose-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-rose-500 hover:text-red-500"/></button></div>
-                    ))}
-                  </div>
-                </div>
+                <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if(d) { const arr = settings[t] || []; if(!arr.includes(d)) { const s = {...settings, [t]: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4 inline"/></button>
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
               <div className="flex gap-2 mb-4">
-                <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
-                <button onClick={() => { 
-                  const val = document.getElementById('adminTeacherInput').value.trim(); 
-                  if(val) { 
-                    const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; 
-                    setSettings(s); 
-                    saveGlobalSettings(s); 
-                    document.getElementById('adminTeacherInput').value = ''; 
-                  } 
-                }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
-              </div>
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                {(settings.teachersList || []).map((t, i) => (
-                  <div key={i} className="flex justify-between items-center p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
-                    <span className="font-black uppercase tracking-widest text-slate-700">{t}</span>
-                    <button onClick={() => { 
-                      const s = {...settings, teachersList: settings.teachersList.filter((_, idx) => idx !== i)}; 
-                      setSettings(s); 
-                      saveGlobalSettings(s); 
-                    }} className="text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
-                  </div>
-                ))}
+                <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
+                <button onClick={() => { const val = document.getElementById('adminTeacherInput').value.trim(); if(val) { const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTeacherInput').value = ''; } }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8 flex flex-col h-full">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Check className="w-5 h-5 text-black"/> Tareas de Hora Muerta</h3>
-              <div className="flex gap-2 mb-4">
-                <input id="adminTaskInput" type="text" placeholder="Ej: Ordenar partituras..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-medium" />
-                <button onClick={() => { const val = document.getElementById('adminTaskInput').value; if(val) { const s = {...settings, generalTasks: [...(settings.generalTasks||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTaskInput').value = ''; } }} className="bg-black text-white px-4 rounded-xl font-bold uppercase text-[10px] hover:bg-zinc-800 transition-colors"><Plus className="w-4 h-4"/></button>
-              </div>
-              <div className="space-y-2 max-h-32 overflow-y-auto pr-2 flex-1">
-                {settings.generalTasks?.map((t, i) => (
-                  <div key={i} className="flex justify-between items-center p-2.5 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
-                    <span className="font-medium text-slate-600">{t}</span>
-                    <button onClick={() => { const s = {...settings, generalTasks: settings.generalTasks.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 className="w-3 h-3"/></button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
-              <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Escribe aquí el reglamento interno, horarios, protocolos..." />
-              <button onClick={() => saveGlobalSettings(settings)} className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md hover:bg-indigo-700 transition-colors">Guardar Normativa Profesores</button>
+              <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />
+              <button onClick={() => saveGlobalSettings(settings)} className="mt-4 bg-indigo-600 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Guardar Normativa</button>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-black"/> Contrato de Servicios (Alumnos)</h3>
-              <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-5 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[200px] resize-y mb-4" placeholder="Pega aquí el contrato completo..." />
-              <button onClick={() => saveGlobalSettings(settings)} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-sm hover:bg-zinc-800 transition-colors">Guardar Contrato Alumnos</button>
+              <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-5 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />
+              <button onClick={() => saveGlobalSettings(settings)} className="mt-4 bg-black text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Guardar Contrato</button>
             </div>
 
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Trash2 className="w-5 h-5 text-red-600"/> Mantenimiento del Sistema</h3>
-              <p className="text-sm text-zinc-500 font-medium mb-6">Pulsa este botón una o dos veces al año para eliminar los tickets de recuperación caducados y mantener la base de datos rápida y optimizada.</p>
-              <button onClick={cleanExpiredTickets} className="bg-red-50 hover:bg-red-100 text-red-700 px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max border border-red-200">
-                <Trash2 className="w-4 h-4"/> Purgar Tickets Caducados
-              </button>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-6">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Importador Masivo (Excel)</h3>
-              <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquí las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-mono text-xs text-slate-700 min-h-[150px] resize-y mb-4 whitespace-pre"/>
-              <button onClick={handleMassImport} disabled={isImporting || !importText} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 shadow-sm transition-colors w-full sm:w-max disabled:opacity-50">{isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}</button>
+              <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquí las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl font-mono text-xs text-slate-700 min-h-[120px] mb-4"/>
+              <button onClick={handleMassImport} disabled={isImporting || !importText} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest disabled:opacity-50">{isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}</button>
             </div>
-
           </div>
         )}
 

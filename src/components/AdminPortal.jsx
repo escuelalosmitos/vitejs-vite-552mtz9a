@@ -12,6 +12,8 @@ const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukele
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
+const SCHEDULE_HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00"];
+
 const defaultRoomCapacities = {
   Tarragona: { 'Sala 1': 10, 'Sala 2': 8, 'Sala 3': 4 },
   Reus: { 'Sala 1': 8, 'Sala 2': 5, 'Sala 3': 4 }
@@ -593,6 +595,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     alert('Ajustes guardados correctamente.');
   };
 
+  // 👇 FIX: Advertencia Anti-Solapamientos (No bloqueante)
   const handleCreateGlobalClass = async () => {
     if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
@@ -602,15 +605,38 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
 
     const teacherKey = newClassData.teacher.toLowerCase();
-    const dayKey = newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString();
+    const dayKey = newClassData.isRecurring ? parseInt(newClassData.dayOfWeek) : new Date(newClassData.specificDate).getDay();
     const classTime = newClassData.time;
     
-    const teacherSlots = availabilities[teacherKey]?.[dayKey] || [];
+    // --- 1. Aviso de Disponibilidad del Profesor ---
+    const teacherSlots = availabilities[teacherKey]?.[dayKey.toString()] || [];
     const isCovered = teacherSlots.some(slot => classTime >= slot.start && classTime < slot.end);
-
     if (!isCovered) {
       const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} a las ${classTime}h.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
       if (!confirmForce) return; 
+    }
+
+    // --- 2. Aviso de Solapamiento Físico de Sala (Vista Arquitecto) ---
+    const collidingClasses = allClasses.filter(c => {
+      if (c.sede !== newClassData.sede) return false;
+      if (c.sala !== newClassData.sala) return false;
+      if (c.time !== newClassData.time) return false;
+
+      // Cruce de días (Recurrente vs Puntual)
+      if (newClassData.isRecurring) {
+        if (c.isRecurring && c.dayOfWeek === dayKey) return true;
+        if (!c.isRecurring && new Date(c.date).getDay() === dayKey) return true; 
+      } else {
+        if (c.isRecurring && c.dayOfWeek === dayKey) return true;
+        if (!c.isRecurring && c.date === newClassData.specificDate) return true;
+      }
+      return false;
+    });
+
+    if (collidingClasses.length > 0) {
+      const clash = collidingClasses[0];
+      const confirmForceRoom = window.confirm(`⚠️ ADVERTENCIA DE ESPACIO:\n\nLa ${newClassData.sala} de ${newClassData.sede} ya está ocupada ese día a las ${newClassData.time}h por la clase de ${clash.subject} de ${clash.teacher}.\n\nSabemos que a veces usáis el vestíbulo o buscáis apaños.\n¿Quieres forzar la creación de la clase en este mismo hueco de todas formas?`);
+      if (!confirmForceRoom) return;
     }
     
     const teacherEmail = `${newClassData.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`;
@@ -632,7 +658,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     try {
       const classId = Date.now().toString();
-      const targetDay = newClassData.isRecurring ? parseInt(newClassData.dayOfWeek) : new Date(newClassData.specificDate).getDay();
 
       await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
         ...newClassData,
@@ -641,7 +666,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         students: [],
         exceptions: {},
         cancelledDates: [],
-        dayOfWeek: targetDay,
+        dayOfWeek: dayKey,
         date: newClassData.isRecurring ? null : newClassData.specificDate
       });
       alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
@@ -1758,6 +1783,66 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                            );
                         }
                      })}
+                  </div>
+
+                  {/* NUEVO: CUADRANTE HORARIO ESTILO EXCEL */}
+                  <div className="mt-12">
+                     <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2">
+                        <Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo
+                     </h3>
+                     <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden overflow-x-auto">
+                        <table className="w-full text-left border-collapse min-w-[600px]">
+                           <thead>
+                              <tr>
+                                 <th className="p-4 bg-zinc-100 border-b border-r border-zinc-200 w-24 text-center text-xs font-black text-zinc-500 uppercase tracking-widest">Hora</th>
+                                 {SALAS.map(sala => (
+                                    <th key={sala} className="p-4 bg-zinc-100 border-b border-r border-zinc-200 text-center text-sm font-black text-slate-800 uppercase tracking-widest">{sala}</th>
+                                 ))}
+                              </tr>
+                           </thead>
+                           <tbody>
+                              {SCHEDULE_HOURS.map(time => (
+                                 <tr key={time} className="border-b border-zinc-100">
+                                    <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
+                                    {SALAS.map(sala => {
+                                       // Buscamos si hay clases que empiezan en esta hora (ej: 17:00 o 17:30)
+                                       const classesInSlot = allClasses.filter(c => 
+                                          c.sede === archSede && 
+                                          c.dayOfWeek === parseInt(archDay) && 
+                                          c.sala === sala && 
+                                          (c.time || '').startsWith(time.split(':')[0])
+                                       );
+                                       
+                                       return (
+                                          <td 
+                                             key={sala} 
+                                             className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" 
+                                             onClick={(e) => {
+                                                if(e.target.closest('button') || classesInSlot.length > 0) return; 
+                                                setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala});
+                                                setCreateClassModal(true);
+                                             }}
+                                          >
+                                             {classesInSlot.length > 0 ? (
+                                                classesInSlot.map(c => (
+                                                   <div key={c.id} className="bg-zinc-800 text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm cursor-pointer hover:bg-black transition-colors" onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
+                                                      <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}</div>
+                                                      <div className="text-[10px] text-zinc-400 font-bold truncate mt-1">Prof: {c.teacher}</div>
+                                                   </div>
+                                                ))
+                                             ) : (
+                                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                   <PlusCircle className="w-8 h-8 text-zinc-200" />
+                                                </div>
+                                             )}
+                                          </td>
+                                       )
+                                    })}
+                                 </tr>
+                              ))}
+                           </tbody>
+                        </table>
+                     </div>
                   </div>
                </div>
             )}

@@ -1,53 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import {
-  ClipboardList,
-  History,
-  BarChart3,
-  Check,
-  X,
-  AlertCircle,
-  Save,
-  Mail,
-  UserPlus,
-  Trash2,
-  Calendar,
-  Clock,
-  User,
-  Music,
-  RefreshCw,
-  Play,
-  MessageSquare,
-  LogOut,
-  CornerDownRight,
-  BookOpen,
-  CalendarOff,
-  Ticket,
-  Snowflake,
-  Timer,
-  Palmtree,
-  PartyPopper,
-  Coffee,
-  MapPin,
-  Bell,
-  UserMinus,
-  RefreshCcw,
-  PlusCircle,
-  CheckCircle,
-  ShieldAlert,
-  LayoutGrid,
-  FileText,
-  Ghost
+import { 
+  ClipboardList, History, BarChart3, Check, X, AlertCircle, Save, Mail, 
+  UserPlus, Trash2, Calendar, Clock, User, Music, RefreshCw, Play, 
+  MessageSquare, LogOut, CornerDownRight, BookOpen, CalendarOff, Ticket, 
+  Snowflake, Timer, Palmtree, PartyPopper, Coffee, MapPin, Bell, UserMinus, 
+  RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost
 } from 'lucide-react';
-
-import {
-  collection,
-  onSnapshot,
-  doc,
-  setDoc,
-  deleteDoc,
-  updateDoc,
-  collectionGroup 
-} from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const SEDES = ["Tarragona", "Reus"];
@@ -227,6 +186,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
   
+  // NUEVO: Estado para saber si el informe de hoy ya se envió
+  const [lastReportSentDate, setLastReportSentDate] = useState('');
+  
+  // NUEVO: Paginación del historial
+  const [historyLimit, setHistoryLimit] = useState(10);
+
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
 
@@ -284,6 +249,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
+    
+    // Leemos el documento del propio usuario para ver su última fecha de envío
+    const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
     let recordsLoaded = false;
     let recurringLoaded = false;
@@ -293,10 +261,19 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let subsLoaded = false;
     let gestionesLoaded = false;
     let availLoaded = false;
+    let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && availLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
+
+    const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
+      if (docSnap.exists() && docSnap.data().lastReportSentDate) {
+        setLastReportSentDate(docSnap.data().lastReportSentDate);
+      }
+      userDocLoaded = true;
+      checkLoading();
+    });
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
       const myClasses = [];
@@ -380,6 +357,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubSubs();
       unsubGestiones();
       unsubAvail();
+      unsubUserDoc();
     };
   }, [user, db, appId]);
 
@@ -504,18 +482,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const items = [];
     const recordsToday = records.filter(r => r.date === date);
     
-    // 👇 FIX: Filtrado inteligente para las clases puntuales y recurrentes
     const scheduledToday = recurringClasses.filter(rc => {
-      // Si la clase es PUNTUAL (tiene 'date' guardado de origen)
       if (rc.date) {
         if (rc.date !== date) return false;
       } 
-      // Si es RECURRENTE (tiene 'dayOfWeek')
       else {
         if (rc.dayOfWeek !== selectedDayOfWeek) return false;
       }
       
-      // Filtramos si la clase se canceló manualmente un día suelto
       if (rc.cancelledDates && rc.cancelledDates.includes(date)) return false;
       
       return true;
@@ -662,6 +636,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload)
       });
+      
+      // MARCAMOS LA FECHA DE ENVÍO EN FIREBASE PARA BLOQUEAR EL BOTÓN
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid), {
+        lastReportSentDate: date
+      }, { merge: true });
+
       showNotification({ type: 'success', text: 'Informe enviado por email.' });
     } catch (error) {
       console.error(error);
@@ -717,7 +697,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     });
   };
 
-  // 👇 FIX: Asumir Sustitución ahora la convierte en una "Clase Puntual" en tu agenda y la borra de sustituciones
   const assumeSubstitution = async (sub) => {
     if (!window.confirm(`¿Asumir la sustitución de ${sub.subject} el ${formatDateSpanish(sub.date)} a las ${sub.time}h?\n\nEsta clase pasará a tu agenda y serás el profesor responsable.`)) return;
 
@@ -907,7 +886,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       return;
     }
 
-    // 👇 LA BARRERA DE FRICCIÓN QUE PEDISTE 👇
     const confirmacion = window.confirm("⚠️ ATENCIÓN: ESTA ACCIÓN NO SE PUEDE DESHACER.\n\nRevisa bien quién está presente, quién avisó y quién ha faltado sin avisar.\n\n¿Estás seguro de que quieres guardar la lista definitivamente?");
     if (!confirmacion) return;
 
@@ -997,7 +975,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      // Ahora siempre actualizamos la plantilla (Incluso si es una clase puntual en su agenda)
       const templateStudents = [
         ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
         ...(currentSession.hiddenStudents || [])
@@ -1030,7 +1007,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  // 👇 FIX: "Cancelar solo por hoy" ahora sabe diferenciar entre Clases Recurrentes y Puntuales
   const cancelClassForToday = async (classData) => {
     if (!user) return;
     const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
@@ -1039,7 +1015,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     try {
       const subId = `${classData.id}-${date}`;
       
-      // Creamos la sustitución en el tablón amarillo
       await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
         originalClassId: classData.id,
         originalTeacherUid: user.uid,
@@ -1056,10 +1031,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       });
 
       if (classData.date) {
-        // Es una clase puntual. La borramos de la agenda de este profe para que quede libre.
         await deleteDoc(doc(db, classData.refPath));
       } else {
-        // Es una clase recurrente. Le ponemos el parche de cancelledDate.
         const updatedCancelledDates = [...(classData.cancelledDates || []), date];
         await setDoc(doc(db, classData.refPath), {
           ...classData,
@@ -1813,16 +1786,24 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <button onClick={() => saveDailyReport(false)} className="w-full bg-white border-2 border-zinc-200 text-black hover:bg-zinc-50 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-sm">
                     <Save className="w-5 h-5" /> Guardar Borrador
                   </button>
-                  <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-black hover:bg-zinc-800 text-white font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xl disabled:opacity-60">
-                    {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Enviar a Coordinación
-                  </button>
+                  
+                  {/* 👇 FIX: Bloqueo de 24 horas si ya se ha enviado hoy */}
+                  {lastReportSentDate === date ? (
+                    <div className="w-full bg-emerald-50 text-emerald-600 border-2 border-emerald-200 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 shadow-sm text-center">
+                      <CheckCircle className="w-5 h-5 shrink-0" /> Ya enviado a coordinación
+                    </div>
+                  ) : (
+                    <button onClick={saveAndSendDailyReport} disabled={isSendingReport} className="w-full bg-black hover:bg-zinc-800 text-white font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all active:scale-95 shadow-xl disabled:opacity-60">
+                      {isSendingReport ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Mail className="w-5 h-5" />} Enviar a Coordinación
+                    </button>
+                  )}
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* --- PESTAÑA HISTORIAL --- */}
+        {/* --- PESTAÑA HISTORIAL CON PAGINACIÓN --- */}
         {activeTab === 'history' && (
           <div className="space-y-6">
             <h2 className="text-2xl font-black text-slate-800 mb-8 uppercase tracking-tight">Historial de Clases</h2>
@@ -1832,49 +1813,64 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay registros aún</h3>
               </div>
             ) : (
-              records.map((record) => (
-                <div key={record.id} className={`bg-white rounded-3xl shadow-sm border p-6 md:p-8 ${record.isRenounced ? 'border-amber-200 opacity-80' : 'border-zinc-200'}`}>
-                  <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-zinc-100 gap-4">
-                    <div>
-                      <h3 className="font-black uppercase tracking-wide text-black text-xl">
-                        {record.subject}
-                        {record.isRenounced && <span className="text-amber-600 text-xs font-black uppercase tracking-widest ml-3 bg-amber-50 px-2 py-1 rounded-lg">(RENUNCIADA)</span>}
-                      </h3>
-                      <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5 mt-2">
-                        <MapPin className="w-4 h-4" /> {record.sede || 'Tarragona'} ({record.sala || 'Sala 1'})
-                        <span className="mx-1">•</span> 
-                        <User className="w-4 h-4" /> {record.teacher}
-                      </p>
-                    </div>
-                    <div className="text-left md:text-right">
-                      <p className="font-black text-slate-800 flex items-center md:justify-end gap-1.5">
-                        <Calendar className="w-4 h-4 text-zinc-400" /> {formatDateSpanish(record.date)}
-                      </p>
-                      <p className="text-sm font-bold uppercase tracking-widest text-zinc-500 flex items-center md:justify-end gap-1.5 mt-1">
-                        <Clock className="w-4 h-4" /> {record.time}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                    {record.students.map(student => (
-                      <div key={student.id} className="flex flex-col gap-1 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
-                        <div className="flex items-center gap-2.5">
-                          {student.status === 'present' && <Check className="w-5 h-5 text-emerald-500 bg-emerald-100 rounded-md p-0.5" />}
-                          {student.status === 'absent' && <X className="w-5 h-5 text-rose-500 bg-rose-100 rounded-md p-0.5" />}
-                          {student.status === 'notified' && <AlertCircle className="w-5 h-5 text-amber-500 bg-amber-100 rounded-md p-0.5" />}
-                          <span className={`text-sm ${student.status === 'present' ? 'text-slate-700 font-bold' : student.status === 'absent' ? 'text-rose-600 font-black' : 'text-amber-700 font-black'}`}>
-                            {student.name}
-                          </span>
-                        </div>
-                        {student.isRecovery && (
-                          <span className="text-[10px] text-amber-600 font-black uppercase tracking-widest ml-8">Recuperación</span>
-                        )}
+              <>
+                {/* 👇 FIX: Solo renderizamos hasta el límite actual (paginación suave) */}
+                {records.slice(0, historyLimit).map((record) => (
+                  <div key={record.id} className={`bg-white rounded-3xl shadow-sm border p-6 md:p-8 ${record.isRenounced ? 'border-amber-200 opacity-80' : 'border-zinc-200'}`}>
+                    <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-zinc-100 gap-4">
+                      <div>
+                        <h3 className="font-black uppercase tracking-wide text-black text-xl">
+                          {record.subject}
+                          {record.isRenounced && <span className="text-amber-600 text-xs font-black uppercase tracking-widest ml-3 bg-amber-50 px-2 py-1 rounded-lg">(RENUNCIADA)</span>}
+                        </h3>
+                        <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5 mt-2">
+                          <MapPin className="w-4 h-4" /> {record.sede || 'Tarragona'} ({record.sala || 'Sala 1'})
+                          <span className="mx-1">•</span> 
+                          <User className="w-4 h-4" /> {record.teacher}
+                        </p>
                       </div>
-                    ))}
+                      <div className="text-left md:text-right">
+                        <p className="font-black text-slate-800 flex items-center md:justify-end gap-1.5">
+                          <Calendar className="w-4 h-4 text-zinc-400" /> {formatDateSpanish(record.date)}
+                        </p>
+                        <p className="text-sm font-bold uppercase tracking-widest text-zinc-500 flex items-center md:justify-end gap-1.5 mt-1">
+                          <Clock className="w-4 h-4" /> {record.time}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {record.students.map(student => (
+                        <div key={student.id} className="flex flex-col gap-1 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+                          <div className="flex items-center gap-2.5">
+                            {student.status === 'present' && <Check className="w-5 h-5 text-emerald-500 bg-emerald-100 rounded-md p-0.5" />}
+                            {student.status === 'absent' && <X className="w-5 h-5 text-rose-500 bg-rose-100 rounded-md p-0.5" />}
+                            {student.status === 'notified' && <AlertCircle className="w-5 h-5 text-amber-500 bg-amber-100 rounded-md p-0.5" />}
+                            <span className={`text-sm ${student.status === 'present' ? 'text-slate-700 font-bold' : student.status === 'absent' ? 'text-rose-600 font-black' : 'text-amber-700 font-black'}`}>
+                              {student.name}
+                            </span>
+                          </div>
+                          {student.isRecovery && (
+                            <span className="text-[10px] text-amber-600 font-black uppercase tracking-widest ml-8">Recuperación</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))
+                ))}
+                
+                {/* BOTÓN CARGAR MÁS */}
+                {historyLimit < records.length && (
+                  <div className="text-center pt-4 pb-8">
+                    <button 
+                      onClick={() => setHistoryLimit(prev => prev + 10)}
+                      className="bg-zinc-200 hover:bg-zinc-300 text-zinc-600 font-black uppercase tracking-widest text-xs px-6 py-3 rounded-xl transition-colors"
+                    >
+                      Cargar más clases antiguas
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -1919,45 +1915,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-center mt-6">* La proyección de vacaciones se calcula matemáticamente en base a la media diaria de tu mes anterior.</p>
                </div>
                <Music className="absolute -bottom-12 -right-12 w-80 h-80 text-zinc-900/40 rotate-12 pointer-events-none" />
-            </div>
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight">Reporte Diario</h2>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Previsualiza los datos que enviarás de la jornada.</p>
-              </div>
-              <div className="flex gap-2 w-full sm:w-auto">
-                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full sm:w-auto p-3 bg-white border-2 border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-slate-700" />
-              </div>
-            </div>
-
-            <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 p-6 md:p-8">
-              <h3 className="font-black text-slate-800 mb-6 uppercase tracking-widest text-xs">Datos de {formatDateSpanish(date)}</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Clases</p>
-                  <p className="text-3xl font-black text-slate-800 mt-1">{recordsForSelectedDate.length}</p>
-                </div>
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Horas Registradas</p>
-                  <p className="text-3xl font-black text-slate-800 mt-1">{(recordsForSelectedDate.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0) / 60).toFixed(2)}h</p>
-                </div>
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-5">
-                  <p className="text-[10px] uppercase font-black tracking-widest text-zinc-400">Profesor</p>
-                  <p className="text-xl font-black text-slate-800 mt-1 truncate">{getTeacherName()}</p>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div>
-                  <h4 className="font-black text-slate-800 mb-3 uppercase tracking-widest text-[10px]">Registro de Asistencia</h4>
-                  <pre className="whitespace-pre-wrap text-sm bg-zinc-900 text-zinc-300 rounded-2xl p-6 font-mono leading-relaxed overflow-x-auto shadow-inner">{buildAttendanceDetails()}</pre>
-                </div>
-                <div>
-                  <h4 className="font-black text-slate-800 mb-3 uppercase tracking-widest text-[10px]">Observaciones del Profesor</h4>
-                  <pre className="whitespace-pre-wrap text-sm bg-zinc-50 border-2 border-zinc-100 rounded-2xl p-6 font-sans font-medium text-slate-700 leading-relaxed">{buildObservations()}</pre>
-                </div>
-              </div>
             </div>
           </div>
         )}

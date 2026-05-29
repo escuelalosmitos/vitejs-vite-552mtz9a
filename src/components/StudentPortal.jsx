@@ -124,6 +124,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
+  
+  // 👇 NUEVO ESTADO: Candado para el botón de avisar ausencia
+  const [isSendingAbsence, setIsSendingAbsence] = useState(false);
 
   const [mitoboxModal, setMitoboxModal] = useState(false);
   const [mboxDate, setMboxDate] = useState('');
@@ -303,7 +306,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const confirmAbsence = async (wantsTicket) => {
-    if (!absenceModal || !profile) return;
+    if (!absenceModal || !profile || isSendingAbsence) return;
+    
+    // Bloqueamos el botón inmediatamente
+    setIsSendingAbsence(true);
     
     const isLate = absenceModal.diffHours < 16;
     const status = (!isLate && wantsTicket) ? 'notified' : 'notified_no_ticket';
@@ -365,6 +371,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     } catch (error) {
       showToast('Error al enviar el aviso.', 'error');
+    } finally {
+      // Liberamos el botón cuando todo ha terminado
+      setIsSendingAbsence(false);
     }
   };
 
@@ -664,8 +673,10 @@ END:VCALENDAR`;
               <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso fuera de plazo</h2>
               <p className="text-center text-zinc-500 font-medium mb-6">Avisas con menos de 16h. Informaremos al profesor, pero <strong className="text-red-500">no generará ticket</strong>.</p>
               <div className="space-y-3">
-                <button onClick={() => confirmAbsence(false)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 shadow-lg">Avisar de todas formas</button>
-                <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
+                <button onClick={() => confirmAbsence(false)} disabled={isSendingAbsence} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 shadow-lg disabled:opacity-50">
+                  {isSendingAbsence ? 'Enviando...' : 'Avisar de todas formas'}
+                </button>
+                <button onClick={() => setAbsenceModal(null)} disabled={isSendingAbsence} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200 disabled:opacity-50">Cancelar</button>
               </div>
             </>
           ) : (
@@ -677,14 +688,18 @@ END:VCALENDAR`;
               <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl mb-4">
                 <p className="text-xs text-amber-800 font-bold mb-3 leading-relaxed">Recuerda que solo se puede recuperar por razones de <strong>salud, trabajo o estudios</strong>.</p>
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={healthCheck} onChange={e => setHealthCheck(e.target.checked)} className="w-4 h-4 accent-amber-600 rounded cursor-pointer" />
+                  <input type="checkbox" checked={healthCheck} onChange={e => setHealthCheck(e.target.checked)} disabled={isSendingAbsence} className="w-4 h-4 accent-amber-600 rounded cursor-pointer disabled:cursor-not-allowed" />
                   <span className="text-xs font-black text-amber-950 uppercase tracking-widest">Cumplo las condiciones</span>
                 </label>
               </div>
               <div className="space-y-3">
-                <button onClick={() => confirmAbsence(true)} disabled={!healthCheck} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">Sí, quiero recuperarla</button>
-                <button onClick={() => confirmAbsence(false)} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black">No, gracias. Solo aviso.</button>
-                <button onClick={() => setAbsenceModal(null)} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200">Cancelar</button>
+                <button onClick={() => confirmAbsence(true)} disabled={!healthCheck || isSendingAbsence} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                  {isSendingAbsence ? 'Enviando...' : 'Sí, quiero recuperarla'}
+                </button>
+                <button onClick={() => confirmAbsence(false)} disabled={isSendingAbsence} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black disabled:opacity-50">
+                  {isSendingAbsence ? 'Enviando...' : 'No, gracias. Solo aviso.'}
+                </button>
+                <button onClick={() => setAbsenceModal(null)} disabled={isSendingAbsence} className="w-full bg-zinc-100 text-zinc-500 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200 disabled:opacity-50">Cancelar</button>
               </div>
             </>
           )}
@@ -1218,7 +1233,6 @@ END:VCALENDAR`;
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
 
-                      {/* 👇 AQUÍ ESTÁ EL CÓDIGO DE LA BITÁCORA QUE FALTABA 👇 */}
                       {clase.notes && (
                         <div className={`mb-8 p-5 rounded-2xl border ${isCongelado ? 'bg-zinc-300/30 border-zinc-300/50 text-zinc-600' : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'}`}>
                           <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${isCongelado ? 'text-zinc-500' : 'text-amber-400'}`}>

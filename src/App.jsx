@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react'; // 👈 FIX: Añadidos los iconos del ojo
+import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react'; 
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+// 👇 FIX: Añadimos sendPasswordResetEmail a las importaciones
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, collection, query, where, getDocs } from 'firebase/firestore';
 
 // --- MÓDULOS ---
@@ -33,11 +34,12 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false); // 👈 FIX: Estado para controlar el ojito
+  const [showPassword, setShowPassword] = useState(false); 
   
   // ESTADOS DE AUTENTICACIÓN Y ERRORES
   const [isLoginMode, setIsLoginMode] = useState(true); 
   const [authError, setAuthError] = useState(''); 
+  const [authSuccess, setAuthSuccess] = useState(''); // 👈 NUEVO: Mensaje verde para éxito
   
   // ESTADO PARA EL ENTRADA/SALIDA DEL ADMIN
   const [viewMode, setViewMode] = useState('admin'); // 'admin' o 'teacher'
@@ -52,6 +54,7 @@ export default function App() {
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
+    setAuthSuccess('');
     const cleanEmail = email.toLowerCase().trim();
 
     try {
@@ -86,6 +89,28 @@ export default function App() {
     }
   };
 
+  // 👇 NUEVA FUNCIÓN PARA RECUPERAR CONTRASEÑA
+  const handleResetPassword = async () => {
+    setAuthError('');
+    setAuthSuccess('');
+    
+    if (!email.trim()) {
+      setAuthError('Por favor, escribe tu correo arriba primero para enviarte el enlace.');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      setAuthSuccess('¡Correo enviado! Revisa tu bandeja de entrada (o spam) para crear una nueva contraseña.');
+    } catch (error) {
+      if (error.code === 'auth/user-not-found') {
+        setAuthError('No existe ninguna cuenta con este correo.');
+      } else {
+        setAuthError('Error al enviar el correo. Revisa si el email es correcto.');
+      }
+    }
+  };
+
   const handleLogout = () => signOut(auth);
 
   if (loading) return (
@@ -100,12 +125,12 @@ export default function App() {
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4 font-sans text-slate-800">
         <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md text-center border border-zinc-100">
           <div className="flex justify-center mx-auto mb-8">
-  <img 
-    src="/logo.png" 
-    alt="Logo Escuela Los Mitos" 
-    className="w-32 h-auto object-contain" 
-  />
-</div>
+            <img 
+              src="/logo.png" 
+              alt="Logo Escuela Los Mitos" 
+              className="w-32 h-auto object-contain" 
+            />
+          </div>
           <h1 className="text-3xl font-black uppercase tracking-tighter mb-1">Los Mitos</h1>
           <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-8">
             {isLoginMode ? 'Acceso al portal' : 'Reivindicar cuenta de alumno'}
@@ -114,6 +139,13 @@ export default function App() {
           {authError && (
             <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm font-bold rounded-xl border border-red-100 animate-in fade-in">
               {authError}
+            </div>
+          )}
+
+          {/* Mensaje de éxito para el email de recuperación */}
+          {authSuccess && (
+            <div className="mb-4 p-3 bg-emerald-50 text-emerald-700 text-sm font-bold rounded-xl border border-emerald-100 animate-in fade-in">
+              {authSuccess}
             </div>
           )}
 
@@ -127,7 +159,6 @@ export default function App() {
               className="w-full p-4 bg-zinc-50 border-2 border-zinc-100 rounded-2xl outline-none focus:border-black font-medium transition-colors" 
             />
             
-            {/* 👇 FIX: Input de contraseña con el ojito de mostrar/ocultar */}
             <div className="relative w-full">
               <input 
                 type={showPassword ? "text" : "password"} 
@@ -153,14 +184,25 @@ export default function App() {
             </button>
           </form>
 
-          <div className="mt-8 pt-6 border-t border-zinc-100">
+          <div className="mt-8 pt-6 border-t border-zinc-100 space-y-4 flex flex-col items-center">
             <button 
               type="button"
-              onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); }}
+              onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); setAuthSuccess(''); }}
               className="text-sm font-bold text-zinc-500 hover:text-black transition-colors"
             >
               {isLoginMode ? '¿Primera vez aquí? Activa tu cuenta' : '¿Ya tienes contraseña? Inicia sesión'}
             </button>
+            
+            {/* 👇 NUEVO BOTÓN PARA RECUPERAR CONTRASEÑA */}
+            {isLoginMode && (
+              <button 
+                type="button"
+                onClick={handleResetPassword}
+                className="text-[10px] font-bold text-blue-500 hover:text-blue-700 transition-colors uppercase tracking-widest"
+              >
+                ¿Has olvidado tu contraseña?
+              </button>
+            )}
           </div>
         </div>
       </div>

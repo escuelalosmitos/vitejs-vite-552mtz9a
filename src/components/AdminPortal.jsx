@@ -193,7 +193,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const ingresos = numAlumnos * cuota;
       
       const duracionHoras = (Number(c.duration) || 60) / 60;
-      // EXCEPCIÓN PACO: Si el profesor es Paco, el coste es 0€ (ya está en gastos fijos).
       const coste = (c.teacher?.toLowerCase() === 'paco') ? 0 : (duracionHoras * 4 * (settings.costeEmpresa || 22));      
       const beneficio = ingresos - coste;
 
@@ -239,6 +238,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
   }, [allClasses, settings]);
+
+  // 👇 NUEVA FUNCIÓN GLOBAL PARA BORRAR CLASES DESDE CUALQUIER VISTA
+  const handleDeleteClassGlobal = async (clase) => {
+    if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
+    try {
+      await deleteDoc(doc(db, clase.refPath));
+      if (viewClassModal && viewClassModal.id === clase.id) {
+        setViewClassModal(null);
+      }
+      alert("✅ Clase borrada correctamente.");
+    } catch (e) {
+      alert("❌ Error al borrar la clase: " + e.message);
+    }
+  };
 
   const updateGestionStatus = async (gestionId, status, gestionData = null) => {
     const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
@@ -866,7 +879,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
 
   // ==========================================
-  // MODALES
+  // MODALES Y COMPONENTES
   // ==========================================
 
   const NotesModalOverlay = () => {
@@ -1376,6 +1389,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
         <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
           <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          
+          {/* 👇 FIX: Botón papelera añadido al modal Global */}
+          <button onClick={() => handleDeleteClassGlobal(c)} className="absolute top-4 right-14 text-red-500 hover:text-white hover:bg-red-500 bg-red-50 p-2 rounded-full transition-colors" title="Borrar Clase DEFINITIVAMENTE"><Trash2 className="w-5 h-5"/></button>
+
           <div className="flex items-center gap-3 mb-6 shrink-0">
             <BookOpen className="w-8 h-8 text-indigo-600"/>
             <div>
@@ -1846,7 +1863,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
                 <div className="flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
-                  {/* 👇 FIX: Añadimos el filtro SIN ACTIVAR */}
                   {['activo', 'congelado', 'baja', 'sin_activar'].map((s) => (
                     <button
                       key={s}
@@ -1883,7 +1899,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     {(() => {
                       const filtered = students.filter(s => {
                         const matchSearch = s.name.toLowerCase().includes(searchStudent.toLowerCase());
-                        // 👇 FIX: Si buscamos "Sin activar", comprobamos que claimed sea explícitamente false
                         if (filterStatus === 'sin_activar') {
                           return matchSearch && (s.claimed === false);
                         }
@@ -1901,7 +1916,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                           <td className="p-4 overflow-hidden">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
                             <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px]" title={student.email}>{student.email}</div>
-                            {/* 👇 FIX: Medallita visual de Activación */}
                             <div className="mt-1.5">
                               {student.claimed ? (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">
@@ -2059,7 +2073,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                         if (claseAsignada) {
                            const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
                            return (
-                              <div key={sala} className="bg-zinc-900 text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border border-zinc-800">
+                              <div key={sala} className="bg-zinc-900 text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border border-zinc-800 group">
                                  <h3 className="font-black text-3xl uppercase tracking-tighter mb-1 opacity-20 absolute top-4 right-4">{sala.replace('Sala ', 'S')}</h3>
                                  <h3 className="font-black text-xl uppercase tracking-widest mb-1 text-zinc-400">{sala}</h3>
                                  <div className="flex-1 mt-2 z-10">
@@ -2069,7 +2083,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                  </div>
                                  <div className="mt-4 pt-4 border-t border-zinc-800 flex justify-between items-center z-10">
                                     <span className="text-xs font-black text-zinc-300">Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-400' : 'text-emerald-400'}>{activeC}/{claseAsignada.capacity}</span></span>
-                                    <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
+                                    <div className="flex gap-2">
+                                      {/* 👇 FIX: Papelera añadida en la tarjeta oscura de Arquitecto */}
+                                      <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>
+                                      <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
+                                    </div>
                                  </div>
                               </div>
                            );
@@ -2162,7 +2180,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               const isHibernated = activeC === 0;
                               return (
                                 <div key={c.id} className={`p-4 rounded-xl border relative group ${isHibernated ? 'bg-zinc-50 border-dashed' : 'bg-white'}`}>
-                                  <div className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)} <span className="bg-zinc-100 p-1 rounded">{c.time}</span></div>
+                                  {/* 👇 FIX: Botón papelera en Vista Profesor */}
+                                  <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-2 right-2 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
+                                    <Trash2 className="w-4 h-4"/>
+                                  </button>
+                                  
+                                  <div className="font-black text-sm uppercase pr-8">{getDayName(c.dayOfWeek)} <span className="bg-zinc-100 p-1 rounded">{c.time}</span></div>
                                   <div className="text-xs text-zinc-400 font-bold uppercase mt-1">{c.subject} • {c.sede} ({c.sala})</div>
                                   <div className="text-right text-xs font-black mt-2">{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
                                   <div className="flex gap-2 mt-3">
@@ -2208,8 +2231,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   const isCritical = activeC === 1; 
 
                   return (
-                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
-                      <div className="flex justify-between items-start mb-3">
+                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                      {/* 👇 FIX: Botón papelera en pestaña Peligro */}
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
+                        <Trash2 className="w-4 h-4"/>
+                      </button>
+
+                      <div className="flex justify-between items-start mb-3 pr-8">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
                           {isHibernated ? 'Hibernada' : isCritical ? 'Crítico' : 'Revisar'}
                         </span>
@@ -2496,6 +2524,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             {/* AFOROS FÍSICOS DE LAS SALAS */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
+              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                  {SEDES.map(sede => (
                     <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
@@ -2517,7 +2547,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
-            {/* CALENDARIO Y COPIAS EXCEL */}
+            {/* CALENDARIO ESCOLAR */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">

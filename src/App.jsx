@@ -3,9 +3,9 @@ import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
-// 👇 FIX: Añadimos sendPasswordResetEmail a las importaciones
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, collection, query, where, getDocs } from 'firebase/firestore';
+// 👇 FIX: Añadimos updateDoc y doc a las importaciones
+import { getFirestore, collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
 
 // --- MÓDULOS ---
 import TeacherPortal from './components/TeacherPortal.jsx';
@@ -39,7 +39,7 @@ export default function App() {
   // ESTADOS DE AUTENTICACIÓN Y ERRORES
   const [isLoginMode, setIsLoginMode] = useState(true); 
   const [authError, setAuthError] = useState(''); 
-  const [authSuccess, setAuthSuccess] = useState(''); // 👈 NUEVO: Mensaje verde para éxito
+  const [authSuccess, setAuthSuccess] = useState(''); 
   
   // ESTADO PARA EL ENTRADA/SALIDA DEL ADMIN
   const [viewMode, setViewMode] = useState('admin'); // 'admin' o 'teacher'
@@ -59,22 +59,43 @@ export default function App() {
 
     try {
       if (isLoginMode) {
-        // MODO LOGIN NORMAL
+        // --- MODO LOGIN NORMAL ---
         await signInWithEmailAndPassword(auth, cleanEmail, password);
+
+        // 👇 FIX DE "AUTOCURACIÓN": Si es un alumno y su cuenta sigue constando como "no activada" en el CRM, la marcamos como activada silenciosamente.
+        if (cleanEmail !== ADMIN_EMAIL && !cleanEmail.endsWith('@escuelalosmitos.com')) {
+          const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const studentDoc = snap.docs[0];
+            if (studentDoc.data().claimed !== true) {
+              await updateDoc(doc(db, 'artifacts', appId, 'students', studentDoc.id), { 
+                claimed: true 
+              });
+            }
+          }
+        }
+
       } else {
-        // --- EL PORTERO ANTI-BOTS (MODO REGISTRO REAL) ---
-        // 1. Buscamos si el email existe en el Archivador (Firestore)
+        // --- MODO REGISTRO REAL (ACTIVAR CUENTA) ---
         const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
         const snapshot = await getDocs(q);
 
-        // 2. Si no ha sido introducido previamente por un profesor y no eres Paco, se cancela la creación.
         if (snapshot.empty && cleanEmail !== ADMIN_EMAIL) {
           setAuthError("Acceso denegado: Este email no consta en la base de datos de alumnos activos.");
-          return; // <-- BLOQUEO: Impide que Firebase registre la cuenta basura
+          return;
         }
 
-        // 3. Si es un alumno real pre-autorizado, le permitimos crear su cuenta y contraseña propia
+        // 1. Creamos la cuenta y contraseña en Firebase Auth
         await createUserWithEmailAndPassword(auth, cleanEmail, password);
+
+        // 2. 👇 FIX: Marcamos la ficha del alumno como "Activada" (claimed: true) en la base de datos
+        if (!snapshot.empty) {
+          const studentDoc = snapshot.docs[0];
+          await updateDoc(doc(db, 'artifacts', appId, 'students', studentDoc.id), { 
+            claimed: true 
+          });
+        }
       }
     } catch (err) {
       if (err.code === 'auth/email-already-in-use') {
@@ -89,7 +110,6 @@ export default function App() {
     }
   };
 
-  // 👇 NUEVA FUNCIÓN PARA RECUPERAR CONTRASEÑA
   const handleResetPassword = async () => {
     setAuthError('');
     setAuthSuccess('');
@@ -142,7 +162,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Mensaje de éxito para el email de recuperación */}
           {authSuccess && (
             <div className="mb-4 p-3 bg-emerald-50 text-emerald-700 text-sm font-bold rounded-xl border border-emerald-100 animate-in fade-in">
               {authSuccess}
@@ -193,7 +212,6 @@ export default function App() {
               {isLoginMode ? '¿Primera vez aquí? Activa tu cuenta' : '¿Ya tienes contraseña? Inicia sesión'}
             </button>
             
-            {/* 👇 NUEVO BOTÓN PARA RECUPERAR CONTRASEÑA */}
             {isLoginMode && (
               <button 
                 type="button"
@@ -213,7 +231,6 @@ export default function App() {
   const isPaco = user.email === ADMIN_EMAIL;
   const isTeacher = user.email.toLowerCase().endsWith('@escuelalosmitos.com');
 
-  // 1. Caso Especial: Si es Paco y tiene el conmutador en Modo Admin (Dios)
   if (isPaco && viewMode === 'admin') {
     return (
       <AdminPortal 
@@ -226,7 +243,6 @@ export default function App() {
     );
   }
 
-  // 2. Si el correo pertenece al dominio de la escuela, se le presenta el portal de profesores
   if (isTeacher) {
     return (
       <TeacherPortal 
@@ -242,6 +258,5 @@ export default function App() {
     );
   }
 
-  // 3. Cualquier otro dominio externo del mundo entra directamente al portal de alumnos/familias
   return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
 }

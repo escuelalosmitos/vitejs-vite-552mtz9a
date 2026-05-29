@@ -1558,13 +1558,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 </div>
                 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
-                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Calculator className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Personal</h3></div>
+                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
                   <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
                   <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Nóminas a Coste Empresa (Paco = 0€)</p>
                 </div>
 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
-                  <div className="flex items-center gap-2 text-rose-600 mb-2"><Settings className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
+                  <div className="flex items-center gap-2 text-rose-600 mb-2"><MapPin className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
                   <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}€</p>
                   <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Locales y costes compartidos</p>
                 </div>
@@ -1846,13 +1846,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
                 <div className="flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
-                  {['activo', 'congelado', 'baja'].map((s) => (
+                  {/* 👇 FIX: Añadimos el filtro SIN ACTIVAR */}
+                  {['activo', 'congelado', 'baja', 'sin_activar'].map((s) => (
                     <button
                       key={s}
                       onClick={() => setFilterStatus(s)}
                       className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${filterStatus === s ? 'bg-black text-white' : 'text-zinc-400 hover:text-black'}`}
                     >
-                      {s}s
+                      {s === 'sin_activar' ? 'Sin Activar' : s + 's'}
                     </button>
                   ))}
                 </div>
@@ -1882,6 +1883,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     {(() => {
                       const filtered = students.filter(s => {
                         const matchSearch = s.name.toLowerCase().includes(searchStudent.toLowerCase());
+                        // 👇 FIX: Si buscamos "Sin activar", comprobamos que claimed sea explícitamente false
+                        if (filterStatus === 'sin_activar') {
+                          return matchSearch && (s.claimed === false);
+                        }
                         const currentStatus = s.globalStatus || 'activo';
                         const matchStatus = currentStatus === filterStatus;
                         return matchSearch && matchStatus;
@@ -1896,6 +1901,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                           <td className="p-4 overflow-hidden">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
                             <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px]" title={student.email}>{student.email}</div>
+                            {/* 👇 FIX: Medallita visual de Activación */}
+                            <div className="mt-1.5">
+                              {student.claimed ? (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">
+                                  <CheckCircle className="w-3 h-3" /> Activada
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
+                                  <Timer className="w-3 h-3" /> Pendiente
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="p-4 text-center">
                             <div className="flex items-center justify-center gap-2">
@@ -1915,7 +1932,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               <button onClick={() => setEditStudentModal(student)} className="flex items-center gap-1 p-2 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest" title="Editar datos del alumno">
                                 <Pencil className="w-3 h-3"/> Editar
                               </button>
-                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manualmente">
+                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manually">
                                 <ArrowRightLeft className="w-3 h-3"/> Mover
                               </button>
                               <button onClick={() => grantRecoveryTicket(student)} className="flex items-center gap-1 p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors text-[10px] font-black uppercase tracking-widest" title="Regalar Ticket de Recuperación">
@@ -2479,8 +2496,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             {/* AFOROS FÍSICOS DE LAS SALAS */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
-              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                  {SEDES.map(sede => (
                     <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
@@ -2502,7 +2517,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
-            {/* CALENDARIO ESCOLAR */}
+            {/* CALENDARIO Y COPIAS EXCEL */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">

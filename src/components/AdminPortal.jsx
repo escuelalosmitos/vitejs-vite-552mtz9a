@@ -239,7 +239,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     };
   }, [allClasses, settings]);
 
-  // 👇 NUEVA FUNCIÓN GLOBAL PARA BORRAR CLASES DESDE CUALQUIER VISTA
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
     try {
@@ -600,10 +599,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(!window.confirm(`¿Confirmas el cierre del MES?\n\nLos puntos pasarán al acumulado del Trimestre y del Año, y el mes quedará a cero.\n\nHay ${winners.length} ganadores este mes con ${maxScore} puntos.`)) return;
     setLoading(true);
     try {
-      const winnerNames = winners.map(w => {
-        const nameParts = w.name.split(' ');
-        return `${nameParts[0]} ${nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : ''}`;
-      });
+      const winnerNames = winners.map(w => w.name);
       const updatePromises = players.map(p => {
         const docRef = doc(db, 'artifacts', appId, 'students', p.id);
         return updateDoc(docRef, { 
@@ -633,10 +629,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if(!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nLos puntos trimestrales se pondrán a cero (los anuales seguirán intactos).\n\nHay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
     setLoading(true);
     try {
-      const winnerNames = winners.map(w => {
-        const nameParts = w.name.split(' ');
-        return `${nameParts[0]} ${nameParts.length > 1 ? nameParts[1].charAt(0) + '.' : ''}`;
-      });
+      const winnerNames = winners.map(w => w.name);
       const updatePromises = players.map(p => {
         return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
           triviaPointsQuarterly: 0
@@ -655,17 +648,27 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   };
 
   const handleCerrarRetoAnual = async () => {
-    if(!window.confirm(`⚠️ PELIGRO: ¿Seguro que quieres CERRAR EL AÑO?\n\nEsto pondrá a CERO el ranking anual de todos los alumnos de forma definitiva. Asegúrate de haber entregado el Gran Premio Anual primero.`)) return;
+    if(!window.confirm(`⚠️ PELIGRO: REINICIO TOTAL\n\n¿Seguro que quieres CERRAR LA TEMPORADA?\n\nEsto pondrá a CERO ABSOLUTO los contadores de todos los alumnos (Mes, Trimestre, Año, Rachas y Victorias). Úsalo solo para empezar un nuevo curso o terminar el periodo de pruebas.`)) return;
     setLoading(true);
     try {
-      const players = students.filter(s => (s.triviaPointsAnnual || 0) > 0);
+      const players = students.filter(s => 
+        (s.triviaPointsAnnual || 0) > 0 || 
+        (s.triviaPointsQuarterly || 0) > 0 || 
+        (s.triviaPoints || 0) > 0 || 
+        (s.triviaStreak || 0) > 0 || 
+        (s.triviaVictories || 0) > 0
+      );
       const updatePromises = players.map(p => {
         return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
-          triviaPointsAnnual: 0 
+          triviaPoints: 0,
+          triviaPointsQuarterly: 0,
+          triviaPointsAnnual: 0,
+          triviaStreak: 0,
+          triviaVictories: 0
         });
       });
       await Promise.all(updatePromises);
-      alert("Año cerrado con éxito. El sistema está limpio para la nueva temporada.");
+      alert("🧹 ¡Limpieza profunda completada! El sistema está a cero y listo para una nueva temporada.");
     } catch (e) { 
       alert("Error al cerrar el año: " + e.message); 
     } finally {
@@ -1390,7 +1393,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
           <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           
-          {/* 👇 FIX: Botón papelera añadido al modal Global */}
           <button onClick={() => handleDeleteClassGlobal(c)} className="absolute top-4 right-14 text-red-500 hover:text-white hover:bg-red-500 bg-red-50 p-2 rounded-full transition-colors" title="Borrar Clase DEFINITIVAMENTE"><Trash2 className="w-5 h-5"/></button>
 
           <div className="flex items-center gap-3 mb-6 shrink-0">
@@ -2084,7 +2086,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                  <div className="mt-4 pt-4 border-t border-zinc-800 flex justify-between items-center z-10">
                                     <span className="text-xs font-black text-zinc-300">Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-400' : 'text-emerald-400'}>{activeC}/{claseAsignada.capacity}</span></span>
                                     <div className="flex gap-2">
-                                      {/* 👇 FIX: Papelera añadida en la tarjeta oscura de Arquitecto */}
                                       <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>
                                       <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
                                     </div>
@@ -2180,7 +2181,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               const isHibernated = activeC === 0;
                               return (
                                 <div key={c.id} className={`p-4 rounded-xl border relative group ${isHibernated ? 'bg-zinc-50 border-dashed' : 'bg-white'}`}>
-                                  {/* 👇 FIX: Botón papelera en Vista Profesor */}
                                   <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-2 right-2 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
                                     <Trash2 className="w-4 h-4"/>
                                   </button>
@@ -2232,7 +2232,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
                   return (
                     <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
-                      {/* 👇 FIX: Botón papelera en pestaña Peligro */}
                       <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
                         <Trash2 className="w-4 h-4"/>
                       </button>
@@ -2376,7 +2375,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-emerald-50/20">
                   {rankMonthly.map((s, i) => (
                     <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-emerald-100 rounded-lg shadow-sm">
-                      <div className="flex items-center gap-2"><span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-emerald-500 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span><span className="font-bold text-xs text-slate-700 truncate">{s.name.split(' ')[0]}</span></div>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-emerald-500 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span>
+                        {/* 👇 FIX: Nombres completos en el ranking */}
+                        <span className="font-bold text-xs text-slate-700 truncate max-w-[120px]" title={s.name}>{s.name}</span>
+                      </div>
                       <span className="font-black text-emerald-600 text-xs">{s.triviaPoints}</span>
                     </div>
                   ))}
@@ -2389,7 +2392,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-amber-50/20">
                   {rankQuarterly.map((s, i) => (
                     <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-amber-100 rounded-lg shadow-sm">
-                      <div className="flex items-center gap-2"><span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-amber-500 text-white' : 'text-zinc-400'}`}>{i+1}</span><span className="font-bold text-xs text-slate-700 truncate">{s.name.split(' ')[0]}</span></div>
+                      <div className="flex items-center gap-2">
+                        <span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-amber-500 text-white' : 'text-zinc-400'}`}>{i+1}</span>
+                        <span className="font-bold text-xs text-slate-700 truncate max-w-[120px]" title={s.name}>{s.name}</span>
+                      </div>
                       <span className="font-black text-amber-600 text-xs">{s.liveQuarterly} <span className="text-[8px] uppercase">pts</span></span>
                     </div>
                   ))}
@@ -2402,7 +2408,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-zinc-900/50">
                   {rankAnnual.map((s, i) => (
                     <div key={s.id} className="flex items-center justify-between p-2 bg-zinc-800 border border-zinc-700 rounded-lg">
-                      <div className="flex items-center gap-2"><span className="font-black text-zinc-500 text-[10px] w-3">{i+1}.</span><span className="font-bold text-xs text-zinc-300 truncate">{s.name.split(' ')[0]}</span></div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-black text-zinc-500 text-[10px] w-3">{i+1}.</span>
+                        <span className="font-bold text-xs text-zinc-300 truncate max-w-[120px]" title={s.name}>{s.name}</span>
+                      </div>
                       <span className="font-black text-white text-xs">{s.liveAnnual} <span className="text-[8px] text-zinc-500 uppercase">pts</span></span>
                     </div>
                   ))}
@@ -2547,7 +2556,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
-            {/* CALENDARIO ESCOLAR */}
+            {/* CALENDARIO Y COPIAS EXCEL */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">

@@ -1918,7 +1918,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                           <td className="p-4 overflow-hidden">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
                             <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px]" title={student.email}>{student.email}</div>
-                            <div className="mt-1.5">
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               {student.claimed ? (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">
                                   <CheckCircle className="w-3 h-3" /> Activada
@@ -1929,6 +1929,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                 </span>
                               )}
                             </div>
+
+                            {/* NUEVO: Etiquetas de clases (Cero Clics) */}
+                            {(() => {
+                              const studentClasses = allClasses.filter(c => c.students && c.students.some(s => s.id === student.id && !s.isPaused));
+                              if (studentClasses.length === 0) return null;
+                              return (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {studentClasses.map(c => {
+                                    const dayShort = getDayName(c.dayOfWeek).substring(0, 3);
+                                    const timeShort = c.time.split(':')[0] + 'h';
+                                    return (
+                                      <span key={c.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-zinc-100 border border-zinc-200 text-zinc-500 rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap" title={`Profesor: ${c.teacher}`}>
+                                        <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="p-4 text-center">
                             <div className="flex items-center justify-center gap-2">

@@ -4,7 +4,6 @@ import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react';
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
-// 👇 FIX: Añadimos updateDoc y doc a las importaciones
 import { getFirestore, collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
 
 // --- MÓDULOS ---
@@ -62,7 +61,7 @@ export default function App() {
         // --- MODO LOGIN NORMAL ---
         await signInWithEmailAndPassword(auth, cleanEmail, password);
 
-        // 👇 FIX DE "AUTOCURACIÓN": Si es un alumno y su cuenta sigue constando como "no activada" en el CRM, la marcamos como activada silenciosamente.
+        // AUTOCURACIÓN: Si es un alumno y su cuenta sigue constando como "no activada" en el CRM, la marcamos como activada silenciosamente.
         if (cleanEmail !== ADMIN_EMAIL && !cleanEmail.endsWith('@escuelalosmitos.com')) {
           const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
           const snap = await getDocs(q);
@@ -89,7 +88,7 @@ export default function App() {
         // 1. Creamos la cuenta y contraseña en Firebase Auth
         await createUserWithEmailAndPassword(auth, cleanEmail, password);
 
-        // 2. 👇 FIX: Marcamos la ficha del alumno como "Activada" (claimed: true) en la base de datos
+        // 2. Marcamos la ficha del alumno como "Activada" (claimed: true) en la base de datos
         if (!snapshot.empty) {
           const studentDoc = snapshot.docs[0];
           await updateDoc(doc(db, 'artifacts', appId, 'students', studentDoc.id), { 
@@ -99,7 +98,10 @@ export default function App() {
       }
     } catch (err) {
       if (err.code === 'auth/email-already-in-use') {
-        setAuthError("Este email ya está registrado. Por favor, inicia sesión.");
+        // 👇 FIX UX: Cambiamos al usuario a modo login automáticamente
+        setIsLoginMode(true);
+        setPassword(''); // Limpiamos la contraseña por si acaso
+        setAuthSuccess("¡Ojo! Parece que ya activaste tu cuenta anteriormente. Te hemos pasado a la pantalla de entrada. ¡Pon tu contraseña y listo!");
       } else if (err.code === 'auth/weak-password') {
         setAuthError("La contraseña es poco segura (Mínimo 6 caracteres).");
       } else if (err.code === 'auth/invalid-credential') {
@@ -152,7 +154,9 @@ export default function App() {
             />
           </div>
           <h1 className="text-3xl font-black uppercase tracking-tighter mb-1">Los Mitos</h1>
-          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-8">
+          
+          {/* 👇 FIX UX: Color distinto según el modo para que el usuario sepa dónde está */}
+          <p className={`text-xs font-bold uppercase tracking-widest mb-8 transition-colors ${isLoginMode ? 'text-zinc-400' : 'text-indigo-500'}`}>
             {isLoginMode ? 'Acceso al portal' : 'Reivindicar cuenta de alumno'}
           </p>
           
@@ -197,9 +201,10 @@ export default function App() {
               </button>
             </div>
 
-            <button type="submit" className="w-full bg-black hover:bg-zinc-800 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-sm mt-4 flex justify-center items-center gap-2 transition-all active:scale-95 shadow-md">
+            {/* 👇 FIX UX: Botón de registro con color índigo en lugar de negro para romper el hábito visual */}
+            <button type="submit" className={`w-full text-white font-black py-4 rounded-2xl uppercase tracking-widest text-sm mt-4 flex justify-center items-center gap-2 transition-all active:scale-95 shadow-md ${isLoginMode ? 'bg-black hover:bg-zinc-800' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
               {isLoginMode ? <Lock className="w-4 h-4"/> : <UserPlus className="w-4 h-4"/>} 
-              {isLoginMode ? 'Entrar al Ecosistema' : 'Crear mi Contraseña'}
+              {isLoginMode ? 'Entrar al Ecosistema' : 'Activar mi Cuenta'}
             </button>
           </form>
 

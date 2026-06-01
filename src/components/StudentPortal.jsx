@@ -124,8 +124,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
-  
-  // 👇 NUEVO ESTADO: Candado para el botón de avisar ausencia
   const [isSendingAbsence, setIsSendingAbsence] = useState(false);
 
   const [mitoboxModal, setMitoboxModal] = useState(false);
@@ -144,6 +142,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const timeRules = getMonthNames();
   const dToday = new Date();
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
+
+  // 👇 LÓGICA DE LA BOLITA ROJA (NOTIFICACIONES TABLÓN)
+  const latestAnnounceId = announcements.length > 0 ? Math.max(...announcements.map(a => Number(a.id))).toString() : null;
+  const hasUnreadNews = latestAnnounceId && profile?.lastSeenTablon !== latestAnnounceId;
+
+  // Actualiza la marca de tiempo del tablón en Firestore cuando el alumno entra a la pestaña 'news'
+  useEffect(() => {
+    if (activeTab === 'news' && hasUnreadNews && profile?.id) {
+      updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+        lastSeenTablon: latestAnnounceId
+      }).catch(e => console.error("Error al actualizar estado del tablón:", e));
+    }
+  }, [activeTab, hasUnreadNews, profile?.id, latestAnnounceId, db, appId]);
 
   useEffect(() => {
     checkRegistration();
@@ -199,7 +210,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setSchoolCalendar(newCal);
 
   }, [globalSettings, myClasses, profile]);
-
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -308,7 +318,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const confirmAbsence = async (wantsTicket) => {
     if (!absenceModal || !profile || isSendingAbsence) return;
     
-    // Bloqueamos el botón inmediatamente
     setIsSendingAbsence(true);
     
     const isLate = absenceModal.diffHours < 16;
@@ -372,7 +381,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
     } catch (error) {
       showToast('Error al enviar el aviso.', 'error');
     } finally {
-      // Liberamos el botón cuando todo ha terminado
       setIsSendingAbsence(false);
     }
   };
@@ -1502,7 +1510,7 @@ END:VCALENDAR`;
                 {announcements.map(ann => (
                   <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
                     <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
-                    <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{ann.date}</p>
+                    <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
                     <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap">{ann.content}</p>
                   </div>
                 ))}
@@ -1563,7 +1571,7 @@ END:VCALENDAR`;
               <button 
                 onClick={() => handleAdminGestionClick({
                   type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
-                  desc: 'Congela tu plaza temporalmente por 15€/Mes. Esta gestión afecta solo al mes que viene.',
+                  desc: 'Congela tu plaza temporalmente por 15€/Mes. Esta gestión solo es posible un total de 2 meses al año. El alumno verá reactivada su cuota habitual tras dos meses de mantenimiento si no comunica nada mas en este periodo.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
@@ -1612,8 +1620,17 @@ END:VCALENDAR`;
             {id:'news', i:Megaphone, label:'Tablón'}, 
             {id:'contact', i:MessageSquare, label:'Gestiones'}
           ].map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>
-              <t.i className="w-6 h-6"/>
+            <button key={t.id} onClick={() => setActiveTab(t.id)} className={`relative p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>
+              <div className="relative">
+                <t.i className="w-6 h-6"/>
+                {/* 👇 LA BOLITA ROJA (Aparece en el ícono de 'news' si hay avisos sin leer y no estás en la pestaña) */}
+                {t.id === 'news' && hasUnreadNews && activeTab !== 'news' && (
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border-2 border-white"></span>
+                  </span>
+                )}
+              </div>
               <span className="text-[10px] font-bold">{t.label}</span>
             </button>
           ))}

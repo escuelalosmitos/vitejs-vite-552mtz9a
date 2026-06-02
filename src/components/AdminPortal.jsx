@@ -193,6 +193,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const ingresos = numAlumnos * cuota;
       
       const duracionHoras = (Number(c.duration) || 60) / 60;
+      // EXCEPCIÓN PACO: Si el profesor es Paco, el coste es 0€ (ya está en gastos fijos).
       const coste = (c.teacher?.toLowerCase() === 'paco') ? 0 : (duracionHoras * 4 * (settings.costeEmpresa || 22));      
       const beneficio = ingresos - coste;
 
@@ -266,6 +267,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData; 
       const studentInfo = students.find(s => s.id === studentId);
 
+      // 👇 FIX: Respetamos el alias en las gestiones
+      let displayName = studentName;
+      if (studentInfo && studentInfo.useAlias && studentInfo.alias) {
+          displayName = studentInfo.alias;
+      }
+
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
         let borradas = 0;
@@ -282,15 +289,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 body: JSON.stringify({
                   type: 'notificacion_profesor',
                   teacherEmail: emailProfe,
-                  subject: `❌ Baja de alumno: ${studentName} (${c.subject})`,
-                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} se ha dado de BAJA de tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+                  subject: `❌ Baja de alumno: ${displayName} (${c.subject})`,
+                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${displayName} se ha dado de BAJA de tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
                 })
               });
             } catch(e) { console.log("Fallo correo baja", e); }
           }
         }
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`✅ Baja ejecutada. Profesores avisados por correo. ${studentName} borrado de ${borradas} clases.`);
+        alert(`✅ Baja ejecutada. Profesores avisados por correo. ${displayName} borrado de ${borradas} clases.`);
       }
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
@@ -306,8 +313,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                 body: JSON.stringify({
                   type: 'notificacion_profesor',
                   teacherEmail: emailProfe,
-                  subject: `❄️ Alumno congelado: ${studentName} (${c.subject})`,
-                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${studentName} ha CONGELADO su plaza de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h) durante este mes.\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+                  subject: `❄️ Alumno congelado: ${displayName} (${c.subject})`,
+                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${displayName} ha CONGELADO su plaza de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h) durante este mes.\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
                 })
               });
             } catch(e) { console.log("Fallo correo congelar", e); }
@@ -327,7 +334,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           alert(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
           return;
         }
-        let logMessage = `Iniciando proceso para ${studentName}:\n\n`;
+        let logMessage = `Iniciando proceso para ${displayName}:\n\n`;
         if (type === 'cambio_horario') {
           const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
           for (let c of oldClasses) {
@@ -342,8 +349,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   body: JSON.stringify({
                     type: 'notificacion_profesor',
                     teacherEmail: emailProfe,
-                    subject: `🔄 Cambio de horario: ${studentName} (${c.subject})`,
-                    body: `Hola ${c.teacher},\n\nTe informamos que ${studentName} se ha cambiado de horario y ya NO vendrá a tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nLo hemos borrado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo.`
+                    subject: `🔄 Cambio de horario: ${displayName} (${c.subject})`,
+                    body: `Hola ${c.teacher},\n\nTe informamos que ${displayName} se ha cambiado de horario y ya NO vendrá a tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nLo hemos borrado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo.`
                   })
                 });
               } catch(e) {}
@@ -352,7 +359,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         }
         const newStudentPayload = {
           id: studentId,
-          name: studentName,
+          name: displayName,
           email: studentInfo?.email || '',
           isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
           status: 'present',
@@ -367,10 +374,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         try {
           const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
           let emailSubject = `🎉 ¡Nuevo alumno en tu clase de ${targetClass.subject}!`;
-          let emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${studentName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`;
+          let emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${displayName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`;
           if (type === 'recuperacion') {
-            emailSubject = `🔄 Recuperación programada: ${studentName} (${targetClass.subject})`;
-            emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${studentName} para recuperar una clase de ${targetClass.subject} contigo el próximo ${formatDateSpanish(recoveryDate)} a las ${targetClass.time}h.\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`;
+            emailSubject = `🔄 Recuperación programada: ${displayName} (${targetClass.subject})`;
+            emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} para recuperar una clase de ${targetClass.subject} contigo el próximo ${formatDateSpanish(recoveryDate)} a las ${targetClass.time}h.\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`;
           }
           await fetch(APPS_SCRIPT_URL, {
             method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -442,9 +449,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const updatedList = c.students.filter(s => s.id !== student.id);
         if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
       }
+      
+      // 👇 FIX: Respetamos el alias en las altas
+      const displayName = student.useAlias && student.alias ? student.alias : student.name;
       const newStudentPayload = {
         id: student.id,
-        name: student.name,
+        name: displayName,
         email: student.email || '',
         isPaused: student.globalStatus === 'congelado',
         status: 'present',
@@ -467,12 +477,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
       const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
       const promises = [];
+      const displayName = student.useAlias && student.alias ? student.alias : student.name;
       for (let i = 0; i < parseInt(num); i++) {
         const ticketId = `gift-${Date.now()}-${i}`;
         promises.push(
           setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
             studentId: student.id,
-            studentName: student.name,
+            studentName: displayName,
             subject: 'Cortesía Escuela',
             originalDate: new Date().toISOString().split('T')[0],
             validFrom,
@@ -925,25 +936,36 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (!editStudentModal) return null;
     const [name, setName] = useState(editStudentModal.name || '');
     const [email, setEmail] = useState(editStudentModal.email || '');
+    
+    // 👇 FIX: Nuevos estados para el Alias ninja
+    const [alias, setAlias] = useState(editStudentModal.alias || '');
+    const [useAlias, setUseAlias] = useState(editStudentModal.useAlias || false);
+    
     const [saving, setSaving] = useState(false);
 
     const handleSave = async () => {
-      if (!name.trim()) return alert("El nombre es obligatorio.");
+      if (!name.trim()) return alert("El nombre principal es obligatorio.");
       setSaving(true);
       try {
+        const finalDisplayName = useAlias && alias.trim() ? alias.trim() : name.trim();
+
         await updateDoc(doc(db, 'artifacts', appId, 'students', editStudentModal.id), { 
           name: name.trim(), 
-          email: email.toLowerCase().trim() 
+          email: email.toLowerCase().trim(),
+          alias: alias.trim(),
+          useAlias: useAlias
         });
+        
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === editStudentModal.id));
         const batch = writeBatch(db);
         classesWithStudent.forEach(c => {
           const updatedList = c.students.map(s => 
-            s.id === editStudentModal.id ? { ...s, name: name.trim(), email: email.toLowerCase().trim() } : s
+            s.id === editStudentModal.id ? { ...s, name: finalDisplayName, email: email.toLowerCase().trim() } : s
           );
           batch.update(doc(db, c.refPath), { students: updatedList });
         });
         await batch.commit();
+        
         alert('Datos del alumno actualizados en todo el sistema.');
         setEditStudentModal(null);
       } catch (e) {
@@ -963,7 +985,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
           <div className="space-y-4 mb-6">
             <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nombre del alumno</label>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Titular de la cuenta (Padre/Madre)</label>
               <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
             </div>
             <div>
@@ -971,6 +993,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vacio@sin-correo.com" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
               {!email && <p className="text-[10px] text-rose-500 font-bold mt-1">⚠️ Sin correo, el alumno no podrá entrar a la App.</p>}
             </div>
+            
+            {/* 👇 FIX: Campos para el Alias ninja */}
+            <div className="pt-4 border-t border-zinc-100 mt-4">
+              <label className="text-[10px] font-black uppercase text-indigo-600 mb-1 block flex items-center gap-1"><User className="w-3 h-3"/> Nombre Real (Niño/a)</label>
+              <input type="text" value={alias} onChange={e => setAlias(e.target.value)} placeholder="Ej: Hugo..." className="w-full p-3 bg-indigo-50/50 border-2 border-indigo-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" />
+              <label className="flex items-start gap-2 mt-3 cursor-pointer">
+                <input type="checkbox" checked={useAlias} onChange={e => setUseAlias(e.target.checked)} className="mt-0.5 w-4 h-4 text-indigo-600 rounded" />
+                <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest leading-tight">Sustituir el nombre del titular por este en todas las listas de clase de los profesores.</span>
+              </label>
+            </div>
+
           </div>
           <button onClick={handleSave} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando cambios...' : 'Guardar Datos'}
@@ -1015,7 +1048,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           </div>
           
           <div className="space-y-4 mb-8">
-            {/* ZONA DE NEGOCIO (BI) */}
             <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6">
               <h4 className="text-[10px] font-black uppercase text-emerald-800 tracking-widest mb-3 flex items-center gap-1"><DollarSign className="w-4 h-4"/> Datos Internos (Informes)</h4>
               <div>
@@ -1025,7 +1057,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </div>
             </div>
 
-            {/* ZONA PÚBLICA (WEB) */}
             <div className="bg-zinc-50 border border-zinc-200 p-4 rounded-xl">
                <h4 className="text-[10px] font-black uppercase text-zinc-500 tracking-widest mb-3 flex items-center gap-1"><Globe className="w-4 h-4"/> Escaparate Web</h4>
                
@@ -1243,6 +1274,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           s.name.toLowerCase() === searchName.trim().toLowerCase() || 
           (email && s.email === email.trim().toLowerCase())
         );
+        
+        // 👇 FIX: Respetar alias al reactivar
+        let displayName = searchName.trim();
+        if (existingStudent && existingStudent.useAlias && existingStudent.alias) {
+            displayName = existingStudent.alias;
+        }
+
         if (existingStudent) {
           studentId = existingStudent.id;
         } else {
@@ -1263,7 +1301,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         }
         const newStudentPayload = {
           id: studentId,
-          name: searchName.trim(),
+          name: displayName,
           email: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
@@ -1350,6 +1388,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           s.name.toLowerCase() === searchName.trim().toLowerCase() || 
           (emailInput && s.email === emailInput.trim().toLowerCase())
         );
+        
+        // 👇 FIX: Respetar alias al matricular en clase
+        let displayName = searchName.trim();
+        if (existingStudent && existingStudent.useAlias && existingStudent.alias) {
+            displayName = existingStudent.alias;
+        }
+
         if (existingStudent) {
           studentId = existingStudent.id;
         } else {
@@ -1370,7 +1415,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         }
         const newStudentPayload = {
           id: studentId,
-          name: searchName.trim(),
+          name: displayName,
           email: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
@@ -1917,7 +1962,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                         <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
                           <td className="p-4 overflow-hidden">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
-                            <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px]" title={student.email}>{student.email}</div>
+                            {/* 👇 FIX: Muestra el Alias debajo si existe */}
+                            {student.useAlias && student.alias && (
+                              <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 mt-0.5 flex items-center gap-1">
+                                <User className="w-3 h-3"/> Alumno: {student.alias}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px] mt-0.5" title={student.email}>{student.email}</div>
+                            
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               {student.claimed ? (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">
@@ -1930,7 +1982,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               )}
                             </div>
 
-                            {/* NUEVO: Etiquetas de clases (Cero Clics) */}
                             {(() => {
                               const studentClasses = allClasses.filter(c => c.students && c.students.some(s => s.id === student.id && !s.isPaused));
                               if (studentClasses.length === 0) return null;
@@ -2396,7 +2447,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                     <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-emerald-100 rounded-lg shadow-sm">
                       <div className="flex items-center gap-2">
                         <span className={`font-black w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${i === 0 ? 'bg-emerald-500 text-white' : i === 1 ? 'bg-slate-300 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'text-zinc-400'}`}>{i+1}</span>
-                        {/* 👇 FIX: Nombres completos en el ranking */}
                         <span className="font-bold text-xs text-slate-700 truncate max-w-[120px]" title={s.name}>{s.name}</span>
                       </div>
                       <span className="font-black text-emerald-600 text-xs">{s.triviaPoints}</span>
@@ -2575,7 +2625,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
-            {/* CALENDARIO Y COPIAS EXCEL */}
+            {/* CALENDARIO ESCOLAR */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">

@@ -104,8 +104,13 @@ const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
             Cancelar
           </button>
           
-      <button 
-            onClick={() => onRenounce()}
+          <button 
+            onClick={() => {
+              const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
+              if (isConfirmed) {
+                onRenounce();
+              }
+            }}
             className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1"
           >
             <Coffee className="w-4 h-4" /> Renunciar
@@ -924,7 +929,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const ticketPromises = currentSession.students.map(async (s) => {
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
         if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !s.isPaused) {
-            const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate?.startsWith(currentMonth));          if (monthTickets.length < 2) {
+          const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
+          if (monthTickets.length < 2) {
             const { validFrom, validUntil } = generateTicketDates(date);
             const ticketId = Date.now().toString() + '-' + s.id;
             await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {

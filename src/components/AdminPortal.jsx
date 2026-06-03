@@ -82,8 +82,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   const [manualTaskModal, setManualTaskModal] = useState(false);
-  const [manualTaskForm, setManualTaskForm] = useState({ title: '', details: '', person: '', type: 'tarea_manual' });
-  const [isSavingManualTask, setIsSavingManualTask] = useState(false);
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
@@ -270,40 +268,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     return stats;
   }, [allTickets]);
-
-  const createManualTask = async () => {
-    const title = manualTaskForm.title.trim();
-    const details = manualTaskForm.details.trim();
-
-    if (!title || !details) {
-      alert('Rellena al menos el título y los detalles de la tarea.');
-      return;
-    }
-
-    setIsSavingManualTask(true);
-    try {
-      const taskId = `manual-${Date.now()}`;
-      await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), {
-        type: manualTaskForm.type || 'tarea_manual',
-        title,
-        details,
-        studentId: null,
-        studentName: manualTaskForm.person.trim() || 'Tarea manual',
-        studentEmail: '',
-        source: 'manual_admin',
-        status: 'pendiente',
-        date: new Date().toISOString()
-      });
-
-      setManualTaskForm({ title: '', details: '', person: '', type: 'tarea_manual' });
-      setManualTaskModal(false);
-      alert('✅ Tarea manual añadida a la bandeja.');
-    } catch (error) {
-      alert('❌ Error al crear la tarea manual: ' + error.message);
-    } finally {
-      setIsSavingManualTask(false);
-    }
-  };
 
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
@@ -964,10 +928,51 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const ManualTaskModalOverlay = () => {
     if (!manualTaskModal) return null;
 
+    const [form, setForm] = useState({ title: '', details: '', person: '', type: 'tarea_manual' });
+    const [saving, setSaving] = useState(false);
+
+    const handleClose = () => {
+      if (saving) return;
+      setManualTaskModal(false);
+    };
+
+    const handleCreate = async () => {
+      const title = form.title.trim();
+      const details = form.details.trim();
+
+      if (!title || !details) {
+        alert('Rellena al menos el título y los detalles de la tarea.');
+        return;
+      }
+
+      setSaving(true);
+      try {
+        const taskId = `manual-${Date.now()}`;
+        await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), {
+          type: form.type || 'tarea_manual',
+          title,
+          details,
+          studentId: null,
+          studentName: form.person.trim() || 'Tarea manual',
+          studentEmail: '',
+          source: 'manual_admin',
+          status: 'pendiente',
+          date: new Date().toISOString()
+        });
+
+        alert('✅ Tarea manual añadida a la bandeja.');
+        setManualTaskModal(false);
+      } catch (error) {
+        alert('❌ Error al crear la tarea manual: ' + error.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
-          <button onClick={() => setManualTaskModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={handleClose} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
 
           <div className="flex items-center gap-3 text-slate-900 mb-6">
             <Inbox className="w-8 h-8 text-red-600" />
@@ -980,7 +985,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           <div className="space-y-4 mb-6">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Tipo</label>
-              <select value={manualTaskForm.type} onChange={e => setManualTaskForm({...manualTaskForm, type: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
+              <select value={form.type} onChange={e => setForm(prev => ({ ...prev, type: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
                 <option value="tarea_manual">Tarea manual</option>
                 <option value="llamada">Llamada pendiente</option>
                 <option value="seguimiento">Seguimiento</option>
@@ -990,28 +995,27 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
-              <input type="text" value={manualTaskForm.person} onChange={e => setManualTaskForm({...manualTaskForm, person: e.target.value})} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+              <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
             </div>
 
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Título *</label>
-              <input type="text" value={manualTaskForm.title} onChange={e => setManualTaskForm({...manualTaskForm, title: e.target.value})} placeholder="Ej: Cambiar a Hugo de grupo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+              <input type="text" value={form.title} onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder="Ej: Cambiar a Hugo de grupo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
             </div>
 
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles *</label>
-              <textarea value={manualTaskForm.details} onChange={e => setManualTaskForm({...manualTaskForm, details: e.target.value})} placeholder="Describe exactamente qué hay que hacer..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
+              <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder="Describe exactamente qué hay que hacer..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
             </div>
           </div>
 
-          <button onClick={createManualTask} disabled={isSavingManualTask} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
-            {isSavingManualTask ? 'Guardando...' : <><Plus className="w-4 h-4"/> Añadir a Bandeja</>}
+          <button onClick={handleCreate} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> Añadir a Bandeja</>}
           </button>
         </div>
       </div>
     );
   };
-
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
     const globalStudentInfo = students.find(s => s.id === notesModal.id);

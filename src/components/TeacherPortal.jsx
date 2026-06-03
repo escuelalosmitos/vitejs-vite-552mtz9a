@@ -662,7 +662,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         if (exceptionsToday[s.id]) {
           currentStatus = exceptionsToday[s.id] === 'notified_no_ticket' ? 'notified' : exceptionsToday[s.id];
         }
-        visibleStudents.push({ ...s, status: currentStatus, originalException: exceptionsToday[s.id] });
+        visibleStudents.push({ ...s, status: currentStatus, originalException: exceptionsToday[s.id] || null });
       }
     });
 

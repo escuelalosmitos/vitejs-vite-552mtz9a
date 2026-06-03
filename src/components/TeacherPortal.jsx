@@ -929,8 +929,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const ticketPromises = currentSession.students.map(async (s) => {
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
         if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !s.isPaused) {
-          const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
-          if (monthTickets.length < 2) {
+            const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate?.startsWith(currentMonth));          if (monthTickets.length < 2) {
             const { validFrom, validUntil } = generateTicketDates(date);
             const ticketId = Date.now().toString() + '-' + s.id;
             await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {

@@ -104,13 +104,8 @@ const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
             Cancelar
           </button>
           
-          <button 
-            onClick={() => {
-              const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
-              if (isConfirmed) {
-                onRenounce();
-              }
-            }}
+      <button 
+            onClick={() => onRenounce()}
             className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1"
           >
             <Coffee className="w-4 h-4" /> Renunciar

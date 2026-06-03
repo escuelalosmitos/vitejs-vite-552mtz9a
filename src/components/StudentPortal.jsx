@@ -1288,7 +1288,7 @@ END:VCALENDAR`;
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">
-                  Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada. Los tickets regalados por cortesía de la escuela aparecen automáticamente.
+                  Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.
                 </p>
               </div>
             </div>

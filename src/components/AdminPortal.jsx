@@ -65,6 +65,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
   const [availabilities, setAvailabilities] = useState({}); 
+  const [allTickets, setAllTickets] = useState([]);
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -80,6 +81,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
+  const [manualTaskModal, setManualTaskModal] = useState(false);
+  const [manualTaskForm, setManualTaskForm] = useState({ title: '', details: '', person: '', type: 'tarea_manual' });
+  const [isSavingManualTask, setIsSavingManualTask] = useState(false);
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
@@ -114,7 +118,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 7) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 8) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -157,7 +161,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); };
+    const unsubTickets = onSnapshot(collectionGroup(db, 'tickets'), (snap) => {
+      setAllTickets(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
+      checkLoad();
+    });
+
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -239,6 +248,62 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
   }, [allClasses, settings]);
+
+  const ticketStatsByStudent = useMemo(() => {
+    const stats = {};
+    allTickets.forEach(ticket => {
+      if (!ticket.studentId) return;
+      if (!stats[ticket.studentId]) {
+        stats[ticket.studentId] = { total: 0, active: 0, used: 0, expired: 0 };
+      }
+
+      stats[ticket.studentId].total += 1;
+
+      const today = new Date().toISOString().split('T')[0];
+      if (ticket.isUsed) {
+        stats[ticket.studentId].used += 1;
+      } else if (ticket.validUntil && ticket.validUntil < today) {
+        stats[ticket.studentId].expired += 1;
+      } else {
+        stats[ticket.studentId].active += 1;
+      }
+    });
+    return stats;
+  }, [allTickets]);
+
+  const createManualTask = async () => {
+    const title = manualTaskForm.title.trim();
+    const details = manualTaskForm.details.trim();
+
+    if (!title || !details) {
+      alert('Rellena al menos el título y los detalles de la tarea.');
+      return;
+    }
+
+    setIsSavingManualTask(true);
+    try {
+      const taskId = `manual-${Date.now()}`;
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), {
+        type: manualTaskForm.type || 'tarea_manual',
+        title,
+        details,
+        studentId: null,
+        studentName: manualTaskForm.person.trim() || 'Tarea manual',
+        studentEmail: '',
+        source: 'manual_admin',
+        status: 'pendiente',
+        date: new Date().toISOString()
+      });
+
+      setManualTaskForm({ title: '', details: '', person: '', type: 'tarea_manual' });
+      setManualTaskModal(false);
+      alert('✅ Tarea manual añadida a la bandeja.');
+    } catch (error) {
+      alert('❌ Error al crear la tarea manual: ' + error.message);
+    } finally {
+      setIsSavingManualTask(false);
+    }
+  };
 
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
@@ -896,6 +961,57 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // MODALES Y COMPONENTES
   // ==========================================
 
+  const ManualTaskModalOverlay = () => {
+    if (!manualTaskModal) return null;
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
+          <button onClick={() => setManualTaskModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+
+          <div className="flex items-center gap-3 text-slate-900 mb-6">
+            <Inbox className="w-8 h-8 text-red-600" />
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight">Nueva Tarea Manual</h2>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Para encargos verbales, llamadas o notas internas.</p>
+            </div>
+          </div>
+
+          <div className="space-y-4 mb-6">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Tipo</label>
+              <select value={manualTaskForm.type} onChange={e => setManualTaskForm({...manualTaskForm, type: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
+                <option value="tarea_manual">Tarea manual</option>
+                <option value="llamada">Llamada pendiente</option>
+                <option value="seguimiento">Seguimiento</option>
+                <option value="incidencia_manual">Incidencia</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
+              <input type="text" value={manualTaskForm.person} onChange={e => setManualTaskForm({...manualTaskForm, person: e.target.value})} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Título *</label>
+              <input type="text" value={manualTaskForm.title} onChange={e => setManualTaskForm({...manualTaskForm, title: e.target.value})} placeholder="Ej: Cambiar a Hugo de grupo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles *</label>
+              <textarea value={manualTaskForm.details} onChange={e => setManualTaskForm({...manualTaskForm, details: e.target.value})} placeholder="Describe exactamente qué hay que hacer..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
+            </div>
+          </div>
+
+          <button onClick={createManualTask} disabled={isSavingManualTask} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+            {isSavingManualTask ? 'Guardando...' : <><Plus className="w-4 h-4"/> Añadir a Bandeja</>}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
     const globalStudentInfo = students.find(s => s.id === notesModal.id);
@@ -1525,6 +1641,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
       <EditWebModalOverlay />
       <CreateClassModalOverlay />
+      <ManualTaskModalOverlay />
       {notesModal && <NotesModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
       {editStudentModal && <EditStudentModalOverlay />} 
@@ -1800,9 +1917,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         {/* --- 1. BANDEJA DE GESTIONES --- */}
         {activeTab === 'gestiones' && (
           <div className="space-y-6 animate-in fade-in">
-            <header className="mb-6">
-              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bandeja de Entrada</h2>
-              <p className="text-zinc-500 font-medium text-sm">Gestiona las solicitudes de los alumnos.</p>
+            <header className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bandeja de Entrada</h2>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos y tareas manuales internas.</p>
+              </div>
+              <button onClick={() => setManualTaskModal(true)} className="bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                <Plus className="w-4 h-4"/> Nueva Tarea Manual
+              </button>
             </header>
 
             {pendingGestiones.length === 0 ? (
@@ -1832,8 +1954,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <div className="text-[10px] text-zinc-400">{g.studentEmail}</div>
                           </td>
                           <td className="p-4">
-                            <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${g.type.includes('mitobox') ? 'bg-blue-100 text-blue-800' : g.type.includes('baja') ? 'bg-red-100 text-red-800' : 'bg-zinc-200 text-zinc-800'}`}>
-                              {g.type.replace('_', ' ')}
+                            <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${(g.type || '').includes('mitobox') ? 'bg-blue-100 text-blue-800' : (g.type || '').includes('baja') ? 'bg-red-100 text-red-800' : (g.type || '').includes('manual') || (g.source === 'manual_admin') ? 'bg-purple-100 text-purple-800' : 'bg-zinc-200 text-zinc-800'}`}>
+                              {(g.type || 'tarea').replace('_', ' ')}
                             </span>
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
@@ -1877,7 +1999,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             <td className="p-4 font-black text-black">{g.studentName}</td>
                             <td className="p-4">
                               <span className="px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest bg-zinc-200 text-zinc-800">
-                                {g.type.replace('_', ' ')}
+                                {(g.type || 'tarea').replace('_', ' ')}
                               </span>
                             </td>
                             <td className="p-4">
@@ -1937,9 +2059,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                   <thead>
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                       <th className="p-4 font-black w-[30%]">Alumno</th>
-                      <th className="p-4 font-black text-center w-[15%]">Extras</th>
-                      <th className="p-4 font-black text-center w-[30%]">Acciones Dios</th>
-                      <th className="p-4 font-black text-right w-[25%]">Estado</th>
+                      <th className="p-4 font-black text-center w-[20%]">Extras / Tickets</th>
+                      <th className="p-4 font-black text-center w-[20%]">Acciones Dios</th>
+                      <th className="p-4 font-black text-right w-[30%]">Estado</th>
                     </tr>
                   </thead>
                   <tbody className="text-sm font-medium text-slate-700">
@@ -1955,7 +2077,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                       });
 
                       if (filtered.length === 0) {
-                        return <tr><td colSpan="5" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
+                        return <tr><td colSpan="4" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
                       }
 
                       return filtered.map(student => (
@@ -2011,18 +2133,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                               <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`} title="Mitobox">
                                 MB
                               </button>
+                              {(() => {
+                                const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, used: 0, expired: 0 };
+                                return (
+                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos: ${ticketStats.active} · Usados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
+                                    <Ticket className="w-3 h-3"/> {ticketStats.active}/{ticketStats.total}
+                                  </span>
+                                );
+                              })()}
                             </div>
                           </td>
                           <td className="p-4 text-center">
                             <div className="flex items-center justify-center gap-2">
-                              <button onClick={() => setEditStudentModal(student)} className="flex items-center gap-1 p-2 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors text-[10px] font-black uppercase tracking-widest" title="Editar datos del alumno">
-                                <Pencil className="w-3 h-3"/> Editar
+                              <button onClick={() => setEditStudentModal(student)} className="p-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
+                                <Pencil className="w-4 h-4"/>
                               </button>
-                              <button onClick={() => setChangeClassModal(student)} className="flex items-center gap-1 p-2 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors text-[10px] font-black uppercase tracking-widest" title="Cambiar a otra clase manually">
-                                <ArrowRightLeft className="w-3 h-3"/> Mover
+                              <button onClick={() => setChangeClassModal(student)} className="p-2.5 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors" title="Cambiar a otra clase manualmente">
+                                <ArrowRightLeft className="w-4 h-4"/>
                               </button>
-                              <button onClick={() => grantRecoveryTicket(student)} className="flex items-center gap-1 p-2 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors text-[10px] font-black uppercase tracking-widest" title="Regalar Ticket de Recuperación">
-                                <Gift className="w-3 h-3"/> Ticket
+                              <button onClick={() => grantRecoveryTicket(student)} className="p-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors" title="Regalar Ticket de Recuperación">
+                                <Gift className="w-4 h-4"/>
                               </button>
                             </div>
                           </td>

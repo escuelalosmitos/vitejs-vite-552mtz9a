@@ -186,10 +186,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
   
-  // NUEVO: Estado para saber si el informe de hoy ya se envió
   const [lastReportSentDate, setLastReportSentDate] = useState('');
-  
-  // NUEVO: Paginación del historial
   const [historyLimit, setHistoryLimit] = useState(10);
 
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
@@ -249,8 +246,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
-    
-    // Leemos el documento del propio usuario para ver su última fecha de envío
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
     let recordsLoaded = false;
@@ -637,7 +632,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         body: JSON.stringify(payload)
       });
       
-      // MARCAMOS LA FECHA DE ENVÍO EN FIREBASE PARA BLOQUEAR EL BOTÓN
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid), {
         lastReportSentDate: date
       }, { merge: true });
@@ -664,10 +658,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         hiddenStudents.push(s); 
       } else {
         let currentStatus = s.isPaused ? 'paused' : 'present';
+        // 👇 FIX: Si el status es 'notified_no_ticket', lo mapeamos visualmente a 'notified' para la UI
         if (exceptionsToday[s.id]) {
-          currentStatus = exceptionsToday[s.id];
+          currentStatus = exceptionsToday[s.id] === 'notified_no_ticket' ? 'notified' : exceptionsToday[s.id];
         }
-        visibleStudents.push({ ...s, status: currentStatus });
+        visibleStudents.push({ ...s, status: currentStatus, originalException: exceptionsToday[s.id] });
       }
     });
 
@@ -685,8 +680,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       duration: scheduledClass.duration || 60,
       notes: scheduledClass.notes || '',
       dayOfWeek: scheduledClass.dayOfWeek,
-      date: scheduledClass.date || null, // Guardamos la fecha si es puntual
-      isRecurring: !scheduledClass.date, // Si tiene fecha explícita, NO es recurrente
+      date: scheduledClass.date || null, 
+      isRecurring: !scheduledClass.date, 
       exceptions: scheduledClass.exceptions || {}, 
       students: visibleStudents, 
       hiddenStudents: hiddenStudents, 
@@ -723,7 +718,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         isWebVisible: false
       });
 
-      // Remove from substitutions pool
       await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', sub.id));
 
       showNotification({ type: 'success', text: 'Clase añadida a tu agenda. Puedes seleccionarla el día que corresponda.' });
@@ -854,7 +848,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         
       await setDoc(targetPath, {
         dayOfWeek: dayToSave,
-        date: currentSession.date || null, // Mantenerlo si es puntual
+        date: currentSession.date || null, 
         time: currentSession.time,
         sede: currentSession.sede || 'Tarragona',
         sala: currentSession.sala || 'Sala 1',
@@ -933,7 +927,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const targetUid = user.uid;
 
       const ticketPromises = currentSession.students.map(async (s) => {
-        if (s.status === 'notified' && !s.isRecovery && !s.isPaused) {
+        // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
+        if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !s.isPaused) {
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
           if (monthTickets.length < 2) {
             const { validFrom, validUntil } = generateTicketDates(date);
@@ -1787,7 +1782,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     <Save className="w-5 h-5" /> Guardar Borrador
                   </button>
                   
-                  {/* 👇 FIX: Bloqueo de 24 horas si ya se ha enviado hoy */}
                   {lastReportSentDate === date ? (
                     <div className="w-full bg-emerald-50 text-emerald-600 border-2 border-emerald-200 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 shadow-sm text-center">
                       <CheckCircle className="w-5 h-5 shrink-0" /> Ya enviado a coordinación
@@ -1814,7 +1808,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               </div>
             ) : (
               <>
-                {/* 👇 FIX: Solo renderizamos hasta el límite actual (paginación suave) */}
                 {records.slice(0, historyLimit).map((record) => (
                   <div key={record.id} className={`bg-white rounded-3xl shadow-sm border p-6 md:p-8 ${record.isRenounced ? 'border-amber-200 opacity-80' : 'border-zinc-200'}`}>
                     <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-zinc-100 gap-4">
@@ -1859,7 +1852,6 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </div>
                 ))}
                 
-                {/* BOTÓN CARGAR MÁS */}
                 {historyLimit < records.length && (
                   <div className="text-center pt-4 pb-8">
                     <button 

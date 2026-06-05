@@ -809,8 +809,17 @@ END:VCALENDAR`;
                   <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
                     {availableClasses.map(c => (
                       <div key={c.id} onClick={() => {setSelectedNewClass(c); setSelectedRecoveryDate('');}} className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedNewClass?.id === c.id ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
-                        <div className="flex justify-between items-center mb-1"><span className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)}</span><span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded">{c.time}h</span></div>
-                        <div className="text-xs text-zinc-500 font-medium">Prof: {c.teacher} • Quedan {parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas</div>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)}</span>
+                          <span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded">{c.time}h</span>
+                        </div>
+                        <div className="text-xs text-zinc-500 font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="inline-flex items-center gap-1 font-black text-slate-700 uppercase">
+                            <MapPin className="w-3 h-3" /> {c.sede || 'Tarragona'}
+                          </span>
+                          <span>Prof: {c.teacher}</span>
+                          <span>Quedan {parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas</span>
+                        </div>
                       </div>
                     ))}
                   </div>

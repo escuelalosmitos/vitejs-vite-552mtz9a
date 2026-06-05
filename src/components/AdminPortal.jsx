@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -42,6 +42,17 @@ const generateTicketDates = () => {
   return { validFrom, validUntil };
 };
 
+const generateImmediateGiftTicketDates = () => {
+  const now = new Date();
+  const validFrom = now.toISOString().split('T')[0];
+  const lastDayNextMonth = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+  const y = lastDayNextMonth.getFullYear();
+  const m = String(lastDayNextMonth.getMonth() + 1).padStart(2, '0');
+  const d = String(lastDayNextMonth.getDate()).padStart(2, '0');
+  const validUntil = `${y}-${m}-${d}`;
+  return { validFrom, validUntil };
+};
+
 const generateLast12Months = () => {
   const months = [];
   const d = new Date();
@@ -66,6 +77,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allRecords, setAllRecords] = useState([]);
   const [availabilities, setAvailabilities] = useState({}); 
   const [allTickets, setAllTickets] = useState([]);
+  const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -82,6 +94,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
   const [manualTaskModal, setManualTaskModal] = useState(false);
+  const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
@@ -116,7 +129,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 8) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 9) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -164,7 +177,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); };
+    const unsubPayrollAdjustments = onSnapshot(collection(db, 'artifacts', appId, 'payrollAdjustments'), (snap) => {
+      setPayrollAdjustments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+      checkLoad();
+    });
+
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -268,6 +286,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     return stats;
   }, [allTickets]);
+
+  const getStudentTeachers = (studentId) => {
+    if (!studentId) return [];
+    const teacherNames = allClasses
+      .filter(c => (c.students || []).some(s => s.id === studentId))
+      .map(c => c.teacher)
+      .filter(Boolean);
+    return [...new Set(teacherNames)];
+  };
 
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
@@ -499,10 +526,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   };
 
   const grantRecoveryTicket = async (student) => {
-    const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Se generarán para el mes próximo)`, "1");
+    const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Disponibles desde hoy por ser regalo de administración)`, "1");
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
     try {
-      const { validFrom, validUntil } = generateTicketDates();
+      const { validFrom, validUntil } = generateImmediateGiftTicketDates();
       const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
       const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
       const promises = [];
@@ -524,7 +551,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         );
       }
       await Promise.all(promises);
-      alert(`🎁 Se han otorgado ${num} tickets a ${student.name}. Serán válidos desde el 1 del mes que viene.`);
+      alert(`🎁 Se han otorgado ${num} tickets a ${student.name}. Ya están disponibles desde hoy.`);
     } catch(e) {
       alert("Error al otorgar tickets.");
     }
@@ -564,6 +591,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     setNewAnnounce({ title: '', content: '' });
     alert('Aviso publicado.');
+  };
+
+
+  const deletePayrollAdjustment = async (adjustment) => {
+    if (!window.confirm(`¿Borrar este ajuste de ${adjustment.hours > 0 ? '+' : ''}${adjustment.hours}h para ${adjustment.teacher}?`)) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'payrollAdjustments', adjustment.id));
+      alert('Ajuste eliminado.');
+    } catch (e) {
+      alert('Error al eliminar el ajuste: ' + e.message);
+    }
   };
 
   const deleteAnnouncement = async (id) => { 
@@ -876,18 +914,44 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
-    const thisMonthRecords = allRecords.filter(r => r.date.startsWith(targetMonth) && !r.isRenounced);
+    const thisMonthRecords = allRecords.filter(r => (r.date || '').startsWith(targetMonth) && !r.isRenounced);
+    const thisMonthAdjustments = payrollAdjustments.filter(a => a.month === targetMonth);
     const payroll = {};
+
+    const ensureTeacher = (name) => {
+      const teacherName = name || 'Desconocido';
+      if (!payroll[teacherName]) payroll[teacherName] = { realHours: 0, adjustmentHours: 0, adjustments: [] };
+      return teacherName;
+    };
+
+    (settings.teachersList || []).forEach(t => ensureTeacher(t));
+
     thisMonthRecords.forEach(r => {
-      const tName = r.teacher || 'Desconocido';
-      if (!payroll[tName]) payroll[tName] = 0;
+      const tName = ensureTeacher(r.teacher);
       const duration = Number(String(r.duration).replace(',', '.')) || 60;
-      payroll[tName] += (duration / 60);
+      payroll[tName].realHours += (duration / 60);
     });
-    return Object.entries(payroll).map(([name, hours]) => ({
-      name, hours: hours.toFixed(2), earnings: (hours * (settings.hourlyRate || 17.33)).toFixed(2)
-    })).sort((a, b) => b.hours - a.hours);
-  }, [allRecords, settings.hourlyRate, selectedPayrollMonth]);
+
+    thisMonthAdjustments.forEach(a => {
+      const tName = ensureTeacher(a.teacher);
+      const hours = Number(String(a.hours).replace(',', '.')) || 0;
+      payroll[tName].adjustmentHours += hours;
+      payroll[tName].adjustments.push(a);
+    });
+
+    return Object.entries(payroll).map(([name, data]) => {
+      const totalHours = data.realHours + data.adjustmentHours;
+      return {
+        name,
+        realHours: data.realHours,
+        adjustmentHours: data.adjustmentHours,
+        totalHours,
+        adjustments: data.adjustments,
+        earnings: (totalHours * (settings.hourlyRate || 17.33)).toFixed(2)
+      };
+    }).filter(t => t.realHours !== 0 || t.adjustmentHours !== 0 || (settings.teachersList || []).includes(t.name))
+      .sort((a, b) => b.totalHours - a.totalHours);
+  }, [allRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, selectedPayrollMonth]);
 
   const availableMboxSlotsAdmin = useMemo(() => {
     let slots = [];
@@ -924,6 +988,79 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // ==========================================
   // MODALES Y COMPONENTES
   // ==========================================
+
+  const PayrollAdjustmentModalOverlay = () => {
+    if (!payrollAdjustModal) return null;
+
+    const [hours, setHours] = useState('1');
+    const [reason, setReason] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const sign = payrollAdjustModal.mode === 'subtract' ? -1 : 1;
+    const actionLabel = sign > 0 ? 'Sumar horas' : 'Restar horas';
+
+    const handleSave = async () => {
+      const parsedHours = Number(String(hours).replace(',', '.'));
+      if (!parsedHours || parsedHours <= 0) return alert('Indica un número de horas mayor que cero.');
+      if (!reason.trim()) return alert('El motivo es obligatorio para dejar trazabilidad.');
+
+      setSaving(true);
+      try {
+        const adjustmentId = `adj-${selectedPayrollMonth}-${payrollAdjustModal.teacher}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, '_');
+        await setDoc(doc(db, 'artifacts', appId, 'payrollAdjustments', adjustmentId), {
+          teacher: payrollAdjustModal.teacher,
+          month: selectedPayrollMonth,
+          hours: sign * parsedHours,
+          reason: reason.trim(),
+          createdAt: new Date().toISOString(),
+          createdBy: user?.email || 'admin'
+        });
+        alert('Ajuste de horas guardado.');
+        setPayrollAdjustModal(null);
+      } catch (e) {
+        alert('Error al guardar el ajuste: ' + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
+          <button onClick={() => setPayrollAdjustModal(null)} disabled={saving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
+
+          <div className="flex items-center gap-3 mb-6">
+            <div className={`p-3 rounded-2xl ${sign > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+              {sign > 0 ? <Plus className="w-6 h-6"/> : <Minus className="w-6 h-6"/>}
+            </div>
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight">{actionLabel}</h2>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{payrollAdjustModal.teacher} · {selectedPayrollMonth}</p>
+            </div>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-100 text-amber-900 p-4 rounded-2xl mb-6 text-xs font-bold leading-relaxed">
+            Esto no modifica las clases ni las asistencias. Solo añade una corrección administrativa al cálculo mensual de profesores.
+          </div>
+
+          <div className="space-y-4 mb-6">
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Horas *</label>
+              <input type="number" step="0.25" min="0.25" value={hours} onChange={e => setHours(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-black text-sm outline-none focus:border-black" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Motivo *</label>
+              <textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Ej: Clase firmada en papel no registrada / corrección por clase vacía de última hora..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[120px] resize-y text-sm font-medium text-slate-700" />
+            </div>
+          </div>
+
+          <button onClick={handleSave} disabled={saving} className={`w-full text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest shadow-md disabled:opacity-50 flex items-center justify-center gap-2 ${sign > 0 ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}>
+            {saving ? 'Guardando...' : actionLabel}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   const ManualTaskModalOverlay = () => {
     if (!manualTaskModal) return null;
@@ -1646,6 +1783,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       <EditWebModalOverlay />
       <CreateClassModalOverlay />
       <ManualTaskModalOverlay />
+      <PayrollAdjustmentModalOverlay />
       {notesModal && <NotesModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
       {editStudentModal && <EditStudentModalOverlay />} 
@@ -1956,6 +2094,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                           <td className="p-4">
                             <div className="font-black text-black">{g.studentName}</div>
                             <div className="text-[10px] text-zinc-400">{g.studentEmail}</div>
+                            {g.studentId && getStudentTeachers(g.studentId).length > 0 && (
+                              <div className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1">
+                                Prof: {getStudentTeachers(g.studentId).join(', ')}
+                              </div>
+                            )}
                           </td>
                           <td className="p-4">
                             <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${(g.type || '').includes('mitobox') ? 'bg-blue-100 text-blue-800' : (g.type || '').includes('baja') ? 'bg-red-100 text-red-800' : (g.type || '').includes('manual') || (g.source === 'manual_admin') ? 'bg-purple-100 text-purple-800' : 'bg-zinc-200 text-zinc-800'}`}>
@@ -2478,7 +2621,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Estado de Profesores</h2>
-                <p className="text-zinc-500 font-medium text-sm">Resumen de horas impartidas y nómina proyectada.</p>
+                <p className="text-zinc-500 font-medium text-sm">Horas reales, ajustes administrativos y nómina orientativa.</p>
               </div>
               <select 
                 value={selectedPayrollMonth} 
@@ -2491,34 +2634,65 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               </select>
             </header>
 
+            <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
+              Los ajustes manuales no alteran los registros de asistencia. Sirven para cotejar con las hojas firmadas físicamente o corregir errores del sistema.
+            </div>
+
             <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                    <th className="p-4 font-black">Profesor</th>
-                    <th className="p-4 font-black text-right">Horas Reales</th>
-                    <th className="p-4 font-black text-right">Acumulado (€)</th>
-                  </tr>
-                </thead>
-                <tbody className="text-sm font-medium text-slate-700">
-                  {teachersPayroll.length === 0 ? (
-                    <tr><td colSpan="3" className="p-8 text-center text-zinc-400 italic">No hay registros de clases para este mes.</td></tr>
-                  ) : (
-                    teachersPayroll.map((t, idx) => (
-                      <tr key={idx} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-                        <td className="p-4 font-black uppercase text-slate-900">{t.name}</td>
-                        <td className="p-4 text-right font-black">{t.hours} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
-                        <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">€</span></td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[850px]">
+                  <thead>
+                    <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
+                      <th className="p-4 font-black">Profesor</th>
+                      <th className="p-4 font-black text-right">Horas Reales</th>
+                      <th className="p-4 font-black text-right">Ajustes</th>
+                      <th className="p-4 font-black text-right">Total Liquidable</th>
+                      <th className="p-4 font-black text-right">Acumulado (€)</th>
+                      <th className="p-4 font-black text-center">Corregir</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-sm font-medium text-slate-700">
+                    {teachersPayroll.length === 0 ? (
+                      <tr><td colSpan="6" className="p-8 text-center text-zinc-400 italic">No hay profesores, registros ni ajustes para este mes.</td></tr>
+                    ) : (
+                      teachersPayroll.map((t, idx) => (
+                        <tr key={idx} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
+                          <td className="p-4">
+                            <div className="font-black uppercase text-slate-900">{t.name}</div>
+                            {t.adjustments.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {t.adjustments.map(adj => (
+                                  <div key={adj.id} className="flex items-center gap-2 text-[10px] text-zinc-500 bg-zinc-50 border border-zinc-100 rounded-lg px-2 py-1 max-w-md">
+                                    <span className={`font-black ${adj.hours > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{adj.hours > 0 ? '+' : ''}{Number(adj.hours).toFixed(2)}h</span>
+                                    <span className="truncate flex-1" title={adj.reason}>{adj.reason}</span>
+                                    <button onClick={() => deletePayrollAdjustment(adj)} className="text-red-400 hover:text-red-600" title="Borrar ajuste"><Trash2 className="w-3 h-3"/></button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-4 text-right font-black">{t.realHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
+                          <td className={`p-4 text-right font-black ${t.adjustmentHours > 0 ? 'text-emerald-600' : t.adjustmentHours < 0 ? 'text-rose-600' : 'text-zinc-400'}`}>{t.adjustmentHours > 0 ? '+' : ''}{t.adjustmentHours.toFixed(2)} <span className="text-[10px] uppercase">h</span></td>
+                          <td className="p-4 text-right font-black text-slate-900">{t.totalHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
+                          <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">€</span></td>
+                          <td className="p-4 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'add' })} className="p-2 bg-emerald-100 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-colors" title="Sumar horas"><Plus className="w-4 h-4"/></button>
+                              <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'subtract' })} className="p-2 bg-rose-100 text-rose-700 hover:bg-rose-600 hover:text-white rounded-lg transition-colors" title="Restar horas"><Minus className="w-4 h-4"/></button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
         
-        {/* --- 7. TABLÓN --- */}
+        
+{/* --- 7. TABLÓN --- */}
         {activeTab === 'announcements' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">

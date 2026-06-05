@@ -185,6 +185,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [tickets, setTickets] = useState([]); 
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
+  const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   
   const [lastReportSentDate, setLastReportSentDate] = useState('');
   const [historyLimit, setHistoryLimit] = useState(10);
@@ -245,6 +246,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const ticketsRef = collectionGroup(db, 'tickets');
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
+    const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
@@ -255,11 +257,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let ticketsLoaded = false;
     let subsLoaded = false;
     let gestionesLoaded = false;
+    let payrollAdjustmentsLoaded = false;
     let availLoaded = false;
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
@@ -332,6 +335,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    const unsubPayrollAdjustments = onSnapshot(payrollAdjustmentsRef, (snapshot) => {
+      setPayrollAdjustments(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
+      payrollAdjustmentsLoaded = true;
+      checkLoading();
+    });
+
     const unsubAvail = onSnapshot(availRef, (docSnap) => {
       if (docSnap.exists()) {
         setAvailability(docSnap.data().slots || { 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
@@ -351,6 +360,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubTickets();
       unsubSubs();
       unsubGestiones();
+      unsubPayrollAdjustments();
       unsubAvail();
       unsubUserDoc();
     };
@@ -446,6 +456,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const monthlyPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth; 
     const prevMonth = getPreviousMonthStr(targetMonth);
+    const teacherKey = getTeacherName().toLowerCase();
 
     const currentRecords = records.filter(r => r.date && r.date.startsWith(targetMonth) && !r.isRenounced);
     const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
@@ -460,17 +471,30 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const projectedMinutes = vacationsThisMonth * avgDailyMins;
     const projectedHours = projectedMinutes / 60;
 
-    const totalHours = currentHours + projectedHours;
+    const adjustmentItems = payrollAdjustments
+      .filter(a => 
+        a.month === targetMonth && 
+        String(a.teacher || '').toLowerCase() === teacherKey
+      )
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+    const adjustmentHours = adjustmentItems.reduce((acc, a) => acc + normalizeNumber(a.hours), 0);
+
+    const totalBeforeAdjustments = currentHours + projectedHours;
+    const totalHours = totalBeforeAdjustments + adjustmentHours;
     const earnings = totalHours * (settings.hourlyRate || 0);
 
     return { 
       realHours: currentHours.toFixed(2),
       projectedHours: projectedHours.toFixed(2),
       vacationDays: vacationsThisMonth,
+      adjustmentHours: adjustmentHours.toFixed(2),
+      adjustmentItems,
+      totalBeforeAdjustments: totalBeforeAdjustments.toFixed(2),
       totalHours: totalHours.toFixed(2), 
       earnings: earnings.toFixed(2) 
     };
-  }, [records, selectedPayrollMonth, settings]);
+  }, [records, selectedPayrollMonth, settings, payrollAdjustments, user]);
 
   const dashboardItems = useMemo(() => {
     const selectedDayOfWeek = getDayOfWeek(date);
@@ -1890,7 +1914,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
                     <div className="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 backdrop-blur hover:bg-zinc-800 transition-colors">
                       <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-4 h-4"/> Horas Reales</p>
                       <p className="text-4xl font-black tracking-tighter">{monthlyPayroll.realHours}<span className="text-lg text-zinc-600 ml-1 font-bold">h</span></p>
@@ -1899,12 +1923,45 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       <p className="text-[10px] font-black text-blue-500/80 uppercase tracking-widest mb-2 flex items-center gap-2"><Palmtree className="w-4 h-4"/> Vacaciones ({monthlyPayroll.vacationDays}d)</p>
                       <p className="text-4xl font-black tracking-tighter text-blue-400">{monthlyPayroll.projectedHours}<span className="text-lg text-zinc-600 ml-1 font-bold">h</span></p>
                     </div>
+                    <div className="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 backdrop-blur hover:border-amber-500/30 transition-colors">
+                      <p className="text-[10px] font-black text-amber-500/80 uppercase tracking-widest mb-2 flex items-center gap-2"><RefreshCcw className="w-4 h-4"/> Ajustes Admin</p>
+                      <p className={`text-4xl font-black tracking-tighter ${Number(monthlyPayroll.adjustmentHours) < 0 ? 'text-rose-400' : Number(monthlyPayroll.adjustmentHours) > 0 ? 'text-amber-300' : 'text-zinc-500'}`}>
+                        {Number(monthlyPayroll.adjustmentHours) > 0 ? '+' : ''}{monthlyPayroll.adjustmentHours}<span className="text-lg text-zinc-600 ml-1 font-bold">h</span>
+                      </p>
+                    </div>
                     <div className="bg-zinc-900/80 p-6 rounded-3xl border border-zinc-800 backdrop-blur hover:border-emerald-500/30 transition-colors">
-                      <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-widest mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Acumulado Mes</p>
-                      <p className="text-4xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.earnings}<span className="text-lg ml-1 font-bold">€</span></p>
+                      <p className="text-[10px] font-black text-emerald-600/50 uppercase tracking-widest mb-2 flex items-center gap-2"><BarChart3 className="w-4 h-4"/> Total Ajustado</p>
+                      <p className="text-4xl font-black tracking-tighter text-emerald-400">{monthlyPayroll.totalHours}<span className="text-lg text-zinc-600 ml-1 font-bold">h</span></p>
+                      <p className="text-xl font-black tracking-tighter text-emerald-300 mt-1">{monthlyPayroll.earnings}<span className="text-sm ml-1 font-bold">€</span></p>
                     </div>
                   </div>
-                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-center mt-6">* La proyección de vacaciones se calcula matemáticamente en base a la media diaria de tu mes anterior.</p>
+
+                  <div className="mt-6 bg-zinc-900/70 border border-zinc-800 rounded-2xl p-5">
+                    <h3 className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4"/> Correcciones administrativas del mes
+                    </h3>
+                    {monthlyPayroll.adjustmentItems.length === 0 ? (
+                      <p className="text-xs font-bold text-zinc-600 uppercase tracking-widest">No hay ajustes manuales aplicados a este mes.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {monthlyPayroll.adjustmentItems.map(adj => (
+                          <div key={adj.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-black/30 border border-zinc-800 rounded-xl p-3">
+                            <div>
+                              <p className="text-xs font-black text-white uppercase tracking-widest">{adj.reason || 'Ajuste sin motivo indicado'}</p>
+                              <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">
+                                {adj.createdAt ? formatDateSpanish(adj.createdAt.substring(0, 10)) : 'Sin fecha'} · Coordinación
+                              </p>
+                            </div>
+                            <span className={`text-sm font-black ${Number(adj.hours) < 0 ? 'text-rose-400' : 'text-amber-300'}`}>
+                              {Number(adj.hours) > 0 ? '+' : ''}{normalizeNumber(adj.hours).toFixed(2)} h
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-center mt-6">* La proyección de vacaciones se calcula matemáticamente en base a la media diaria de tu mes anterior. Los ajustes administrativos se aplican al total final visible.</p>
                </div>
                <Music className="absolute -bottom-12 -right-12 w-80 h-80 text-zinc-900/40 rotate-12 pointer-events-none" />
             </div>

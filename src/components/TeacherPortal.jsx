@@ -901,7 +901,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       if (isLastClass) {
         showNotification({ type: 'success', text: "¡Clase vacía y última hora! Puedes irte a casa. Guardando..." });
-        executeSaveRecord(null, false);
+        executeSaveRecord(null, true);
       } else {
         const combinedTasks = settings.generalTasks || [];
         setDeadHourModal({ tasks: combinedTasks, subject: currentSession.subject });

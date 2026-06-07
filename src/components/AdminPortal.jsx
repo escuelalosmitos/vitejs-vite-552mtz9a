@@ -347,6 +347,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
   };
 
+  const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+
+  const cleanEmailSubject = (subject) => String(subject || '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const resolveStudentEmail = (studentInfo, gestionData = {}) => normalizeEmail(
+    studentInfo?.email ||
+    gestionData.studentEmail ||
+    gestionData.email ||
+    gestionData.to ||
+    ''
+  );
+
   const groupClassesByTeacher = (classes = []) => {
     const grouped = {};
     classes.filter(Boolean).forEach(c => {
@@ -360,16 +375,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   };
 
   const sendNotificationEmail = async ({ to, subject, body, type = 'notificacion_email' }) => {
-    if (!to || !subject || !body) return;
+    const cleanTo = normalizeEmail(to);
+    const cleanSubject = cleanEmailSubject(subject);
+
+    if (!cleanTo || !cleanSubject || !body) {
+      console.warn('Correo automático omitido por falta de datos', { type, to, subject });
+      return false;
+    }
+
     try {
       await fetch(APPS_SCRIPT_URL, {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ type, to, subject, body })
+        body: JSON.stringify({ type, to: cleanTo, subject: cleanSubject, body })
       });
+      return true;
     } catch (e) {
       console.log('Fallo correo automático', e);
+      return false;
     }
   };
 
@@ -379,7 +403,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   };
 
   const sendStudentNotification = async ({ studentEmail, subject, body }) => {
-    await sendNotificationEmail({ to: studentEmail, subject, body, type: 'confirmacion_alumno' });
+    const cleanStudentEmail = normalizeEmail(studentEmail);
+
+    if (!cleanStudentEmail) {
+      await sendNotificationEmail({
+        to: 'admin@escuelalosmitos.com',
+        subject: `Aviso interno: alumno sin email para confirmación`,
+        body: `No se ha enviado una confirmación al alumno porque no hay email válido asociado.
+
+Asunto previsto:
+${subject}
+
+Cuerpo previsto:
+${body}`,
+        type: 'notificacion_email'
+      });
+      return false;
+    }
+
+    return sendNotificationEmail({ to: cleanStudentEmail, subject, body, type: 'confirmacion_alumno' });
   };
 
   const sendGroupedTeacherSummary = async ({ groupedClasses, subjectBuilder, bodyBuilder }) => {
@@ -418,7 +460,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
       const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData;
       const studentInfo = students.find(s => s.id === studentId);
-      const studentEmail = studentInfo?.email || gestionData.studentEmail || '';
+      const studentEmail = resolveStudentEmail(studentInfo, gestionData);
 
       let displayName = studentName;
       if (studentInfo && studentInfo.useAlias && studentInfo.alias) {
@@ -441,7 +483,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `❌ Baja de alumno: ${displayName}`,
+          subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} se ha dado de BAJA y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
@@ -468,7 +510,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `❄️ Alumno en mantenimiento: ${displayName}`,
+          subjectBuilder: (group) => `Alumno en mantenimiento: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha solicitado mantenimiento/congelación de plaza.\n\nAfecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo mientras dure este estado.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
@@ -538,20 +580,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
           await sendGroupedTeacherSummary({
             groupedClasses: otherOldGroups,
-            subjectBuilder: (group) => `🔄 Cambio de horario: ${displayName} deja tu clase`,
+            subjectBuilder: (group) => `Cambio de horario: ${displayName} deja tu clase`,
             bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} se ha cambiado de horario y ya no vendrá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
           if (targetOldGroup) {
             await sendTeacherNotification({
               teacherName: targetClass.teacher,
-              subject: `🔄 Cambio de horario interno: ${displayName}`,
+              subject: `Cambio de horario interno: ${displayName}`,
               body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas de asistencia en la App.\n\nUn saludo,\nCoordinación Los Mitos.`
             });
           } else {
             await sendTeacherNotification({
               teacherName: targetClass.teacher,
-              subject: `🎉 Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
+              subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
               body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
             });
           }
@@ -566,7 +608,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         if (type === 'ampliar_clases') {
           await sendTeacherNotification({
             teacherName: targetClass.teacher,
-            subject: `🎉 Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
+            subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
             body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
@@ -580,7 +622,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         if (type === 'recuperacion') {
           await sendTeacherNotification({
             teacherName: targetClass.teacher,
-            subject: `🔄 Recuperación programada: ${displayName} (${targetClass.subject})`,
+            subject: `Recuperación programada: ${displayName} (${targetClass.subject})`,
             body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} para recuperar una clase contigo.\n\nClase de destino:\n· ${formatClassLine(targetClass)}\n\nFecha exacta de recuperación: ${formatDateSpanish(recoveryDate)}\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
@@ -630,7 +672,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `❌ Baja de alumno: ${displayName}`,
+          subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha sido dado de baja y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
@@ -688,20 +730,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
       await sendGroupedTeacherSummary({
         groupedClasses: otherOldGroups,
-        subjectBuilder: (group) => `🔄 Cambio manual: ${displayName} deja tu clase`,
+        subjectBuilder: (group) => `Cambio manual: ${displayName} deja tu clase`,
         bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} ha sido cambiado manualmente de grupo y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
       });
 
       if (targetOldGroup) {
         await sendTeacherNotification({
           teacherName: targetClass.teacher,
-          subject: `🔄 Cambio manual interno: ${displayName}`,
+          subject: `Cambio manual interno: ${displayName}`,
           body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
       } else {
         await sendTeacherNotification({
           teacherName: targetClass.teacher,
-          subject: `🎉 Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
+          subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
           body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
       }
@@ -1763,7 +1805,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         await sendTeacherNotification({
           teacherName: resurrectClassModal.teacher,
-          subject: `🎉 Nuevo alumno fijo: ${displayName} (${resurrectClassModal.subject})`,
+          subject: `Nuevo alumno fijo: ${displayName} (${resurrectClassModal.subject})`,
           body: `Hola ${resurrectClassModal.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo al reactivar tu grupo:\n\n· ${formatClassLine(resurrectClassModal)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
@@ -1889,7 +1931,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
         await sendTeacherNotification({
           teacherName: c.teacher,
-          subject: `🎉 Nuevo alumno fijo: ${displayName} (${c.subject})`,
+          subject: `Nuevo alumno fijo: ${displayName} (${c.subject})`,
           body: `Hola ${c.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(c)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 

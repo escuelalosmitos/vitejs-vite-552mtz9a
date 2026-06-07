@@ -394,6 +394,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
       showToast('Debes aceptar las condiciones de plazo marcando la casilla.', 'error');
       return;
     }
+
+    if (isTicketRedemption && hasReachedRecoveryLimit) {
+      showToast('Ya tienes tantas recuperaciones en trámite como tickets disponibles.', 'error');
+      return;
+    }
     
     setIsSendingGestion(true);
     try {
@@ -601,6 +606,14 @@ END:VCALENDAR`;
     ['baja', 'mantenimiento', 'cambio_horario', 'ampliar_clases'].includes(g.type)
   );
   const hasPendingAdminGestion = pendingAdminGestiones.length > 0;
+
+  const pendingRecoveryGestiones = myGestiones.filter(g =>
+    g.status === 'pendiente' &&
+    g.type === 'recuperacion'
+  );
+  const pendingRecoveryCount = pendingRecoveryGestiones.length;
+  const availableRecoveryTickets = profile?.activeTickets || 0;
+  const hasReachedRecoveryLimit = pendingRecoveryCount >= availableRecoveryTickets;
 
   const handleAdminGestionClick = (gestionPayload) => {
     if (hasPendingAdminGestion) {
@@ -1284,15 +1297,21 @@ END:VCALENDAR`;
                 <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{profile.activeTickets || 0} Tickets</span>
               </div>
               <button 
-                disabled={!profile.activeTickets} 
-                onClick={() => setGestionModal({
-                  type: 'recuperacion', title: 'Canjear Ticket', icon: Ticket, color: 'text-amber-500',
-                  desc: 'Elige el grupo en el que quieres gastar tu ticket. Si no encuentras disponibilidad, vuelve a mirar otro día.',
-                  placeholder: 'Añade observaciones para el profesor (Opcional)...'
-                })}
-                className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                disabled={!profile.activeTickets || hasReachedRecoveryLimit} 
+                onClick={() => {
+                  if (hasReachedRecoveryLimit) {
+                    showToast('Ya tienes tantas recuperaciones en trámite como tickets disponibles.', 'error');
+                    return;
+                  }
+                  setGestionModal({
+                    type: 'recuperacion', title: 'Canjear Ticket', icon: Ticket, color: 'text-amber-500',
+                    desc: 'Elige el grupo en el que quieres gastar tu ticket. Si no encuentras disponibilidad, vuelve a mirar otro día.',
+                    placeholder: 'Añade observaciones para el profesor (Opcional)...'
+                  });
+                }}
+                className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 && !hasReachedRecoveryLimit ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
               >
-                {profile.activeTickets > 0 ? 'Canjear Ticket Libre' : 'No tienes tickets'}
+                {profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones en trámite' : 'Canjear Ticket Libre') : 'No tienes tickets'}
               </button>
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />

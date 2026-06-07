@@ -396,7 +396,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
 
     if (isTicketRedemption && hasReachedRecoveryLimit) {
-      showToast('Ya tienes tantas recuperaciones en trámite como tickets disponibles.', 'error');
+      showToast('Ya tienes tantas recuperaciones solicitadas o programadas como tickets disponibles.', 'error');
       return;
     }
     
@@ -611,9 +611,17 @@ END:VCALENDAR`;
     g.status === 'pendiente' &&
     g.type === 'recuperacion'
   );
-  const pendingRecoveryCount = pendingRecoveryGestiones.length;
+
+  const scheduledRecoveryGestiones = myGestiones.filter(g =>
+    g.status === 'completado' &&
+    g.type === 'recuperacion' &&
+    g.recoveryDate &&
+    g.recoveryDate >= todayStr
+  );
+
+  const committedRecoveryCount = pendingRecoveryGestiones.length + scheduledRecoveryGestiones.length;
   const availableRecoveryTickets = profile?.activeTickets || 0;
-  const hasReachedRecoveryLimit = pendingRecoveryCount >= availableRecoveryTickets;
+  const hasReachedRecoveryLimit = committedRecoveryCount >= availableRecoveryTickets;
 
   const handleAdminGestionClick = (gestionPayload) => {
     if (hasPendingAdminGestion) {
@@ -1306,7 +1314,7 @@ END:VCALENDAR`;
                 disabled={!profile.activeTickets || hasReachedRecoveryLimit} 
                 onClick={() => {
                   if (hasReachedRecoveryLimit) {
-                    showToast('Ya tienes tantas recuperaciones en trámite como tickets disponibles.', 'error');
+                    showToast('Ya tienes tantas recuperaciones solicitadas o programadas como tickets disponibles.', 'error');
                     return;
                   }
                   setGestionModal({
@@ -1317,7 +1325,7 @@ END:VCALENDAR`;
                 }}
                 className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 && !hasReachedRecoveryLimit ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
               >
-                {profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones en trámite' : 'Canjear Ticket Libre') : 'No tienes tickets'}
+                {profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
               </button>
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />

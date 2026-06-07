@@ -1594,7 +1594,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Solicita otro día u hora</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Solicita otro día u hora si necesitas cambiar tu horario fijo.</p>
               </button>
 
               <button 
@@ -1607,7 +1607,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Ampliar Mis Clases</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Apunta un nuevo instrumento</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Apúntate a clases de un nuevo instrumento o reserva una sesión mas con el que ya tienes. ¡Se aplicarán descuentos en el total de tu cuota!</p>
               </button>
 
               <button 
@@ -1626,7 +1626,7 @@ END:VCALENDAR`;
               <button 
                 onClick={() => handleAdminGestionClick({
                   type: 'baja', title: 'Dar de Baja mi Plaza', icon: UserMinus, color: 'text-red-500',
-                  desc: 'Solicita la cancelación de tu suscripción en la escuela. Te echaremos de menos.',
+                  desc: 'Solicita la cancelación de tu suscripción en la escuela. Perderás las clases pendientes por recuperar, los puntos en el trivial y el acceso a la plataforma. Te echaremos de menos.',
                   placeholder: '¿Podrías decirnos brevemente el motivo? Nos ayuda a mejorar (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}

@@ -1236,6 +1236,8 @@ END:VCALENDAR`;
                 const classInfo = getNextClassInfo(clase.dayOfWeek, clase.time);
                 const holidayMatch = schoolCalendar.find(c => c.date === classInfo.dateStr);
                 const hasNotifiedNext = clase.exceptions?.[classInfo.dateStr]?.[profile.id];
+                const myStudentEntry = clase.students?.find(s => s.id === profile.id);
+                const isRecoveryClassForMe = myStudentEntry?.isRecovery === true;
 
                 if (holidayMatch) {
                   const isFestivo = holidayMatch.type === 'festivo';
@@ -1276,6 +1278,10 @@ END:VCALENDAR`;
                         <div className="w-full bg-blue-100 text-blue-800 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-3 uppercase text-[10px] sm:text-xs tracking-widest border border-blue-200 text-center leading-tight">
                           <Snowflake className="w-5 h-5 shrink-0" />
                           <span>Tienes la plaza congelada.<br/>Te la estamos guardando este mes.</span>
+                        </div>
+                      ) : isRecoveryClassForMe ? (
+                        <div className="w-full bg-amber-100 text-amber-900 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-amber-200 text-center">
+                          <Ticket className="w-4 h-4 shrink-0" /> Clase de recuperación no recuperable
                         </div>
                       ) : hasNotifiedNext ? (
                         <div className="w-full bg-zinc-800/50 text-emerald-400 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-emerald-900/50">

@@ -266,26 +266,67 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   }, [allClasses, settings]);
 
   const ticketStatsByStudent = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
     const stats = {};
+
+    const ensureStudentStats = (studentId) => {
+      if (!stats[studentId]) {
+        stats[studentId] = {
+          total: 0,
+          active: 0,
+          future: 0,
+          used: 0,
+          expired: 0,
+          pending: 0,
+          scheduled: 0,
+          committed: 0,
+          free: 0
+        };
+      }
+      return stats[studentId];
+    };
+
     allTickets.forEach(ticket => {
       if (!ticket.studentId) return;
-      if (!stats[ticket.studentId]) {
-        stats[ticket.studentId] = { total: 0, active: 0, used: 0, expired: 0 };
-      }
 
-      stats[ticket.studentId].total += 1;
+      const studentStats = ensureStudentStats(ticket.studentId);
+      studentStats.total += 1;
 
-      const today = new Date().toISOString().split('T')[0];
       if (ticket.isUsed) {
-        stats[ticket.studentId].used += 1;
+        studentStats.used += 1;
       } else if (ticket.validUntil && ticket.validUntil < today) {
-        stats[ticket.studentId].expired += 1;
+        studentStats.expired += 1;
+      } else if (ticket.validFrom && ticket.validFrom > today) {
+        studentStats.future += 1;
       } else {
-        stats[ticket.studentId].active += 1;
+        studentStats.active += 1;
       }
     });
+
+    gestiones.forEach(gestion => {
+      if (!gestion.studentId || gestion.type !== 'recuperacion') return;
+
+      const studentStats = ensureStudentStats(gestion.studentId);
+
+      if (gestion.status === 'pendiente') {
+        studentStats.pending += 1;
+      } else if (
+        gestion.status === 'completado' &&
+        gestion.recoveryDate &&
+        gestion.recoveryDate >= today
+      ) {
+        studentStats.scheduled += 1;
+      }
+    });
+
+    Object.keys(stats).forEach(studentId => {
+      const studentStats = stats[studentId];
+      studentStats.committed = studentStats.pending + studentStats.scheduled;
+      studentStats.free = Math.max(studentStats.active - studentStats.committed, 0);
+    });
+
     return stats;
-  }, [allTickets]);
+  }, [allTickets, gestiones]);
 
   const getStudentTeachers = (studentId) => {
     if (!studentId) return [];
@@ -380,6 +421,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores han sido avisados.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
+        if (type === 'recuperacion') {
+          const currentTicketStats = ticketStatsByStudent[studentId] || { active: 0, committed: 0, free: 0 };
+          if (currentTicketStats.free <= 0) {
+            alert(`⚠️ No se puede aprobar esta recuperación.\n\n${displayName} no tiene tickets libres ahora mismo.\n\nTickets activos: ${currentTicketStats.active}\nRecuperaciones comprometidas: ${currentTicketStats.committed}\nTickets libres: ${currentTicketStats.free}`);
+            return;
+          }
+        }
+
         if (!requestedClass) {
           alert("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se archivará el ticket.");
           await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
@@ -2106,6 +2155,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                             </span>
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
+                            {g.type === 'recuperacion' && (() => {
+                              const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };
+                              return (
+                                <div className={`text-[10px] font-black mt-1 uppercase ${ticketStats.free > 0 ? 'text-amber-700' : 'text-red-600'}`}>
+                                  Tickets: {ticketStats.free} libres / {ticketStats.active} activos · {ticketStats.committed} comprometidos
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="p-4">
                             <div className="max-w-[150px] md:max-w-[250px] truncate text-xs" title={g.details}>{g.details}</div>
@@ -2281,10 +2338,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
                                 MB
                               </button>
                               {(() => {
-                                const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, used: 0, expired: 0 };
+                                const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, future: 0, used: 0, expired: 0, pending: 0, scheduled: 0, committed: 0, free: 0 };
+                                const hasOvercommittedTickets = ticketStats.committed > ticketStats.active;
                                 return (
-                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos: ${ticketStats.active} · Usados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
-                                    <Ticket className="w-3 h-3"/> {ticketStats.active}/{ticketStats.total}
+                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${hasOvercommittedTickets ? 'bg-red-100 text-red-800' : ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos hoy: ${ticketStats.active} · Libres reales: ${ticketStats.free} · Comprometidos: ${ticketStats.committed} (${ticketStats.pending} pendientes + ${ticketStats.scheduled} programados) · Futuros: ${ticketStats.future} · Usados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
+                                    <Ticket className="w-3 h-3"/> {ticketStats.free}/{ticketStats.active}
                                   </span>
                                 );
                               })()}

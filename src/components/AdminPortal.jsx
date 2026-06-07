@@ -337,6 +337,61 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return [...new Set(teacherNames)];
   };
 
+  const getTeacherEmail = (teacherName) => {
+    if (!teacherName) return '';
+    return `${teacherName.toLowerCase().trim().replace(/\s+/g, '.')}@escuelalosmitos.com`;
+  };
+
+  const formatClassLine = (clase) => {
+    if (!clase) return '';
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
+  };
+
+  const groupClassesByTeacher = (classes = []) => {
+    const grouped = {};
+    classes.filter(Boolean).forEach(c => {
+      const teacherName = c.teacher || 'Profesor';
+      const email = getTeacherEmail(teacherName);
+      if (!email) return;
+      if (!grouped[email]) grouped[email] = { teacherName, email, classes: [] };
+      grouped[email].classes.push(c);
+    });
+    return Object.values(grouped);
+  };
+
+  const sendNotificationEmail = async ({ to, subject, body, type = 'notificacion_email' }) => {
+    if (!to || !subject || !body) return;
+    try {
+      await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ type, to, subject, body })
+      });
+    } catch (e) {
+      console.log('Fallo correo automático', e);
+    }
+  };
+
+  const sendTeacherNotification = async ({ teacherName, subject, body }) => {
+    const to = getTeacherEmail(teacherName);
+    await sendNotificationEmail({ to, subject, body, type: 'notificacion_profesor' });
+  };
+
+  const sendStudentNotification = async ({ studentEmail, subject, body }) => {
+    await sendNotificationEmail({ to: studentEmail, subject, body, type: 'confirmacion_alumno' });
+  };
+
+  const sendGroupedTeacherSummary = async ({ groupedClasses, subjectBuilder, bodyBuilder }) => {
+    for (let group of groupedClasses) {
+      await sendTeacherNotification({
+        teacherName: group.teacherName,
+        subject: subjectBuilder(group),
+        body: bodyBuilder(group)
+      });
+    }
+  };
+
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
     try {
@@ -361,64 +416,70 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         return;
       }
 
-      const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData; 
+      const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData;
       const studentInfo = students.find(s => s.id === studentId);
+      const studentEmail = studentInfo?.email || gestionData.studentEmail || '';
 
-      // 👇 FIX: Respetamos el alias en las gestiones
       let displayName = studentName;
       if (studentInfo && studentInfo.useAlias && studentInfo.alias) {
-          displayName = studentInfo.alias;
+        displayName = studentInfo.alias;
       }
 
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
         let borradas = 0;
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        const groupedTeachers = groupClassesByTeacher(classesWithStudent);
+
         for (let c of classesWithStudent) {
           const updatedList = c.students.filter(s => s.id !== studentId);
           if (c.refPath) {
             await updateDoc(doc(db, c.refPath), { students: updatedList });
             borradas++;
-            try {
-              const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-              await fetch(APPS_SCRIPT_URL, {
-                method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                body: JSON.stringify({
-                  type: 'notificacion_profesor',
-                  teacherEmail: emailProfe,
-                  subject: `❌ Baja de alumno: ${displayName} (${c.subject})`,
-                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${displayName} se ha dado de BAJA de tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
-                })
-              });
-            } catch(e) { console.log("Fallo correo baja", e); }
           }
         }
+
+        await sendGroupedTeacherSummary({
+          groupedClasses: groupedTeachers,
+          subjectBuilder: (group) => `❌ Baja de alumno: ${displayName}`,
+          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} se ha dado de BAJA y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail,
+          subject: `Confirmación de baja - Escuela Los Mitos`,
+          body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de baja ha sido tramitada correctamente.\n\nA partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`✅ Baja ejecutada. Profesores avisados por correo. ${displayName} borrado de ${borradas} clases.`);
+        alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases.`);
       }
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        const groupedTeachers = groupClassesByTeacher(classesWithStudent);
+
         for (let c of classesWithStudent) {
           if (c.refPath) {
             const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: true } : s);
             await updateDoc(doc(db, c.refPath), { students: updatedList });
-            try {
-              const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-              await fetch(APPS_SCRIPT_URL, {
-                method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                body: JSON.stringify({
-                  type: 'notificacion_profesor',
-                  teacherEmail: emailProfe,
-                  subject: `❄️ Alumno congelado: ${displayName} (${c.subject})`,
-                  body: `Hola ${c.teacher},\n\nDesde coordinación te informamos que ${displayName} ha CONGELADO su plaza de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h) durante este mes.\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
-                })
-              });
-            } catch(e) { console.log("Fallo correo congelar", e); }
           }
         }
+
+        await sendGroupedTeacherSummary({
+          groupedClasses: groupedTeachers,
+          subjectBuilder: (group) => `❄️ Alumno en mantenimiento: ${displayName}`,
+          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha solicitado mantenimiento/congelación de plaza.\n\nAfecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo mientras dure este estado.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail,
+          subject: `Confirmación de mantenimiento de plaza - Escuela Los Mitos`,
+          body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de mantenimiento/congelación de plaza ha sido tramitada correctamente.\n\nTu plaza queda en mantenimiento según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores han sido avisados.`);
+        alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores/alumno han sido avisados.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
         if (type === 'recuperacion') {
@@ -439,29 +500,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           alert(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
           return;
         }
+
         let logMessage = `Iniciando proceso para ${displayName}:\n\n`;
+        let oldClasses = [];
+
         if (type === 'cambio_horario') {
-          const oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
+          oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
           for (let c of oldClasses) {
             const updatedList = c.students.filter(s => s.id !== studentId);
             if (c.refPath) {
               await updateDoc(doc(db, c.refPath), { students: updatedList });
               logMessage += `➖ Borrado de la clase de ${c.subject} (${c.time}h).\n`;
-              try {
-                const emailProfe = `${c.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-                await fetch(APPS_SCRIPT_URL, {
-                  method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                  body: JSON.stringify({
-                    type: 'notificacion_profesor',
-                    teacherEmail: emailProfe,
-                    subject: `🔄 Cambio de horario: ${displayName} (${c.subject})`,
-                    body: `Hola ${c.teacher},\n\nTe informamos que ${displayName} se ha cambiado de horario y ya NO vendrá a tu clase de ${c.subject} (${getDayName(c.dayOfWeek)} a las ${c.time}h).\n\nLo hemos borrado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo.`
-                  })
-                });
-              } catch(e) {}
             }
           }
         }
+
         const newStudentPayload = {
           id: studentId,
           name: displayName,
@@ -469,31 +522,75 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
           status: 'present',
           isRecovery: type === 'recuperacion',
-          recoveryDate: type === 'recuperacion' ? recoveryDate : null 
+          recoveryDate: type === 'recuperacion' ? recoveryDate : null
         };
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
         await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        logMessage += `✅ Ticket archivado con éxito.\n`;
-        try {
-          const emailProfe = `${targetClass.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
-          let emailSubject = `🎉 ¡Nuevo alumno en tu clase de ${targetClass.subject}!`;
-          let emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${displayName} a tu clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h).\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`;
-          if (type === 'recuperacion') {
-            emailSubject = `🔄 Recuperación programada: ${displayName} (${targetClass.subject})`;
-            emailBody = `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} para recuperar una clase de ${targetClass.subject} contigo el próximo ${formatDateSpanish(recoveryDate)} a las ${targetClass.time}h.\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`;
-          }
-          await fetch(APPS_SCRIPT_URL, {
-            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify({
-              type: 'notificacion_profesor',
-              teacherEmail: emailProfe,
-              subject: emailSubject,
-              body: emailBody
-            })
+        logMessage += `✅ Trámite archivado con éxito.\n`;
+
+        if (type === 'cambio_horario') {
+          const oldGroups = groupClassesByTeacher(oldClasses);
+          const targetEmail = getTeacherEmail(targetClass.teacher);
+          const targetOldGroup = oldGroups.find(g => g.email === targetEmail);
+          const otherOldGroups = oldGroups.filter(g => g.email !== targetEmail);
+
+          await sendGroupedTeacherSummary({
+            groupedClasses: otherOldGroups,
+            subjectBuilder: (group) => `🔄 Cambio de horario: ${displayName} deja tu clase`,
+            bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} se ha cambiado de horario y ya no vendrá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
-        } catch(e) { }
+
+          if (targetOldGroup) {
+            await sendTeacherNotification({
+              teacherName: targetClass.teacher,
+              subject: `🔄 Cambio de horario interno: ${displayName}`,
+              body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas de asistencia en la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+            });
+          } else {
+            await sendTeacherNotification({
+              teacherName: targetClass.teacher,
+              subject: `🎉 Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
+              body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+            });
+          }
+
+          await sendStudentNotification({
+            studentEmail,
+            subject: `Confirmación de cambio de horario - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y tramitado correctamente.\n\nTu nuevo horario es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
+
+        if (type === 'ampliar_clases') {
+          await sendTeacherNotification({
+            teacherName: targetClass.teacher,
+            subject: `🎉 Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
+            body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+
+          await sendStudentNotification({
+            studentEmail,
+            subject: `Confirmación de ampliación de clases - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu ampliación de clases ha sido aprobada y tramitada correctamente.\n\nNueva clase añadida a tu horario:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
+
+        if (type === 'recuperacion') {
+          await sendTeacherNotification({
+            teacherName: targetClass.teacher,
+            subject: `🔄 Recuperación programada: ${displayName} (${targetClass.subject})`,
+            body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} para recuperar una clase contigo.\n\nClase de destino:\n· ${formatClassLine(targetClass)}\n\nFecha exacta de recuperación: ${formatDateSpanish(recoveryDate)}\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+
+          await sendStudentNotification({
+            studentEmail,
+            subject: `Confirmación de recuperación programada - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu recuperación ha sido programada correctamente.\n\nRecuperación:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\nFecha exacta: ${formatDateSpanish(recoveryDate)}\n\nRecuerda que las clases de recuperación no son recuperables si no asistes.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
+
         alert(logMessage);
       } else {
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
@@ -518,16 +615,32 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       if (!confirmBaja) return;
     }
     try {
+      const studentInfo = students.find(s => s.id === studentId);
+      const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
       if (newStatus === 'baja') {
         const classesWithThisStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        const groupedTeachers = groupClassesByTeacher(classesWithThisStudent);
         const updatePromises = classesWithThisStudent.map(c => {
           const updatedList = c.students.filter(s => s.id !== studentId);
           if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
           return Promise.resolve();
         });
         await Promise.all(updatePromises);
-        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases.`);
+
+        await sendGroupedTeacherSummary({
+          groupedClasses: groupedTeachers,
+          subjectBuilder: (group) => `❌ Baja de alumno: ${displayName}`,
+          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha sido dado de baja y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail: studentInfo?.email || '',
+          subject: `Confirmación de baja - Escuela Los Mitos`,
+          body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo.`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
@@ -550,13 +663,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
     try {
       const oldClasses = allClasses.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
+      const displayName = student.useAlias && student.alias ? student.alias : student.name;
+      const oldGroups = groupClassesByTeacher(oldClasses);
+
       for (let c of oldClasses) {
         const updatedList = c.students.filter(s => s.id !== student.id);
         if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
       }
-      
-      // 👇 FIX: Respetamos el alias en las altas
-      const displayName = student.useAlias && student.alias ? student.alias : student.name;
+
       const newStudentPayload = {
         id: student.id,
         name: displayName,
@@ -567,7 +681,38 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       };
       const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== student.id), newStudentPayload];
       await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-      alert(`✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}.`);
+
+      const targetEmail = getTeacherEmail(targetClass.teacher);
+      const targetOldGroup = oldGroups.find(g => g.email === targetEmail);
+      const otherOldGroups = oldGroups.filter(g => g.email !== targetEmail);
+
+      await sendGroupedTeacherSummary({
+        groupedClasses: otherOldGroups,
+        subjectBuilder: (group) => `🔄 Cambio manual: ${displayName} deja tu clase`,
+        bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} ha sido cambiado manualmente de grupo y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
+      });
+
+      if (targetOldGroup) {
+        await sendTeacherNotification({
+          teacherName: targetClass.teacher,
+          subject: `🔄 Cambio manual interno: ${displayName}`,
+          body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+      } else {
+        await sendTeacherNotification({
+          teacherName: targetClass.teacher,
+          subject: `🎉 Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
+          body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+      }
+
+      await sendStudentNotification({
+        studentEmail: student.email || '',
+        subject: `Confirmación de horario - Escuela Los Mitos`,
+        body: `Hola ${student.name},\n\nTe confirmamos que tu horario ha sido actualizado correctamente.\n\nTu clase asignada es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+      });
+
+      alert(`✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}. Correos automáticos enviados.`);
       setChangeClassModal(null);
     } catch (error) {
       alert(`❌ Error al cambiar de clase: ${error.message}`);
@@ -1576,15 +1721,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setSaving(true);
       try {
         let studentId;
-        let existingStudent = students.find(s => 
-          s.name.toLowerCase() === searchName.trim().toLowerCase() || 
+        let existingStudent = students.find(s =>
+          s.name.toLowerCase() === searchName.trim().toLowerCase() ||
           (email && s.email === email.trim().toLowerCase())
         );
-        
-        // 👇 FIX: Respetar alias al reactivar
+
         let displayName = searchName.trim();
         if (existingStudent && existingStudent.useAlias && existingStudent.alias) {
-            displayName = existingStudent.alias;
+          displayName = existingStudent.alias;
         }
 
         if (existingStudent) {
@@ -1616,7 +1760,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const targetPath = doc(db, resurrectClassModal.refPath);
         const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
         await updateDoc(targetPath, { students: updatedStudents });
-        alert("🎉 ¡Clase reactivada! El profesor ya la tiene operativa en su tablet y empezará a computar en nómina cuando pase lista.");
+
+        await sendTeacherNotification({
+          teacherName: resurrectClassModal.teacher,
+          subject: `🎉 Nuevo alumno fijo: ${displayName} (${resurrectClassModal.subject})`,
+          body: `Hola ${resurrectClassModal.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo al reactivar tu grupo:\n\n· ${formatClassLine(resurrectClassModal)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
+          subject: `Confirmación de alta - Escuela Los Mitos`,
+          body: `Hola ${searchName.trim()},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(resurrectClassModal)}\nProfesor/a: ${resurrectClassModal.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        alert("🎉 ¡Clase reactivada! El profesor ya la tiene operativa y ha sido avisado por correo.");
         setResurrectClassModal(null);
       } catch (e) {
         alert("Error al reactivar: " + e.message);
@@ -1690,15 +1847,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setSaving(true);
       try {
         let studentId;
-        let existingStudent = students.find(s => 
-          s.name.toLowerCase() === searchName.trim().toLowerCase() || 
+        let existingStudent = students.find(s =>
+          s.name.toLowerCase() === searchName.trim().toLowerCase() ||
           (emailInput && s.email === emailInput.trim().toLowerCase())
         );
-        
-        // 👇 FIX: Respetar alias al matricular en clase
+
         let displayName = searchName.trim();
         if (existingStudent && existingStudent.useAlias && existingStudent.alias) {
-            displayName = existingStudent.alias;
+          displayName = existingStudent.alias;
         }
 
         if (existingStudent) {
@@ -1730,6 +1886,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const targetPath = doc(db, c.refPath);
         const updatedStudents = [...(c.students || []), newStudentPayload];
         await updateDoc(targetPath, { students: updatedStudents });
+
+        await sendTeacherNotification({
+          teacherName: c.teacher,
+          subject: `🎉 Nuevo alumno fijo: ${displayName} (${c.subject})`,
+          body: `Hola ${c.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(c)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
+          subject: `Confirmación de alta - Escuela Los Mitos`,
+          body: `Hola ${searchName.trim()},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(c)}\nProfesor/a: ${c.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        alert(`✅ Alumno añadido. Profesor${(existingStudent ? existingStudent.email : emailInput.trim()) ? ' y alumno' : ''} avisados por correo.`);
         setSearchName('');
         setEmailInput('');
       } catch (e) {
@@ -1738,7 +1908,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         setSaving(false);
       }
     };
-
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
         <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">

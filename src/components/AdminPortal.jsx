@@ -504,6 +504,27 @@ ${body}`,
     return count;
   };
 
+  const syncStudentPauseStateInClasses = async (studentId, isPaused) => {
+    if (!studentId) return 0;
+
+    const classesWithStudent = allClasses.filter(c =>
+      c.students && c.students.some(s => s.id === studentId)
+    );
+
+    const updatePromises = classesWithStudent.map(c => {
+      if (!c.refPath) return Promise.resolve();
+
+      const updatedList = (c.students || []).map(s =>
+        s.id === studentId ? { ...s, isPaused } : s
+      );
+
+      return updateDoc(doc(db, c.refPath), { students: updatedList });
+    });
+
+    await Promise.all(updatePromises);
+    return classesWithStudent.filter(c => c.refPath).length;
+  };
+
   const resetStudentTickets = async (student) => {
     if (!student?.id) return;
 
@@ -812,11 +833,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         });
 
         alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}.`);
+      } else if (newStatus === 'congelado') {
+        const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, true);
+        alert(`❄️ Estado de ${studentName} cambiado a CONGELADO. Plaza marcada como mantenimiento en ${clasesActualizadas} clase(s).`);
+      } else if (newStatus === 'activo') {
+        const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, false);
+        alert(`✅ Estado de ${studentName} cambiado a ACTIVO. Plaza reactivada en ${clasesActualizadas} clase(s).`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
     } catch (error) {
-      alert("Hubo un error al procesar el cambio.");
+      alert("Hubo un error al procesar el cambio: " + error.message);
     }
   };
 

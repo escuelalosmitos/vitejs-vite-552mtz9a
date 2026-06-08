@@ -102,6 +102,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [myClasses, setMyClasses] = useState([]);
+  const [classesLoaded, setClassesLoaded] = useState(false);
   const [allClasses, setAllClasses] = useState([]); 
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [] });
@@ -213,6 +214,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   useEffect(() => {
     if (!profile?.id) return;
+    setClassesLoaded(false);
     
     const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
       if (docSnap.exists()) {
@@ -235,6 +237,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       });
       setAllClasses(all);
       setMyClasses(mine);
+      setClassesLoaded(true);
     });
 
     const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
@@ -1076,7 +1079,29 @@ END:VCALENDAR`;
   
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
-  if (profile?.globalStatus === 'baja') {
+  if (!profile) {
+    return (
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
+        <div className="bg-red-100 text-red-500 p-6 rounded-full mb-6">
+          <AlertCircle className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Acceso Denegado</h1>
+        <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
+          Tu correo electrónico (<strong className="text-black">{user.email}</strong>) no está registrado como alumno de la escuela.
+        </p>
+        <div className="bg-amber-50 border border-amber-200 p-6 rounded-2xl mb-8">
+          <p className="text-sm text-amber-800 font-bold">
+            Si eres alumno de Los Mitos, asegúrate de haber iniciado sesión con el mismo correo que le diste a tu profesor.
+          </p>
+        </div>
+        <button onClick={logout} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors">
+          Cerrar Sesión y probar con otro correo
+        </button>
+      </div>
+    );
+  }
+
+  if (profile.globalStatus === 'baja') {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
         <div className="bg-zinc-200 text-zinc-500 p-6 rounded-full mb-6">
@@ -1106,23 +1131,33 @@ END:VCALENDAR`;
     );
   }
 
-  if (!profile) {
+  if (!classesLoaded) {
+    return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando clases...</div>;
+  }
+
+  if (myClasses.length === 0) {
     return (
-      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
-        <div className="bg-red-100 text-red-500 p-6 rounded-full mb-6">
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
+        <div className="bg-amber-100 text-amber-600 p-6 rounded-full mb-6">
           <AlertCircle className="w-12 h-12" />
         </div>
-        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Acceso Denegado</h1>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Sin clase asignada</h1>
         <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
-          Tu correo electrónico (<strong className="text-black">{user.email}</strong>) no está asignado a ninguna clase activa en la escuela.
+          Tu cuenta existe, pero ahora mismo no tienes ninguna clase asignada. Para acceder al portal necesitas tener una plaza activa o una plaza en mantenimiento.
         </p>
-        <div className="bg-amber-50 border border-amber-200 p-6 rounded-2xl mb-8">
-          <p className="text-sm text-amber-800 font-bold">
-            Si eres alumno de Los Mitos, asegúrate de haber iniciado sesión con el mismo correo que le diste a tu profesor.
+        <div className="bg-white border-2 border-zinc-200 p-6 rounded-2xl mb-8 w-full shadow-sm">
+          <p className="text-sm text-slate-700 font-bold mb-4 uppercase tracking-widest">
+            ¿Crees que es un error?
           </p>
+          <a 
+            href="mailto:gestiones@escuelalosmitos.com?subject=Acceso%20al%20portal%20sin%20clase%20asignada" 
+            className="block w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors"
+          >
+            Contactar con la escuela
+          </a>
         </div>
-        <button onClick={logout} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors">
-          Cerrar Sesión y probar con otro correo
+        <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
+          Cerrar Sesión
         </button>
       </div>
     );
@@ -1261,7 +1296,7 @@ END:VCALENDAR`;
                   );
                 }
 
-                const isCongelado = profile?.globalStatus === 'congelado';
+                const isCongelado = profile?.globalStatus === 'congelado' || myStudentEntry?.isPaused === true;
 
                 return (
                   <div key={idx} className={`rounded-3xl p-6 shadow-xl relative overflow-hidden mb-4 transition-all ${isCongelado ? 'bg-zinc-200 text-zinc-500 border-2 border-zinc-300' : 'bg-black text-white'}`}>
@@ -1594,7 +1629,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Solicita otro día u hora si necesitas cambiar tu horario fijo.</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Solicita otro día u hora</p>
               </button>
 
               <button 
@@ -1607,7 +1642,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Ampliar Mis Clases</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Apúntate a clases de un nuevo instrumento o reserva una sesión mas con el que ya tienes. ¡Se aplicarán descuentos en el total de tu cuota!</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Apunta un nuevo instrumento</p>
               </button>
 
               <button 
@@ -1626,7 +1661,7 @@ END:VCALENDAR`;
               <button 
                 onClick={() => handleAdminGestionClick({
                   type: 'baja', title: 'Dar de Baja mi Plaza', icon: UserMinus, color: 'text-red-500',
-                  desc: 'Solicita la cancelación de tu suscripción en la escuela. Perderás las clases pendientes por recuperar, los puntos en el trivial y el acceso a la plataforma. Te echaremos de menos.',
+                  desc: 'Solicita la cancelación de tu suscripción en la escuela. Te echaremos de menos.',
                   placeholder: '¿Podrías decirnos brevemente el motivo? Nos ayuda a mejorar (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}

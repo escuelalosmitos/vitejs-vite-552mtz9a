@@ -12,6 +12,15 @@ const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukele
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
+const DEFAULT_DEAD_HOUR_TASKS = [
+  'Ordenar y revisar material del aula',
+  'Preparar ejercicios personalizados para alumnos',
+  'Actualizar notas de seguimiento en la ficha interna',
+  'Revisar repertorio y propuestas para próximas clases',
+  'Organizar el aula y comprobar instrumentos/equipos',
+  'Grabar o preparar material didáctico breve'
+];
+
 const getDayOfWeek = (dateString) => {
   if (!dateString) return 0;
   const [year, month, day] = dateString.split('-');
@@ -71,23 +80,43 @@ const generateLast12Months = () => {
   return months;
 };
 
-const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
+const DeadHourModalComponent = ({ tasks = [], onCancel, onConfirm, onRenounce }) => {
+  const safeTasks = Array.isArray(tasks) && tasks.length > 0 ? tasks : DEFAULT_DEAD_HOUR_TASKS;
   const [note, setNote] = useState('');
-  const [selectedTask, setSelectedTask] = useState('');
+  const [selectedTask, setSelectedTask] = useState(safeTasks[0] || '');
+  const [saving, setSaving] = useState(false);
+
+  const handleConfirm = async () => {
+    if (!selectedTask || !note.trim() || saving) return;
+    setSaving(true);
+    await onConfirm(selectedTask, note.trim());
+    setSaving(false);
+  };
+
+  const handleRenounce = async () => {
+    if (saving) return;
+    const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
+    if (!isConfirmed) return;
+    setSaving(true);
+    await onRenounce();
+    setSaving(false);
+  };
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl animate-in zoom-in-95 duration-200">
-        <div className="flex items-center gap-3 text-red-600 mb-4">
-          <AlertCircle className="w-8 h-8" />
-          <h2 className="text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm overflow-y-auto">
+      <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-8 shadow-2xl animate-in zoom-in-95 duration-200 my-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
+        <div className="flex items-start gap-3 text-red-600 mb-4">
+          <AlertCircle className="w-8 h-8 shrink-0" />
+          <div>
+            <h2 className="text-lg sm:text-xl font-bold uppercase tracking-tight">Protocolo Hora Muerta</h2>
+            <p className="text-[10px] font-black uppercase tracking-widest text-red-400 mt-1">Ausencia total sin aviso suficiente</p>
+          </div>
         </div>
-        <p className="text-zinc-600 mb-6 font-medium">Todos los alumnos activos han faltado. Por favor, selecciona una tarea productiva para realizar en este tiempo o renuncia a esta hora si prefieres descansar.</p>
+        <p className="text-zinc-600 mb-5 font-medium text-sm leading-relaxed">Todos los alumnos activos han faltado. Selecciona una tarea productiva para realizar durante esta hora o renuncia a cobrarla si prefieres descansar.</p>
         
-        <div className="space-y-3 mb-6 max-h-48 overflow-y-auto pr-2">
-          {tasks.length === 0 && <p className="text-sm text-zinc-400 italic">No hay tareas configuradas.</p>}
-          {tasks.map((t, i) => (
-            <button key={i} onClick={() => setSelectedTask(t)} className={`w-full text-left p-3 rounded-xl border-2 transition-all ${selectedTask === t ? 'border-black bg-zinc-50 font-bold' : 'border-zinc-100 text-zinc-500 hover:border-zinc-300'}`}>
+        <div className="space-y-2 mb-5 max-h-44 overflow-y-auto pr-1">
+          {safeTasks.map((t, i) => (
+            <button key={`${t}-${i}`} disabled={saving} onClick={() => setSelectedTask(t)} className={`w-full text-left p-3 rounded-xl border-2 transition-all text-sm ${selectedTask === t ? 'border-black bg-zinc-50 font-bold text-black' : 'border-zinc-100 text-zinc-500 hover:border-zinc-300'}`}>
               {t}
             </button>
           ))}
@@ -96,32 +125,29 @@ const DeadHourModalComponent = ({ tasks, onCancel, onConfirm, onRenounce }) => {
         <textarea 
           placeholder="Escribe brevemente qué has hecho..."
           value={note} onChange={e => setNote(e.target.value)}
-          className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-6 min-h-[80px]"
+          disabled={saving}
+          className="w-full p-4 border-2 border-zinc-200 rounded-xl focus:border-black outline-none mb-5 min-h-[90px] text-sm disabled:opacity-60"
         />
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <button onClick={onCancel} className="w-full bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sticky bottom-0 bg-white pt-2">
+          <button disabled={saving} onClick={onCancel} className="w-full bg-zinc-100 text-zinc-600 font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors disabled:opacity-50">
             Cancelar
           </button>
           
           <button 
-            onClick={() => {
-              const isConfirmed = window.confirm("¿Estás seguro de que quieres renunciar a esta hora? \n\nNo se te exigirá ninguna tarea, pero la hora NO sumará a tu nómina.");
-              if (isConfirmed) {
-                onRenounce();
-              }
-            }}
-            className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1"
+            disabled={saving}
+            onClick={handleRenounce}
+            className="w-full bg-amber-100 border-2 border-amber-200 text-amber-800 font-bold py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-amber-200 transition-colors flex flex-col items-center justify-center gap-1 disabled:opacity-50"
           >
             <Coffee className="w-4 h-4" /> Renunciar
           </button>
 
           <button 
-            disabled={!selectedTask || !note}
-            onClick={() => onConfirm(selectedTask, note)}
+            disabled={!selectedTask || !note.trim() || saving}
+            onClick={handleConfirm}
             className="w-full bg-black text-white font-bold py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-30 transition-all hover:bg-zinc-800"
           >
-            Confirmar Tarea
+            {saving ? 'Guardando...' : 'Confirmar Tarea'}
           </button>
         </div>
       </div>
@@ -917,17 +943,29 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         return;
       }
 
-      const scheduledTimesToday = dashboardItems.map(i => i.data.time);
-      scheduledTimesToday.push(currentSession.time);
-      scheduledTimesToday.sort();
-      const lastTimeScheduled = scheduledTimesToday[scheduledTimesToday.length - 1];
-      const isLastClass = currentSession.time === lastTimeScheduled;
+      const laterPayableClassesToday = dashboardItems.filter(item => {
+        const itemTime = item.data?.time || '';
+        if (!itemTime || itemTime <= currentSession.time) return false;
+
+        const activeCount = (item.data?.students || []).filter(s => !s.isPaused).length;
+        if (activeCount === 0) return false;
+
+        const isGlobalSpecial = settings.festivos?.includes(date) || settings.vacaciones?.includes(date);
+        const isTarragonaSpecial = item.data?.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
+        const isReusSpecial = item.data?.sede === 'Reus' && settings.festivosReus?.includes(date);
+        if (isGlobalSpecial || isTarragonaSpecial || isReusSpecial) return false;
+
+        return true;
+      });
+
+      const isLastClass = laterPayableClassesToday.length === 0;
 
       if (isLastClass) {
-        showNotification({ type: 'success', text: "¡Clase vacía y última hora! Puedes irte a casa. Guardando..." });
-        executeSaveRecord(null, true);
+        showNotification({ type: 'success', text: "Clase vacía y última hora. Puedes irte a casa. Guardando como hora no computable..." });
+        executeSaveRecord('Última hora del día. No se aplica protocolo de tareas.', true);
       } else {
-        const combinedTasks = settings.generalTasks || [];
+        const configuredTasks = Array.isArray(settings.generalTasks) ? settings.generalTasks.filter(Boolean) : [];
+        const combinedTasks = configuredTasks.length > 0 ? configuredTasks : DEFAULT_DEAD_HOUR_TASKS;
         setDeadHourModal({ tasks: combinedTasks, subject: currentSession.subject });
       }
     } else {
@@ -1022,6 +1060,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       setDeadHourModal(null);
     } catch (error) {
       console.error(error);
+      window.alert(`No se ha podido guardar la asistencia. La ventana queda abierta para que no pierdas la información.\n\nError: ${error.message || error}`);
       showNotification({ type: 'error', text: 'Hubo un error al guardar los datos.' });
     }
   };

@@ -347,6 +347,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
   };
 
+  const isPunctualClass = (clase) => Boolean(clase?.date) || clase?.isRecurring === false;
+
   const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
   const cleanEmailSubject = (subject) => String(subject || '')
@@ -590,7 +592,7 @@ ${body}`,
               subject: `Cambio de horario interno: ${displayName}`,
               body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas de asistencia en la App.\n\nUn saludo,\nCoordinación Los Mitos.`
             });
-          } else {
+          } else if (!isPunctualClass(targetClass)) {
             await sendTeacherNotification({
               teacherName: targetClass.teacher,
               subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
@@ -605,7 +607,7 @@ ${body}`,
           });
         }
 
-        if (type === 'ampliar_clases') {
+        if (type === 'ampliar_clases' && !isPunctualClass(targetClass)) {
           await sendTeacherNotification({
             teacherName: targetClass.teacher,
             subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
@@ -727,6 +729,7 @@ ${body}`,
       const targetEmail = getTeacherEmail(targetClass.teacher);
       const targetOldGroup = oldGroups.find(g => g.email === targetEmail);
       const otherOldGroups = oldGroups.filter(g => g.email !== targetEmail);
+      const targetIsPunctual = isPunctualClass(targetClass);
 
       await sendGroupedTeacherSummary({
         groupedClasses: otherOldGroups,
@@ -740,7 +743,7 @@ ${body}`,
           subject: `Cambio manual interno: ${displayName}`,
           body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
-      } else {
+      } else if (!targetIsPunctual) {
         await sendTeacherNotification({
           teacherName: targetClass.teacher,
           subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
@@ -748,13 +751,17 @@ ${body}`,
         });
       }
 
-      await sendStudentNotification({
-        studentEmail: student.email || '',
-        subject: `Confirmación de horario - Escuela Los Mitos`,
-        body: `Hola ${student.name},\n\nTe confirmamos que tu horario ha sido actualizado correctamente.\n\nTu clase asignada es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
-      });
+      if (!targetIsPunctual) {
+        await sendStudentNotification({
+          studentEmail: student.email || '',
+          subject: `Confirmación de horario - Escuela Los Mitos`,
+          body: `Hola ${student.name},\n\nTe confirmamos que tu horario ha sido actualizado correctamente.\n\nTu clase asignada es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+      }
 
-      alert(`✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}. Correos automáticos enviados.`);
+      alert(targetIsPunctual
+        ? `✅ ${student.name} añadido a una clase puntual de ${targetClass.teacher}. No se han enviado correos de alumno fijo.`
+        : `✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}. Correos automáticos enviados.`);
       setChangeClassModal(null);
     } catch (error) {
       alert(`❌ Error al cambiar de clase: ${error.message}`);
@@ -1803,19 +1810,23 @@ ${body}`,
         const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
         await updateDoc(targetPath, { students: updatedStudents });
 
-        await sendTeacherNotification({
-          teacherName: resurrectClassModal.teacher,
-          subject: `Nuevo alumno fijo: ${displayName} (${resurrectClassModal.subject})`,
-          body: `Hola ${resurrectClassModal.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo al reactivar tu grupo:\n\n· ${formatClassLine(resurrectClassModal)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
+        if (!isPunctualClass(resurrectClassModal)) {
+          await sendTeacherNotification({
+            teacherName: resurrectClassModal.teacher,
+            subject: `Nuevo alumno fijo: ${displayName} (${resurrectClassModal.subject})`,
+            body: `Hola ${resurrectClassModal.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo al reactivar tu grupo:\n\n· ${formatClassLine(resurrectClassModal)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
 
-        await sendStudentNotification({
-          studentEmail: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
-          subject: `Confirmación de alta - Escuela Los Mitos`,
-          body: `Hola ${searchName.trim()},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(resurrectClassModal)}\nProfesor/a: ${resurrectClassModal.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
+          await sendStudentNotification({
+            studentEmail: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
+            subject: `Confirmación de alta - Escuela Los Mitos`,
+            body: `Hola ${searchName.trim()},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(resurrectClassModal)}\nProfesor/a: ${resurrectClassModal.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
 
-        alert("🎉 ¡Clase reactivada! El profesor ya la tiene operativa y ha sido avisado por correo.");
+        alert(isPunctualClass(resurrectClassModal)
+          ? "✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo."
+          : "🎉 ¡Clase reactivada! El profesor ya la tiene operativa y ha sido avisado por correo.");
         setResurrectClassModal(null);
       } catch (e) {
         alert("Error al reactivar: " + e.message);
@@ -1880,6 +1891,7 @@ ${body}`,
     const maxCap = parseInt(c.capacity, 10) || 0;
     const currentCount = c.students?.length || 0;
     const isFull = maxCap > 0 && currentCount >= maxCap;
+    const isPunctual = isPunctualClass(c);
 
     const handleAddStudent = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
@@ -1929,19 +1941,23 @@ ${body}`,
         const updatedStudents = [...(c.students || []), newStudentPayload];
         await updateDoc(targetPath, { students: updatedStudents });
 
-        await sendTeacherNotification({
-          teacherName: c.teacher,
-          subject: `Nuevo alumno fijo: ${displayName} (${c.subject})`,
-          body: `Hola ${c.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(c)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
+        if (!isPunctual) {
+          await sendTeacherNotification({
+            teacherName: c.teacher,
+            subject: `Nuevo alumno fijo: ${displayName} (${c.subject})`,
+            body: `Hola ${c.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(c)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
 
-        await sendStudentNotification({
-          studentEmail: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
-          subject: `Confirmación de alta - Escuela Los Mitos`,
-          body: `Hola ${searchName.trim()},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(c)}\nProfesor/a: ${c.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
+          await sendStudentNotification({
+            studentEmail: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
+            subject: `Confirmación de alta - Escuela Los Mitos`,
+            body: `Hola ${searchName.trim()},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(c)}\nProfesor/a: ${c.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
 
-        alert(`✅ Alumno añadido. Profesor${(existingStudent ? existingStudent.email : emailInput.trim()) ? ' y alumno' : ''} avisados por correo.`);
+        alert(isPunctual
+          ? `✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo.`
+          : `✅ Alumno añadido. Profesor${(existingStudent ? existingStudent.email : emailInput.trim()) ? ' y alumno' : ''} avisados por correo.`);
         setSearchName('');
         setEmailInput('');
       } catch (e) {

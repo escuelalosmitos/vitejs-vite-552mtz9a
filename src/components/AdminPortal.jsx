@@ -436,6 +436,57 @@ ${body}`,
     }
   };
 
+
+  const voidStudentTickets = async (studentId, reason = 'baja') => {
+    if (!studentId) return 0;
+
+    const ticketsSnapshot = await getDocs(collectionGroup(db, 'tickets'));
+    const batch = writeBatch(db);
+    let count = 0;
+
+    ticketsSnapshot.forEach((ticketDoc) => {
+      const ticket = ticketDoc.data();
+      if (ticket.studentId === studentId && !ticket.isUsed) {
+        batch.set(ticketDoc.ref, {
+          isUsed: true,
+          voided: true,
+          voidReason: reason,
+          voidedAt: new Date().toISOString(),
+          voidedBy: user?.email || 'admin'
+        }, { merge: true });
+        count++;
+      }
+    });
+
+    if (count > 0) await batch.commit();
+    return count;
+  };
+
+  const resetStudentTickets = async (student) => {
+    if (!student?.id) return;
+
+    const stats = ticketStatsByStudent[student.id] || { active: 0, future: 0, free: 0, total: 0 };
+    const pendingCount = (stats.active || 0) + (stats.future || 0);
+
+    if (pendingCount <= 0) {
+      alert(`${student.name} no tiene tickets pendientes que anular.`);
+      return;
+    }
+
+    if (!window.confirm(`¿Anular los tickets pendientes de ${student.name}?
+
+Tickets activos/futuros: ${pendingCount}
+
+Esto dejará su contador a cero sin borrar el historial.`)) return;
+
+    try {
+      const count = await voidStudentTickets(student.id, 'ajuste_manual_admin');
+      alert(`✅ Tickets anulados: ${count}. El contador del alumno quedará a cero.`);
+    } catch (e) {
+      alert('Error al anular tickets: ' + e.message);
+    }
+  };
+
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
     try {
@@ -471,6 +522,7 @@ ${body}`,
 
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
+        const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
         let borradas = 0;
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
         const groupedTeachers = groupClassesByTeacher(classesWithStudent);
@@ -496,7 +548,7 @@ ${body}`,
         });
 
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases.`);
+        alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}.`);
       }
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
@@ -695,6 +747,7 @@ ${body}`,
       const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
       if (newStatus === 'baja') {
+        const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
         const classesWithThisStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
         const groupedTeachers = groupClassesByTeacher(classesWithThisStudent);
         const updatePromises = classesWithThisStudent.map(c => {
@@ -716,7 +769,7 @@ ${body}`,
           body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo.`);
+        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}.`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
@@ -2617,6 +2670,9 @@ ${body}`,
                               </button>
                               <button onClick={() => grantRecoveryTicket(student)} className="p-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors" title="Regalar Ticket de Recuperación">
                                 <Gift className="w-4 h-4"/>
+                              </button>
+                              <button onClick={() => resetStudentTickets(student)} className="p-2.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-600 hover:text-white transition-colors" title="Anular tickets pendientes">
+                                <Ticket className="w-4 h-4"/>
                               </button>
                             </div>
                           </td>

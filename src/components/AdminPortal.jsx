@@ -43,27 +43,57 @@ const isOperationalClass = (clase, todayStr = getTodayLocalString()) => {
 
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
-const TEACHER_COLOR_THEMES = [
-  { soft: '#eef2ff', border: '#818cf8', solid: '#4338ca', solidBorder: '#3730a3', text: '#312e81', muted: '#e0e7ff' },
-  { soft: '#ecfeff', border: '#22d3ee', solid: '#0891b2', solidBorder: '#0e7490', text: '#164e63', muted: '#cffafe' },
-  { soft: '#ecfdf5', border: '#34d399', solid: '#047857', solidBorder: '#065f46', text: '#064e3b', muted: '#d1fae5' },
-  { soft: '#fef3c7', border: '#f59e0b', solid: '#b45309', solidBorder: '#92400e', text: '#78350f', muted: '#fde68a' },
-  { soft: '#fff1f2', border: '#fb7185', solid: '#be123c', solidBorder: '#9f1239', text: '#881337', muted: '#ffe4e6' },
-  { soft: '#f5f3ff', border: '#a78bfa', solid: '#6d28d9', solidBorder: '#5b21b6', text: '#4c1d95', muted: '#ede9fe' },
-  { soft: '#fdf4ff', border: '#e879f9', solid: '#a21caf', solidBorder: '#86198f', text: '#701a75', muted: '#fae8ff' },
-  { soft: '#f0fdfa', border: '#2dd4bf', solid: '#0f766e', solidBorder: '#115e59', text: '#134e4a', muted: '#ccfbf1' }
+const TEACHER_DEFAULT_COLORS = [
+  '#2563eb', // azul
+  '#dc2626', // rojo
+  '#16a34a', // verde
+  '#d97706', // naranja
+  '#7c3aed', // violeta
+  '#0891b2', // cian
+  '#db2777', // rosa
+  '#475569'  // pizarra
 ];
 
-const getTeacherColorTheme = (teacherName = 'Sin Asignar') => {
+const DEFAULT_TEACHER_COLOR = '#334155';
+
+const isValidHexColor = (value) => /^#[0-9A-Fa-f]{6}$/.test(String(value || '').trim());
+
+const hexToRgb = (hex) => {
+  const clean = String(hex || DEFAULT_TEACHER_COLOR).replace('#', '');
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16)
+  };
+};
+
+const buildTeacherColorTheme = (hex = DEFAULT_TEACHER_COLOR) => {
+  const safeHex = isValidHexColor(hex) ? hex : DEFAULT_TEACHER_COLOR;
+  const { r, g, b } = hexToRgb(safeHex);
+  return {
+    soft: `rgba(${r}, ${g}, ${b}, .10)`,
+    border: `rgba(${r}, ${g}, ${b}, .55)`,
+    solid: safeHex,
+    solidBorder: `rgba(${r}, ${g}, ${b}, .85)`,
+    text: safeHex,
+    muted: 'rgba(255,255,255,.86)'
+  };
+};
+
+const getFallbackTeacherColor = (teacherName = 'Sin Asignar') => {
   const cleanName = String(teacherName || 'Sin Asignar').trim();
-  if (!cleanName || cleanName === 'Sin Asignar') {
-    return { soft: '#f8fafc', border: '#94a3b8', solid: '#334155', solidBorder: '#1e293b', text: '#0f172a', muted: '#e2e8f0' };
-  }
+  if (!cleanName || cleanName === 'Sin Asignar') return DEFAULT_TEACHER_COLOR;
   let hash = 0;
   for (let i = 0; i < cleanName.length; i++) {
     hash = cleanName.charCodeAt(i) + ((hash << 5) - hash);
   }
-  return TEACHER_COLOR_THEMES[Math.abs(hash) % TEACHER_COLOR_THEMES.length];
+  return TEACHER_DEFAULT_COLORS[Math.abs(hash) % TEACHER_DEFAULT_COLORS.length];
+};
+
+const getTeacherColorTheme = (teacherName = 'Sin Asignar', settings = {}) => {
+  const cleanName = String(teacherName || 'Sin Asignar').trim();
+  const configuredColor = settings?.teacherColors?.[cleanName];
+  return buildTeacherColorTheme(isValidHexColor(configuredColor) ? configuredColor : getFallbackTeacherColor(cleanName));
 };
 
 const generateTicketDates = () => {
@@ -120,7 +150,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
     hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 },
-    generalTasks: [], prizes: { trimestral: '', anual: '' }, teachersList: [],
+    generalTasks: [], prizes: { trimestral: '', anual: '' }, teachersList: [], teacherColors: {},
     roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos
   });
 
@@ -189,6 +219,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           ...data,
           roomCapacities: data.roomCapacities || defaultRoomCapacities,
           instrumentos: data.instrumentos || defaultInstrumentos,
+          teacherColors: data.teacherColors || {},
           costeEmpresa: data.costeEmpresa || 22,
           gastosFijos: data.gastosFijos || { global: 0, tarragona: 0, reus: 0 }
         }));
@@ -2943,7 +2974,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
                         if (claseAsignada) {
                            const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
-                           const teacherTheme = getTeacherColorTheme(claseAsignada.teacher);
+                           const teacherTheme = getTeacherColorTheme(claseAsignada.teacher, settings);
                            return (
                               <div key={sala} className="text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border group transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, borderColor: teacherTheme.solidBorder }}>
                                  <h3 className="font-black text-3xl uppercase tracking-tighter mb-1 opacity-20 absolute top-4 right-4">{sala.replace('Sala ', 'S')}</h3>
@@ -3010,7 +3041,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                                       .filter(Boolean);
                                                    const visibleStudentNames = fixedActiveStudents.slice(0, 6);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
-                                                   const teacherTheme = getTeacherColorTheme(c.teacher);
+                                                   const teacherTheme = getTeacherColorTheme(c.teacher, settings);
 
                                                    return (
                                                       <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
@@ -3049,7 +3080,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 ) : (
                   Object.entries(classesByTeacher).map(([teacher, classes]) => {
                     const isExpanded = expandedTeacher === teacher;
-                    const teacherTheme = getTeacherColorTheme(teacher);
+                    const teacherTheme = getTeacherColorTheme(teacher, settings);
                     return (
                       <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
                         <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
@@ -3065,7 +3096,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                             {classes.map(c => {
                               const activeC = (c.students || []).filter(s => !s.isPaused).length;
                               const isHibernated = activeC === 0;
-                              const teacherTheme = getTeacherColorTheme(c.teacher);
+                              const teacherTheme = getTeacherColorTheme(c.teacher, settings);
                               return (
                                 <div key={c.id} className={`p-4 rounded-xl border-l-8 border relative group ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
                                   <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-2 right-2 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
@@ -3533,13 +3564,57 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
                 <button onClick={() => { const val = document.getElementById('adminTeacherInput').value.trim(); if(val) { const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTeacherInput').value = ''; } }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
               </div>
-              <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                {(settings.teachersList || []).map((t, i) => (
-                  <div key={i} className="flex justify-between items-center p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
-                    <span className="font-black uppercase tracking-widest text-slate-700">{t}</span>
-                    <button onClick={() => { const s = {...settings, teachersList: settings.teachersList.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors"><Trash2 className="w-4 h-4"/></button>
-                  </div>
-                ))}
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
+                {(settings.teachersList || []).map((t, i) => {
+                  const currentColor = settings.teacherColors?.[t] || getFallbackTeacherColor(t);
+                  return (
+                    <div key={i} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-4 h-4 rounded-full border border-white shadow-sm shrink-0" style={{ background: currentColor }} />
+                        <span className="font-black uppercase tracking-widest text-slate-700 truncate">{t}</span>
+                      </div>
+                      <div className="flex items-center gap-2 justify-between sm:justify-end">
+                        <label className="m-0 text-[9px] font-black uppercase tracking-widest text-zinc-400">Color</label>
+                        <input
+                          type="color"
+                          value={currentColor}
+                          onChange={(e) => {
+                            const s = {
+                              ...settings,
+                              teacherColors: { ...(settings.teacherColors || {}), [t]: e.target.value }
+                            };
+                            setSettings(s);
+                          }}
+                          className="w-10 h-8 p-0 border border-zinc-200 rounded-lg bg-white cursor-pointer"
+                          title={`Color de ${t}`}
+                        />
+                        <button onClick={() => {
+                          const nextColors = { ...(settings.teacherColors || {}) };
+                          delete nextColors[t];
+                          const s = { ...settings, teacherColors: nextColors };
+                          setSettings(s);
+                        }} className="text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 p-1.5 rounded transition-colors" title="Restaurar color automático">
+                          <History className="w-4 h-4"/>
+                        </button>
+                        <button onClick={() => {
+                          const nextColors = { ...(settings.teacherColors || {}) };
+                          delete nextColors[t];
+                          const s = {
+                            ...settings,
+                            teachersList: settings.teachersList.filter((_, idx) => idx !== i),
+                            teacherColors: nextColors
+                          };
+                          setSettings(s);
+                          saveGlobalSettings(s);
+                        }} className="text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors" title="Eliminar profesor"><Trash2 className="w-4 h-4"/></button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
+                <p className="text-[11px] text-zinc-500 font-medium leading-relaxed">Estos colores se usan en Clases Globales, Vista Arquitecto y Cuadrante Completo.</p>
+                <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-900 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-2"><Save className="w-4 h-4"/> Guardar colores</button>
               </div>
             </div>
 

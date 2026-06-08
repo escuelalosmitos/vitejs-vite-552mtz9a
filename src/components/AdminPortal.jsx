@@ -3282,6 +3282,32 @@ ${body}`,
               </div>
             </div>
 
+            {/* PROTOCOLO DE HORA MUERTA */}
+            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Timer className="w-5 h-5 text-amber-600"/> Protocolo de Hora Muerta</h3>
+              <p className="text-xs text-zinc-500 font-medium mb-4 leading-relaxed">
+                Define las tareas que aparecerán al profesor cuando todos los alumnos activos falten sin aviso suficiente y no sea la última clase del día. Escribe una tarea por línea.
+              </p>
+              <textarea
+                value={(settings.generalTasks || []).join('\n')}
+                onChange={e => setSettings({
+                  ...settings,
+                  generalTasks: e.target.value
+                    .split('\n')
+                    .map(task => task.trim())
+                    .filter(Boolean)
+                })}
+                placeholder={`Ordenar el aula y revisar material\nPreparar ejercicios personalizados\nActualizar notas de seguimiento\nRevisar repertorio de alumnos\nGrabar material didáctico breve`}
+                className="w-full p-5 bg-amber-50/30 border border-amber-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y"
+              />
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-4">
+                <p className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">
+                  Tareas activas: {(settings.generalTasks || []).length}
+                </p>
+                <button onClick={() => saveGlobalSettings(settings)} className="bg-amber-600 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-700 transition-colors">Guardar Tareas</button>
+              </div>
+            </div>
+
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
               <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />

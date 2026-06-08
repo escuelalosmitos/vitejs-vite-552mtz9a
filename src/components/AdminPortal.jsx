@@ -1423,8 +1423,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       const title = form.title.trim();
       const details = form.details.trim();
 
-      if (!title || !details) {
-        alert('Rellena al menos el título y los detalles de la tarea.');
+      if (!title) {
+        alert('Rellena al menos el título de la tarea.');
         return;
       }
 
@@ -1487,8 +1487,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             </div>
 
             <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles *</label>
-              <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder="Describe exactamente qué hay que hacer..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles <span className="text-zinc-300">(opcional)</span></label>
+              <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder="Opcional. Añade contexto si el título no basta..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
             </div>
           </div>
 
@@ -2467,15 +2467,42 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                       </tr>
                     </thead>
                     <tbody className="text-sm font-medium text-slate-700">
-                      {pendingGestiones.map(g => (
-                        <tr key={g.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
+                      {pendingGestiones.map(g => {
+                        const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
+                        const studentAlias = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : '';
+                        const studentClasses = g.studentId ? getStudentAssignedClasses(g.studentId) : [];
+                        const visibleClasses = studentClasses.slice(0, 2);
+                        const hiddenClassCount = Math.max(studentClasses.length - visibleClasses.length, 0);
+                        const teacherNames = g.studentId ? getStudentTeachers(g.studentId) : [];
+                        const detailsText = g.details || g.title || '';
+
+                        return (
+                        <tr key={g.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
                           <td className="p-4 whitespace-nowrap text-zinc-500">{formatDateSpanish(g.date)}</td>
-                          <td className="p-4">
+                          <td className="p-4 min-w-[230px]">
                             <div className="font-black text-black">{g.studentName}</div>
+                            {studentAlias && studentAlias !== g.studentName && (
+                              <div className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mt-0.5 flex items-center gap-1">
+                                <User className="w-3 h-3"/> Alumno: {studentAlias}
+                              </div>
+                            )}
                             <div className="text-[10px] text-zinc-400">{g.studentEmail}</div>
-                            {g.studentId && getStudentTeachers(g.studentId).length > 0 && (
+                            {teacherNames.length > 0 && (
                               <div className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1">
-                                Prof: {getStudentTeachers(g.studentId).join(', ')}
+                                Prof: {teacherNames.join(', ')}
+                              </div>
+                            )}
+                            {visibleClasses.length > 0 && (
+                              <div className="mt-1.5 space-y-1">
+                                {visibleClasses.map(c => (
+                                  <div key={c.id} className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-snug flex items-start gap-1">
+                                    <BookOpen className="w-3 h-3 mt-0.5 shrink-0 text-zinc-400"/>
+                                    <span>{c.subject} · {getDayName(c.dayOfWeek)} · {c.time}h · {c.sede || 'Tarragona'}{c.sala ? ` · ${c.sala}` : ''}</span>
+                                  </div>
+                                ))}
+                                {hiddenClassCount > 0 && (
+                                  <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">+{hiddenClassCount} clase(s) más</div>
+                                )}
                               </div>
                             )}
                           </td>
@@ -2494,15 +2521,22 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               );
                             })()}
                           </td>
-                          <td className="p-4">
-                            <div className="max-w-[150px] md:max-w-[250px] truncate text-xs" title={g.details}>{g.details}</div>
+                          <td className="p-4 min-w-[240px]">
+                            <div
+                              className="max-w-[220px] md:max-w-[360px] text-xs leading-relaxed text-slate-600 whitespace-pre-wrap"
+                              title={detailsText}
+                              style={{ display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                            >
+                              {detailsText || <span className="text-zinc-300 italic">Sin detalles añadidos.</span>}
+                            </div>
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
                             <button onClick={() => updateGestionStatus(g.id, 'completado', g)} className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg mr-2 transition-colors" title="Aprobar y Ejecutar"><Check className="w-4 h-4"/></button>
                             <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -2654,11 +2688,6 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                   <AlertCircle className="w-3 h-3" /> Sin plaza
                                 </span>
                               )}
-                              {operationalStatus === 'activo' && (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded">
-                                  <CheckCircle className="w-3 h-3" /> Con plaza
-                                </span>
-                              )}
                               {operationalStatus === 'congelado' && (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
                                   <Snowflake className="w-3 h-3" /> Mantenimiento
@@ -2666,11 +2695,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               )}
                             </div>
 
-                            {assignedClasses.length === 0 ? (
-                              <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-orange-600 bg-orange-50 border border-orange-100 rounded px-2 py-1 inline-flex items-center gap-1">
-                                <AlertCircle className="w-3 h-3" /> Sin clase asignada
-                              </div>
-                            ) : (
+                            {assignedClasses.length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1">
                                 {assignedClasses.map(c => {
                                   const dayShort = getDayName(c.dayOfWeek).substring(0, 3);
@@ -2739,9 +2764,6 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               <option value="congelado">Congelado</option>
                               <option value="baja">Dar de Baja</option>
                             </select>
-                            {operationalStatus === 'sin_plaza' && (
-                              <p className="text-[9px] font-black uppercase tracking-widest text-orange-600 mt-2">Estado operativo: sin plaza</p>
-                            )}
                           </td>
                         </tr>
                         );

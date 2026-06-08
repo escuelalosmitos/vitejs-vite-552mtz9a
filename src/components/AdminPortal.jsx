@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -335,6 +335,24 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       .map(c => c.teacher)
       .filter(Boolean);
     return [...new Set(teacherNames)];
+  };
+
+  const getStudentAssignedClasses = (studentId) => {
+    if (!studentId) return [];
+    return allClasses.filter(c =>
+      (c.students || []).some(s => s.id === studentId)
+    );
+  };
+
+  const getStudentOperationalStatus = (student) => {
+    const administrativeStatus = student?.globalStatus || 'activo';
+    if (administrativeStatus === 'baja') return 'baja';
+    if (administrativeStatus === 'congelado') return 'congelado';
+
+    const assignedClasses = getStudentAssignedClasses(student?.id);
+    if (administrativeStatus === 'activo' && assignedClasses.length === 0) return 'sin_plaza';
+
+    return administrativeStatus;
   };
 
   const getTeacherEmail = (teacherName) => {
@@ -2548,13 +2566,19 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
                 <div className="flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
-                  {['activo', 'congelado', 'baja', 'sin_activar'].map((s) => (
+                  {[
+                    { id: 'activo', label: 'Activos' },
+                    { id: 'sin_plaza', label: 'Sin plaza' },
+                    { id: 'congelado', label: 'Congelados' },
+                    { id: 'baja', label: 'Bajas' },
+                    { id: 'sin_activar', label: 'Sin activar' }
+                  ].map((tab) => (
                     <button
-                      key={s}
-                      onClick={() => setFilterStatus(s)}
-                      className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${filterStatus === s ? 'bg-black text-white' : 'text-zinc-400 hover:text-black'}`}
+                      key={tab.id}
+                      onClick={() => setFilterStatus(tab.id)}
+                      className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${filterStatus === tab.id ? 'bg-black text-white' : 'text-zinc-400 hover:text-black'}`}
                     >
-                      {s === 'sin_activar' ? 'Sin Activar' : s + 's'}
+                      {tab.label}
                     </button>
                   ))}
                 </div>
@@ -2587,16 +2611,20 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                         if (filterStatus === 'sin_activar') {
                           return matchSearch && (s.claimed === false);
                         }
-                        const currentStatus = s.globalStatus || 'activo';
-                        const matchStatus = currentStatus === filterStatus;
-                        return matchSearch && matchStatus;
+
+                        const operationalStatus = getStudentOperationalStatus(s);
+                        return matchSearch && operationalStatus === filterStatus;
                       });
 
                       if (filtered.length === 0) {
                         return <tr><td colSpan="4" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
                       }
 
-                      return filtered.map(student => (
+                      return filtered.map(student => {
+                        const assignedClasses = getStudentAssignedClasses(student.id);
+                        const operationalStatus = getStudentOperationalStatus(student);
+
+                        return (
                         <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
                           <td className="p-4 overflow-hidden">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
@@ -2620,23 +2648,43 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               )}
                             </div>
 
-                            {(() => {
-                              const studentClasses = allClasses.filter(c => c.students && c.students.some(s => s.id === student.id && !s.isPaused));
-                              if (studentClasses.length === 0) return null;
-                              return (
-                                <div className="mt-2 flex flex-wrap gap-1">
-                                  {studentClasses.map(c => {
-                                    const dayShort = getDayName(c.dayOfWeek).substring(0, 3);
-                                    const timeShort = c.time.split(':')[0] + 'h';
-                                    return (
-                                      <span key={c.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-zinc-100 border border-zinc-200 text-zinc-500 rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap" title={`Profesor: ${c.teacher}`}>
-                                        <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              );
-                            })()}
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {operationalStatus === 'sin_plaza' && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-orange-700 bg-orange-50 border border-orange-100 px-2 py-0.5 rounded">
+                                  <AlertCircle className="w-3 h-3" /> Sin plaza
+                                </span>
+                              )}
+                              {operationalStatus === 'activo' && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded">
+                                  <CheckCircle className="w-3 h-3" /> Con plaza
+                                </span>
+                              )}
+                              {operationalStatus === 'congelado' && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
+                                  <Snowflake className="w-3 h-3" /> Mantenimiento
+                                </span>
+                              )}
+                            </div>
+
+                            {assignedClasses.length === 0 ? (
+                              <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-orange-600 bg-orange-50 border border-orange-100 rounded px-2 py-1 inline-flex items-center gap-1">
+                                <AlertCircle className="w-3 h-3" /> Sin clase asignada
+                              </div>
+                            ) : (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {assignedClasses.map(c => {
+                                  const dayShort = getDayName(c.dayOfWeek).substring(0, 3);
+                                  const timeShort = c.time.split(':')[0] + 'h';
+                                  const studentInClass = (c.students || []).find(s => s.id === student.id);
+                                  const isPausedInThisClass = studentInClass?.isPaused === true;
+                                  return (
+                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isPausedInThisClass ? 'bg-blue-50 border-blue-100 text-blue-600' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}`}>
+                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isPausedInThisClass ? ' · Reservada' : ''}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </td>
                           <td className="p-4 text-center">
                             <div className="flex items-center justify-center gap-2">
@@ -2681,6 +2729,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               value={student.globalStatus || 'activo'}
                               onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
                               className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[120px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
+                                operationalStatus === 'sin_plaza' ? 'bg-orange-50 border-orange-200 text-orange-700' :
                                 student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
                                 student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
                                 'bg-emerald-50 border-emerald-200 text-emerald-700'
@@ -2690,9 +2739,13 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               <option value="congelado">Congelado</option>
                               <option value="baja">Dar de Baja</option>
                             </select>
+                            {operationalStatus === 'sin_plaza' && (
+                              <p className="text-[9px] font-black uppercase tracking-widest text-orange-600 mt-2">Estado operativo: sin plaza</p>
+                            )}
                           </td>
                         </tr>
-                      ));
+                        );
+                      });
                     })()}
                   </tbody>
                 </table>

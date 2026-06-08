@@ -250,7 +250,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
       let validTicketsCount = 0;
       snapshot.forEach(doc => {
         const data = doc.data();
-        if (data.studentId === profile.id && !data.isUsed) {
+        const isMine = data.studentId === profile.id;
+        const isPending = !data.isUsed && !data.voided;
+        const isAlreadyValid = !data.validFrom || data.validFrom <= todayStr;
+        const isNotExpired = !data.validUntil || data.validUntil >= todayStr;
+
+        if (isMine && isPending && isAlreadyValid && isNotExpired) {
           validTicketsCount++;
         }
       });

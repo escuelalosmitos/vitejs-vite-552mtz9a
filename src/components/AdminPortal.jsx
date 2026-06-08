@@ -43,6 +43,29 @@ const isOperationalClass = (clase, todayStr = getTodayLocalString()) => {
 
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
+const TEACHER_COLOR_THEMES = [
+  { soft: '#eef2ff', border: '#818cf8', solid: '#4338ca', solidBorder: '#3730a3', text: '#312e81', muted: '#e0e7ff' },
+  { soft: '#ecfeff', border: '#22d3ee', solid: '#0891b2', solidBorder: '#0e7490', text: '#164e63', muted: '#cffafe' },
+  { soft: '#ecfdf5', border: '#34d399', solid: '#047857', solidBorder: '#065f46', text: '#064e3b', muted: '#d1fae5' },
+  { soft: '#fef3c7', border: '#f59e0b', solid: '#b45309', solidBorder: '#92400e', text: '#78350f', muted: '#fde68a' },
+  { soft: '#fff1f2', border: '#fb7185', solid: '#be123c', solidBorder: '#9f1239', text: '#881337', muted: '#ffe4e6' },
+  { soft: '#f5f3ff', border: '#a78bfa', solid: '#6d28d9', solidBorder: '#5b21b6', text: '#4c1d95', muted: '#ede9fe' },
+  { soft: '#fdf4ff', border: '#e879f9', solid: '#a21caf', solidBorder: '#86198f', text: '#701a75', muted: '#fae8ff' },
+  { soft: '#f0fdfa', border: '#2dd4bf', solid: '#0f766e', solidBorder: '#115e59', text: '#134e4a', muted: '#ccfbf1' }
+];
+
+const getTeacherColorTheme = (teacherName = 'Sin Asignar') => {
+  const cleanName = String(teacherName || 'Sin Asignar').trim();
+  if (!cleanName || cleanName === 'Sin Asignar') {
+    return { soft: '#f8fafc', border: '#94a3b8', solid: '#334155', solidBorder: '#1e293b', text: '#0f172a', muted: '#e2e8f0' };
+  }
+  let hash = 0;
+  for (let i = 0; i < cleanName.length; i++) {
+    hash = cleanName.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return TEACHER_COLOR_THEMES[Math.abs(hash) % TEACHER_COLOR_THEMES.length];
+};
+
 const generateTicketDates = () => {
   const now = new Date();
   let nextY = now.getFullYear();
@@ -2920,17 +2943,18 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
                         if (claseAsignada) {
                            const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
+                           const teacherTheme = getTeacherColorTheme(claseAsignada.teacher);
                            return (
-                              <div key={sala} className="bg-zinc-900 text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border border-zinc-800 group">
+                              <div key={sala} className="text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border group transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, borderColor: teacherTheme.solidBorder }}>
                                  <h3 className="font-black text-3xl uppercase tracking-tighter mb-1 opacity-20 absolute top-4 right-4">{sala.replace('Sala ', 'S')}</h3>
-                                 <h3 className="font-black text-xl uppercase tracking-widest mb-1 text-zinc-400">{sala}</h3>
+                                 <h3 className="font-black text-xl uppercase tracking-widest mb-1" style={{ color: teacherTheme.muted }}>{sala}</h3>
                                  <div className="flex-1 mt-2 z-10">
-                                    <span className="bg-blue-500 text-white px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Ocupada</span>
+                                    <span className="text-white px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest shadow-sm" style={{ background: 'rgba(255,255,255,.18)' }}>Ocupada</span>
                                     <h4 className="font-black text-2xl mt-3 tracking-tight">{claseAsignada.subject}</h4>
-                                    <p className="text-zinc-400 text-xs font-bold uppercase mt-1 tracking-widest flex items-center gap-1"><User className="w-3 h-3"/> Prof: {claseAsignada.teacher}</p>
+                                    <p className="text-xs font-bold uppercase mt-1 tracking-widest flex items-center gap-1" style={{ color: 'rgba(255,255,255,.78)' }}><User className="w-3 h-3"/> Prof: {claseAsignada.teacher}</p>
                                  </div>
-                                 <div className="mt-4 pt-4 border-t border-zinc-800 flex justify-between items-center z-10">
-                                    <span className="text-xs font-black text-zinc-300">Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-400' : 'text-emerald-400'}>{activeC}/{claseAsignada.capacity}</span></span>
+                                 <div className="mt-4 pt-4 border-t flex justify-between items-center z-10" style={{ borderColor: 'rgba(255,255,255,.22)' }}>
+                                    <span className="text-xs font-black" style={{ color: 'rgba(255,255,255,.86)' }}>Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-200' : 'text-emerald-200'}>{activeC}/{claseAsignada.capacity}</span></span>
                                     <div className="flex gap-2">
                                       <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>
                                       <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
@@ -2986,13 +3010,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                                       .filter(Boolean);
                                                    const visibleStudentNames = fixedActiveStudents.slice(0, 6);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
+                                                   const teacherTheme = getTeacherColorTheme(c.teacher);
 
                                                    return (
-                                                      <div key={c.id} className="bg-zinc-800 text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm hover:bg-black transition-colors" onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
+                                                      <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
                                                          <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}</div>
-                                                         <div className="text-[10px] text-zinc-400 font-bold truncate mt-1">Prof: {c.teacher}</div>
+                                                         <div className="text-[10px] font-bold truncate mt-1" style={{ color: 'rgba(255,255,255,.76)' }}>Prof: {c.teacher}</div>
                                                          {visibleStudentNames.length > 0 && (
-                                                            <div className="mt-2 pt-2 border-t border-zinc-700 text-[9px] text-zinc-300 font-bold leading-snug normal-case tracking-normal">
+                                                            <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: 'rgba(255,255,255,.22)', color: 'rgba(255,255,255,.82)' }}>
                                                                {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
                                                             </div>
                                                          )}
@@ -3024,12 +3049,13 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 ) : (
                   Object.entries(classesByTeacher).map(([teacher, classes]) => {
                     const isExpanded = expandedTeacher === teacher;
+                    const teacherTheme = getTeacherColorTheme(teacher);
                     return (
                       <div key={teacher} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
                         <button onClick={() => setExpandedTeacher(isExpanded ? null : teacher)} className="w-full p-5 bg-zinc-50 hover:bg-zinc-100 transition-colors flex justify-between items-center">
                           <div className="flex items-center gap-3">
-                            <div className="bg-black text-white p-2 rounded-lg"><User className="w-5 h-5"/></div>
-                            <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{teacher} ({classes.length} Clases)</h3>
+                            <div className="text-white p-2 rounded-lg" style={{ background: teacherTheme.solid }}><User className="w-5 h-5"/></div>
+                            <h3 className="font-black text-lg uppercase tracking-tight" style={{ color: teacherTheme.text }}>{teacher} ({classes.length} Clases)</h3>
                           </div>
                           {isExpanded ? <ChevronUp/> : <ChevronDown/>}
                         </button>
@@ -3039,8 +3065,9 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                             {classes.map(c => {
                               const activeC = (c.students || []).filter(s => !s.isPaused).length;
                               const isHibernated = activeC === 0;
+                              const teacherTheme = getTeacherColorTheme(c.teacher);
                               return (
-                                <div key={c.id} className={`p-4 rounded-xl border relative group ${isHibernated ? 'bg-zinc-50 border-dashed' : 'bg-white'}`}>
+                                <div key={c.id} className={`p-4 rounded-xl border-l-8 border relative group ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
                                   <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-2 right-2 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
                                     <Trash2 className="w-4 h-4"/>
                                   </button>
@@ -3050,8 +3077,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                     <span className="bg-zinc-100 p-1 rounded">{c.time}</span>
                                     {isPunctualClass(c) && <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Puntual {formatDateSpanish(c.date)}</span>}
                                   </div>
-                                  <div className="text-xs text-zinc-400 font-bold uppercase mt-1">{c.subject} • {c.sede} ({c.sala})</div>
-                                  <div className="text-right text-xs font-black mt-2">{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
+                                  <div className="text-xs font-bold uppercase mt-1" style={{ color: teacherTheme.text }}>{c.subject} • {c.sede} ({c.sala})</div>
+                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
                                   <div className="flex gap-2 mt-3">
                                     <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>
                                     <button onClick={() => setEditWebModal(c)} className={`flex-1 p-1 text-[10px] font-black uppercase rounded ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`}><Globe className="w-3 h-3 inline"/> Config</button>

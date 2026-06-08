@@ -3286,25 +3286,66 @@ ${body}`,
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Timer className="w-5 h-5 text-amber-600"/> Protocolo de Hora Muerta</h3>
               <p className="text-xs text-zinc-500 font-medium mb-4 leading-relaxed">
-                Define las tareas que aparecerán al profesor cuando todos los alumnos activos falten sin aviso suficiente y no sea la última clase del día. Escribe una tarea por línea.
+                Define las tareas que aparecerán al profesor cuando todos los alumnos activos falten sin aviso suficiente y no sea la última clase del día. Añade cada tarea de forma individual.
               </p>
-              <textarea
-                value={(settings.generalTasks || []).join('\n')}
-                onChange={e => setSettings({
-                  ...settings,
-                  generalTasks: e.target.value
-                    .split('\n')
-                    .map(task => task.trim())
-                    .filter(Boolean)
-                })}
-                placeholder={`Ordenar el aula y revisar material\nPreparar ejercicios personalizados\nActualizar notas de seguimiento\nRevisar repertorio de alumnos\nGrabar material didáctico breve`}
-                className="w-full p-5 bg-amber-50/30 border border-amber-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y"
-              />
+
+              <div className="flex flex-col sm:flex-row gap-2 mb-4">
+                <input
+                  id="deadHourTaskInput"
+                  type="text"
+                  placeholder="Ej: Preparar ejercicios personalizados para alumnos"
+                  className="flex-1 p-3 text-sm bg-amber-50/40 border border-amber-100 rounded-xl font-bold outline-none focus:border-amber-500 text-slate-700"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const val = e.currentTarget.value.trim();
+                      if (val) {
+                        const currentTasks = settings.generalTasks || [];
+                        const s = { ...settings, generalTasks: [...currentTasks, val] };
+                        setSettings(s);
+                        saveGlobalSettings(s);
+                        e.currentTarget.value = '';
+                      }
+                    }
+                  }}
+                />
+                <button onClick={() => {
+                  const input = document.getElementById('deadHourTaskInput');
+                  const val = input?.value.trim();
+                  if (val) {
+                    const currentTasks = settings.generalTasks || [];
+                    const s = { ...settings, generalTasks: [...currentTasks, val] };
+                    setSettings(s);
+                    saveGlobalSettings(s);
+                    input.value = '';
+                  }
+                }} className="bg-amber-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-amber-700 transition-colors flex items-center justify-center gap-2"><Plus className="w-4 h-4"/> Añadir</button>
+              </div>
+
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-2">
+                {(settings.generalTasks || []).length === 0 ? (
+                  <div className="p-4 bg-amber-50/50 border border-dashed border-amber-200 rounded-xl text-xs font-bold text-amber-700 uppercase tracking-widest text-center">
+                    No hay tareas configuradas. El TeacherPortal usará tareas básicas por defecto.
+                  </div>
+                ) : (
+                  (settings.generalTasks || []).map((task, i) => (
+                    <div key={`${task}-${i}`} className="flex justify-between items-center gap-3 p-3 text-xs bg-amber-50/40 border border-amber-100 rounded-xl">
+                      <span className="font-black uppercase tracking-widest text-slate-700 leading-relaxed">{task}</span>
+                      <button onClick={() => {
+                        const s = { ...settings, generalTasks: (settings.generalTasks || []).filter((_, idx) => idx !== i) };
+                        setSettings(s);
+                        saveGlobalSettings(s);
+                      }} className="text-red-500 hover:bg-red-50 p-1.5 rounded transition-colors shrink-0"><Trash2 className="w-4 h-4"/></button>
+                    </div>
+                  ))
+                )}
+              </div>
+
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-4">
                 <p className="text-[10px] font-bold text-amber-700 uppercase tracking-widest">
                   Tareas activas: {(settings.generalTasks || []).length}
                 </p>
-                <button onClick={() => saveGlobalSettings(settings)} className="bg-amber-600 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-700 transition-colors">Guardar Tareas</button>
+                <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-100 text-zinc-800 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-200 transition-colors">Guardar Ajustes</button>
               </div>
             </div>
 

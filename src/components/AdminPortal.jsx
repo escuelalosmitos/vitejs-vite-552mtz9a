@@ -26,6 +26,21 @@ const formatDateSpanish = (dateString) => {
   return date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
+const getTodayLocalString = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const isPunctualClass = (clase) => Boolean(clase?.date) || clase?.isRecurring === false;
+
+const isOperationalClass = (clase, todayStr = getTodayLocalString()) => {
+  if (!isPunctualClass(clase)) return true;
+  return Boolean(clase?.date) && clase.date >= todayStr;
+};
+
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
 const generateTicketDates = () => {
@@ -200,6 +215,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return tomorrow.getDate() === 1;
   }, []);
 
+  const todayStr = useMemo(() => getTodayLocalString(), []);
+
+  const operationalClasses = useMemo(() => {
+    return allClasses.filter(c => isOperationalClass(c, todayStr));
+  }, [allClasses, todayStr]);
+
+  const recurringClassesOnly = useMemo(() => {
+    return allClasses.filter(c => !isPunctualClass(c));
+  }, [allClasses]);
+
   // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const businessIntelligence = useMemo(() => {
     let totalIngresos = 0;
@@ -210,7 +235,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const porProfe = {};
     const porInstrumento = {};
 
-    const activeRecurring = allClasses.filter(c => !c.date);
+    const activeRecurring = recurringClassesOnly;
 
     activeRecurring.forEach(c => {
       const numAlumnos = (c.students || []).filter(s => !s.isPaused).length;
@@ -263,7 +288,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
-  }, [allClasses, settings]);
+  }, [recurringClassesOnly, settings]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -330,7 +355,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const getStudentTeachers = (studentId) => {
     if (!studentId) return [];
-    const teacherNames = allClasses
+    const teacherNames = recurringClassesOnly
       .filter(c => (c.students || []).some(s => s.id === studentId))
       .map(c => c.teacher)
       .filter(Boolean);
@@ -339,7 +364,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const getStudentAssignedClasses = (studentId) => {
     if (!studentId) return [];
-    return allClasses.filter(c =>
+    return recurringClassesOnly.filter(c =>
       (c.students || []).some(s => s.id === studentId)
     );
   };
@@ -365,7 +390,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
   };
 
-  const isPunctualClass = (clase) => Boolean(clase?.date) || clase?.isRecurring === false;
 
   const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
@@ -641,7 +665,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
           return;
         }
-        const targetClass = allClasses.find(c => c.id === requestedClass);
+        const targetClass = operationalClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
           alert(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
           return;
@@ -651,7 +675,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         let oldClasses = [];
 
         if (type === 'cambio_horario') {
-          oldClasses = allClasses.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
+          oldClasses = recurringClassesOnly.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
           for (let c of oldClasses) {
             const updatedList = c.students.filter(s => s.id !== studentId);
             if (c.refPath) {
@@ -809,7 +833,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
   const executeDirectClassChange = async (student, targetClass) => {
     if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
     try {
-      const oldClasses = allClasses.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
+      const oldClasses = recurringClassesOnly.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
       const displayName = student.useAlias && student.alias ? student.alias : student.name;
       const oldGroups = groupClassesByTeacher(oldClasses);
 
@@ -876,7 +900,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
     try {
       const { validFrom, validUntil } = generateImmediateGiftTicketDates();
-      const mainClass = allClasses.find(c => c.students && c.students.some(s => s.id === student.id));
+      const mainClass = recurringClassesOnly.find(c => c.students && c.students.some(s => s.id === student.id));
       const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
       const promises = [];
       const displayName = student.useAlias && student.alias ? student.alias : student.name;
@@ -971,7 +995,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     };
 
     SEDES.forEach(sede => {
-      const clasesSede = allClasses.filter(c => (c.sede || 'Tarragona') === sede && c.isWebVisible === true);
+      const clasesSede = recurringClassesOnly.filter(c => (c.sede || 'Tarragona') === sede && c.isWebVisible === true);
       const filteredWithSpots = clasesSede.filter(c => {
         const activeStudents = (c.students || []).filter(s => !s.isPaused).length;
         return (parseInt(c.capacity, 10) || 4) - activeStudents > 0;
@@ -1126,17 +1150,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     }
 
     // --- 2. Aviso de Solapamiento Físico de Sala ---
-    const collidingClasses = allClasses.filter(c => {
+    const collidingClasses = operationalClasses.filter(c => {
       if (c.sede !== newClassData.sede) return false;
       if (c.sala !== newClassData.sala) return false;
       if (c.time !== newClassData.time) return false;
 
       if (newClassData.isRecurring) {
-        if (c.isRecurring && c.dayOfWeek === dayKey) return true;
-        if (!c.isRecurring && new Date(c.date).getDay() === dayKey) return true; 
+        if (!isPunctualClass(c) && c.dayOfWeek === dayKey) return true;
+        if (isPunctualClass(c) && c.date && new Date(`${c.date}T00:00:00`).getDay() === dayKey) return true; 
       } else {
-        if (c.isRecurring && c.dayOfWeek === dayKey) return true;
-        if (!c.isRecurring && c.date === newClassData.specificDate) return true;
+        if (!isPunctualClass(c) && c.dayOfWeek === dayKey) return true;
+        if (isPunctualClass(c) && c.date === newClassData.specificDate) return true;
       }
       return false;
     });
@@ -1237,7 +1261,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
   const classesByTeacher = useMemo(() => {
     const grouped = {};
-    allClasses.forEach(c => {
+    operationalClasses.forEach(c => {
       const teacherName = c.teacher || 'Sin Asignar';
       if (!grouped[teacherName]) grouped[teacherName] = [];
       grouped[teacherName].push(c);
@@ -1246,17 +1270,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       grouped[t].sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
     });
     return grouped;
-  }, [allClasses]);
+  }, [operationalClasses]);
 
   const dangerClasses = useMemo(() => {
-    return allClasses.filter(c => {
+    return recurringClassesOnly.filter(c => {
       const activeCount = (c.students || []).filter(s => !s.isPaused).length;
       if (activeCount === 0) return true; 
       const cap = parseInt(c.capacity, 10) || 0;
       if (cap <= 1) return false; 
       return activeCount <= (cap / 2);
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
-  }, [allClasses]);
+  }, [recurringClassesOnly]);
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
@@ -1835,7 +1859,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     if (!changeClassModal) return null;
     const student = changeClassModal;
     const targetInstrument = selectedInstForChange || (student.instruments && student.instruments[0]);
-    const availableClasses = targetInstrument ? allClasses.filter(c => c.subject === targetInstrument && (c.students?.length || 0) < parseInt(c.capacity || 4)) : [];
+    const availableClasses = targetInstrument ? recurringClassesOnly.filter(c => c.subject === targetInstrument && (c.students?.length || 0) < parseInt(c.capacity || 4)) : [];
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
@@ -2865,7 +2889,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                      {SALAS.map(sala => {
                         const maxCapFisica = settings.roomCapacities?.[archSede]?.[sala] || 0;
-                        const claseAsignada = allClasses.find(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.time === archTime && c.sala === sala);
+                        const claseAsignada = recurringClassesOnly.find(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.time === archTime && c.sala === sala);
 
                         if (claseAsignada) {
                            const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
@@ -2924,7 +2948,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
                                     {SALAS.map(sala => {
-                                       const classesInSlot = allClasses.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.sala === sala && (c.time || '').startsWith(time.split(':')[0]));
+                                       const classesInSlot = recurringClassesOnly.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.sala === sala && (c.time || '').startsWith(time.split(':')[0]));
                                        return (
                                           <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
                                              {classesInSlot.length > 0 ? (
@@ -2994,7 +3018,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                     <Trash2 className="w-4 h-4"/>
                                   </button>
                                   
-                                  <div className="font-black text-sm uppercase pr-8">{getDayName(c.dayOfWeek)} <span className="bg-zinc-100 p-1 rounded">{c.time}</span></div>
+                                  <div className="font-black text-sm uppercase pr-8 flex items-center gap-2 flex-wrap">
+                                    <span>{getDayName(c.dayOfWeek)}</span>
+                                    <span className="bg-zinc-100 p-1 rounded">{c.time}</span>
+                                    {isPunctualClass(c) && <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Puntual {formatDateSpanish(c.date)}</span>}
+                                  </div>
                                   <div className="text-xs text-zinc-400 font-bold uppercase mt-1">{c.subject} • {c.sede} ({c.sala})</div>
                                   <div className="text-right text-xs font-black mt-2">{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
                                   <div className="flex gap-2 mt-3">

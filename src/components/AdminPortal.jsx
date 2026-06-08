@@ -525,7 +525,39 @@ ${body}`,
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
         alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores/alumno han sido avisados.`);
       }
+      else if (type === 'reactivar_plaza') {
+        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
+        const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        const groupedTeachers = groupClassesByTeacher(classesWithStudent);
+
+        for (let c of classesWithStudent) {
+          if (c.refPath) {
+            const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: false } : s);
+            await updateDoc(doc(db, c.refPath), { students: updatedList });
+          }
+        }
+
+        await sendGroupedTeacherSummary({
+          groupedClasses: groupedTeachers,
+          subjectBuilder: (group) => `Alumno reactivado: ${displayName}`,
+          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha reactivado su plaza y vuelve a estar activo en ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa aparecerá de nuevo como alumno activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail,
+          subject: `Confirmación de reactivación de plaza - Escuela Los Mitos`,
+          body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de reactivación de plaza ha sido tramitada correctamente.\n\nA partir de este momento, tu plaza vuelve a estar activa y podrás volver a asistir a clase y gestionar recuperaciones según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        alert(`✅ Plaza reactivada. El alumno vuelve a estar activo y los profesores/alumno han sido avisados.`);
+      }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
+        if (studentInfo?.globalStatus === 'congelado') {
+          alert(`⚠️ No se puede ejecutar este trámite.\n\n${displayName} tiene la plaza en mantenimiento/congelada. Primero debe aprobarse la reactivación de plaza.`);
+          return;
+        }
+
         if (type === 'recuperacion') {
           const currentTicketStats = ticketStatsByStudent[studentId] || { active: 0, committed: 0, free: 0 };
           if (currentTicketStats.free <= 0) {

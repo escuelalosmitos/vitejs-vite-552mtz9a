@@ -2749,12 +2749,26 @@ ${body}`,
                                        return (
                                           <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
                                              {classesInSlot.length > 0 ? (
-                                                classesInSlot.map(c => (
-                                                   <div key={c.id} className="bg-zinc-800 text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm hover:bg-black transition-colors" onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
-                                                      <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}</div>
-                                                      <div className="text-[10px] text-zinc-400 font-bold truncate mt-1">Prof: {c.teacher}</div>
-                                                   </div>
-                                                ))
+                                                classesInSlot.map(c => {
+                                                   const fixedActiveStudents = (c.students || [])
+                                                      .filter(s => !s.isPaused && !s.isRecovery)
+                                                      .map(s => s.name)
+                                                      .filter(Boolean);
+                                                   const visibleStudentNames = fixedActiveStudents.slice(0, 6);
+                                                   const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
+
+                                                   return (
+                                                      <div key={c.id} className="bg-zinc-800 text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm hover:bg-black transition-colors" onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
+                                                         <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}</div>
+                                                         <div className="text-[10px] text-zinc-400 font-bold truncate mt-1">Prof: {c.teacher}</div>
+                                                         {visibleStudentNames.length > 0 && (
+                                                            <div className="mt-2 pt-2 border-t border-zinc-700 text-[9px] text-zinc-300 font-bold leading-snug normal-case tracking-normal">
+                                                               {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
+                                                            </div>
+                                                         )}
+                                                      </div>
+                                                   );
+                                                })
                                              ) : (
                                                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                                                    <PlusCircle className="w-8 h-8 text-zinc-200" />

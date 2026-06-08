@@ -392,6 +392,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
+
+    if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionModal.type)) {
+      showToast('Con la plaza congelada no puedes gestionar recuperaciones, cambios ni ampliaciones hasta reactivar tu plaza.', 'error');
+      return;
+    }
     
     if (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) {
       showToast('Debes aceptar las condiciones de plazo marcando la casilla.', 'error');
@@ -606,7 +611,7 @@ END:VCALENDAR`;
   
   const pendingAdminGestiones = myGestiones.filter(g => 
     g.status === 'pendiente' && 
-    ['baja', 'mantenimiento', 'cambio_horario', 'ampliar_clases'].includes(g.type)
+    ['baja', 'mantenimiento', 'reactivar_plaza', 'cambio_horario', 'ampliar_clases'].includes(g.type)
   );
   const hasPendingAdminGestion = pendingAdminGestiones.length > 0;
 
@@ -625,8 +630,17 @@ END:VCALENDAR`;
   const committedRecoveryCount = pendingRecoveryGestiones.length + scheduledRecoveryGestiones.length;
   const availableRecoveryTickets = profile?.activeTickets || 0;
   const hasReachedRecoveryLimit = committedRecoveryCount >= availableRecoveryTickets;
+  const isStudentFrozen = profile?.globalStatus === 'congelado' || myClasses.some(c =>
+    (c.students || []).some(s => s.id === profile?.id && s.isPaused === true)
+  );
+  const frozenRestrictedGestionTypes = ['recuperacion', 'cambio_horario', 'ampliar_clases'];
+  const isAcademicGestionLocked = isStudentFrozen || hasPendingAdminGestion;
 
   const handleAdminGestionClick = (gestionPayload) => {
+    if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionPayload.type)) {
+      showToast('Con la plaza congelada no puedes solicitar cambios, ampliaciones ni recuperaciones hasta reactivarla.', 'error');
+      return;
+    }
     if (hasPendingAdminGestion) {
       showToast('Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.', 'error');
       return;
@@ -1346,8 +1360,12 @@ END:VCALENDAR`;
                 <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{profile.activeTickets || 0} Tickets</span>
               </div>
               <button 
-                disabled={!profile.activeTickets || hasReachedRecoveryLimit} 
+                disabled={isStudentFrozen || !profile.activeTickets || hasReachedRecoveryLimit} 
                 onClick={() => {
+                  if (isStudentFrozen) {
+                    showToast('Tus tickets se conservan, pero no puedes canjearlos mientras tu plaza esté congelada.', 'error');
+                    return;
+                  }
                   if (hasReachedRecoveryLimit) {
                     showToast('Ya tienes tantas recuperaciones solicitadas o programadas como tickets disponibles.', 'error');
                     return;
@@ -1358,14 +1376,16 @@ END:VCALENDAR`;
                     placeholder: 'Añade observaciones para el profesor (Opcional)...'
                   });
                 }}
-                className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 && !hasReachedRecoveryLimit ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 && !hasReachedRecoveryLimit && !isStudentFrozen ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
               >
-                {profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
+                {isStudentFrozen ? 'Tickets conservados · plaza congelada' : profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
               </button>
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">
-                  Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.
+                  {isStudentFrozen
+                    ? 'Tus tickets se mantienen guardados, pero no podrás gestionarlos ni recuperar clases hasta que reactives tu plaza.'
+                    : 'Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.'}
                 </p>
               </div>
             </div>
@@ -1618,44 +1638,59 @@ END:VCALENDAR`;
               </ul>
             </div>
 
+            {isStudentFrozen && (
+              <div className="bg-blue-50 border-2 border-blue-100 text-blue-900 p-5 rounded-2xl text-xs font-bold leading-relaxed shadow-sm">
+                <strong className="font-black uppercase tracking-widest text-[11px] block mb-2 flex items-center gap-2">
+                  <Snowflake className="w-4 h-4"/> Plaza en mantenimiento
+                </strong>
+                Mientras tu plaza esté congelada puedes consultar la app, leer avisos, jugar al trivial y conservar tus tickets, pero no puedes cambiar horario, ampliar clases ni canjear recuperaciones.
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button 
+                disabled={isAcademicGestionLocked}
                 onClick={() => handleAdminGestionClick({
                   type: 'cambio_horario', title: 'Cambiar Horario Fijo', icon: RefreshCcw, color: 'text-blue-500',
                   desc: 'Busca una plaza libre en otro grupo y solicita el cambio para el mes que viene.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isAcademicGestionLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isAcademicGestionLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isAcademicGestionLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Solicita otro día u hora</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible con plaza congelada' : 'Solicita otro día u hora'}</p>
               </button>
 
               <button 
+                disabled={isAcademicGestionLocked}
                 onClick={() => handleAdminGestionClick({
                   type: 'ampliar_clases', title: 'Añadir Otra Clase', icon: PlusCircle, color: 'text-emerald-500',
                   desc: 'Añade una hora extra o empieza con un nuevo instrumento grupal.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isAcademicGestionLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isAcademicGestionLocked ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${isAcademicGestionLocked ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Ampliar Mis Clases</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Apunta un nuevo instrumento</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible con plaza congelada' : 'Apunta un nuevo instrumento'}</p>
               </button>
 
               <button 
-                onClick={() => handleAdminGestionClick({
+                onClick={() => handleAdminGestionClick(isStudentFrozen ? {
+                  type: 'reactivar_plaza', title: 'Reactivar mi Plaza', icon: Snowflake, color: 'text-blue-500',
+                  desc: 'Solicita salir de mantenimiento para volver a asistir a clase y recuperar la operativa normal de tu plaza.',
+                  placeholder: 'Indica desde cuándo quieres reactivar tu plaza o cualquier observación para Administración...'
+                } : {
                   type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
                   desc: 'Congela tu plaza temporalmente por 15€/Mes. Esta gestión solo es posible un total de 2 meses al año. El alumno verá reactivada su cuota habitual tras dos meses de mantenimiento si no comunica nada mas en este periodo.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : isStudentFrozen ? 'border-blue-100 hover:border-blue-500' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-amber-500'}`}/></div>
-                <h3 className="font-black text-slate-800 uppercase tracking-tight">Cuota Mantenimiento</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Congela tu plaza temporalmente</p>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
+                <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Reactivar Plaza' : 'Cuota Mantenimiento'}</h3>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita salir de mantenimiento' : 'Congela tu plaza temporalmente'}</p>
               </button>
 
               <button 

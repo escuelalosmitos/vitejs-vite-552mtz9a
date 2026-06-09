@@ -248,18 +248,30 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const ticketsQuery = collectionGroup(db, 'tickets');
     const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
       let validTicketsCount = 0;
+      let futureSummerTicketsCount = 0;
+      let activeSummerTicketsCount = 0;
       snapshot.forEach(doc => {
         const data = doc.data();
         const isMine = data.studentId === profile.id;
         const isPending = !data.isUsed && !data.voided;
         const isAlreadyValid = !data.validFrom || data.validFrom <= todayStr;
         const isNotExpired = !data.validUntil || data.validUntil >= todayStr;
+        const isFuture = data.validFrom && data.validFrom > todayStr;
+        const isSummerTicket = data.isSummerTicket || data.recoveryPolicy === 'summer';
 
         if (isMine && isPending && isAlreadyValid && isNotExpired) {
           validTicketsCount++;
+          if (isSummerTicket) activeSummerTicketsCount++;
+        } else if (isMine && isPending && isFuture && isSummerTicket) {
+          futureSummerTicketsCount++;
         }
       });
-      setProfile(prev => prev ? { ...prev, activeTickets: validTicketsCount } : null);
+      setProfile(prev => prev ? {
+        ...prev,
+        activeTickets: validTicketsCount,
+        activeSummerTickets: activeSummerTicketsCount,
+        futureSummerTickets: futureSummerTicketsCount
+      } : null);
     });
 
     return () => {
@@ -704,7 +716,7 @@ END:VCALENDAR`;
             <div className="flex items-center gap-3 text-black mb-6"><FileText className="w-8 h-8" /><h2 className="text-xl font-black uppercase tracking-tight">Normativa</h2></div>
             <div className="space-y-4 text-sm text-zinc-600 font-medium">
               <p>1. <strong className="text-black">Preaviso de 16h:</strong> Para recuperar una clase, avisa con mín. 16 horas de antelación.</p>
-              <p>2. <strong className="text-black">Caducidad:</strong> Los tickets caducan al mes siguiente de la falta.</p>
+              <p>2. <strong className="text-black">Caducidad:</strong> Los tickets normales caducan al mes siguiente de la falta. Los tickets de verano generados en junio, julio y agosto se podrán gestionar de septiembre a diciembre.</p>
               <p>3. <strong className="text-black">Alta activa:</strong> Solo alumnos al corriente de pago pueden recuperar.</p>
               <p>4. <strong className="text-black">Causas justificadas:</strong> Las recuperaciones solo se concederán por motivos de salud, trabajo o estudios.</p>
               <p>5. <strong className="text-black">Límite de recuperación:</strong> Las clases de recuperación no se pueden volver a recuperar en caso de nueva falta.</p>
@@ -1362,7 +1374,12 @@ END:VCALENDAR`;
             <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg flex items-center gap-2"><Ticket className="w-5 h-5 text-amber-500"/> Recuperaciones</h3>
-                <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{profile.activeTickets || 0} Tickets</span>
+                <div className="flex flex-col items-end gap-1">
+                  <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{profile.activeTickets || 0} Tickets</span>
+                  {profile.futureSummerTickets > 0 && (
+                    <span className="bg-sky-100 text-sky-700 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{profile.futureSummerTickets} verano · desde septiembre</span>
+                  )}
+                </div>
               </div>
               <button 
                 disabled={isStudentFrozen || !profile.activeTickets || hasReachedRecoveryLimit} 
@@ -1390,7 +1407,9 @@ END:VCALENDAR`;
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">
                   {isStudentFrozen
                     ? 'Tus tickets se mantienen guardados, pero no podrás gestionarlos ni recuperar clases hasta que reactives tu plaza.'
-                    : 'Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.'}
+                    : profile.futureSummerTickets > 0
+                      ? 'Tienes tickets especiales de verano guardados. No se podrán gestionar hasta septiembre y estarán disponibles hasta diciembre.'
+                      : 'Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.'}
                 </p>
               </div>
             </div>

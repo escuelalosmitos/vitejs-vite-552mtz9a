@@ -389,6 +389,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           total: 0,
           active: 0,
           future: 0,
+          summerActive: 0,
+          summerFuture: 0,
           used: 0,
           expired: 0,
           pending: 0,
@@ -406,14 +408,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const studentStats = ensureStudentStats(ticket.studentId);
       studentStats.total += 1;
 
-      if (ticket.isUsed) {
+      const isSummerTicket = ticket.isSummerTicket || ticket.recoveryPolicy === 'summer';
+
+      if (ticket.isUsed || ticket.voided) {
         studentStats.used += 1;
       } else if (ticket.validUntil && ticket.validUntil < today) {
         studentStats.expired += 1;
       } else if (ticket.validFrom && ticket.validFrom > today) {
         studentStats.future += 1;
+        if (isSummerTicket) studentStats.summerFuture += 1;
       } else {
         studentStats.active += 1;
+        if (isSummerTicket) studentStats.summerActive += 1;
       }
     });
 
@@ -614,6 +620,47 @@ ${body}`,
     return classesWithStudent.filter(c => c.refPath).length;
   };
 
+  const resetStudentTrivia = async (studentId) => {
+    if (!studentId) return;
+    await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+      triviaPoints: 0,
+      triviaPointsQuarterly: 0,
+      triviaPointsAnnual: 0,
+      triviaStreak: 0,
+      triviaVictories: 0
+    });
+  };
+
+  const getTicketStatsForDate = (studentId, targetDate, excludeGestionId = null) => {
+    const today = new Date().toISOString().split('T')[0];
+    const dateToCheck = targetDate || today;
+    const activeForDate = allTickets.filter(t =>
+      t.studentId === studentId &&
+      !t.isUsed &&
+      !t.voided &&
+      (!t.validFrom || t.validFrom <= dateToCheck) &&
+      (!t.validUntil || t.validUntil >= dateToCheck)
+    );
+
+    const committed = gestiones.filter(g =>
+      g.studentId === studentId &&
+      g.id !== excludeGestionId &&
+      g.type === 'recuperacion' &&
+      (
+        g.status === 'pendiente' ||
+        (g.status === 'completado' && g.recoveryDate && g.recoveryDate >= today)
+      )
+    ).length;
+
+    const summerActive = activeForDate.filter(t => t.isSummerTicket || t.recoveryPolicy === 'summer').length;
+    return {
+      active: activeForDate.length,
+      summerActive,
+      committed,
+      free: Math.max(activeForDate.length - committed, 0)
+    };
+  };
+
   const resetStudentTickets = async (student) => {
     if (!student?.id) return;
 
@@ -674,6 +721,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
       if (type === 'baja') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
+        await resetStudentTrivia(studentId);
         const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
         let borradas = 0;
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
@@ -700,7 +748,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         });
 
         await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
-        alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}.`);
+        alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
@@ -763,9 +811,15 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         }
 
         if (type === 'recuperacion') {
-          const currentTicketStats = ticketStatsByStudent[studentId] || { active: 0, committed: 0, free: 0 };
-          if (currentTicketStats.free <= 0) {
-            alert(`⚠️ No se puede aprobar esta recuperación.\n\n${displayName} no tiene tickets libres ahora mismo.\n\nTickets activos: ${currentTicketStats.active}\nRecuperaciones comprometidas: ${currentTicketStats.committed}\nTickets libres: ${currentTicketStats.free}`);
+          const recoveryTicketStats = getTicketStatsForDate(studentId, recoveryDate, gestionId);
+          if (recoveryTicketStats.free <= 0) {
+            alert(`⚠️ No se puede aprobar esta recuperación.
+
+${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).
+
+Tickets válidos ese día: ${recoveryTicketStats.active}
+Recuperaciones comprometidas: ${recoveryTicketStats.committed}
+Tickets libres: ${recoveryTicketStats.free}`);
             return;
           }
         }
@@ -899,6 +953,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
       if (newStatus === 'baja') {
+        await resetStudentTrivia(studentId);
         const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
         const classesWithThisStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
         const groupedTeachers = groupClassesByTeacher(classesWithThisStudent);
@@ -921,7 +976,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}.`);
+        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       } else if (newStatus === 'congelado') {
         const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, true);
         alert(`❄️ Estado de ${studentName} cambiado a CONGELADO. Plaza marcada como mantenimiento en ${clasesActualizadas} clase(s).`);
@@ -2867,7 +2922,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                 const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, future: 0, used: 0, expired: 0, pending: 0, scheduled: 0, committed: 0, free: 0 };
                                 const hasOvercommittedTickets = ticketStats.committed > ticketStats.active;
                                 return (
-                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${hasOvercommittedTickets ? 'bg-red-100 text-red-800' : ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos hoy: ${ticketStats.active} · Libres reales: ${ticketStats.free} · Comprometidos: ${ticketStats.committed} (${ticketStats.pending} pendientes + ${ticketStats.scheduled} programados) · Futuros: ${ticketStats.future} · Usados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
+                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${hasOvercommittedTickets ? 'bg-red-100 text-red-800' : ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos hoy: ${ticketStats.active} · Verano activos: ${ticketStats.summerActive || 0} · Libres reales: ${ticketStats.free} · Comprometidos: ${ticketStats.committed} (${ticketStats.pending} pendientes + ${ticketStats.scheduled} programados) · Futuros: ${ticketStats.future} · Verano futuros: ${ticketStats.summerFuture || 0} · Usados/anulados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
                                     <Ticket className="w-3 h-3"/> {ticketStats.free}/{ticketStats.active}
                                   </span>
                                 );

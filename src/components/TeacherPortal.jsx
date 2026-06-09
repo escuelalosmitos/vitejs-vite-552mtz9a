@@ -42,6 +42,43 @@ const normalizeNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+const isPunctualClass = (clase) => Boolean(clase?.date) || clase?.isRecurring === false;
+
+const parseTimeToMinutes = (time = '') => {
+  const [hoursRaw, minutesRaw = '0'] = String(time || '').split(':');
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return (hours * 60) + minutes;
+};
+
+const formatMinutesToTime = (totalMinutes) => {
+  if (!Number.isFinite(totalMinutes)) return '';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const getClassTimeRange = (time, duration = 60) => {
+  const start = parseTimeToMinutes(time);
+  const classDuration = Number(String(duration || 60).replace(',', '.')) || 60;
+  if (start === null) return null;
+  return { start, end: start + classDuration };
+};
+
+const isClassFullyCoveredBySlot = (classData = {}, slot = {}) => {
+  const range = getClassTimeRange(classData.time, classData.duration);
+  const slotStart = parseTimeToMinutes(slot.start);
+  const slotEnd = parseTimeToMinutes(slot.end);
+  if (!range || slotStart === null || slotEnd === null) return false;
+  return range.start >= slotStart && range.end <= slotEnd;
+};
+
+const getClassEndTime = (time, duration = 60) => {
+  const range = getClassTimeRange(time, duration);
+  return range ? formatMinutesToTime(range.end) : '';
+};
+
 const generateTicketDates = (dateString) => {
   if (!dateString) return { validFrom: '', validUntil: '' };
   const [y, m] = dateString.split('-').map(Number);
@@ -433,11 +470,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const handleDeleteSlot = async (day, index) => {
     const updatedDaySlots = availability[day].filter((_, i) => i !== index);
     
-    const classesThisDay = recurringClasses.filter(c => c.dayOfWeek === parseInt(day));
+    const classesThisDay = recurringClasses.filter(c => !isPunctualClass(c) && c.dayOfWeek === parseInt(day));
     for(let c of classesThisDay) {
-       const isCovered = updatedDaySlots.some(slot => c.time >= slot.start && c.time <= slot.end);
+       const isCovered = updatedDaySlots.some(slot => isClassFullyCoveredBySlot(c, slot));
        if(!isCovered) {
-          return window.alert(`⚠️ ACCIÓN BLOQUEADA:\n\nTienes una clase oficial de ${c.subject} a las ${c.time}h que se quedaría fuera de tu horario.\n\nPara eliminar esta franja, primero debes hablar con Coordinación para que muevan esa clase.`);
+          const classEndTime = getClassEndTime(c.time, c.duration);
+          return window.alert(`⚠️ ACCIÓN BLOQUEADA:\n\nTienes una clase oficial de ${c.subject} de ${c.time}h a ${classEndTime || 'la hora de fin'}h que se quedaría fuera de tu horario.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\nPara eliminar esta franja, primero debes hablar con Coordinación para que muevan esa clase.`);
        }
     }
 

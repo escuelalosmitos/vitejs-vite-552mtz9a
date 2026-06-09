@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
+const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "tarea_manual"]);
 
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
@@ -565,6 +567,97 @@ ${body}`,
 
 
 
+  const isAdminCopyGestionType = (gestion = {}) => {
+    const type = gestion?.type || 'tarea_manual';
+    return ADMIN_COPY_GESTION_TYPES.has(type) || gestion?.source === 'manual_admin';
+  };
+
+  const getGestionTypeLabel = (type = 'tarea_manual') => String(type || 'tarea_manual').replace(/_/g, ' ');
+
+  const getGestionClassLine = (gestion = {}) => {
+    if (gestion.requestedClassLine) return gestion.requestedClassLine;
+    if (gestion.requestedClass) {
+      const c = allClasses.find(clase => clase.id === gestion.requestedClass);
+      if (c) return formatClassLine(c);
+      return gestion.requestedClass;
+    }
+    if (gestion.studentId) {
+      const assigned = getStudentAssignedClasses(gestion.studentId).filter(c => !isPunctualClass(c));
+      if (assigned.length > 0) return assigned.map(c => formatClassLine(c)).join('\n');
+    }
+    return '';
+  };
+
+  const sendAdminGestionEmail = async ({ gestion, phase = 'recibida', status = 'pendiente', executionNotes = '' }) => {
+    if (!gestion || !isAdminCopyGestionType(gestion)) return false;
+
+    const typeLabel = getGestionTypeLabel(gestion.type || 'tarea_manual');
+    const phaseLabel = phase === 'ejecutada'
+      ? (status === 'rechazado' ? 'Gestión rechazada' : 'Gestión ejecutada')
+      : 'Nueva gestión';
+    const studentInfo = gestion.studentId ? students.find(s => s.id === gestion.studentId) : null;
+    const aliasLine = studentInfo?.alias ? `NOMBRE_REAL_ALUMNO: ${studentInfo.alias}\n` : '';
+    const classLine = getGestionClassLine(gestion);
+    const solicitud = gestion.date ? new Date(gestion.date).toLocaleString('es-ES') : '';
+    const ejecucion = phase === 'ejecutada' ? new Date().toLocaleString('es-ES') : '';
+
+    const body = `TIPO_GESTION: ${typeLabel}
+ESTADO: ${status}
+FASE: ${phaseLabel}
+ALUMNO: ${gestion.studentName || ''}
+${aliasLine}EMAIL: ${gestion.studentEmail || studentInfo?.email || ''}
+PROFESOR: ${gestion.requestedTeacher || ''}
+CLASE: ${classLine}
+MES_OBJETIVO: ${gestion.targetMonth || ''}
+FECHA_RECUPERACION: ${gestion.recoveryDate ? formatDateSpanish(gestion.recoveryDate) : ''}
+FECHA_SOLICITUD: ${solicitud}
+FECHA_EJECUCION: ${ejecucion}
+EJECUTADO_POR: ${phase === 'ejecutada' ? (user?.email || 'admin') : ''}
+ID_GESTION: ${gestion.id || ''}
+ORIGEN: ${gestion.source === 'manual_admin' ? 'Tarea manual AdminPortal' : 'Portal del alumno'}
+
+DETALLES:
+${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes ? `\n\nNOTAS_EJECUCION:\n${executionNotes}` : ''}`;
+
+    return sendNotificationEmail({
+      to: ADMIN_GESTION_EMAIL,
+      subject: `[${phaseLabel}] ${typeLabel} - ${gestion.studentName || 'Tarea manual'}`,
+      body,
+      type: 'notificacion_email'
+    });
+  };
+
+  const finalizeGestionStatus = async (gestionId, status, gestionData = null, executionNotes = '') => {
+    const now = new Date().toISOString();
+    const baseUpdate = { status };
+
+    if (gestionData && isAdminCopyGestionType(gestionData)) {
+      const alreadySent = status === 'pendiente'
+        ? gestionData.adminCopySentAt
+        : gestionData.adminExecutionCopySentAt;
+      if (!alreadySent) {
+        const sent = await sendAdminGestionEmail({
+          gestion: { ...gestionData, id: gestionId },
+          phase: status === 'pendiente' ? 'recibida' : 'ejecutada',
+          status,
+          executionNotes
+        });
+        if (sent) {
+          if (status === 'pendiente') {
+            baseUpdate.adminCopySentAt = now;
+            baseUpdate.adminCopyRecipient = ADMIN_GESTION_EMAIL;
+          } else {
+            baseUpdate.adminExecutionCopySentAt = now;
+            baseUpdate.adminExecutionRecipient = ADMIN_GESTION_EMAIL;
+            baseUpdate.adminExecutionStatus = status;
+          }
+        }
+      }
+    }
+
+    await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), baseUpdate);
+  };
+
   const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, studentName, studentEmail, classData }) => {
     if (!createdNow || !studentId || !classData || isPunctualClass(classData)) return false;
     if (existingStudent?.firstClassEmailSentAt || existingStudent?.welcomeEmailSentAt) return false;
@@ -728,7 +821,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     try {
       if (status !== 'completado' || !gestionData) {
-        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status });
+        await finalizeGestionStatus(gestionId, status, gestionData);
         alert(`Trámite marcado como ${status.toUpperCase()}.`);
         return;
       }
@@ -770,7 +863,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de baja ha sido tramitada correctamente.\n\nA partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        await finalizeGestionStatus(gestionId, 'completado', gestionData);
         alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
@@ -797,7 +890,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de mantenimiento/congelación de plaza ha sido tramitada correctamente.\n\nTu plaza queda en mantenimiento según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        await finalizeGestionStatus(gestionId, 'completado', gestionData);
         alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores/alumno han sido avisados.`);
       }
       else if (type === 'reactivar_plaza') {
@@ -824,7 +917,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de reactivación de plaza ha sido tramitada correctamente.\n\nA partir de este momento, tu plaza vuelve a estar activa y podrás volver a asistir a clase y gestionar recuperaciones según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        await finalizeGestionStatus(gestionId, 'completado', gestionData);
         alert(`✅ Plaza reactivada. El alumno vuelve a estar activo y los profesores/alumno han sido avisados.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
@@ -849,7 +942,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
 
         if (!requestedClass) {
           alert("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se archivará el ticket.");
-          await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+          await finalizeGestionStatus(gestionId, 'completado', gestionData);
           return;
         }
         const targetClass = operationalClasses.find(c => c.id === requestedClass);
@@ -884,7 +977,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
         await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
-        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        await finalizeGestionStatus(gestionId, 'completado', gestionData);
         logMessage += `✅ Trámite archivado con éxito.\n`;
 
         if (type === 'cambio_horario') {
@@ -950,7 +1043,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
 
         alert(logMessage);
       } else {
-        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), { status: 'completado' });
+        await finalizeGestionStatus(gestionId, 'completado', gestionData);
         alert("✅ Trámite genérico archivado correctamente.");
       }
     } catch (error) {
@@ -1642,7 +1735,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
       setSaving(true);
       try {
         const taskId = `manual-${Date.now()}`;
-        await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), {
+        const taskPayload = {
           type: form.type || 'tarea_manual',
           title,
           details,
@@ -1652,9 +1745,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
           source: 'manual_admin',
           status: 'pendiente',
           date: new Date().toISOString()
-        });
+        };
+        await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
+        await finalizeGestionStatus(taskId, 'pendiente', { ...taskPayload, id: taskId });
 
-        alert('✅ Tarea manual añadida a la bandeja.');
+        alert('✅ Tarea manual añadida a la bandeja y copiada a gestiones@.');
         setManualTaskModal(false);
       } catch (error) {
         alert('❌ Error al crear la tarea manual: ' + error.message);

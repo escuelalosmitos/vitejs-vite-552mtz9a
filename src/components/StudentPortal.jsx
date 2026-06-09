@@ -3,6 +3,8 @@ import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, Alert
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
+const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario"]);
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
@@ -335,6 +337,54 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setAbsenceModal({ clase, ...info });
   };
 
+  const formatClassLineForAdminCopy = (clase) => {
+    if (!clase) return '';
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''}${clase.teacher ? ` · Prof. ${clase.teacher}` : ''}`;
+  };
+
+  const sendAdminGestionCopy = async ({ gestionId, payload, selectedClass = null, phase = 'recibida', status = 'pendiente' }) => {
+    if (!payload || !ADMIN_COPY_GESTION_TYPES.has(payload.type)) return false;
+
+    const typeLabel = (payload.type || 'gestion').replace(/_/g, ' ');
+    const phaseLabel = phase === 'ejecutada' ? 'Gestión ejecutada' : 'Nueva gestión';
+    const classLine = payload.requestedClassLine || formatClassLineForAdminCopy(selectedClass) || payload.requestedClass || '';
+    const requestedDate = payload.recoveryDate ? formatDateSpanish(payload.recoveryDate) : '';
+    const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
+
+    const body = `TIPO_GESTION: ${typeLabel}
+ESTADO: ${status}
+FASE: ${phaseLabel}
+ALUMNO: ${payload.studentName || ''}
+EMAIL: ${payload.studentEmail || ''}
+CLASE_SOLICITADA: ${classLine}
+FECHA_RECUPERACION: ${requestedDate}
+MES_OBJETIVO: ${payload.targetMonth || ''}
+FECHA_SOLICITUD: ${submittedAt}
+ID_GESTION: ${gestionId || ''}
+ORIGEN: Portal del alumno
+
+DETALLES:
+${payload.details || payload.title || 'Sin detalles añadidos.'}`;
+
+    try {
+      await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          type: 'notificacion_email',
+          to: ADMIN_GESTION_EMAIL,
+          subject: `[${phaseLabel}] ${typeLabel} - ${payload.studentName || 'Alumno'}`,
+          body
+        })
+      });
+      return true;
+    } catch (e) {
+      console.warn('No se pudo enviar copia interna de gestión', e);
+      return false;
+    }
+  };
+
   const confirmAbsence = async (wantsTicket) => {
     if (!absenceModal || !profile || isSendingAbsence) return;
     
@@ -436,6 +486,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
         title: gestionModal.title,
         details: gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
+        requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
+        requestedTeacher: selectedNewClass?.teacher || '',
         recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, 
         targetMonth: (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
         isLateRequest: !isExemptFromLateRule && timeRules.isLate,
@@ -444,6 +496,15 @@ export default function StudentPortal({ user, logout, db, appId }) {
       };
 
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
+      if (ADMIN_COPY_GESTION_TYPES.has(payload.type)) {
+        const sent = await sendAdminGestionCopy({ gestionId, payload, selectedClass: selectedNewClass, phase: 'recibida', status: 'pendiente' });
+        if (sent) {
+          await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
+            adminCopySentAt: new Date().toISOString(),
+            adminCopyRecipient: ADMIN_GESTION_EMAIL
+          });
+        }
+      }
       setGestionModal(null);
       setGestionText('');
       setSelectedNewClass(null);

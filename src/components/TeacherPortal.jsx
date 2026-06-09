@@ -79,9 +79,25 @@ const getClassEndTime = (time, duration = 60) => {
   return range ? formatMinutesToTime(range.end) : '';
 };
 
+const isSummerRecoveryDate = (dateString) => {
+  if (!dateString) return false;
+  const month = Number(dateString.split('-')[1]);
+  return month >= 6 && month <= 8;
+};
+
 const generateTicketDates = (dateString) => {
-  if (!dateString) return { validFrom: '', validUntil: '' };
+  if (!dateString) return { validFrom: '', validUntil: '', recoveryPolicy: 'standard', isSummerTicket: false };
   const [y, m] = dateString.split('-').map(Number);
+
+  if (m >= 6 && m <= 8) {
+    return {
+      validFrom: `${y}-09-01`,
+      validUntil: `${y}-12-31`,
+      recoveryPolicy: 'summer',
+      isSummerTicket: true
+    };
+  }
+
   let nextY = y;
   let nextM = m + 1;
   if (nextM > 12) {
@@ -91,7 +107,7 @@ const generateTicketDates = (dateString) => {
   const validFrom = `${nextY}-${String(nextM).padStart(2, '0')}-01`;
   const lastDay = new Date(nextY, nextM, 0).getDate();
   const validUntil = `${nextY}-${String(nextM).padStart(2, '0')}-${lastDay}`;
-  return { validFrom, validUntil };
+  return { validFrom, validUntil, recoveryPolicy: 'standard', isSummerTicket: false };
 };
 
 const getPreviousMonthStr = (currentMonthStr) => { 
@@ -380,7 +396,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubTickets = onSnapshot(ticketsRef, (snapshot) => {
-      const tks = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+      const tks = snapshot.docs.map(docSnap => ({ id: docSnap.id, refPath: docSnap.ref.path, ...docSnap.data() }));
       setTickets(tks);
       ticketsLoaded = true;
       checkLoading();
@@ -1029,27 +1045,40 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const ticketPromises = currentSession.students.map(async (s) => {
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
         if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !s.isPaused) {
+          const isSummerTicket = isSummerRecoveryDate(date);
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
-          if (monthTickets.length < 2) {
-            const { validFrom, validUntil } = generateTicketDates(date);
+          if (isSummerTicket || monthTickets.length < 2) {
+            const { validFrom, validUntil, recoveryPolicy } = generateTicketDates(date);
             const ticketId = Date.now().toString() + '-' + s.id;
             await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
               studentId: s.id,
               studentName: s.name,
               subject: currentSession.subject,
               originalDate: date,
+              originalMonth: currentMonth,
               validFrom,
               validUntil,
               isUsed: false,
+              recoveryPolicy,
+              isSummerTicket,
               createdAt: new Date().toISOString()
             });
           }
         }
         
         if (s.isRecovery && s.status === 'present') {
-          const pending = tickets.filter(t => t.studentId === s.id && !t.isUsed).sort((a, b) => new Date(a.validFrom) - new Date(b.validFrom));
+          const pending = tickets.filter(t =>
+            t.studentId === s.id &&
+            !t.isUsed &&
+            !t.voided &&
+            (!t.validFrom || t.validFrom <= date) &&
+            (!t.validUntil || t.validUntil >= date)
+          ).sort((a, b) => new Date(a.validFrom || '1900-01-01') - new Date(b.validFrom || '1900-01-01'));
           if (pending.length > 0) {
-            await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', pending[0].id), { isUsed: true }, { merge: true });
+            const ticketRef = pending[0].refPath
+              ? doc(db, pending[0].refPath)
+              : doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', pending[0].id);
+            await setDoc(ticketRef, { isUsed: true, usedAt: new Date().toISOString(), usedOn: date }, { merge: true });
           }
         }
       });

@@ -41,6 +41,41 @@ const isOperationalClass = (clase, todayStr = getTodayLocalString()) => {
   return Boolean(clase?.date) && clase.date >= todayStr;
 };
 
+const parseTimeToMinutes = (time = '') => {
+  const [hoursRaw, minutesRaw = '0'] = String(time || '').split(':');
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return (hours * 60) + minutes;
+};
+
+const formatMinutesToTime = (totalMinutes) => {
+  if (!Number.isFinite(totalMinutes)) return '';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const getClassTimeRange = (time, duration = 60) => {
+  const start = parseTimeToMinutes(time);
+  const classDuration = Number(String(duration || 60).replace(',', '.')) || 60;
+  if (start === null) return null;
+  return { start, end: start + classDuration };
+};
+
+const isClassFullyCoveredBySlot = (classData = {}, slot = {}) => {
+  const range = getClassTimeRange(classData.time, classData.duration);
+  const slotStart = parseTimeToMinutes(slot.start);
+  const slotEnd = parseTimeToMinutes(slot.end);
+  if (!range || slotStart === null || slotEnd === null) return false;
+  return range.start >= slotStart && range.end <= slotEnd;
+};
+
+const getClassEndTime = (time, duration = 60) => {
+  const range = getClassTimeRange(time, duration);
+  return range ? formatMinutesToTime(range.end) : '';
+};
+
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
 const TEACHER_DEFAULT_COLORS = [
@@ -1221,12 +1256,13 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     const teacherKey = newClassData.teacher.toLowerCase();
     const dayKey = newClassData.isRecurring ? parseInt(newClassData.dayOfWeek) : new Date(newClassData.specificDate).getDay();
     const classTime = newClassData.time;
+    const classEndTime = getClassEndTime(classTime, newClassData.duration);
     
     // --- 1. Aviso de Disponibilidad del Profesor ---
     const teacherSlots = availabilities[teacherKey]?.[dayKey.toString()] || [];
-    const isCovered = teacherSlots.some(slot => classTime >= slot.start && classTime < slot.end);
+    const isCovered = teacherSlots.some(slot => isClassFullyCoveredBySlot(newClassData, slot));
     if (!isCovered) {
-      const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} a las ${classTime}h.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
+      const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
       if (!confirmForce) return; 
     }
 

@@ -58,6 +58,12 @@ const formatDateSpanish = (dateString) => {
   return dateString.split('-').reverse().join('/');
 };
 
+const getSafeAnnouncementUrl = (url = '') => {
+  const cleanUrl = String(url || '').trim();
+  if (!/^https?:\/\//i.test(cleanUrl)) return '';
+  return cleanUrl;
+};
+
 const getNextClassInfo = (dayOfWeek, timeStr) => {
   const now = new Date();
   const targetDay = parseInt(dayOfWeek);
@@ -1694,6 +1700,11 @@ END:VCALENDAR`;
                     <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
                     <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
                     <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap">{ann.content}</p>
+                    {getSafeAnnouncementUrl(ann.url) && (
+                      <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
+                        <LinkIcon className="w-4 h-4"/> Abrir enlace
+                      </a>
+                    )}
                   </div>
                 ))}
               </div>

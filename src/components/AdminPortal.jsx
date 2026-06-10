@@ -28,6 +28,13 @@ const formatDateSpanish = (dateString) => {
   return date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
+const normalizeAnnouncementUrl = (url = '') => {
+  const cleanUrl = String(url || '').trim();
+  if (!cleanUrl) return '';
+  if (!/^https?:\/\//i.test(cleanUrl)) return null;
+  return cleanUrl;
+};
+
 const getTodayLocalString = () => {
   const d = new Date();
   const y = d.getFullYear();
@@ -194,7 +201,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
   const [filterStatus, setFilterStatus] = useState('activo');
-  const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '' });
+  const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '', url: '' });
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
@@ -1233,12 +1240,18 @@ Tickets libres: ${recoveryTicketStats.free}`);
   };
 
   const postAnnouncement = async () => {
-    if (!newAnnounce.title || !newAnnounce.content) return alert('Rellena todos los campos');
+    if (!newAnnounce.title || !newAnnounce.content) return alert('Rellena titular y detalles del aviso');
+    const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
+    if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
     const id = Date.now().toString();
-    await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { 
-      ...newAnnounce, date: new Date().toISOString().split('T')[0] 
-    });
-    setNewAnnounce({ title: '', content: '' });
+    const payload = {
+      title: newAnnounce.title.trim(),
+      content: newAnnounce.content.trim(),
+      date: new Date().toISOString().split('T')[0]
+    };
+    if (cleanUrl) payload.url = cleanUrl;
+    await setDoc(doc(db, 'artifacts', appId, 'announcements', id), payload);
+    setNewAnnounce({ title: '', content: '', url: '' });
     alert('Aviso publicado.');
   };
 
@@ -3491,6 +3504,8 @@ Tickets libres: ${recoveryTicketStats.free}`);
               <div className="space-y-4">
                 <input type="text" placeholder="Titular impactante..." value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-sm" />
                 <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
+                <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
                 <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
                   <Megaphone className="w-4 h-4"/> Publicar Aviso
                 </button>
@@ -3503,6 +3518,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
                     <h4 className="font-black text-slate-800 text-md leading-tight">{ann.title}</h4>
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">{formatDateSpanish(ann.date)}</p>
                     <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>
+                    {normalizeAnnouncementUrl(ann.url) && (
+                      <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-2 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
+                        <Globe className="w-3 h-3"/> Enlace añadido
+                      </a>
+                    )}
                   </div>
                   <button onClick={() => deleteAnnouncement(ann.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors shrink-0">
                     <Trash2 className="w-4 h-4"/>

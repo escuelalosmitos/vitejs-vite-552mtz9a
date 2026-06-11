@@ -3,12 +3,14 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "tarea_manual"]);
+const ANNOUNCEMENT_EMAIL_TO = "gestiones@escuelalosmitos.com";
+const ANNOUNCEMENT_EMAIL_BATCH_SIZE = 50;
 
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
@@ -202,6 +204,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [searchStudent, setSearchStudent] = useState('');
   const [filterStatus, setFilterStatus] = useState('activo');
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '', url: '' });
+  const [announceEmailOptions, setAnnounceEmailOptions] = useState({ enabled: false, targetType: 'all', targetValue: '' });
   const [editingAnnouncementId, setEditingAnnouncementId] = useState(null);
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(10);
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
@@ -524,7 +527,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return Object.values(grouped);
   };
 
-  const sendNotificationEmail = async ({ to, subject, body, type = 'notificacion_email' }) => {
+  const sendNotificationEmail = async ({ to, subject, body, type = 'notificacion_email', ...extraPayload }) => {
     const cleanTo = normalizeEmail(to);
     const cleanSubject = cleanEmailSubject(subject);
 
@@ -538,7 +541,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ type, to: cleanTo, subject: cleanSubject, body })
+        body: JSON.stringify({ type, to: cleanTo, subject: cleanSubject, body, ...extraPayload })
       });
       return true;
     } catch (e) {
@@ -572,6 +575,127 @@ ${body}`,
     }
 
     return sendNotificationEmail({ to: cleanStudentEmail, subject, body, type: 'confirmacion_alumno' });
+  };
+
+
+  const isFixedClassStudent = (studentEntry = {}) => {
+    return !(
+      studentEntry?.isRecovery === true ||
+      studentEntry?.isTemporary === true ||
+      studentEntry?.isPunctual === true ||
+      studentEntry?.type === 'recovery' ||
+      studentEntry?.status === 'recovery'
+    );
+  };
+
+  const getAnnouncementTargetOptions = (targetType) => {
+    if (targetType === 'sede') return SEDES;
+    if (targetType === 'instrumento') {
+      return [...new Set([
+        ...(settings.instrumentos || defaultInstrumentos),
+        ...recurringClassesOnly.map(c => c.subject).filter(Boolean)
+      ])].sort((a, b) => a.localeCompare(b));
+    }
+    if (targetType === 'profesor') {
+      return [...new Set([
+        ...(settings.teachersList || []),
+        ...recurringClassesOnly.map(c => c.teacher).filter(Boolean)
+      ])].sort((a, b) => a.localeCompare(b));
+    }
+    return [];
+  };
+
+  const matchesAnnouncementTarget = (clase, emailOptions = announceEmailOptions) => {
+    const targetType = emailOptions.targetType || 'all';
+    const targetValue = String(emailOptions.targetValue || '').trim();
+    if (targetType === 'all') return true;
+    if (!targetValue) return false;
+    if (targetType === 'sede') return (clase.sede || 'Tarragona') === targetValue;
+    if (targetType === 'instrumento') return (clase.subject || '') === targetValue;
+    if (targetType === 'profesor') return (clase.teacher || '') === targetValue;
+    return false;
+  };
+
+  const getAnnouncementEmailTargets = (emailOptions = announceEmailOptions) => {
+    const byEmail = new Map();
+
+    recurringClassesOnly
+      .filter(c => matchesAnnouncementTarget(c, emailOptions))
+      .forEach(c => {
+        (c.students || [])
+          .filter(isFixedClassStudent)
+          .forEach(studentEntry => {
+            const studentInfo = students.find(st => st.id === studentEntry.id) || null;
+            if (studentInfo?.globalStatus === 'baja') return;
+            const email = normalizeEmail(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '');
+            if (!email) return;
+            if (!byEmail.has(email)) {
+              byEmail.set(email, {
+                email,
+                name: studentInfo?.alias || studentInfo?.name || studentEntry.name || studentEntry.studentName || '',
+                studentId: studentInfo?.id || studentEntry.id || '',
+                classes: []
+              });
+            }
+            byEmail.get(email).classes.push(c.id);
+          });
+      });
+
+    return [...byEmail.values()].sort((a, b) => a.email.localeCompare(b.email));
+  };
+
+  const getAnnouncementTargetLabel = (emailOptions = announceEmailOptions) => {
+    const targetType = emailOptions.targetType || 'all';
+    const targetValue = String(emailOptions.targetValue || '').trim();
+    if (targetType === 'all') return 'Todos los alumnos con clase fija';
+    if (targetType === 'sede') return targetValue ? `Sede: ${targetValue}` : 'Sede no seleccionada';
+    if (targetType === 'instrumento') return targetValue ? `Instrumento: ${targetValue}` : 'Instrumento no seleccionado';
+    if (targetType === 'profesor') return targetValue ? `Profesor/a: ${targetValue}` : 'Profesor no seleccionado';
+    return 'Filtro personalizado';
+  };
+
+  const buildAnnouncementEmailBody = ({ title, content, url }, targetLabel) => {
+    const cleanUrl = normalizeAnnouncementUrl(url);
+    return `Nuevo aviso en el Tablón de Escuela Los Mitos
+
+TÍTULO:
+${title}
+
+DESTINATARIOS:
+${targetLabel}
+
+AVISO:
+${content}${cleanUrl ? `\n\nENLACE:\n${cleanUrl}` : ''}
+
+---
+Este correo corresponde a una comunicación operativa del servicio educativo de Escuela Los Mitos.
+También puedes consultar los avisos publicados accediendo al área del alumno.`;
+  };
+
+  const sendAnnouncementEmailToTargets = async ({ announcement, emailOptions = announceEmailOptions }) => {
+    if (!emailOptions.enabled) return { requested: false, count: 0 };
+
+    const targets = getAnnouncementEmailTargets(emailOptions);
+    if (targets.length === 0) {
+      alert('No se ha enviado email porque el filtro elegido no tiene destinatarios con email válido.');
+      return { requested: false, count: 0 };
+    }
+
+    const targetLabel = getAnnouncementTargetLabel(emailOptions);
+    const subject = `[Tablón Escuela Los Mitos] ${announcement.title}`;
+    const body = buildAnnouncementEmailBody(announcement, targetLabel);
+
+    const requested = await sendNotificationEmail({
+      to: ANNOUNCEMENT_EMAIL_TO,
+      subject,
+      body,
+      type: 'tablon_alumnos',
+      recipients: targets.map(t => t.email),
+      targetLabel,
+      batchSize: ANNOUNCEMENT_EMAIL_BATCH_SIZE
+    });
+
+    return { requested, count: targets.length, targetLabel };
   };
 
 
@@ -1252,23 +1376,48 @@ Tickets libres: ${recoveryTicketStats.free}`);
       url: cleanUrl || ''
     };
 
+    let targetAnnouncementId = editingAnnouncementId;
+
     if (editingAnnouncementId) {
       await updateDoc(doc(db, 'artifacts', appId, 'announcements', editingAnnouncementId), {
         ...payload,
         updatedAt: new Date().toISOString()
       });
-      setEditingAnnouncementId(null);
-      alert('Aviso actualizado.');
     } else {
-      const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), {
+      targetAnnouncementId = Date.now().toString();
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', targetAnnouncementId), {
         ...payload,
         date: new Date().toISOString().split('T')[0]
       });
-      alert('Aviso publicado.');
+    }
+
+    const emailRequest = announceEmailOptions.enabled
+      ? await sendAnnouncementEmailToTargets({ announcement: payload, emailOptions: announceEmailOptions })
+      : { requested: false, count: 0, targetLabel: '' };
+
+    if (emailRequest.requested && targetAnnouncementId) {
+      await updateDoc(doc(db, 'artifacts', appId, 'announcements', targetAnnouncementId), {
+        emailNotificationSentAt: new Date().toISOString(),
+        emailNotificationRecipientCount: emailRequest.count,
+        emailNotificationTargetType: announceEmailOptions.targetType,
+        emailNotificationTargetValue: announceEmailOptions.targetValue || '',
+        emailNotificationTargetLabel: emailRequest.targetLabel || getAnnouncementTargetLabel(announceEmailOptions)
+      });
+    }
+
+    if (editingAnnouncementId) {
+      setEditingAnnouncementId(null);
+      alert(emailRequest.requested
+        ? `Aviso actualizado y email solicitado a ${emailRequest.count} destinatarios.`
+        : 'Aviso actualizado.');
+    } else {
+      alert(emailRequest.requested
+        ? `Aviso publicado y email solicitado a ${emailRequest.count} destinatarios.`
+        : 'Aviso publicado.');
     }
 
     setNewAnnounce({ title: '', content: '', url: '' });
+    setAnnounceEmailOptions({ enabled: false, targetType: 'all', targetValue: '' });
   };
 
   const startEditAnnouncement = (ann) => {
@@ -1284,6 +1433,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
   const cancelEditAnnouncement = () => {
     setEditingAnnouncementId(null);
     setNewAnnounce({ title: '', content: '', url: '' });
+    setAnnounceEmailOptions({ enabled: false, targetType: 'all', targetValue: '' });
   };
 
 
@@ -3537,6 +3687,49 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
+                <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-3">
+                  <label className="flex items-start gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={announceEmailOptions.enabled}
+                      onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, enabled: e.target.checked })}
+                      className="mt-1 w-4 h-4 accent-sky-600"
+                    />
+                    <span>
+                      <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email</span>
+                      <span className="block text-xs text-sky-700 font-semibold mt-1">Uso recomendado solo para avisos importantes de funcionamiento. No se envía nada si dejas esta casilla desmarcada.</span>
+                    </span>
+                  </label>
+                  {announceEmailOptions.enabled && (
+                    <div className="grid md:grid-cols-2 gap-3">
+                      <select
+                        value={announceEmailOptions.targetType}
+                        onChange={e => setAnnounceEmailOptions({ enabled: true, targetType: e.target.value, targetValue: '' })}
+                        className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-black text-xs uppercase tracking-widest text-sky-900"
+                      >
+                        <option value="all">Todos los alumnos con clase fija</option>
+                        <option value="sede">Solo una sede</option>
+                        <option value="instrumento">Solo un instrumento</option>
+                        <option value="profesor">Solo alumnos de un profesor</option>
+                      </select>
+                      {announceEmailOptions.targetType !== 'all' && (
+                        <select
+                          value={announceEmailOptions.targetValue}
+                          onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetValue: e.target.value })}
+                          className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-bold text-sm text-sky-900"
+                        >
+                          <option value="">Selecciona...</option>
+                          {getAnnouncementTargetOptions(announceEmailOptions.targetType).map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      )}
+                      <div className="md:col-span-2 text-[11px] font-bold text-sky-800 bg-white/70 rounded-xl px-3 py-2">
+                        Destinatarios estimados: {getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className="flex flex-wrap gap-3">
                   <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
                     {editingAnnouncementId ? <Save className="w-4 h-4"/> : <Megaphone className="w-4 h-4"/>} {editingAnnouncementId ? 'Guardar Cambios' : 'Publicar Aviso'}
@@ -3558,11 +3751,18 @@ Tickets libres: ${recoveryTicketStats.free}`);
                       {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}
                     </p>
                     <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>
-                    {normalizeAnnouncementUrl(ann.url) && (
-                      <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-2 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
-                        <Globe className="w-3 h-3"/> Enlace añadido
-                      </a>
-                    )}
+                    <div className="flex flex-wrap items-center gap-3 mt-2">
+                      {normalizeAnnouncementUrl(ann.url) && (
+                        <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
+                          <Globe className="w-3 h-3"/> Enlace añadido
+                        </a>
+                      )}
+                      {ann.emailNotificationSentAt && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">
+                          <Send className="w-3 h-3"/> Email enviado a {ann.emailNotificationRecipientCount || '?'} · {ann.emailNotificationTargetLabel || 'segmento'}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button onClick={() => startEditAnnouncement(ann)} className="p-2 bg-sky-50 text-sky-700 hover:bg-sky-600 hover:text-white rounded-lg transition-colors" title="Editar aviso">

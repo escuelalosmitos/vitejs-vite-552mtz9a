@@ -64,6 +64,16 @@ const getSafeAnnouncementUrl = (url = '') => {
   return cleanUrl;
 };
 
+const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
+
+const isFixedClassStudent = (studentEntry = {}) => !(
+  studentEntry?.isRecovery === true ||
+  studentEntry?.isTemporary === true ||
+  studentEntry?.isPunctual === true ||
+  studentEntry?.type === 'recovery' ||
+  studentEntry?.status === 'recovery'
+);
+
 const getNextClassInfo = (dayOfWeek, timeStr) => {
   const now = new Date();
   const targetDay = parseInt(dayOfWeek);
@@ -153,8 +163,29 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const dToday = new Date();
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
 
+  const fixedMyClasses = myClasses.filter(c =>
+    !isPunctualClass(c) &&
+    (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
+  );
+
+  const announcementMatchesStudent = (ann = {}) => {
+    const audienceType = ann.audienceType || 'all';
+    const audienceValue = String(ann.audienceValue || '').trim();
+
+    if (audienceType === 'all') return true;
+    if (!audienceValue || fixedMyClasses.length === 0) return false;
+
+    if (audienceType === 'sede') return fixedMyClasses.some(c => (c.sede || 'Tarragona') === audienceValue);
+    if (audienceType === 'instrumento') return fixedMyClasses.some(c => (c.subject || '') === audienceValue);
+    if (audienceType === 'profesor') return fixedMyClasses.some(c => (c.teacher || '') === audienceValue);
+
+    return true;
+  };
+
+  const visibleAnnouncements = announcements.filter(announcementMatchesStudent);
+
   // 👇 LÓGICA DE LA BOLITA ROJA (NOTIFICACIONES TABLÓN)
-  const latestAnnounceId = announcements.length > 0 ? Math.max(...announcements.map(a => Number(a.id))).toString() : null;
+  const latestAnnounceId = visibleAnnouncements.length > 0 ? Math.max(...visibleAnnouncements.map(a => Number(a.id))).toString() : null;
   const hasUnreadNews = latestAnnounceId && profile?.lastSeenTablon !== latestAnnounceId;
 
   // Actualiza la marca de tiempo del tablón en Firestore cuando el alumno entra a la pestaña 'news'
@@ -1690,13 +1721,13 @@ END:VCALENDAR`;
             </div>
 
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Últimas Noticias</h3>
-            {announcements.length === 0 ? (
+            {visibleAnnouncements.length === 0 ? (
                <div className="p-10 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
                 <p className="font-black text-slate-800 uppercase tracking-widest text-sm">El tablón está vacío</p>
               </div>
             ) : (
               <div className="space-y-4">
-                {announcements.slice(0, visibleAnnouncementsCount).map(ann => (
+                {visibleAnnouncements.slice(0, visibleAnnouncementsCount).map(ann => (
                   <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
                     <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
                     <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
@@ -1708,7 +1739,7 @@ END:VCALENDAR`;
                     )}
                   </div>
                 ))}
-                {visibleAnnouncementsCount < announcements.length && (
+                {visibleAnnouncementsCount < visibleAnnouncements.length && (
                   <button onClick={() => setVisibleAnnouncementsCount(c => c + 5)} className="w-full py-4 rounded-2xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
                     Cargar más avisos
                   </button>

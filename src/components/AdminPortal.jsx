@@ -202,6 +202,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [searchStudent, setSearchStudent] = useState('');
   const [filterStatus, setFilterStatus] = useState('activo');
   const [newAnnounce, setNewAnnounce] = useState({ title: '', content: '', url: '' });
+  const [editingAnnouncementId, setEditingAnnouncementId] = useState(null);
+  const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(10);
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
@@ -1243,16 +1245,45 @@ Tickets libres: ${recoveryTicketStats.free}`);
     if (!newAnnounce.title || !newAnnounce.content) return alert('Rellena titular y detalles del aviso');
     const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
     if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
-    const id = Date.now().toString();
+
     const payload = {
       title: newAnnounce.title.trim(),
       content: newAnnounce.content.trim(),
-      date: new Date().toISOString().split('T')[0]
+      url: cleanUrl || ''
     };
-    if (cleanUrl) payload.url = cleanUrl;
-    await setDoc(doc(db, 'artifacts', appId, 'announcements', id), payload);
+
+    if (editingAnnouncementId) {
+      await updateDoc(doc(db, 'artifacts', appId, 'announcements', editingAnnouncementId), {
+        ...payload,
+        updatedAt: new Date().toISOString()
+      });
+      setEditingAnnouncementId(null);
+      alert('Aviso actualizado.');
+    } else {
+      const id = Date.now().toString();
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), {
+        ...payload,
+        date: new Date().toISOString().split('T')[0]
+      });
+      alert('Aviso publicado.');
+    }
+
     setNewAnnounce({ title: '', content: '', url: '' });
-    alert('Aviso publicado.');
+  };
+
+  const startEditAnnouncement = (ann) => {
+    setEditingAnnouncementId(ann.id);
+    setNewAnnounce({
+      title: ann.title || '',
+      content: ann.content || '',
+      url: normalizeAnnouncementUrl(ann.url) || ''
+    });
+    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
+  };
+
+  const cancelEditAnnouncement = () => {
+    setEditingAnnouncementId(null);
+    setNewAnnounce({ title: '', content: '', url: '' });
   };
 
 
@@ -3506,17 +3537,26 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
-                <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
-                  <Megaphone className="w-4 h-4"/> Publicar Aviso
-                </button>
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
+                    {editingAnnouncementId ? <Save className="w-4 h-4"/> : <Megaphone className="w-4 h-4"/>} {editingAnnouncementId ? 'Guardar Cambios' : 'Publicar Aviso'}
+                  </button>
+                  {editingAnnouncementId && (
+                    <button onClick={cancelEditAnnouncement} className="bg-zinc-100 text-zinc-600 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-200">
+                      <X className="w-4 h-4"/> Cancelar edición
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             <div className="space-y-3">
-              {announcements.map(ann => (
-                <div key={ann.id} className="bg-white p-5 rounded-2xl shadow-sm border border-zinc-200 flex justify-between items-start gap-4">
-                  <div>
+              {announcements.slice(0, visibleAnnouncementsCount).map(ann => (
+                <div key={ann.id} className={`bg-white p-5 rounded-2xl shadow-sm border ${editingAnnouncementId === ann.id ? 'border-sky-300 ring-2 ring-sky-100' : 'border-zinc-200'} flex justify-between items-start gap-4`}>
+                  <div className="min-w-0">
                     <h4 className="font-black text-slate-800 text-md leading-tight">{ann.title}</h4>
-                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">{formatDateSpanish(ann.date)}</p>
+                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
+                      {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}
+                    </p>
                     <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>
                     {normalizeAnnouncementUrl(ann.url) && (
                       <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 mt-2 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
@@ -3524,11 +3564,21 @@ Tickets libres: ${recoveryTicketStats.free}`);
                       </a>
                     )}
                   </div>
-                  <button onClick={() => deleteAnnouncement(ann.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors shrink-0">
-                    <Trash2 className="w-4 h-4"/>
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => startEditAnnouncement(ann)} className="p-2 bg-sky-50 text-sky-700 hover:bg-sky-600 hover:text-white rounded-lg transition-colors" title="Editar aviso">
+                      <Pencil className="w-4 h-4"/>
+                    </button>
+                    <button onClick={() => deleteAnnouncement(ann.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors" title="Borrar aviso">
+                      <Trash2 className="w-4 h-4"/>
+                    </button>
+                  </div>
                 </div>
               ))}
+              {visibleAnnouncementsCount < announcements.length && (
+                <button onClick={() => setVisibleAnnouncementsCount(c => c + 10)} className="w-full py-3 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
+                  Cargar más avisos ({Math.min(10, announcements.length - visibleAnnouncementsCount)} más)
+                </button>
+              )}
             </div>
           </div>
         )}

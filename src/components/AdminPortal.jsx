@@ -1370,10 +1370,22 @@ Tickets libres: ${recoveryTicketStats.free}`);
     const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
     if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
 
+    const audienceOptions = {
+      targetType: announceEmailOptions.targetType || 'all',
+      targetValue: announceEmailOptions.targetValue || ''
+    };
+    if (audienceOptions.targetType !== 'all' && !String(audienceOptions.targetValue || '').trim()) {
+      return alert('Selecciona el segmento de destinatarios del aviso.');
+    }
+    const audienceLabel = getAnnouncementTargetLabel(audienceOptions);
+
     const payload = {
       title: newAnnounce.title.trim(),
       content: newAnnounce.content.trim(),
-      url: cleanUrl || ''
+      url: cleanUrl || '',
+      audienceType: audienceOptions.targetType,
+      audienceValue: audienceOptions.targetValue || '',
+      audienceLabel
     };
 
     let targetAnnouncementId = editingAnnouncementId;
@@ -1392,16 +1404,16 @@ Tickets libres: ${recoveryTicketStats.free}`);
     }
 
     const emailRequest = announceEmailOptions.enabled
-      ? await sendAnnouncementEmailToTargets({ announcement: payload, emailOptions: announceEmailOptions })
+      ? await sendAnnouncementEmailToTargets({ announcement: payload, emailOptions: audienceOptions })
       : { requested: false, count: 0, targetLabel: '' };
 
     if (emailRequest.requested && targetAnnouncementId) {
       await updateDoc(doc(db, 'artifacts', appId, 'announcements', targetAnnouncementId), {
         emailNotificationSentAt: new Date().toISOString(),
         emailNotificationRecipientCount: emailRequest.count,
-        emailNotificationTargetType: announceEmailOptions.targetType,
-        emailNotificationTargetValue: announceEmailOptions.targetValue || '',
-        emailNotificationTargetLabel: emailRequest.targetLabel || getAnnouncementTargetLabel(announceEmailOptions)
+        emailNotificationTargetType: audienceOptions.targetType,
+        emailNotificationTargetValue: audienceOptions.targetValue || '',
+        emailNotificationTargetLabel: emailRequest.targetLabel || audienceLabel
       });
     }
 
@@ -1426,6 +1438,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
       title: ann.title || '',
       content: ann.content || '',
       url: normalizeAnnouncementUrl(ann.url) || ''
+    });
+    setAnnounceEmailOptions({
+      enabled: false,
+      targetType: ann.audienceType || ann.emailNotificationTargetType || 'all',
+      targetValue: ann.audienceValue || ann.emailNotificationTargetValue || ''
     });
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
   };
@@ -3687,8 +3704,39 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
-                <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-3">
-                  <label className="flex items-start gap-3 cursor-pointer select-none">
+                <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-4">
+                  <div>
+                    <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Destinatarios del aviso en el Tablón</span>
+                    <span className="block text-xs text-sky-700 font-semibold mt-1">El aviso solo aparecerá en el StudentPortal de los alumnos que coincidan con este filtro.</span>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <select
+                      value={announceEmailOptions.targetType}
+                      onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetType: e.target.value, targetValue: '' })}
+                      className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-black text-xs uppercase tracking-widest text-sky-900"
+                    >
+                      <option value="all">Todos los alumnos con clase fija</option>
+                      <option value="sede">Solo una sede</option>
+                      <option value="instrumento">Solo un instrumento</option>
+                      <option value="profesor">Solo alumnos de un profesor</option>
+                    </select>
+                    {announceEmailOptions.targetType !== 'all' && (
+                      <select
+                        value={announceEmailOptions.targetValue}
+                        onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetValue: e.target.value })}
+                        className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-bold text-sm text-sky-900"
+                      >
+                        <option value="">Selecciona...</option>
+                        {getAnnouncementTargetOptions(announceEmailOptions.targetType).map(opt => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    )}
+                    <div className="md:col-span-2 text-[11px] font-bold text-sky-800 bg-white/70 rounded-xl px-3 py-2">
+                      Destinatarios estimados con email: {getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
+                    </div>
+                  </div>
+                  <label className="flex items-start gap-3 cursor-pointer select-none pt-2 border-t border-sky-100">
                     <input
                       type="checkbox"
                       checked={announceEmailOptions.enabled}
@@ -3696,39 +3744,10 @@ Tickets libres: ${recoveryTicketStats.free}`);
                       className="mt-1 w-4 h-4 accent-sky-600"
                     />
                     <span>
-                      <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email</span>
+                      <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email a esos destinatarios</span>
                       <span className="block text-xs text-sky-700 font-semibold mt-1">Uso recomendado solo para avisos importantes de funcionamiento. No se envía nada si dejas esta casilla desmarcada.</span>
                     </span>
                   </label>
-                  {announceEmailOptions.enabled && (
-                    <div className="grid md:grid-cols-2 gap-3">
-                      <select
-                        value={announceEmailOptions.targetType}
-                        onChange={e => setAnnounceEmailOptions({ enabled: true, targetType: e.target.value, targetValue: '' })}
-                        className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-black text-xs uppercase tracking-widest text-sky-900"
-                      >
-                        <option value="all">Todos los alumnos con clase fija</option>
-                        <option value="sede">Solo una sede</option>
-                        <option value="instrumento">Solo un instrumento</option>
-                        <option value="profesor">Solo alumnos de un profesor</option>
-                      </select>
-                      {announceEmailOptions.targetType !== 'all' && (
-                        <select
-                          value={announceEmailOptions.targetValue}
-                          onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetValue: e.target.value })}
-                          className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-bold text-sm text-sky-900"
-                        >
-                          <option value="">Selecciona...</option>
-                          {getAnnouncementTargetOptions(announceEmailOptions.targetType).map(opt => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      )}
-                      <div className="md:col-span-2 text-[11px] font-bold text-sky-800 bg-white/70 rounded-xl px-3 py-2">
-                        Destinatarios estimados: {getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
-                      </div>
-                    </div>
-                  )}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
@@ -3752,6 +3771,9 @@ Tickets libres: ${recoveryTicketStats.free}`);
                     </p>
                     <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>
                     <div className="flex flex-wrap items-center gap-3 mt-2">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-sky-700 bg-sky-50 px-2 py-1 rounded-lg">
+                        <Users className="w-3 h-3"/> {ann.audienceLabel || getAnnouncementTargetLabel({ targetType: ann.audienceType || 'all', targetValue: ann.audienceValue || '' })}
+                      </span>
                       {normalizeAnnouncementUrl(ann.url) && (
                         <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
                           <Globe className="w-3 h-3"/> Enlace añadido

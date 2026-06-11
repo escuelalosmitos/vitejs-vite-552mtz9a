@@ -115,6 +115,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [] });
   const [announcements, setAnnouncements] = useState([]); 
+  const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [myGestiones, setMyGestiones] = useState([]); 
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
@@ -1695,7 +1696,7 @@ END:VCALENDAR`;
               </div>
             ) : (
               <div className="space-y-4">
-                {announcements.map(ann => (
+                {announcements.slice(0, visibleAnnouncementsCount).map(ann => (
                   <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
                     <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
                     <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
@@ -1707,6 +1708,11 @@ END:VCALENDAR`;
                     )}
                   </div>
                 ))}
+                {visibleAnnouncementsCount < announcements.length && (
+                  <button onClick={() => setVisibleAnnouncementsCount(c => c + 5)} className="w-full py-4 rounded-2xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
+                    Cargar más avisos
+                  </button>
+                )}
               </div>
             )}
           </div>

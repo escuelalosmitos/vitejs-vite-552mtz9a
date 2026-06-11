@@ -1404,7 +1404,10 @@ Tickets libres: ${recoveryTicketStats.free}`);
     }
 
     const emailRequest = announceEmailOptions.enabled
-      ? await sendAnnouncementEmailToTargets({ announcement: payload, emailOptions: audienceOptions })
+      ? await sendAnnouncementEmailToTargets({
+          announcement: payload,
+          emailOptions: { ...audienceOptions, enabled: true }
+        })
       : { requested: false, count: 0, targetLabel: '' };
 
     if (emailRequest.requested && targetAnnouncementId) {

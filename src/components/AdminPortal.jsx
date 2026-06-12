@@ -233,7 +233,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
   
   // VISTA ARQUITECTO E INFORMES
-  const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
+  const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
   const [archDay, setArchDay] = useState('1'); // Lunes por defecto
   const [archTime, setArchTime] = useState('17:00');
   const [archSede, setArchSede] = useState('Tarragona');
@@ -347,6 +347,28 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return allClasses.filter(c => !isPunctualClass(c));
   }, [allClasses]);
 
+  const studentByIdForOperations = useMemo(() => {
+    return new Map(students.map(student => [student.id, student]));
+  }, [students]);
+
+  const hibernatedClasses = useMemo(() => {
+    return recurringClassesOnly.filter(c => {
+      const activeCount = (c.students || []).filter(studentEntry => {
+        const studentInfo = studentByIdForOperations.get(studentEntry.id);
+        const isDropped = studentInfo?.globalStatus === 'baja';
+        const isFrozen = studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado';
+        const isTemporary = studentEntry.isRecovery === true || studentEntry.isTemporary === true || studentEntry.isPunctual === true || studentEntry.type === 'recovery' || studentEntry.status === 'recovery';
+        return !isDropped && !isFrozen && !isTemporary;
+      }).length;
+      return activeCount === 0;
+    }).sort((a, b) => Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0) || String(a.time || '').localeCompare(String(b.time || '')));
+  }, [recurringClassesOnly, studentByIdForOperations]);
+
+  const activeRecurringClasses = useMemo(() => {
+    const hibernatedIds = new Set(hibernatedClasses.map(c => c.id));
+    return recurringClassesOnly.filter(c => !hibernatedIds.has(c.id));
+  }, [recurringClassesOnly, hibernatedClasses]);
+
   // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const businessIntelligence = useMemo(() => {
     let totalIngresosClases = 0;
@@ -359,35 +381,48 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     };
     const porProfe = {};
     const porInstrumento = {};
-    const studentById = new Map(students.map(student => [student.id, student]));
+    const studentById = studentByIdForOperations;
     const frozenStudents = new Map();
 
+    // El mantenimiento se cuenta una sola vez por alumno, incluso si su clase está hibernada.
     recurringClassesOnly.forEach(c => {
+      (c.students || []).forEach((studentEntry, index) => {
+        const studentInfo = studentById.get(studentEntry.id);
+        const isDropped = studentInfo?.globalStatus === 'baja';
+        const isFrozen = !isDropped && (studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado');
+        if (!isFrozen) return;
+
+        const emailKey = String(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '').trim().toLowerCase();
+        const frozenKey = studentEntry.id || emailKey || `${c.id}-${index}-${studentEntry.name || 'alumno'}`;
+        if (!frozenStudents.has(frozenKey)) {
+          frozenStudents.set(frozenKey, {
+            id: studentEntry.id || '',
+            name: studentInfo?.alias || studentInfo?.name || studentEntry.name || studentEntry.studentName || 'Alumno',
+            email: studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '',
+            sede: c.sede || 'Tarragona'
+          });
+        }
+      });
+    });
+
+    // Las hibernadas no generan ingreso de clase ni coste docente previsto.
+    activeRecurringClasses.forEach(c => {
       const classStudents = c.students || [];
       let numAlumnos = 0;
       let numCongelados = 0;
 
-      classStudents.forEach((studentEntry, index) => {
+      classStudents.forEach(studentEntry => {
         const studentInfo = studentById.get(studentEntry.id);
         const isDropped = studentInfo?.globalStatus === 'baja';
         const isFrozen = !isDropped && (studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado');
+        const isTemporary = studentEntry.isRecovery === true || studentEntry.isTemporary === true || studentEntry.isPunctual === true || studentEntry.type === 'recovery' || studentEntry.status === 'recovery';
 
         if (isFrozen) {
           numCongelados += 1;
-          const emailKey = String(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '').trim().toLowerCase();
-          const frozenKey = studentEntry.id || emailKey || `${c.id}-${index}-${studentEntry.name || 'alumno'}`;
-          if (!frozenStudents.has(frozenKey)) {
-            frozenStudents.set(frozenKey, {
-              id: studentEntry.id || '',
-              name: studentInfo?.alias || studentInfo?.name || studentEntry.name || studentEntry.studentName || 'Alumno',
-              email: studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '',
-              sede: c.sede || 'Tarragona'
-            });
-          }
           return;
         }
 
-        if (!isDropped) numAlumnos += 1;
+        if (!isDropped && !isTemporary) numAlumnos += 1;
       });
 
       const cuota = Number(c.cuotaBase) || 0;
@@ -464,7 +499,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
-  }, [recurringClassesOnly, settings, students]);
+  }, [activeRecurringClasses, recurringClassesOnly, settings, studentByIdForOperations]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -1596,45 +1631,45 @@ Tickets libres: ${recoveryTicketStats.free}`);
     const sortedClasses = [...recurringClassesOnly].sort((a, b) => {
       const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
       if (teacherCompare !== 0) return teacherCompare;
-      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
-      if (sedeCompare !== 0) return sedeCompare;
       const dayCompare = Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0);
       if (dayCompare !== 0) return dayCompare;
       return String(a.time || '').localeCompare(String(b.time || ''));
     });
 
-    const headers = [
-      'Sede', 'Profesor', 'Instrumento', 'Día', 'Hora inicio', 'Hora fin', 'Sala', 'Aforo', 'Cuota base',
-      'ID clase', 'Nombre en clase', 'Titular CRM', 'Nombre real alumno/a', 'Email', 'Estado CRM', 'Situación en clase'
+    const lines = [
+      'FOTO DE LA ESCUELA · ESCUELA LOS MITOS',
+      `Generada: ${new Date().toLocaleString('es-ES')}`,
+      ''
     ];
-    const rows = [headers.map(escapeCsvCell).join(';')];
 
     sortedClasses.forEach(clase => {
-      const classStudents = clase.students || [];
-      const base = [
-        clase.sede || 'Tarragona', clase.teacher || '', clase.subject || '', getDayName(clase.dayOfWeek), clase.time || '',
-        getClassEndTime(clase.time, clase.duration), clase.sala || '', clase.capacity || '', clase.cuotaBase ?? '', clase.id || ''
-      ];
+      lines.push(`Clase: ${getDayName(clase.dayOfWeek)}, ${clase.time}h, ${clase.teacher || 'Sin profesor'}`);
 
-      if (classStudents.length === 0) {
-        rows.push([...base, '', '', '', '', '', 'Clase sin alumnos'].map(escapeCsvCell).join(';'));
-        return;
+      const fixedStudents = (clase.students || []).filter(studentEntry => {
+        const studentInfo = studentByIdForOperations.get(studentEntry.id);
+        const isDropped = studentInfo?.globalStatus === 'baja';
+        const isTemporary = studentEntry.isRecovery === true || studentEntry.isTemporary === true || studentEntry.isPunctual === true || studentEntry.type === 'recovery' || studentEntry.status === 'recovery';
+        return !isDropped && !isTemporary;
+      });
+
+      if (fixedStudents.length === 0) {
+        lines.push('Sin alumnos');
+      } else {
+        fixedStudents.forEach(studentEntry => {
+          const studentInfo = studentByIdForOperations.get(studentEntry.id);
+          const fullName = (studentInfo?.useAlias && studentInfo?.alias)
+            ? studentInfo.alias
+            : (studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno');
+          const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'Sin email';
+          lines.push(`${fullName} - ${email}`);
+        });
       }
 
-      classStudents.forEach(studentEntry => {
-        const studentInfo = students.find(student => student.id === studentEntry.id);
-        const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.name || '';
-        const titularName = studentInfo?.name || '';
-        const realName = studentInfo?.alias || '';
-        const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
-        const crmStatus = studentInfo?.globalStatus || 'activo';
-        const classStatus = studentEntry.isPaused || crmStatus === 'congelado' ? 'Mantenimiento / plaza reservada' : 'Activo';
-        rows.push([...base, displayName, titularName, realName, email, crmStatus, classStatus].map(escapeCsvCell).join(';'));
-      });
+      lines.push('');
     });
 
-    const filename = `Foto_Escuela_Los_Mitos_${getTodayLocalString()}.csv`;
-    downloadTextFile(filename, `\uFEFF${rows.join('\n')}`, 'text/csv;charset=utf-8');
+    const filename = `Foto_Escuela_Los_Mitos_${getTodayLocalString()}.txt`;
+    downloadTextFile(filename, lines.join('\n'));
   };
 
   const handleGenerateSocialText = () => {
@@ -1933,14 +1968,19 @@ Tickets libres: ${recoveryTicketStats.free}`);
   }, [operationalClasses]);
 
   const dangerClasses = useMemo(() => {
-    return recurringClassesOnly.filter(c => {
-      const activeCount = (c.students || []).filter(s => !s.isPaused).length;
-      if (activeCount === 0) return true; 
+    return activeRecurringClasses.filter(c => {
+      const activeCount = (c.students || []).filter(studentEntry => {
+        const studentInfo = studentByIdForOperations.get(studentEntry.id);
+        const isDropped = studentInfo?.globalStatus === 'baja';
+        const isFrozen = studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado';
+        const isTemporary = studentEntry.isRecovery === true || studentEntry.isTemporary === true || studentEntry.isPunctual === true || studentEntry.type === 'recovery' || studentEntry.status === 'recovery';
+        return !isDropped && !isFrozen && !isTemporary;
+      }).length;
       const cap = parseInt(c.capacity, 10) || 0;
-      if (cap <= 1) return false; 
+      if (cap <= 1) return false;
       return activeCount <= (cap / 2);
-    }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
-  }, [recurringClassesOnly]);
+    }).sort((a, b) => Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0) || String(a.time || '').localeCompare(String(b.time || '')));
+  }, [activeRecurringClasses, studentByIdForOperations]);
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
@@ -3538,6 +3578,9 @@ Tickets libres: ${recoveryTicketStats.free}`);
                   <button onClick={() => setClassesViewMode('salas')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'salas' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
                     <LayoutGrid className="w-3 h-3 inline mr-1" /> Salas (Arquitecto)
                   </button>
+                  <button onClick={() => setClassesViewMode('hibernadas')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'hibernadas' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
+                    <Ghost className="w-3 h-3 inline mr-1" /> Hibernadas ({hibernatedClasses.length})
+                  </button>
                 </div>
                 
                 {classesViewMode === 'profesores' && (
@@ -3556,6 +3599,60 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 </button>
               </div>
             </header>
+
+            {/* VISTA DE CLASES HIBERNADAS */}
+            {classesViewMode === 'hibernadas' && (
+              <div className="space-y-5 animate-in fade-in slide-in-from-left-4">
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex items-start gap-3">
+                  <Ghost className="w-5 h-5 text-slate-500 mt-0.5" />
+                  <div>
+                    <p className="font-black uppercase tracking-widest text-xs text-slate-700">Clases sin alumnos activos</p>
+                    <p className="text-xs text-slate-500 mt-1">Se conservan para planificación y oferta futura, pero no cuentan en BI ni en Grupos en Peligro.</p>
+                  </div>
+                </div>
+
+                {hibernatedClasses.length === 0 ? (
+                  <div className="p-10 text-center bg-white border-2 border-dashed border-zinc-200 rounded-3xl">
+                    <CheckCircle className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
+                    <p className="font-black uppercase tracking-widest text-sm text-slate-700">No hay clases hibernadas</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {hibernatedClasses.map(c => {
+                      const frozenCount = (c.students || []).filter(studentEntry => {
+                        const studentInfo = studentByIdForOperations.get(studentEntry.id);
+                        return studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado';
+                      }).length;
+                      const teacherTheme = getTeacherColorTheme(c.teacher, settings);
+                      return (
+                        <div key={c.id} className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-5 shadow-sm relative group">
+                          <button onClick={() => handleDeleteClassGlobal(c)} className="absolute top-3 right-3 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all" title="Borrar clase">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                          <div className="flex items-center gap-2 mb-3 pr-8">
+                            <div className="p-2 rounded-lg text-white" style={{ background: teacherTheme.solid }}><Ghost className="w-4 h-4" /></div>
+                            <span className="px-2 py-1 rounded bg-zinc-100 text-zinc-500 text-[9px] font-black uppercase tracking-widest">Hibernada</span>
+                            {c.isWebVisible && <span className="px-2 py-1 rounded bg-blue-100 text-blue-700 text-[9px] font-black uppercase tracking-widest">Visible web</span>}
+                          </div>
+                          <h4 className="font-black uppercase tracking-tight text-slate-900">{c.subject}</h4>
+                          <p className="text-xs font-bold text-slate-600 mt-1">{getDayName(c.dayOfWeek)} · {c.time}h · {c.teacher}</p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mt-2">{c.sede} · {c.sala || 'Sin sala'} · {frozenCount} plaza/s congelada/s</p>
+                          {c.startDate && <p className="text-[10px] font-bold text-amber-700 mt-2">Inicio previsto: {formatDateSpanish(c.startDate)}</p>}
+                          <div className="mt-4 flex gap-2">
+                            <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 hover:bg-black text-white py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-1">
+                              <PlusCircle className="w-3 h-3" /> Añadir alumno
+                            </button>
+                            <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-500'}`}>
+                              <Globe className="w-3 h-3" /> Config / Web
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* VISTA ARQUITECTO (POR SALAS EN BLANCO/OCUPADO + CUADRANTE) */}
             {classesViewMode === 'salas' && (
@@ -3738,7 +3835,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
               <div className="bg-red-100 p-3 rounded-xl"><AlertTriangle className="w-6 h-6 text-red-600"/></div>
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Grupos en Peligro</h2>
-                <p className="text-zinc-500 font-medium text-sm">Clases grupales al 50% de ocupación, o totalmente hibernadas.</p>
+                <p className="text-zinc-500 font-medium text-sm">Clases grupales activas con ocupación igual o inferior al 50%.</p>
               </div>
             </header>
 
@@ -3751,36 +3848,35 @@ Tickets libres: ${recoveryTicketStats.free}`);
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                 {dangerClasses.map(c => {
-                  const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                  const isHibernated = activeC === 0;
-                  const isCritical = activeC === 1; 
+                  const activeC = (c.students || []).filter(studentEntry => {
+                    const studentInfo = studentByIdForOperations.get(studentEntry.id);
+                    const isDropped = studentInfo?.globalStatus === 'baja';
+                    const isFrozen = studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado';
+                    const isTemporary = studentEntry.isRecovery === true || studentEntry.isTemporary === true || studentEntry.isPunctual === true || studentEntry.type === 'recovery' || studentEntry.status === 'recovery';
+                    return !isDropped && !isFrozen && !isTemporary;
+                  }).length;
+                  const isCritical = activeC === 1;
 
                   return (
-                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
                       <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
                         <Trash2 className="w-4 h-4"/>
                       </button>
 
                       <div className="flex justify-between items-start mb-3 pr-8">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
-                          {isHibernated ? 'Hibernada' : isCritical ? 'Crítico' : 'Revisar'}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
+                          {isCritical ? 'Crítico' : 'Revisar'}
                         </span>
-                        {isHibernated ? <Ghost className="w-5 h-5 text-zinc-400"/> : <span className="font-black text-lg">{activeC} / {c.capacity}</span>}
+                        <span className="font-black text-lg">{activeC} / {c.capacity}</span>
                       </div>
                       <h4 className="font-black uppercase tracking-tight text-slate-900">{c.subject}</h4>
                       <p className="text-xs font-bold text-slate-600 mb-2">{getDayName(c.dayOfWeek)} a las {c.time}h</p>
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {c.teacher}</div>
                       
                       <div className="mt-auto pt-4 flex gap-2">
-                        {isHibernated ? (
-                           <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
-                             <PlusCircle className="w-3 h-3"/> Reactivar
-                           </button>
-                        ) : (
-                           <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
-                             <Users className="w-3 h-3"/> Alumnos
-                           </button>
-                        )}
+                        <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
+                          <Users className="w-3 h-3"/> Alumnos
+                        </button>
                         <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
                           <Globe className="w-3 h-3"/> Configurar / Web
                         </button>

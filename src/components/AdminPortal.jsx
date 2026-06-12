@@ -11,6 +11,8 @@ const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "tarea_manual"]);
 const ANNOUNCEMENT_EMAIL_TO = "gestiones@escuelalosmitos.com";
 const ANNOUNCEMENT_EMAIL_BATCH_SIZE = 50;
+const BI_WEEKS_PER_MONTH = 4.333;
+const MAINTENANCE_MONTHLY_FEE = 15;
 
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
@@ -88,6 +90,23 @@ const getClassEndTime = (time, duration = 60) => {
 };
 
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
+
+const downloadTextFile = (filename, content, mimeType = 'text/plain;charset=utf-8') => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+const escapeCsvCell = (value) => {
+  const clean = String(value ?? '').replace(/\r?\n/g, ' ').trim();
+  return `"${clean.replace(/"/g, '""')}"`;
+};
 
 const TEACHER_DEFAULT_COLORS = [
   '#2563eb', // azul
@@ -330,37 +349,69 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const businessIntelligence = useMemo(() => {
-    let totalIngresos = 0;
+    let totalIngresosClases = 0;
     let costeTotalProfesores = 0;
-    
+
     const clasesRentabilidad = [];
-    const porSede = { Tarragona: { ingresos: 0, costesProf: 0 }, Reus: { ingresos: 0, costesProf: 0 } };
+    const porSede = {
+      Tarragona: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 },
+      Reus: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 }
+    };
     const porProfe = {};
     const porInstrumento = {};
+    const studentById = new Map(students.map(student => [student.id, student]));
+    const frozenStudents = new Map();
 
-    const activeRecurring = recurringClassesOnly;
+    recurringClassesOnly.forEach(c => {
+      const classStudents = c.students || [];
+      let numAlumnos = 0;
+      let numCongelados = 0;
 
-    activeRecurring.forEach(c => {
-      const numAlumnos = (c.students || []).filter(s => !s.isPaused).length;
+      classStudents.forEach((studentEntry, index) => {
+        const studentInfo = studentById.get(studentEntry.id);
+        const isDropped = studentInfo?.globalStatus === 'baja';
+        const isFrozen = !isDropped && (studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado');
+
+        if (isFrozen) {
+          numCongelados += 1;
+          const emailKey = String(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '').trim().toLowerCase();
+          const frozenKey = studentEntry.id || emailKey || `${c.id}-${index}-${studentEntry.name || 'alumno'}`;
+          if (!frozenStudents.has(frozenKey)) {
+            frozenStudents.set(frozenKey, {
+              id: studentEntry.id || '',
+              name: studentInfo?.alias || studentInfo?.name || studentEntry.name || studentEntry.studentName || 'Alumno',
+              email: studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '',
+              sede: c.sede || 'Tarragona'
+            });
+          }
+          return;
+        }
+
+        if (!isDropped) numAlumnos += 1;
+      });
+
       const cuota = Number(c.cuotaBase) || 0;
       const ingresos = numAlumnos * cuota;
-      
+
       const duracionHoras = (Number(c.duration) || 60) / 60;
       // EXCEPCIÓN PACO: Si el profesor es Paco, el coste es 0€ (ya está en gastos fijos).
-      const coste = (c.teacher?.toLowerCase() === 'paco') ? 0 : (duracionHoras * 4 * (settings.costeEmpresa || 22));      
+      const coste = (c.teacher?.toLowerCase() === 'paco')
+        ? 0
+        : (duracionHoras * BI_WEEKS_PER_MONTH * (settings.costeEmpresa || 22));
       const beneficio = ingresos - coste;
 
-      totalIngresos += ingresos;
+      totalIngresosClases += ingresos;
       costeTotalProfesores += coste;
 
       clasesRentabilidad.push({
         id: c.id, subject: c.subject, teacher: c.teacher, sede: c.sede, time: c.time, dayOfWeek: c.dayOfWeek,
-        numAlumnos, ingresos, coste, beneficio
+        numAlumnos, numCongelados, ingresos, coste, beneficio
       });
 
       const sedeKey = c.sede || 'Tarragona';
-      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, costesProf: 0 };
+      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 };
       porSede[sedeKey].ingresos += ingresos;
+      porSede[sedeKey].ingresosClases += ingresos;
       porSede[sedeKey].costesProf += coste;
 
       const profKey = c.teacher || 'Sin Asignar';
@@ -376,13 +427,35 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porInstrumento[instKey].numGrupos += 1;
     });
 
+    const alumnosMantenimiento = frozenStudents.size;
+    const ingresosMantenimiento = alumnosMantenimiento * MAINTENANCE_MONTHLY_FEE;
+
+    frozenStudents.forEach(student => {
+      const sedeKey = student.sede || 'Tarragona';
+      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 };
+      porSede[sedeKey].ingresos += MAINTENANCE_MONTHLY_FEE;
+      porSede[sedeKey].mantenimiento += MAINTENANCE_MONTHLY_FEE;
+      porSede[sedeKey].alumnosMantenimiento += 1;
+    });
+
+    if (ingresosMantenimiento > 0) {
+      porProfe['Mantenimiento (sin atribuir)'] = { ingresos: ingresosMantenimiento, costes: 0, horasSemanales: 0 };
+      porInstrumento['Mantenimiento'] = { ingresos: ingresosMantenimiento, costes: 0, numGrupos: 0 };
+    }
+
     clasesRentabilidad.sort((a,b) => b.beneficio - a.beneficio);
 
+    const totalIngresos = totalIngresosClases + ingresosMantenimiento;
     const fijos = settings.gastosFijos || { global: 0, tarragona: 0, reus: 0 };
     const totalFijos = Number(fijos.global) + Number(fijos.tarragona) + Number(fijos.reus);
-    
+
     return {
       totalIngresos,
+      totalIngresosClases,
+      ingresosMantenimiento,
+      alumnosMantenimiento,
+      mantenimientoMensualPorAlumno: MAINTENANCE_MONTHLY_FEE,
+      semanasPrevision: BI_WEEKS_PER_MONTH,
       costeTotalProfesores,
       totalFijos,
       beneficioNeto: totalIngresos - costeTotalProfesores - totalFijos,
@@ -391,7 +464,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
-  }, [recurringClassesOnly, settings]);
+  }, [recurringClassesOnly, settings, students]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -1469,6 +1542,99 @@ Tickets libres: ${recoveryTicketStats.free}`);
 
   const deleteAnnouncement = async (id) => { 
     if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
+  };
+
+  const handleDownloadBIReport = () => {
+    const generatedAt = new Date();
+    const dateLabel = generatedAt.toLocaleString('es-ES');
+    const money = value => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+
+    const lines = [
+      'INFORME BI · ESCUELA LOS MITOS',
+      `Generado: ${dateLabel}`,
+      '',
+      'RESUMEN GLOBAL',
+      `Ingresos por clases activas: ${money(businessIntelligence.totalIngresosClases)}`,
+      `Ingresos por mantenimiento: ${money(businessIntelligence.ingresosMantenimiento)} (${businessIntelligence.alumnosMantenimiento} alumno/s × ${MAINTENANCE_MONTHLY_FEE} €)`,
+      `Ingresos totales estimados: ${money(businessIntelligence.totalIngresos)}`,
+      `Coste profesores previsto: ${money(businessIntelligence.costeTotalProfesores)}`,
+      `Gastos fijos: ${money(businessIntelligence.totalFijos)}`,
+      `Resultado estimado: ${money(businessIntelligence.beneficioNeto)}`,
+      `Criterio de previsión docente: ${BI_WEEKS_PER_MONTH} semanas/mes`,
+      '',
+      'POR SEDE',
+      ...SEDES.flatMap(sede => {
+        const data = businessIntelligence.porSede[sede] || { ingresos: 0, ingresosClases: 0, mantenimiento: 0, costesProf: 0, alumnosMantenimiento: 0 };
+        const gastoFijo = Number(settings.gastosFijos?.[sede.toLowerCase()]) || 0;
+        return [
+          `${sede}:`,
+          `  Ingresos clases: ${money(data.ingresosClases)}`,
+          `  Mantenimiento: ${money(data.mantenimiento)} (${data.alumnosMantenimiento || 0} alumno/s)`,
+          `  Coste profesores: ${money(data.costesProf)}`,
+          `  Gasto fijo local: ${money(gastoFijo)}`,
+          `  Margen local estimado: ${money(data.ingresos - data.costesProf - gastoFijo)}`
+        ];
+      }),
+      '',
+      'POR PROFESOR',
+      ...businessIntelligence.porProfe.map(p => `${p.name}: ingresos ${money(p.ingresos)} · coste ${money(p.costes)} · margen ${money(p.beneficio)} · ${p.horasSemanales.toFixed(1)} h/sem`),
+      '',
+      'POR INSTRUMENTO',
+      ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} · coste ${money(i.costes)} · margen ${money(i.beneficio)} · ${i.numGrupos} grupo/s`),
+      '',
+      'DETALLE POR CLASE',
+      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · activos ${c.numAlumnos} · congelados ${c.numCongelados} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}`),
+      '',
+      'Nota: este informe es una previsión operativa, no sustituye la contabilidad real de Tadosi.'
+    ];
+
+    const filename = `Informe_BI_Los_Mitos_${getTodayLocalString()}.txt`;
+    downloadTextFile(filename, lines.join('\n'));
+  };
+
+  const handleDownloadSchoolSnapshot = () => {
+    const sortedClasses = [...recurringClassesOnly].sort((a, b) => {
+      const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
+      if (teacherCompare !== 0) return teacherCompare;
+      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
+      if (sedeCompare !== 0) return sedeCompare;
+      const dayCompare = Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0);
+      if (dayCompare !== 0) return dayCompare;
+      return String(a.time || '').localeCompare(String(b.time || ''));
+    });
+
+    const headers = [
+      'Sede', 'Profesor', 'Instrumento', 'Día', 'Hora inicio', 'Hora fin', 'Sala', 'Aforo', 'Cuota base',
+      'ID clase', 'Nombre en clase', 'Titular CRM', 'Nombre real alumno/a', 'Email', 'Estado CRM', 'Situación en clase'
+    ];
+    const rows = [headers.map(escapeCsvCell).join(';')];
+
+    sortedClasses.forEach(clase => {
+      const classStudents = clase.students || [];
+      const base = [
+        clase.sede || 'Tarragona', clase.teacher || '', clase.subject || '', getDayName(clase.dayOfWeek), clase.time || '',
+        getClassEndTime(clase.time, clase.duration), clase.sala || '', clase.capacity || '', clase.cuotaBase ?? '', clase.id || ''
+      ];
+
+      if (classStudents.length === 0) {
+        rows.push([...base, '', '', '', '', '', 'Clase sin alumnos'].map(escapeCsvCell).join(';'));
+        return;
+      }
+
+      classStudents.forEach(studentEntry => {
+        const studentInfo = students.find(student => student.id === studentEntry.id);
+        const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.name || '';
+        const titularName = studentInfo?.name || '';
+        const realName = studentInfo?.alias || '';
+        const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
+        const crmStatus = studentInfo?.globalStatus || 'activo';
+        const classStatus = studentEntry.isPaused || crmStatus === 'congelado' ? 'Mantenimiento / plaza reservada' : 'Activo';
+        rows.push([...base, displayName, titularName, realName, email, crmStatus, classStatus].map(escapeCsvCell).join(';'));
+      });
+    });
+
+    const filename = `Foto_Escuela_Los_Mitos_${getTodayLocalString()}.csv`;
+    downloadTextFile(filename, `\uFEFF${rows.join('\n')}`, 'text/csv;charset=utf-8');
   };
 
   const handleGenerateSocialText = () => {
@@ -2765,6 +2931,9 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Business Intelligence</h2>
                 <p className="text-zinc-500 font-bold text-sm mt-1 uppercase tracking-widest">Información estratégica y análisis de márgenes</p>
               </div>
+              <button onClick={handleDownloadBIReport} className="w-full sm:w-auto bg-slate-900 hover:bg-black text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                <FileText className="w-4 h-4"/> Generar informe
+              </button>
             </header>
 
             {/* SELECTOR DE SUBVISTAS FINANCIERAS */}
@@ -2788,13 +2957,13 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
                   <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
-                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Alumnos Activos × Cuota Base</p>
+                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Clases: {businessIntelligence.totalIngresosClases.toLocaleString('es-ES')}€ · Mantenimiento: {businessIntelligence.ingresosMantenimiento.toLocaleString('es-ES')}€ ({businessIntelligence.alumnosMantenimiento})</p>
                 </div>
                 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
                   <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
-                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Nóminas a Coste Empresa (Paco = 0€)</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Previsión con {BI_WEEKS_PER_MONTH} semanas/mes · Paco = 0€</p>
                 </div>
 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
@@ -2826,7 +2995,9 @@ Tickets libres: ${recoveryTicketStats.free}`);
                        <div key={sede} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col">
                           <h3 className="font-black text-2xl uppercase text-slate-800 tracking-tight border-b pb-3 flex items-center gap-2"><MapPin className="text-blue-500"/> Sede {sede}</h3>
                           <div className="mt-4 space-y-3 flex-1 text-sm font-bold">
-                             <div className="flex justify-between text-slate-600"><span>Ingresos Alumnos:</span><span className="text-emerald-600">+{dataSede.ingresos}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Ingresos por clases:</span><span className="text-emerald-600">+{dataSede.ingresosClases}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}€</span></div>
                           </div>
@@ -3370,9 +3541,14 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 </div>
                 
                 {classesViewMode === 'profesores' && (
-                  <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
-                    <Megaphone className="w-3 h-3"/> Redes
-                  </button>
+                  <>
+                    <button onClick={handleDownloadSchoolSnapshot} className="flex-1 sm:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                      <FileText className="w-3 h-3"/> Foto escuela
+                    </button>
+                    <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                      <Megaphone className="w-3 h-3"/> Redes
+                    </button>
+                  </>
                 )}
                 
                 <button onClick={() => setCreateClassModal(true)} className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">

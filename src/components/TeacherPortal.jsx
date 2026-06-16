@@ -110,6 +110,62 @@ const generateTicketDates = (dateString) => {
   return { validFrom, validUntil, recoveryPolicy: 'standard', isSummerTicket: false };
 };
 
+
+const NON_COMPUTABLE_REASONS = {
+  auto_cancelled_all_notified: {
+    label: 'Clase cancelada por aviso previo',
+    tag: 'CLASE CANCELADA',
+    detail: 'Todos los alumnos activos avisaron con antelación suficiente. La clase no computa y no requiere protocolo de hora muerta.'
+  },
+  teacher_renounced_dead_hour: {
+    label: 'Hora renunciada por el profesor',
+    tag: 'RENUNCIA VOLUNTARIA',
+    detail: 'Todos los alumnos faltaron y el profesor renunció a realizar una tarea del protocolo de hora muerta. La hora no computa.'
+  },
+  last_hour_all_absent: {
+    label: 'Última hora sin alumnos',
+    tag: 'ÚLTIMA HORA SIN ALUMNOS',
+    detail: 'Todos los alumnos activos faltaron y no quedaban más clases computables después. No se aplica protocolo de hora muerta.'
+  },
+  legacy_renounced: {
+    label: 'Hora no computable registrada sin motivo específico',
+    tag: 'HORA NO COMPUTABLE',
+    detail: 'Registro antiguo o sin motivo estructurado. La hora no computa.'
+  }
+};
+
+const getNonComputableInfo = (reason) => NON_COMPUTABLE_REASONS[reason] || NON_COMPUTABLE_REASONS.legacy_renounced;
+
+const formatDateTimeSpanish = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('es-ES', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+};
+
+const daysSince = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  d.setHours(0, 0, 0, 0);
+  return Math.floor((today - d) / (1000 * 60 * 60 * 24));
+};
+
+const buildNotesFreshnessLine = (updatedAt) => {
+  if (!updatedAt) return 'Cuaderno de bitácora: fecha de última actualización no registrada.';
+  const formatted = formatDateTimeSpanish(updatedAt);
+  const age = daysSince(updatedAt);
+  if (age !== null && age > 30) {
+    return `⚠️ Cuaderno de bitácora sin actualizar desde hace ${age} días. Última actualización: ${formatted}.`;
+  }
+  return `Cuaderno de bitácora actualizado: ${formatted}.`;
+};
+
 const getPreviousMonthStr = (currentMonthStr) => { 
   const [y, m] = currentMonthStr.split('-').map(Number);
   let prevM = m - 1;
@@ -652,12 +708,25 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         .map(s => `- ${s.name}`)
         .join('\n') || '- Ninguno';
 
+      const nonComputableInfo = record.isRenounced
+        ? getNonComputableInfo(record.nonComputableReason || 'legacy_renounced')
+        : null;
+      const hourStatus = record.isRenounced
+        ? `NO COMPUTABLE - ${record.nonComputableLabel || nonComputableInfo.label}`
+        : (record.isDeadHourWorked ? 'COMPUTABLE - Hora muerta trabajada' : 'COMPUTABLE');
+      const reasonLine = record.isRenounced
+        ? `\nMotivo no computable: ${record.nonComputableDetail || nonComputableInfo.detail}`
+        : (record.isDeadHourWorked && record.deadHourNote ? `\nHora muerta realizada: ${record.deadHourNote}` : '');
+      const notesFreshnessLine = buildNotesFreshnessLine(record.classNotesUpdatedAt || record.notesUpdatedAt);
+
       return `
-CLASE: ${record.time} - ${record.subject} ${record.isRenounced ? '(HORA RENUNCIADA)' : ''}
+CLASE: ${record.time} - ${record.subject} ${record.isRenounced ? '(NO COMPUTABLE)' : ''}
 Sede: ${record.sede || 'Tarragona'} (${record.sala || 'Sala 1'})
 Profesor: ${record.teacher}
+Estado de hora: ${hourStatus}${reasonLine}
 Total alumnos: ${students.length}
 Anotaciones: ${record.notes || 'Ninguna'}
+${notesFreshnessLine}
 
 Presentes:
 ${present}
@@ -783,6 +852,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       capacity: scheduledClass.capacity || '',
       duration: scheduledClass.duration || 60,
       notes: scheduledClass.notes || '',
+      originalNotes: scheduledClass.notes || '',
+      notesUpdatedAt: scheduledClass.notesUpdatedAt || null,
+      notesUpdatedBy: scheduledClass.notesUpdatedBy || '',
+      notesUpdatedByName: scheduledClass.notesUpdatedByName || '',
       dayOfWeek: scheduledClass.dayOfWeek,
       date: scheduledClass.date || null, 
       isRecurring: !scheduledClass.date, 
@@ -816,6 +889,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: sub.capacity || '',
         duration: sub.duration || 60,
         notes: sub.notes || '',
+        originalNotes: sub.notes || '',
+        notesUpdatedAt: sub.notesUpdatedAt || null,
+        notesUpdatedBy: sub.notesUpdatedBy || '',
+        notesUpdatedByName: sub.notesUpdatedByName || '',
         students: sub.students || [],
         exceptions: {},
         cancelledDates: [],
@@ -948,6 +1025,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         finalExceptions[date] = exceptionsForDate;
       }
 
+      const notesChanged = String(currentSession.notes || '') !== String(currentSession.originalNotes || '');
+      const notesUpdatePayload = notesChanged ? {
+        notesUpdatedAt: new Date().toISOString(),
+        notesUpdatedBy: user.email,
+        notesUpdatedByName: getTeacherName()
+      } : {};
+
       const targetPath = doc(db, currentSession.refPath); 
         
       await setDoc(targetPath, {
@@ -961,6 +1045,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: currentSession.capacity,
         duration: currentSession.duration || 60,
         notes: currentSession.notes,
+        ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents,
         exceptions: finalExceptions
@@ -993,7 +1078,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     if (allAbsent) {
       if (currentSession.isAutoCancelled) {
         showNotification({ type: 'success', text: "Clase auto-cancelada. Hora no computable registrada." });
-        executeSaveRecord("Clase cancelada automáticamente por ausencia total (+2h de antelación)", true);
+        executeSaveRecord(null, true, { nonComputableReason: 'auto_cancelled_all_notified' });
         return;
       }
 
@@ -1016,7 +1101,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       if (isLastClass) {
         showNotification({ type: 'success', text: "Clase vacía y última hora. Puedes irte a casa. Guardando como hora no computable..." });
-        executeSaveRecord('Última hora del día. No se aplica protocolo de tareas.', true);
+        executeSaveRecord(null, true, { nonComputableReason: 'last_hour_all_absent' });
       } else {
         const configuredTasks = Array.isArray(settings.generalTasks) ? settings.generalTasks.filter(Boolean) : [];
         const combinedTasks = configuredTasks.length > 0 ? configuredTasks : DEFAULT_DEAD_HOUR_TASKS;
@@ -1027,18 +1112,33 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
   };
 
-  const executeSaveRecord = async (deadHourNote = null, isRenounced = false) => {
+  const executeSaveRecord = async (deadHourNote = null, isRenounced = false, options = {}) => {
     try {
       const recordId = Date.now().toString();
       const currentMonth = date.substring(0, 7);
       
+      const nonComputableReason = isRenounced
+        ? (options.nonComputableReason || 'teacher_renounced_dead_hour')
+        : null;
+      const nonComputableInfo = nonComputableReason ? getNonComputableInfo(nonComputableReason) : null;
+
       let finalNotes = deadHourNote 
         ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
         : currentSession.notes;
 
-      if (isRenounced) {
-        finalNotes = `[RENUNCIA VOLUNTARIA]: El profesor ha decidido no cobrar esta hora. ${currentSession.notes || ''}`;
+      if (isRenounced && nonComputableInfo) {
+        finalNotes = `[${nonComputableInfo.tag}]: ${nonComputableInfo.detail} ${currentSession.notes || ''}`;
       }
+
+      const notesChanged = String(currentSession.notes || '') !== String(currentSession.originalNotes || '');
+      const notesUpdatePayload = notesChanged ? {
+        notesUpdatedAt: new Date().toISOString(),
+        notesUpdatedBy: user.email,
+        notesUpdatedByName: getTeacherName()
+      } : {};
+      const effectiveNotesUpdatedAt = notesUpdatePayload.notesUpdatedAt || currentSession.notesUpdatedAt || null;
+      const effectiveNotesUpdatedBy = notesUpdatePayload.notesUpdatedBy || currentSession.notesUpdatedBy || '';
+      const effectiveNotesUpdatedByName = notesUpdatePayload.notesUpdatedByName || currentSession.notesUpdatedByName || '';
 
       const targetUid = user.uid;
 
@@ -1095,7 +1195,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: currentSession.capacity,
         duration: currentSession.duration || 60,
         notes: finalNotes,
-        isRenounced: isRenounced, 
+        classNotes: currentSession.notes || '',
+        classNotesUpdatedAt: effectiveNotesUpdatedAt,
+        classNotesUpdatedBy: effectiveNotesUpdatedBy,
+        classNotesUpdatedByName: effectiveNotesUpdatedByName,
+        isRenounced: isRenounced,
+        isNonComputable: isRenounced,
+        nonComputableReason: nonComputableReason || '',
+        nonComputableLabel: nonComputableInfo?.label || '',
+        nonComputableDetail: nonComputableInfo?.detail || '',
+        deadHourNote: !isRenounced && deadHourNote ? deadHourNote : '',
+        isDeadHourWorked: Boolean(!isRenounced && deadHourNote),
         students: currentSession.students.map(s => ({ ...s }))
       });
 
@@ -1117,6 +1227,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: currentSession.capacity,
         duration: currentSession.duration || 60,
         notes: currentSession.notes,
+        ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents,
         exceptions: currentSession.exceptions || {}
@@ -1253,7 +1364,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         <DeadHourModalComponent
           tasks={deadHourModal.tasks}
           onCancel={() => setDeadHourModal(null)}
-          onRenounce={() => executeSaveRecord(null, true)}
+          onRenounce={() => executeSaveRecord(null, true, { nonComputableReason: 'teacher_renounced_dead_hour' })}
           onConfirm={(task, note) => executeSaveRecord(`${task}: ${note}`, false)}
         />
       )}
@@ -1574,7 +1685,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   </div>
 
                   <div className="space-y-2 mt-2">
-                    <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><BookOpen className="w-3 h-3" /> Cuaderno de Bitácora (Pasa a la sig. semana)</label>
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                      <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><BookOpen className="w-3 h-3" /> Cuaderno de Bitácora (Pasa a la sig. semana)</label>
+                      <span className={`text-[10px] font-black uppercase tracking-widest ${daysSince(currentSession.notesUpdatedAt) > 30 ? 'text-amber-600' : 'text-zinc-400'}`}>
+                        {currentSession.notesUpdatedAt
+                          ? `Última actualización: ${formatDateTimeSpanish(currentSession.notesUpdatedAt)}`
+                          : 'Sin fecha de actualización registrada'}
+                      </span>
+                    </div>
+                    {daysSince(currentSession.notesUpdatedAt) > 30 && (
+                      <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                        ⚠️ Este cuaderno lleva más de 30 días sin actualizarse. Revísalo si la clase ha avanzado o se han mandado nuevos deberes.
+                      </p>
+                    )}
                     <textarea 
                       placeholder="Ejercicios, tareas, estado de los alumnos..." 
                       value={currentSession.notes} 

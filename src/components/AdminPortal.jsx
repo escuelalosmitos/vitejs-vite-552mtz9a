@@ -590,6 +590,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const administrativeStatus = student?.globalStatus || 'activo';
     if (administrativeStatus === 'baja') return 'baja';
     if (administrativeStatus === 'congelado') return 'congelado';
+    if (administrativeStatus === 'impago') return 'impago';
 
     const assignedClasses = getStudentAssignedClasses(student?.id);
     if (administrativeStatus === 'activo' && assignedClasses.length === 0) return 'sin_plaza';
@@ -1302,13 +1303,30 @@ Tickets libres: ${recoveryTicketStats.free}`);
 
   const handleUpdateStudentStatus = async (studentId, studentName, newStatus) => {
     if (newStatus === 'baja') {
-      const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
+      const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?
+
+Se eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
       if (!confirmBaja) return;
+    }
+    if (newStatus === 'impago') {
+      const confirmImpago = window.confirm(`¿Marcar a ${studentName} como IMPAGO?
+
+El alumno conservará su plaza, pero tendrá el acceso al portal bloqueado hasta que regularices su estado desde CRM.`);
+      if (!confirmImpago) return;
     }
     try {
       const studentInfo = students.find(s => s.id === studentId);
       const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
-      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
+      const statusUpdate = { globalStatus: newStatus };
+
+      if (newStatus === 'impago') {
+        statusUpdate.impagoDesde = studentInfo?.impagoDesde || new Date().toISOString();
+        statusUpdate.impagoResolvedAt = null;
+      } else if (studentInfo?.globalStatus === 'impago') {
+        statusUpdate.impagoResolvedAt = new Date().toISOString();
+      }
+
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), statusUpdate);
       if (newStatus === 'baja') {
         await resetStudentTrivia(studentId);
         const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
@@ -1324,19 +1342,36 @@ Tickets libres: ${recoveryTicketStats.free}`);
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
           subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
-          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha sido dado de baja y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+          bodyBuilder: (group) => `Hola ${group.teacherName},
+
+Desde coordinación te informamos que ${displayName} ha sido dado de baja y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
+
+Ya ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.
+
+Un saludo,
+Coordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail: studentInfo?.email || '',
           subject: `Confirmación de baja - Escuela Los Mitos`,
-          body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinación Los Mitos.`
+          body: `Hola ${studentName},
+
+Te confirmamos que tu baja ha sido tramitada correctamente.
+
+Un saludo,
+Coordinación Los Mitos.`
         });
 
         alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       } else if (newStatus === 'congelado') {
         const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, true);
         alert(`❄️ Estado de ${studentName} cambiado a CONGELADO. Plaza marcada como mantenimiento en ${clasesActualizadas} clase(s).`);
+      } else if (newStatus === 'impago') {
+        const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, false);
+        alert(`🚫 Estado de ${studentName} cambiado a IMPAGO. Acceso del alumno bloqueado. Plaza conservada en ${clasesActualizadas} clase(s). El profesor verá “Incidencia abierta”.`);
       } else if (newStatus === 'activo') {
         const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, false);
         alert(`✅ Estado de ${studentName} cambiado a ACTIVO. Plaza reactivada en ${clasesActualizadas} clase(s).`);
@@ -3347,6 +3382,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
                     { id: 'activo', label: 'Activos' },
                     { id: 'sin_plaza', label: 'Sin plaza' },
                     { id: 'congelado', label: 'Congelados' },
+                    { id: 'impago', label: 'Impagos' },
                     { id: 'baja', label: 'Bajas' },
                     { id: 'sin_activar', label: 'Sin activar' }
                   ].map((tab) => (
@@ -3363,7 +3399,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <div className="relative w-full sm:w-64">
                   <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input 
-                    type="text" placeholder="Buscar alumno..." value={searchStudent} onChange={e => setSearchStudent(e.target.value)}
+                    type="text" placeholder="Buscar titular, alumno/a o email..." value={searchStudent} onChange={e => setSearchStudent(e.target.value)}
                     className="w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm shadow-sm"
                   />
                 </div>
@@ -3384,7 +3420,18 @@ Tickets libres: ${recoveryTicketStats.free}`);
                   <tbody className="text-sm font-medium text-slate-700">
                     {(() => {
                       const filtered = students.filter(s => {
-                        const matchSearch = s.name.toLowerCase().includes(searchStudent.toLowerCase());
+                        const searchTerm = searchStudent.toLowerCase().trim();
+                        const searchableFields = [
+                          s.name,
+                          s.alias,
+                          s.studentName,
+                          s.realStudentName,
+                          s.childName,
+                          s.email,
+                          s.phone,
+                          s.telefono
+                        ];
+                        const matchSearch = !searchTerm || searchableFields.some(value => String(value || '').toLowerCase().includes(searchTerm));
                         if (filterStatus === 'sin_activar') {
                           return matchSearch && (s.claimed === false);
                         }
@@ -3434,6 +3481,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
                               {operationalStatus === 'congelado' && (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
                                   <Snowflake className="w-3 h-3" /> Mantenimiento
+                                </span>
+                              )}
+                              {operationalStatus === 'impago' && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-red-700 bg-red-50 border border-red-100 px-2 py-0.5 rounded">
+                                  <AlertCircle className="w-3 h-3" /> Impago
                                 </span>
                               )}
                             </div>
@@ -3499,12 +3551,14 @@ Tickets libres: ${recoveryTicketStats.free}`);
                               className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[120px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
                                 operationalStatus === 'sin_plaza' ? 'bg-orange-50 border-orange-200 text-orange-700' :
                                 student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
+                                student.globalStatus === 'impago' ? 'bg-red-50 border-red-200 text-red-700' :
                                 student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
                                 'bg-emerald-50 border-emerald-200 text-emerald-700'
                               }`}
                             >
                               <option value="activo">Activo</option>
                               <option value="congelado">Congelado</option>
+                              <option value="impago">Impago</option>
                               <option value="baja">Dar de Baja</option>
                             </select>
                           </td>

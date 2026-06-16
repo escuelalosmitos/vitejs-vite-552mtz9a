@@ -1261,6 +1261,34 @@ END:VCALENDAR`;
     );
   }
 
+  if (profile.globalStatus === 'impago') {
+    return (
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
+        <div className="bg-red-100 text-red-600 p-6 rounded-full mb-6">
+          <AlertCircle className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Acceso temporalmente bloqueado</h1>
+        <p className="text-zinc-500 font-medium mb-6 leading-relaxed">
+          Tu cuenta se encuentra temporalmente inaccesible por una incidencia de pago.
+        </p>
+        <div className="bg-white border-2 border-red-100 p-6 rounded-2xl mb-8 w-full shadow-sm text-left">
+          <p className="text-sm text-slate-700 font-bold leading-relaxed mb-4">
+            Para regularizar la situación, deja fondos disponibles en la cuenta bancaria con la que realizaste el alta.
+          </p>
+          <p className="text-sm text-slate-700 font-bold leading-relaxed">
+            Si tienes alguna duda o crees que se trata de un error, escríbenos a:
+          </p>
+          <a href="mailto:gestiones@escuelalosmitos.com" className="block mt-3 text-center bg-red-50 border border-red-100 text-red-700 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-red-100 transition-colors">
+            gestiones@escuelalosmitos.com
+          </a>
+        </div>
+        <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
+          Cerrar Sesión
+        </button>
+      </div>
+    );
+  }
+
   if (!classesLoaded) {
     return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando clases...</div>;
   }

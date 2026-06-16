@@ -1797,9 +1797,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     {currentSession.students.map((student) => {
                       const globalSt = globalStudents.find(g => g.id === student.id);
                       const displayEmail = globalSt?.email || student.email;
+                      const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
 
                       return (
-                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
+                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
                           <div className="flex flex-col">
                             <span className={`font-bold text-lg ${student.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
@@ -1811,6 +1812,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             {student.isRecovery && !student.isPaused && (
                               <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
                                 <CornerDownRight className="w-3 h-3" /> Recuperación
+                              </span>
+                            )}
+                            {hasOpenAdminIncident && !student.isPaused && (
+                              <span className="text-[10px] uppercase font-black text-red-600 tracking-widest flex items-center gap-1 mt-1" title="Incidencia administrativa abierta">
+                                <AlertCircle className="w-3 h-3" /> Incidencia abierta
                               </span>
                             )}
                           </div>

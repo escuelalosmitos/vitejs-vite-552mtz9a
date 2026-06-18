@@ -231,6 +231,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [editStudentModal, setEditStudentModal] = useState(null); 
   const [manualTaskModal, setManualTaskModal] = useState(false);
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
+  const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores' o 'salas'
@@ -2058,6 +2059,21 @@ Tickets libres: ${recoveryTicketStats.free}`);
 
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
+
+  const gestionPendingFilters = [
+    { id: 'todas', label: 'Todas', matcher: () => true },
+    { id: 'mantenimiento', label: 'Mantenimiento', matcher: (g) => ['mantenimiento', 'reactivar_plaza'].includes(g.type) },
+    { id: 'ausencias', label: 'Ausencias', matcher: (g) => (g.type || '').includes('ausencia') || (g.type || '').includes('falta') },
+    { id: 'bajas', label: 'Bajas', matcher: (g) => (g.type || '').includes('baja') },
+    { id: 'manuales', label: 'Manuales', matcher: (g) => g.source === 'manual_admin' || (g.type || '').includes('manual') || g.type === 'tarea_manual' || g.type === 'incidencia_manual' },
+  ];
+
+  const activeGestionPendingFilter = gestionPendingFilters.find(f => f.id === gestionPendingFilter) || gestionPendingFilters[0];
+  const filteredPendingGestiones = pendingGestiones.filter(activeGestionPendingFilter.matcher);
+  const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
+    acc[filter.id] = pendingGestiones.filter(filter.matcher).length;
+    return acc;
+  }, {});
   
   const rankMonthly = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints).slice(0,10);
   const rankQuarterly = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0).map(s => ({ ...s, liveQuarterly: (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) })).sort((a,b) => b.liveQuarterly - a.liveQuarterly).slice(0,10);
@@ -3428,8 +3444,34 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <h3 className="text-lg font-black text-slate-800 uppercase">Todo al día</h3>
               </div>
             ) : (
-              <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                <div className="overflow-x-auto">
+              <div className="space-y-4">
+                <div className="bg-white rounded-2xl p-2 border border-zinc-200 shadow-sm flex flex-wrap gap-2">
+                  {gestionPendingFilters.map(filter => {
+                    const active = gestionPendingFilter === filter.id;
+                    return (
+                      <button
+                        key={filter.id}
+                        onClick={() => setGestionPendingFilter(filter.id)}
+                        className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 ${active ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
+                      >
+                        {filter.label}
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] ${active ? 'bg-white/20 text-white' : 'bg-white text-zinc-500 border border-zinc-200'}`}>
+                          {pendingGestionFilterCounts[filter.id] || 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {filteredPendingGestiones.length === 0 ? (
+                  <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
+                    <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
+                    <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay trámites pendientes en esta vista</h3>
+                    <p className="text-xs text-zinc-400 font-medium mt-2">El resto de notificaciones pendientes sigue disponible en “Todas”.</p>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
+                    <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse min-w-[800px]">
                     <thead>
                       <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
@@ -3441,7 +3483,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
                       </tr>
                     </thead>
                     <tbody className="text-sm font-medium text-slate-700">
-                      {pendingGestiones.map(g => {
+                      {filteredPendingGestiones.map(g => {
                         const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
                         const studentAlias = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : '';
                         const studentClasses = g.studentId ? getStudentAssignedClasses(g.studentId) : [];
@@ -3513,7 +3555,9 @@ Tickets libres: ${recoveryTicketStats.free}`);
                       })}
                     </tbody>
                   </table>
-                </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

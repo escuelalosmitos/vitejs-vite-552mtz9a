@@ -558,6 +558,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const administrativeStatus = student?.globalStatus || 'activo';
     if (administrativeStatus === 'baja') return 'baja';
     if (administrativeStatus === 'congelado') return 'congelado';
+    if (administrativeStatus === 'impago') return 'impago';
 
     const assignedClasses = getStudentAssignedClasses(student?.id);
     if (administrativeStatus === 'activo' && assignedClasses.length === 0) return 'sin_plaza';
@@ -1273,6 +1274,10 @@ Tickets libres: ${recoveryTicketStats.free}`);
       const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
       if (!confirmBaja) return;
     }
+    if (newStatus === 'impago') {
+      const confirmImpago = window.confirm(`¿Marcar a ${studentName} como IMPAGO?\n\nMantendrá su plaza y seguirá apareciendo en las clases, pero perderá temporalmente el acceso al Área del Alumno hasta que lo reactives.`);
+      if (!confirmImpago) return;
+    }
     try {
       const studentInfo = students.find(s => s.id === studentId);
       const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
@@ -1308,6 +1313,9 @@ Tickets libres: ${recoveryTicketStats.free}`);
       } else if (newStatus === 'activo') {
         const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, false);
         alert(`✅ Estado de ${studentName} cambiado a ACTIVO. Plaza reactivada en ${clasesActualizadas} clase(s).`);
+      } else if (newStatus === 'impago') {
+        const clasesActualizadas = studentInfo?.globalStatus === 'congelado' ? await syncStudentPauseStateInClasses(studentId, false) : 0;
+        alert(`⚠️ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${clasesActualizadas ? ` Plaza reactivada en ${clasesActualizadas} clase(s).` : ''}`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
@@ -1631,7 +1639,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
         const realName = studentInfo?.alias || '';
         const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
         const crmStatus = studentInfo?.globalStatus || 'activo';
-        const classStatus = studentEntry.isPaused || crmStatus === 'congelado' ? 'Mantenimiento / plaza reservada' : 'Activo';
+        const classStatus = crmStatus === 'impago' ? 'Incidencia administrativa / impago' : (studentEntry.isPaused || crmStatus === 'congelado' ? 'Mantenimiento / plaza reservada' : 'Activo');
         rows.push([...base, displayName, titularName, realName, email, crmStatus, classStatus].map(escapeCsvCell).join(';'));
       });
     });
@@ -3622,6 +3630,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
                     { id: 'activo', label: 'Activos' },
                     { id: 'sin_plaza', label: 'Sin plaza' },
                     { id: 'congelado', label: 'Congelados' },
+                    { id: 'impago', label: 'Impagos' },
                     { id: 'baja', label: 'Bajas' },
                     { id: 'sin_activar', label: 'Sin activar' }
                   ].map((tab) => (
@@ -3711,6 +3720,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
                                   <Snowflake className="w-3 h-3" /> Mantenimiento
                                 </span>
                               )}
+                              {operationalStatus === 'impago' && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-orange-700 bg-orange-50 border border-orange-100 px-2 py-0.5 rounded">
+                                  <AlertCircle className="w-3 h-3" /> Impago
+                                </span>
+                              )}
                             </div>
 
                             {assignedClasses.length > 0 && (
@@ -3774,12 +3788,14 @@ Tickets libres: ${recoveryTicketStats.free}`);
                               className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[120px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
                                 operationalStatus === 'sin_plaza' ? 'bg-orange-50 border-orange-200 text-orange-700' :
                                 student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
+                                student.globalStatus === 'impago' ? 'bg-orange-50 border-orange-200 text-orange-700' :
                                 student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
                                 'bg-emerald-50 border-emerald-200 text-emerald-700'
                               }`}
                             >
                               <option value="activo">Activo</option>
                               <option value="congelado">Congelado</option>
+                              <option value="impago">Impago</option>
                               <option value="baja">Dar de Baja</option>
                             </select>
                           </td>

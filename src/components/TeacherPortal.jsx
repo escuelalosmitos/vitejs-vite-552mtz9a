@@ -166,6 +166,46 @@ const buildNotesFreshnessLine = (updatedAt) => {
   return `Cuaderno de bitácora actualizado: ${formatted}.`;
 };
 
+const getComputableHoursFromRecords = (recordsList = []) => {
+  const computableMinutes = recordsList
+    .filter(record => !record.isRenounced && !record.isNonComputable)
+    .reduce((acc, record) => acc + normalizeNumber(record.duration || 60), 0);
+  return computableMinutes / 60;
+};
+
+const cleanAttendanceNotesForReport = (record = {}) => {
+  let notes = String(record.classNotes || record.notes || '').trim();
+  if (!notes) return 'Ninguna';
+
+  if (record.isDeadHourWorked && record.deadHourNote) {
+    const deadHourNote = String(record.deadHourNote || '').trim();
+    const exactPrefix = `[HORA MUERTA]: ${deadHourNote}.`;
+    const loosePrefix = `[HORA MUERTA]: ${deadHourNote}`;
+
+    if (notes.startsWith(exactPrefix)) {
+      notes = notes.slice(exactPrefix.length).trim();
+    } else if (notes.startsWith(loosePrefix)) {
+      notes = notes.slice(loosePrefix.length).replace(/^\.\s*/, '').trim();
+    } else {
+      notes = notes.replace(/^\[HORA MUERTA\]:\s*/i, '').trim();
+    }
+  }
+
+  if (record.isRenounced) {
+    const nonComputableInfo = getNonComputableInfo(record.nonComputableReason || 'legacy_renounced');
+    const tagPrefix = `[${nonComputableInfo.tag}]:`;
+    if (notes.startsWith(tagPrefix)) {
+      notes = notes.slice(tagPrefix.length).trim();
+      const detail = String(record.nonComputableDetail || nonComputableInfo.detail || '').trim();
+      if (detail && notes.startsWith(detail)) {
+        notes = notes.slice(detail.length).trim();
+      }
+    }
+  }
+
+  return notes || 'Ninguna';
+};
+
 const getPreviousMonthStr = (currentMonthStr) => { 
   const [y, m] = currentMonthStr.split('-').map(Number);
   let prevM = m - 1;
@@ -561,23 +601,32 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const notifications = useMemo(() => {
+    const myClassIds = new Set();
+    recurringClasses.forEach(c => {
+      myClassIds.add(c.id);
+    });
+
+    const isRelevantForTeacher = (g) => {
+      if (g.status !== 'pendiente') return false;
+
+      if (g.type === 'aviso_ausencia' && g.requestedClass && myClassIds.has(g.requestedClass)) {
+        return true;
+      }
+
+      if (g.type === 'recuperacion') {
+        if (g.requestedClass && myClassIds.has(g.requestedClass)) return true;
+        if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === getTeacherName().toLowerCase()) return true;
+      }
+
+      return false;
+    };
+
     if (isAdmin) {
       return gestiones.filter(g => g.status === 'pendiente');
-    } else {
-      const myClassIds = new Set();
-      recurringClasses.forEach(c => {
-        myClassIds.add(c.id);
-      });
-
-      return gestiones.filter(g => {
-        if (g.status !== 'pendiente') return false;
-        if (g.type === 'aviso_ausencia' && g.requestedClass && myClassIds.has(g.requestedClass)) {
-          return true;
-        }
-        return false;
-      });
     }
-  }, [gestiones, recurringClasses, isAdmin]);
+
+    return gestiones.filter(isRelevantForTeacher);
+  }, [gestiones, recurringClasses, isAdmin, user]);
 
   const recordsForSelectedDate = useMemo(() => {
     return records
@@ -685,6 +734,167 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   };
 
+  const getRecoveryClass = (gestion = {}) => {
+    if (!gestion.requestedClass) return null;
+    return recurringClasses.find(c => c.id === gestion.requestedClass) || null;
+  };
+
+  const formatClassSummary = (clase = {}) => {
+    if (!clase) return 'Clase no localizada';
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''}`;
+  };
+
+  const getRecoveryTicketInfo = (gestion = {}) => {
+    const recoveryDate = gestion.recoveryDate || date;
+    const today = new Date().toISOString().split('T')[0];
+
+    const validTickets = tickets.filter(t =>
+      t.studentId === gestion.studentId &&
+      !t.isUsed &&
+      !t.voided &&
+      (!t.validFrom || t.validFrom <= recoveryDate) &&
+      (!t.validUntil || t.validUntil >= recoveryDate)
+    );
+
+    const committedRequests = gestiones.filter(g =>
+      g.id !== gestion.id &&
+      g.studentId === gestion.studentId &&
+      g.type === 'recuperacion' &&
+      (g.status === 'pendiente' || g.status === 'completado') &&
+      (!g.recoveryDate || g.recoveryDate >= today)
+    ).length;
+
+    return {
+      valid: validTickets.length,
+      committed: committedRequests,
+      free: Math.max(validTickets.length - committedRequests, 0)
+    };
+  };
+
+  const getClassOccupancyForDate = (clase = {}, targetDate = date) => {
+    const visibleStudents = (clase.students || []).filter(s =>
+      !s.isPaused &&
+      (!s.isRecovery || s.recoveryDate === targetDate)
+    );
+    const fixedStudentIds = new Set((clase.students || [])
+      .filter(s => !s.isPaused && !s.isRecovery)
+      .map(s => s.id));
+
+    return {
+      count: visibleStudents.length,
+      fixedStudentIds,
+      capacity: parseInt(clase.capacity, 10) || 0
+    };
+  };
+
+  const approveRecoveryRequest = async (gestion) => {
+    if (!gestion?.id) return;
+
+    const targetClass = getRecoveryClass(gestion);
+    if (!targetClass?.refPath) {
+      showNotification({ type: 'error', text: 'No se ha encontrado la clase de destino.' });
+      return;
+    }
+
+    const recoveryDate = gestion.recoveryDate;
+    if (!recoveryDate) {
+      showNotification({ type: 'error', text: 'La solicitud no tiene fecha de recuperación.' });
+      return;
+    }
+
+    const studentInfo = globalStudents.find(s => s.id === gestion.studentId);
+    if (studentInfo?.globalStatus === 'baja' || studentInfo?.globalStatus === 'congelado' || studentInfo?.globalStatus === 'impago') {
+      showNotification({ type: 'error', text: 'El alumno no está en estado activo. Coordina la recuperación desde administración.' });
+      return;
+    }
+
+    const ticketInfo = getRecoveryTicketInfo(gestion);
+    if (ticketInfo.free <= 0) {
+      showNotification({ type: 'error', text: 'El alumno no tiene tickets libres válidos para esa fecha.' });
+      return;
+    }
+
+    const occupancy = getClassOccupancyForDate(targetClass, recoveryDate);
+    if (occupancy.fixedStudentIds.has(gestion.studentId)) {
+      showNotification({ type: 'error', text: 'El alumno ya pertenece de forma fija a esta clase.' });
+      return;
+    }
+
+    const alreadyScheduled = (targetClass.students || []).some(s =>
+      s.id === gestion.studentId &&
+      s.isRecovery &&
+      s.recoveryDate === recoveryDate
+    );
+
+    if (!alreadyScheduled && occupancy.capacity > 0 && occupancy.count >= occupancy.capacity) {
+      showNotification({ type: 'error', text: 'La clase ya está completa para ese día.' });
+      return;
+    }
+
+    const ok = window.confirm(`¿Aceptar la recuperación de ${gestion.studentName || 'este alumno'}?
+
+${gestion.requestedClassLine || formatClassSummary(targetClass)}
+Fecha: ${formatDateSpanish(recoveryDate)}
+
+El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicamente si asiste y guardas la asistencia.`);
+    if (!ok) return;
+
+    try {
+      if (!alreadyScheduled) {
+        const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (studentInfo?.name || gestion.studentName || 'Alumno');
+        const email = studentInfo?.email || gestion.studentEmail || '';
+
+        const recoveryStudent = {
+          id: gestion.studentId,
+          name: displayName,
+          email,
+          isPaused: false,
+          status: 'present',
+          isRecovery: true,
+          recoveryDate
+        };
+
+        await updateDoc(doc(db, targetClass.refPath), {
+          students: [...(targetClass.students || []).filter(s => !(s.id === gestion.studentId && s.isRecovery && s.recoveryDate === recoveryDate)), recoveryStudent]
+        });
+      }
+
+      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
+        status: 'completado',
+        approvedByTeacher: true,
+        approvedBy: user?.email || getTeacherName(),
+        approvedAt: new Date().toISOString(),
+        teacherDecision: 'aprobada'
+      });
+
+      showNotification({ type: 'success', text: 'Recuperación aceptada. Aparecerá en tu lista el día indicado.' });
+    } catch (e) {
+      console.error('Error al aprobar recuperación', e);
+      showNotification({ type: 'error', text: 'No se pudo aprobar la recuperación.' });
+    }
+  };
+
+  const rejectRecoveryRequest = async (gestion) => {
+    if (!gestion?.id) return;
+    const reason = window.prompt(`Motivo del rechazo para ${gestion.studentName || 'el alumno'} (opcional):`, '');
+    if (reason === null) return;
+
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
+        status: 'rechazado',
+        rejectedByTeacher: true,
+        rejectedBy: user?.email || getTeacherName(),
+        rejectedAt: new Date().toISOString(),
+        rejectionReason: String(reason || '').trim(),
+        teacherDecision: 'rechazada'
+      });
+      showNotification({ type: 'success', text: 'Recuperación rechazada.' });
+    } catch (e) {
+      console.error('Error al rechazar recuperación', e);
+      showNotification({ type: 'error', text: 'No se pudo rechazar la recuperación.' });
+    }
+  };
+
   const buildAttendanceDetails = () => {
     if (recordsForSelectedDate.length === 0) {
       return 'No hay registros de asistencia guardados para esta fecha.';
@@ -718,6 +928,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         ? `\nMotivo no computable: ${record.nonComputableDetail || nonComputableInfo.detail}`
         : (record.isDeadHourWorked && record.deadHourNote ? `\nHora muerta realizada: ${record.deadHourNote}` : '');
       const notesFreshnessLine = buildNotesFreshnessLine(record.classNotesUpdatedAt || record.notesUpdatedAt);
+      const reportNotes = cleanAttendanceNotesForReport(record);
 
       return `
 CLASE: ${record.time} - ${record.subject} ${record.isRenounced ? '(NO COMPUTABLE)' : ''}
@@ -725,7 +936,7 @@ Sede: ${record.sede || 'Tarragona'} (${record.sala || 'Sala 1'})
 Profesor: ${record.teacher}
 Estado de hora: ${hourStatus}${reasonLine}
 Total alumnos: ${students.length}
-Anotaciones: ${record.notes || 'Ninguna'}
+Anotaciones: ${reportNotes}
 ${notesFreshnessLine}
 
 Presentes:
@@ -787,11 +998,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     }
 
     setIsSendingReport(true);
+    const monthlyComputableHours = monthlyPayroll.realHours;
+    const dailyComputableHours = getComputableHoursFromRecords(recordsForSelectedDate).toFixed(2);
+
     const payload = {
       profesor: getTeacherName(),
       profesorEmail: user.email,
       fecha: formatDateSpanish(date),
-      horas: monthlyPayroll.realHours,
+      horas: `${monthlyComputableHours}\nHoras declaradas del día: ${dailyComputableHours}`,
+      horasAcumuladasMes: monthlyComputableHours,
+      horasDia: dailyComputableHours,
       asistenciaDetallada: buildAttendanceDetails(),
       observaciones: buildObservations(report),
       enviadoDesde: 'App profesores Escuela Los Mitos'
@@ -1122,13 +1338,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         : null;
       const nonComputableInfo = nonComputableReason ? getNonComputableInfo(nonComputableReason) : null;
 
-      let finalNotes = deadHourNote 
-        ? `[HORA MUERTA]: ${deadHourNote}. ${currentSession.notes || ''}` 
-        : currentSession.notes;
-
-      if (isRenounced && nonComputableInfo) {
-        finalNotes = `[${nonComputableInfo.tag}]: ${nonComputableInfo.detail} ${currentSession.notes || ''}`;
-      }
+      const finalNotes = currentSession.notes || '';
 
       const notesChanged = String(currentSession.notes || '') !== String(currentSession.originalNotes || '');
       const notesUpdatePayload = notesChanged ? {
@@ -1510,7 +1720,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                   <div className="space-y-4">
                     {dashboardItems.map((item, idx) => {
                       const visibleCount = item.data.students?.filter(s => !s.isRecovery || s.recoveryDate === date).length || 0;
-                      const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
+                      const activeCount = item.data.students?.filter(s => !s.isPaused && (!s.isRecovery || s.recoveryDate === date)).length || 0;
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 
                       const isTarragonaFestivo = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
@@ -1709,89 +1919,105 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
                 {/* ZONA DE ALUMNOS */}
                 <div className="p-6 md:p-8">
-                  <div className={`flex flex-col mb-8 p-6 rounded-2xl border-2 transition-colors ${isCapacityMissing ? 'bg-amber-50/50 border-amber-200' : isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-zinc-50 border-zinc-200'}`}>
-                    <h3 className="text-sm uppercase tracking-widest font-black text-slate-800 mb-4 flex items-center gap-2">
-                      <UserPlus className="w-5 h-5 text-black" />
-                      Añadir Alumno
-                      {currentSession.capacity && (
-                        <span className={`ml-2 px-3 py-1 rounded-lg text-[10px] ${isOverCapacity ? 'bg-red-600 text-white shadow-sm' : isCapacityReached ? 'bg-red-200 text-red-900' : 'bg-zinc-200 text-zinc-600'}`}>
-                          ({currentCount} / {currentSession.capacity})
-                        </span>
-                      )}
-                    </h3>
-                    
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
-                      <div className="w-full sm:flex-1 relative">
-                        <input
-                          type="text"
-                          name="custom_search_field_no_chrome"
-                          autoComplete="new-password"
-                          placeholder={isCapacityMissing ? "Escribe la capacidad arriba primero..." : isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
-                          value={currentSession.newStudentName}
-                          onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && addStudent()}
-                          disabled={isDisabledAdd}
-                          className={`w-full p-4 text-sm font-bold rounded-xl outline-none relative z-10 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                        />
-                        {!isDisabledAdd && currentSession.newStudentName.length >= 2 && (
-                          <div className="absolute left-0 right-0 top-full mt-2 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-56 overflow-y-auto overflow-x-hidden">
-                            {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
-                              <div className="p-4 text-sm font-bold text-zinc-500 bg-zinc-50">
-                                No hay coincidencias. Se guardará como alumno nuevo.
-                              </div>
-                            ) : (
-                              globalStudents
-                                .filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase()))
-                                .map(student => (
-                                  <div
-                                    key={student.id}
-                                    onClick={() => handleSessionFieldChange('newStudentName', student.name)}
-                                    className="p-4 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 last:border-0 transition-colors flex items-center gap-3"
-                                  >
-                                    <User className="w-4 h-4 opacity-50" />
-                                    {student.name}
-                                  </div>
-                                ))
-                            )}
-                          </div>
+                  {isAdmin ? (
+                    <div className={`flex flex-col mb-8 p-6 rounded-2xl border-2 transition-colors ${isCapacityMissing ? 'bg-amber-50/50 border-amber-200' : isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-zinc-50 border-zinc-200'}`}>
+                      <h3 className="text-sm uppercase tracking-widest font-black text-slate-800 mb-4 flex items-center gap-2">
+                        <UserPlus className="w-5 h-5 text-black" />
+                        Añadir Alumno
+                        <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-widest">Solo Admin</span>
+                        {currentSession.capacity && (
+                          <span className={`ml-2 px-3 py-1 rounded-lg text-[10px] ${isOverCapacity ? 'bg-red-600 text-white shadow-sm' : isCapacityReached ? 'bg-red-200 text-red-900' : 'bg-zinc-200 text-zinc-600'}`}>
+                            ({currentCount} / {currentSession.capacity})
+                          </span>
                         )}
+                      </h3>
+                      
+                      <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl mb-4 text-[11px] font-bold leading-relaxed">
+                        Esta puerta queda reservada a coordinación. Los profesores gestionan recuperaciones desde la bandeja de avisos, aceptando o rechazando solicitudes ya creadas por el alumno.
                       </div>
 
-                      <div className="w-full sm:flex-1 relative">
-                        <input
-                          type="email"
-                          placeholder="Email del alumno (Opcional)"
-                          value={currentSession.newStudentEmail}
-                          onChange={(e) => handleSessionFieldChange('newStudentEmail', e.target.value)}
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
+                        <div className="w-full sm:flex-1 relative">
+                          <input
+                            type="text"
+                            name="custom_search_field_no_chrome"
+                            autoComplete="new-password"
+                            placeholder={isCapacityMissing ? "Escribe la capacidad arriba primero..." : isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
+                            value={currentSession.newStudentName}
+                            onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && addStudent()}
+                            disabled={isDisabledAdd}
+                            className={`w-full p-4 text-sm font-bold rounded-xl outline-none relative z-10 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
+                          />
+                          {!isDisabledAdd && currentSession.newStudentName.length >= 2 && (
+                            <div className="absolute left-0 right-0 top-full mt-2 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-56 overflow-y-auto overflow-x-hidden">
+                              {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
+                                <div className="p-4 text-sm font-bold text-zinc-500 bg-zinc-50">
+                                  No hay coincidencias. Se guardará como alumno nuevo.
+                                </div>
+                              ) : (
+                                globalStudents
+                                  .filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase()))
+                                  .map(student => (
+                                    <div
+                                      key={student.id}
+                                      onClick={() => handleSessionFieldChange('newStudentName', student.name)}
+                                      className="p-4 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 last:border-0 transition-colors flex items-center gap-3"
+                                    >
+                                      <User className="w-4 h-4 opacity-50" />
+                                      {student.name}
+                                    </div>
+                                  ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="w-full sm:flex-1 relative">
+                          <input
+                            type="email"
+                            placeholder="Email del alumno (Opcional)"
+                            value={currentSession.newStudentEmail}
+                            onChange={(e) => handleSessionFieldChange('newStudentEmail', e.target.value)}
+                            disabled={isDisabledAdd}
+                            className={`w-full p-4 text-sm font-bold rounded-xl outline-none transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
+                          />
+                        </div>
+
+                        <div className={`flex items-center gap-3 w-full sm:w-auto px-4 py-4 rounded-xl border-2 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-zinc-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
+                          <input
+                            type="checkbox"
+                            id="isRecovery"
+                            checked={currentSession.isAddingRecovery || false}
+                            onChange={(e) => handleSessionFieldChange('isAddingRecovery', e.target.checked)}
+                            disabled={isDisabledAdd}
+                            className="w-5 h-5 accent-amber-600 rounded cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          <label htmlFor="isRecovery" className="text-xs font-black text-amber-900 uppercase tracking-widest cursor-pointer whitespace-nowrap">
+                            Recuperar
+                          </label>
+                        </div>
+
+                        <button
+                          onClick={addStudent}
                           disabled={isDisabledAdd}
-                          className={`w-full p-4 text-sm font-bold rounded-xl outline-none transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                        />
+                          className={`w-full sm:w-auto px-8 py-4 font-black text-xs tracking-widest uppercase rounded-xl transition-all shadow-sm flex justify-center ${isDisabledAdd ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
+                        >
+                          Añadir
+                        </button>
                       </div>
-
-                      <div className={`flex items-center gap-3 w-full sm:w-auto px-4 py-4 rounded-xl border-2 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-zinc-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
-                        <input
-                          type="checkbox"
-                          id="isRecovery"
-                          checked={currentSession.isAddingRecovery || false}
-                          onChange={(e) => handleSessionFieldChange('isAddingRecovery', e.target.checked)}
-                          disabled={isDisabledAdd}
-                          className="w-5 h-5 accent-amber-600 rounded cursor-pointer disabled:cursor-not-allowed"
-                        />
-                        <label htmlFor="isRecovery" className="text-xs font-black text-amber-900 uppercase tracking-widest cursor-pointer whitespace-nowrap">
-                          Recuperar
-                        </label>
-                      </div>
-
-                      <button
-                        onClick={addStudent}
-                        disabled={isDisabledAdd}
-                        className={`w-full sm:w-auto px-8 py-4 font-black text-xs tracking-widest uppercase rounded-xl transition-all shadow-sm flex justify-center ${isDisabledAdd ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
-                      >
-                        Añadir
-                      </button>
+                      {currentSession.newStudentEmail && <p className="text-[10px] font-bold text-blue-600 mt-3">💡 Al poner email, el alumno podrá activar su portal automáticamente la primera vez que entre.</p>}
                     </div>
-                    {currentSession.newStudentEmail && <p className="text-[10px] font-bold text-blue-600 mt-3">💡 Al poner email, el alumno podrá activar su portal automáticamente la primera vez que entre.</p>}
-                  </div>
+                  ) : (
+                    <div className="mb-8 p-5 rounded-2xl border-2 border-blue-100 bg-blue-50 text-blue-900">
+                      <h3 className="text-sm uppercase tracking-widest font-black mb-2 flex items-center gap-2">
+                        <Ticket className="w-5 h-5" /> Recuperaciones centralizadas
+                      </h3>
+                      <p className="text-xs font-bold leading-relaxed">
+                        Los alumnos de recuperación aparecerán aquí automáticamente cuando aceptes su solicitud desde la pestaña Avisos. El profesor ya no añade alumnos manualmente a la clase.
+                      </p>
+                    </div>
+                  )}
 
                   <div className="space-y-4">
                     {currentSession.students.map((student) => {
@@ -1961,32 +2187,72 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {notifications.map(n => (
+                {notifications.map(n => {
+                  const isRecoveryRequest = n.type === 'recuperacion';
+                  const targetClass = isRecoveryRequest ? getRecoveryClass(n) : null;
+                  const ticketInfo = isRecoveryRequest ? getRecoveryTicketInfo(n) : null;
+                  const recoveryClassLine = n.requestedClassLine || (targetClass ? formatClassSummary(targetClass) : 'Clase no localizada');
+                  const canApproveRecovery = isRecoveryRequest && targetClass?.refPath && ticketInfo?.free > 0;
+
+                  return (
                   <div key={n.id} className="bg-white border-2 border-zinc-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
-                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : 'bg-emerald-50 text-emerald-500'}`}>
-                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
+                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : isRecoveryRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-500'}`}>
+                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : isRecoveryRequest ? <Ticket className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
                     </div>
                     <div className="flex-1">
                       <h3 className="font-black text-lg uppercase tracking-tight">{n.studentName}</h3>
                       <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">
-                        {n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`}
+                        {isRecoveryRequest ? 'Solicita recuperación' : (n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`)}
                       </p>
-                      <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
-                        <p className="text-sm font-medium text-zinc-600 italic">"{n.details || 'Sin detalles adicionales'}"</p>
-                      </div>
+
+                      {isRecoveryRequest ? (
+                        <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 space-y-2">
+                          <p className="text-xs font-black text-blue-900 uppercase tracking-widest">Clase solicitada</p>
+                          <p className="text-sm font-bold text-slate-800">{recoveryClassLine}</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
+                            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Fecha: <span className="text-slate-800">{formatDateSpanish(n.recoveryDate)}</span></p>
+                            <p className={`text-[10px] font-black uppercase tracking-widest ${ticketInfo?.free > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                              Tickets libres: {ticketInfo?.free || 0} / válidos: {ticketInfo?.valid || 0}
+                            </p>
+                          </div>
+                          {n.details && <p className="text-xs font-medium text-zinc-600 italic pt-2">"{n.details}"</p>}
+                          {!targetClass && <p className="text-[10px] font-black text-red-600 uppercase tracking-widest pt-2">No se ha localizado la clase en tu agenda.</p>}
+                        </div>
+                      ) : (
+                        <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+                          <p className="text-sm font-medium text-zinc-600 italic">"{n.details || 'Sin detalles adicionales'}"</p>
+                        </div>
+                      )}
+
                       {n.targetMonth && (
                         <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mt-3">Para el mes de: {n.targetMonth}</p>
                       )}
                       
-                      <div className="mt-4 pt-4 border-t border-zinc-100">
-                        <button onClick={() => dismissNotification(n.id)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
-                          <Check className="w-4 h-4"/> Enterado / Ocultar
-                        </button>
+                      <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-col sm:flex-row gap-2">
+                        {isRecoveryRequest ? (
+                          <>
+                            <button
+                              onClick={() => approveRecoveryRequest(n)}
+                              disabled={!canApproveRecovery}
+                              className={`w-full sm:w-auto text-[10px] font-black uppercase tracking-widest px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2 ${canApproveRecovery ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                            >
+                              <Check className="w-4 h-4"/> Aceptar recuperación
+                            </button>
+                            <button onClick={() => rejectRecoveryRequest(n)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                              <X className="w-4 h-4"/> Rechazar
+                            </button>
+                          </>
+                        ) : (
+                          <button onClick={() => dismissNotification(n.id)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                            <Check className="w-4 h-4"/> Enterado / Ocultar
+                          </button>
+                        )}
                       </div>
 
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

@@ -249,6 +249,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [editClassModal, setEditClassModal] = useState(null);
   const [editClassData, setEditClassData] = useState(null);
   const [socialModalText, setSocialModalText] = useState(''); 
+  const [photosModalOpen, setPhotosModalOpen] = useState(false);
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
@@ -1657,6 +1658,280 @@ Tickets libres: ${recoveryTicketStats.free}`);
     downloadTextFile(filename, lines.join('\n'), 'text/plain;charset=utf-8');
   };
 
+
+  const handleDownloadProjectedSchoolSnapshot = () => {
+    const actionableTypes = new Set(['baja', 'mantenimiento', 'reactivar_plaza', 'cambio_horario', 'ampliar_clases']);
+    const projectedClasses = recurringClassesOnly.map(clase => ({
+      ...clase,
+      students: (clase.students || []).map(studentEntry => ({ ...studentEntry }))
+    }));
+    const classById = new Map(projectedClasses.map(clase => [clase.id, clase]));
+    const studentById = new Map(students.map(student => [student.id, { ...student }]));
+    const studentMovements = new Map();
+    const movements = [];
+
+    const addStudentMovement = (studentId, label) => {
+      if (!studentId || !label) return;
+      if (!studentMovements.has(studentId)) studentMovements.set(studentId, []);
+      studentMovements.get(studentId).push(label);
+    };
+
+    const getProjectedStudent = (gestion) => {
+      if (!gestion?.studentId) return null;
+      let studentInfo = studentById.get(gestion.studentId);
+      if (!studentInfo) {
+        studentInfo = {
+          id: gestion.studentId,
+          name: gestion.studentName || 'Alumno',
+          email: gestion.studentEmail || '',
+          globalStatus: 'activo'
+        };
+        studentById.set(gestion.studentId, studentInfo);
+      }
+      return studentInfo;
+    };
+
+    const getProjectedDisplayName = (studentInfo, fallbackName = '') => {
+      if (studentInfo?.useAlias && studentInfo?.alias) return studentInfo.alias;
+      return fallbackName || studentInfo?.alias || studentInfo?.name || 'Alumno';
+    };
+
+    const getProjectedEmail = (studentInfo, gestion = {}) => {
+      return studentInfo?.email || gestion.studentEmail || gestion.email || '';
+    };
+
+    const describeProjectedClass = (clase) => {
+      if (!clase) return '';
+      return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''} · ${clase.teacher || 'Sin profesor'}`;
+    };
+
+    const addOrUpdateStudentInClass = (clase, studentInfo, gestion, isPaused = false, movementLabel = '') => {
+      if (!clase || !studentInfo?.id) return;
+      const displayName = getProjectedDisplayName(studentInfo, gestion.studentName);
+      const email = getProjectedEmail(studentInfo, gestion);
+      const payload = {
+        id: studentInfo.id,
+        name: displayName,
+        email,
+        isPaused,
+        status: 'present',
+        isRecovery: false
+      };
+
+      const exists = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
+      if (exists) {
+        clase.students = (clase.students || []).map(studentEntry =>
+          studentEntry.id === studentInfo.id
+            ? { ...studentEntry, ...payload, isPaused: Boolean(isPaused || studentEntry.isPaused) }
+            : studentEntry
+        );
+      } else {
+        clase.students = [...(clase.students || []), payload];
+      }
+      addStudentMovement(studentInfo.id, movementLabel);
+    };
+
+    const removeStudentFromClass = (clase, studentId) => {
+      if (!clase || !studentId) return false;
+      const before = (clase.students || []).length;
+      clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== studentId);
+      return clase.students.length !== before;
+    };
+
+    const pendingProjectionGestiones = [...pendingGestiones]
+      .filter(gestion => actionableTypes.has(gestion.type))
+      .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+
+    pendingProjectionGestiones.forEach(gestion => {
+      const studentInfo = getProjectedStudent(gestion);
+      const studentName = getProjectedDisplayName(studentInfo, gestion.studentName || 'Alumno');
+      const studentEmail = getProjectedEmail(studentInfo, gestion);
+      const baseMovement = {
+        type: gestion.type,
+        studentName,
+        email: studentEmail,
+        details: gestion.details || gestion.title || '',
+        result: ''
+      };
+
+      if (!studentInfo?.id) {
+        movements.push({ ...baseMovement, result: 'NO APLICADA: gestión sin alumno asociado' });
+        return;
+      }
+
+      if (gestion.type === 'baja') {
+        studentInfo.globalStatus = 'baja';
+        let removedFrom = 0;
+        projectedClasses.forEach(clase => {
+          if (removeStudentFromClass(clase, studentInfo.id)) removedFrom += 1;
+        });
+        addStudentMovement(studentInfo.id, 'BAJA PENDIENTE');
+        movements.push({ ...baseMovement, result: `BAJA aplicada en proyección. Eliminado de ${removedFrom} clase(s).` });
+        return;
+      }
+
+      if (gestion.type === 'mantenimiento') {
+        studentInfo.globalStatus = 'congelado';
+        let affected = 0;
+        projectedClasses.forEach(clase => {
+          const hasStudent = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
+          if (!hasStudent) return;
+          clase.students = (clase.students || []).map(studentEntry =>
+            studentEntry.id === studentInfo.id ? { ...studentEntry, isPaused: true } : studentEntry
+          );
+          affected += 1;
+        });
+        addStudentMovement(studentInfo.id, 'MANTENIMIENTO PENDIENTE');
+        movements.push({ ...baseMovement, result: `MANTENIMIENTO aplicado en proyección. Plaza reservada en ${affected} clase(s).` });
+        return;
+      }
+
+      if (gestion.type === 'reactivar_plaza') {
+        studentInfo.globalStatus = 'activo';
+        let affected = 0;
+        projectedClasses.forEach(clase => {
+          const hasStudent = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
+          if (!hasStudent) return;
+          clase.students = (clase.students || []).map(studentEntry =>
+            studentEntry.id === studentInfo.id ? { ...studentEntry, isPaused: false } : studentEntry
+          );
+          affected += 1;
+        });
+        addStudentMovement(studentInfo.id, 'REACTIVACIÓN PENDIENTE');
+        movements.push({ ...baseMovement, result: `REACTIVACIÓN aplicada en proyección. Reactivado en ${affected} clase(s).` });
+        return;
+      }
+
+      if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
+        const targetClass = classById.get(gestion.requestedClass);
+        if (!targetClass) {
+          movements.push({ ...baseMovement, result: `NO APLICADA: no se encontró la clase destino (${gestion.requestedClass || 'sin clase destino'}).` });
+          return;
+        }
+
+        if (gestion.type === 'cambio_horario') {
+          let removedFrom = 0;
+          projectedClasses.forEach(clase => {
+            if (clase.id === targetClass.id) return;
+            if (clase.subject !== targetClass.subject) return;
+            if (removeStudentFromClass(clase, studentInfo.id)) removedFrom += 1;
+          });
+          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, `CAMBIO DE HORARIO PENDIENTE → ${describeProjectedClass(targetClass)}`);
+          movements.push({ ...baseMovement, result: `CAMBIO DE HORARIO aplicado. Sale de ${removedFrom} clase(s) de ${targetClass.subject} y entra en ${describeProjectedClass(targetClass)}.` });
+        } else {
+          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, `AMPLIACIÓN PENDIENTE → ${describeProjectedClass(targetClass)}`);
+          movements.push({ ...baseMovement, result: `AMPLIACIÓN aplicada. Entra en ${describeProjectedClass(targetClass)}.` });
+        }
+      }
+    });
+
+    const sortedClasses = projectedClasses.sort((a, b) => {
+      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
+      if (sedeCompare !== 0) return sedeCompare;
+      const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
+      if (teacherCompare !== 0) return teacherCompare;
+      const dayCompare = Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0);
+      if (dayCompare !== 0) return dayCompare;
+      return String(a.time || '').localeCompare(String(b.time || ''));
+    });
+
+    const headers = [
+      'Tipo foto', 'Sede', 'Profesor', 'Instrumento', 'Día', 'Hora inicio', 'Hora fin', 'Sala', 'Aforo', 'Cuota base',
+      'ID clase', 'Nombre en clase', 'Titular CRM', 'Nombre real alumno/a', 'Email', 'Estado CRM proyectado', 'Situación proyectada',
+      'Activos proyectados', 'Mantenimiento proyectado', 'Ocupación proyectada', 'Plazas libres proyectadas', 'Aviso proyección',
+      'Movimiento proyectado', 'Origen proyección'
+    ];
+    const rows = [headers.map(escapeCsvCell).join(';')];
+
+    sortedClasses.forEach(clase => {
+      const classStudents = (clase.students || []).filter(studentEntry => {
+        const studentInfo = studentById.get(studentEntry.id);
+        return studentInfo?.globalStatus !== 'baja';
+      });
+      const cap = parseInt(clase.capacity, 10) || 0;
+      const maintenanceCount = classStudents.filter(studentEntry => {
+        const studentInfo = studentById.get(studentEntry.id);
+        return studentEntry.isPaused || studentInfo?.globalStatus === 'congelado';
+      }).length;
+      const activeCount = classStudents.filter(studentEntry => {
+        const studentInfo = studentById.get(studentEntry.id);
+        return !studentEntry.isPaused && studentInfo?.globalStatus !== 'congelado';
+      }).length;
+      const occupiedCount = classStudents.length;
+      const freeSpots = cap ? cap - occupiedCount : '';
+      const freeSpotsSafe = Number.isFinite(freeSpots) ? Math.max(freeSpots, 0) : '';
+
+      let classWarning = 'OPERATIVA';
+      if (cap && occupiedCount > cap) classWarning = `SOBREAFORO PROYECTADO (+${occupiedCount - cap})`;
+      else if (occupiedCount === 0) classWarning = 'CLASE VACÍA / HIBERNADA';
+      else if (activeCount === 0 && maintenanceCount > 0) classWarning = 'SOLO MANTENIMIENTO';
+      else if (activeCount === 1 && cap > 1) classWarning = 'GRUPO CON 1 ALUMNO ACTIVO';
+      else if (cap > 1 && activeCount > 0 && activeCount <= (cap / 2)) classWarning = 'GRUPO EN PELIGRO';
+      else if (cap && freeSpots > 0) classWarning = 'CON PLAZAS LIBRES';
+      else if (cap && freeSpots === 0) classWarning = 'COMPLETA';
+
+      const base = [
+        'Proyección', clase.sede || 'Tarragona', clase.teacher || '', clase.subject || '', getDayName(clase.dayOfWeek), clase.time || '',
+        getClassEndTime(clase.time, clase.duration), clase.sala || '', clase.capacity || '', clase.cuotaBase ?? '', clase.id || ''
+      ];
+      const classProjectionData = [activeCount, maintenanceCount, occupiedCount, freeSpotsSafe, classWarning];
+
+      if (classStudents.length === 0) {
+        rows.push([
+          ...base, '', '', '', '', '', 'Clase sin alumnos', ...classProjectionData, '', 'Situación actual + gestiones pendientes'
+        ].map(escapeCsvCell).join(';'));
+        return;
+      }
+
+      classStudents
+        .map(studentEntry => {
+          const studentInfo = studentById.get(studentEntry.id);
+          const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
+          const titularName = studentInfo?.name || '';
+          const realName = studentInfo?.alias || '';
+          const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
+          const crmStatus = studentInfo?.globalStatus || 'activo';
+          const classStatus = crmStatus === 'impago'
+            ? 'Incidencia administrativa / impago'
+            : (studentEntry.isPaused || crmStatus === 'congelado' ? 'Mantenimiento / plaza reservada' : 'Activo');
+          const movementLabel = (studentMovements.get(studentEntry.id) || []).join(' | ');
+          return { displayName, titularName, realName, email, crmStatus, classStatus, movementLabel };
+        })
+        .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'))
+        .forEach(student => {
+          rows.push([
+            ...base,
+            student.displayName,
+            student.titularName,
+            student.realName,
+            student.email,
+            student.crmStatus,
+            student.classStatus,
+            ...classProjectionData,
+            student.movementLabel,
+            'Situación actual + gestiones pendientes'
+          ].map(escapeCsvCell).join(';'));
+        });
+    });
+
+    if (movements.length > 0) {
+      rows.push(Array(headers.length).fill('').map(escapeCsvCell).join(';'));
+      movements.forEach(movement => {
+        const row = Array(headers.length).fill('');
+        row[0] = 'Gestión pendiente aplicada';
+        row[11] = movement.studentName;
+        row[14] = movement.email;
+        row[15] = movement.type;
+        row[22] = movement.result;
+        row[23] = movement.details || 'Gestión pendiente de bandeja';
+        rows.push(row.map(escapeCsvCell).join(';'));
+      });
+    }
+
+    const filename = `Proyeccion_Escuela_Los_Mitos_${getTodayLocalString()}.csv`;
+    downloadTextFile(filename, `\uFEFF${rows.join('\n')}`, 'text/csv;charset=utf-8');
+  };
+
   const handleGenerateSocialText = () => {
     let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";
     let foundAny = false;
@@ -2586,6 +2861,50 @@ Tickets libres: ${recoveryTicketStats.free}`);
     );
   };
 
+
+  const PhotosModalOverlay = () => {
+    if (!photosModalOpen) return null;
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
+          <button onClick={() => setPhotosModalOpen(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-emerald-600 mb-4">
+            <FileText className="w-8 h-8" />
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight">Fotos de Escuela</h2>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Actual o proyección con bandeja pendiente</p>
+            </div>
+          </div>
+
+          <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-4 mb-6 text-xs font-bold text-slate-600 leading-relaxed">
+            La proyección no modifica Firebase. Solo simula bajas, mantenimientos, reactivaciones, cambios de horario y ampliaciones pendientes para ver cómo quedaría la escuela.
+          </div>
+
+          <div className="grid grid-cols-1 gap-3">
+            <button
+              onClick={() => {
+                handleDownloadSchoolSnapshot();
+                setPhotosModalOpen(false);
+              }}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors"
+            >
+              <FileText className="w-4 h-4"/> Foto actual
+            </button>
+            <button
+              onClick={() => {
+                handleDownloadProjectedSchoolSnapshot();
+                setPhotosModalOpen(false);
+              }}
+              className="w-full bg-black hover:bg-zinc-800 text-white px-5 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors"
+            >
+              <Activity className="w-4 h-4"/> Proyección
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const SocialModalOverlay = () => {
     if (!socialModalText) return null;
     return (
@@ -3189,6 +3508,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
       {editStudentModal && <EditStudentModalOverlay />} 
       {resurrectClassModal && <ResurrectClassModalOverlay />}
       {viewClassModal && <ViewClassModalOverlay />}
+      {photosModalOpen && <PhotosModalOverlay />}
       {socialModalText && <SocialModalOverlay />}
       
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
@@ -3913,8 +4233,8 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 
                 {classesViewMode === 'profesores' && (
                   <>
-                    <button onClick={handleDownloadSchoolSnapshot} className="flex-1 sm:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
-                      <FileText className="w-3 h-3"/> Foto escuela
+                    <button onClick={() => setPhotosModalOpen(true)} className="flex-1 sm:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                      <FileText className="w-3 h-3"/> Fotos
                     </button>
                     <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                       <Megaphone className="w-3 h-3"/> Redes

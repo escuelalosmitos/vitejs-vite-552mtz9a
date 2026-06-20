@@ -1668,12 +1668,25 @@ Tickets libres: ${recoveryTicketStats.free}`);
     const classById = new Map(projectedClasses.map(clase => [clase.id, clase]));
     const studentById = new Map(students.map(student => [student.id, { ...student }]));
     const studentMovements = new Map();
-    const movements = [];
+    const classMovementNotes = new Map();
+    const movementsSummary = [];
 
     const addStudentMovement = (studentId, label) => {
       if (!studentId || !label) return;
       if (!studentMovements.has(studentId)) studentMovements.set(studentId, []);
-      studentMovements.get(studentId).push(label);
+      if (!studentMovements.get(studentId).includes(label)) {
+        studentMovements.get(studentId).push(label);
+      }
+    };
+
+    const addClassMovementNote = (classId, name, email, label) => {
+      if (!classId || !label) return;
+      if (!classMovementNotes.has(classId)) classMovementNotes.set(classId, []);
+      classMovementNotes.get(classId).push({
+        name: name || 'Alumno',
+        email: email || 'sin email',
+        label
+      });
     };
 
     const getProjectedStudent = (gestion) => {
@@ -1696,8 +1709,8 @@ Tickets libres: ${recoveryTicketStats.free}`);
       return fallbackName || studentInfo?.alias || studentInfo?.name || 'Alumno';
     };
 
-    const getProjectedEmail = (studentInfo, gestion = {}) => {
-      return studentInfo?.email || gestion.studentEmail || gestion.email || '';
+    const getProjectedEmail = (studentInfo, fallback = '') => {
+      return studentInfo?.email || fallback || '';
     };
 
     const describeProjectedClass = (clase) => {
@@ -1705,10 +1718,27 @@ Tickets libres: ${recoveryTicketStats.free}`);
       return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''} · ${clase.teacher || 'Sin profesor'}`;
     };
 
+    const getStudentLineData = (studentEntry = {}, fallbackStudent = null) => {
+      const studentInfo = fallbackStudent || studentById.get(studentEntry.id) || {};
+      const displayName = studentEntry.name || studentEntry.studentName || getProjectedDisplayName(studentInfo);
+      const email = studentInfo.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
+      return { displayName, email, studentInfo };
+    };
+
+    const removeStudentFromClass = (clase, studentId, noteLabel = '') => {
+      if (!clase || !studentId) return false;
+      const existingEntry = (clase.students || []).find(studentEntry => studentEntry.id === studentId);
+      if (!existingEntry) return false;
+      const { displayName, email } = getStudentLineData(existingEntry);
+      if (noteLabel) addClassMovementNote(clase.id, displayName, email, noteLabel);
+      clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== studentId);
+      return true;
+    };
+
     const addOrUpdateStudentInClass = (clase, studentInfo, gestion, isPaused = false, movementLabel = '') => {
       if (!clase || !studentInfo?.id) return;
       const displayName = getProjectedDisplayName(studentInfo, gestion.studentName);
-      const email = getProjectedEmail(studentInfo, gestion);
+      const email = getProjectedEmail(studentInfo, gestion.studentEmail || gestion.email || '');
       const payload = {
         id: studentInfo.id,
         name: displayName,
@@ -1731,13 +1761,6 @@ Tickets libres: ${recoveryTicketStats.free}`);
       addStudentMovement(studentInfo.id, movementLabel);
     };
 
-    const removeStudentFromClass = (clase, studentId) => {
-      if (!clase || !studentId) return false;
-      const before = (clase.students || []).length;
-      clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== studentId);
-      return clase.students.length !== before;
-    };
-
     const pendingProjectionGestiones = [...pendingGestiones]
       .filter(gestion => actionableTypes.has(gestion.type))
       .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
@@ -1745,17 +1768,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
     pendingProjectionGestiones.forEach(gestion => {
       const studentInfo = getProjectedStudent(gestion);
       const studentName = getProjectedDisplayName(studentInfo, gestion.studentName || 'Alumno');
-      const studentEmail = getProjectedEmail(studentInfo, gestion);
-      const baseMovement = {
-        type: gestion.type,
-        studentName,
-        email: studentEmail,
-        details: gestion.details || gestion.title || '',
-        result: ''
-      };
+      const studentEmail = getProjectedEmail(studentInfo, gestion.studentEmail || gestion.email || '');
+      const details = gestion.details || gestion.title || '';
 
       if (!studentInfo?.id) {
-        movements.push({ ...baseMovement, result: 'NO APLICADA: gestión sin alumno asociado' });
+        movementsSummary.push(`- ${studentName} · ${gestion.type}: no aplicada porque la gestión no tiene alumno asociado.`);
         return;
       }
 
@@ -1763,10 +1780,10 @@ Tickets libres: ${recoveryTicketStats.free}`);
         studentInfo.globalStatus = 'baja';
         let removedFrom = 0;
         projectedClasses.forEach(clase => {
-          if (removeStudentFromClass(clase, studentInfo.id)) removedFrom += 1;
+          if (removeStudentFromClass(clase, studentInfo.id, 'BAJA PENDIENTE · sale de esta clase al cierre')) removedFrom += 1;
         });
         addStudentMovement(studentInfo.id, 'BAJA PENDIENTE');
-        movements.push({ ...baseMovement, result: `BAJA aplicada en proyección. Eliminado de ${removedFrom} clase(s).` });
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA pendiente · sale de ${removedFrom} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
@@ -1782,7 +1799,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
           affected += 1;
         });
         addStudentMovement(studentInfo.id, 'MANTENIMIENTO PENDIENTE');
-        movements.push({ ...baseMovement, result: `MANTENIMIENTO aplicado en proyección. Plaza reservada en ${affected} clase(s).` });
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · MANTENIMIENTO pendiente · conserva plaza en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
@@ -1798,14 +1815,14 @@ Tickets libres: ${recoveryTicketStats.free}`);
           affected += 1;
         });
         addStudentMovement(studentInfo.id, 'REACTIVACIÓN PENDIENTE');
-        movements.push({ ...baseMovement, result: `REACTIVACIÓN aplicada en proyección. Reactivado en ${affected} clase(s).` });
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · REACTIVACIÓN pendiente · vuelve activo en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
       if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
         const targetClass = classById.get(gestion.requestedClass);
         if (!targetClass) {
-          movements.push({ ...baseMovement, result: `NO APLICADA: no se encontró la clase destino (${gestion.requestedClass || 'sin clase destino'}).` });
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · ${gestion.type}: no aplicada porque no se encontró clase destino (${gestion.requestedClass || 'sin clase destino'}).`);
           return;
         }
 
@@ -1814,13 +1831,13 @@ Tickets libres: ${recoveryTicketStats.free}`);
           projectedClasses.forEach(clase => {
             if (clase.id === targetClass.id) return;
             if (clase.subject !== targetClass.subject) return;
-            if (removeStudentFromClass(clase, studentInfo.id)) removedFrom += 1;
+            if (removeStudentFromClass(clase, studentInfo.id, `CAMBIO PENDIENTE · sale de esta clase y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
           });
-          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, `CAMBIO DE HORARIO PENDIENTE → ${describeProjectedClass(targetClass)}`);
-          movements.push({ ...baseMovement, result: `CAMBIO DE HORARIO aplicado. Sale de ${removedFrom} clase(s) de ${targetClass.subject} y entra en ${describeProjectedClass(targetClass)}.` });
+          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'CAMBIO PENDIENTE · entra en esta clase');
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · CAMBIO pendiente · sale de ${removedFrom} clase(s) y entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
         } else {
-          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, `AMPLIACIÓN PENDIENTE → ${describeProjectedClass(targetClass)}`);
-          movements.push({ ...baseMovement, result: `AMPLIACIÓN aplicada. Entra en ${describeProjectedClass(targetClass)}.` });
+          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'AMPLIACIÓN PENDIENTE · entra en esta clase');
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · AMPLIACIÓN pendiente · entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
         }
       }
     });
@@ -1835,31 +1852,46 @@ Tickets libres: ${recoveryTicketStats.free}`);
       return String(a.time || '').localeCompare(String(b.time || ''));
     });
 
-    const headers = [
-      'Tipo foto', 'Sede', 'Profesor', 'Instrumento', 'Día', 'Hora inicio', 'Hora fin', 'Sala', 'Aforo', 'Cuota base',
-      'ID clase', 'Nombre en clase', 'Titular CRM', 'Nombre real alumno/a', 'Email', 'Estado CRM proyectado', 'Situación proyectada',
-      'Activos proyectados', 'Mantenimiento proyectado', 'Ocupación proyectada', 'Plazas libres proyectadas', 'Aviso proyección',
-      'Movimiento proyectado', 'Origen proyección'
+    const emptyClassesSummary = [];
+    const onlyMaintenanceSummary = [];
+    const oneStudentSummary = [];
+    const dangerSummary = [];
+    const freeSpotsSummary = [];
+
+    const lines = [
+      'PROYECCIÓN ESCUELA LOS MITOS',
+      `Generada: ${new Date().toLocaleString('es-ES')}`,
+      '',
+      'Simulación: foto actual + gestiones pendientes de bandeja.',
+      'No ejecuta trámites, no modifica Firebase y no envía correos.',
+      'Formato: turno de clase, profesor/a, cupo proyectado, alumnos y movimientos pendientes.',
+      '==============================================================='
     ];
-    const rows = [headers.map(escapeCsvCell).join(';')];
 
     sortedClasses.forEach(clase => {
       const classStudents = (clase.students || []).filter(studentEntry => {
         const studentInfo = studentById.get(studentEntry.id);
-        return studentInfo?.globalStatus !== 'baja';
+        return studentInfo?.globalStatus !== 'baja' && isFixedClassStudent(studentEntry);
       });
+
       const cap = parseInt(clase.capacity, 10) || 0;
-      const maintenanceCount = classStudents.filter(studentEntry => {
+      const maintenanceStudents = classStudents.filter(studentEntry => {
         const studentInfo = studentById.get(studentEntry.id);
         return studentEntry.isPaused || studentInfo?.globalStatus === 'congelado';
-      }).length;
-      const activeCount = classStudents.filter(studentEntry => {
+      });
+      const activeStudents = classStudents.filter(studentEntry => {
         const studentInfo = studentById.get(studentEntry.id);
         return !studentEntry.isPaused && studentInfo?.globalStatus !== 'congelado';
-      }).length;
+      });
+
+      const maintenanceCount = maintenanceStudents.length;
+      const activeCount = activeStudents.length;
       const occupiedCount = classStudents.length;
-      const freeSpots = cap ? cap - occupiedCount : '';
-      const freeSpotsSafe = Number.isFinite(freeSpots) ? Math.max(freeSpots, 0) : '';
+      const freeSpots = cap ? cap - occupiedCount : null;
+      const freeSpotsLabel = freeSpots === null ? 'sin aforo' : Math.max(freeSpots, 0);
+      const endTime = getClassEndTime(clase.time, clase.duration);
+      const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
+      const classLine = `${clase.subject || 'Clase'} · Profesor/a: ${clase.teacher || 'Sin asignar'}`;
 
       let classWarning = 'OPERATIVA';
       if (cap && occupiedCount > cap) classWarning = `SOBREAFORO PROYECTADO (+${occupiedCount - cap})`;
@@ -1870,67 +1902,90 @@ Tickets libres: ${recoveryTicketStats.free}`);
       else if (cap && freeSpots > 0) classWarning = 'CON PLAZAS LIBRES';
       else if (cap && freeSpots === 0) classWarning = 'COMPLETA';
 
-      const base = [
-        'Proyección', clase.sede || 'Tarragona', clase.teacher || '', clase.subject || '', getDayName(clase.dayOfWeek), clase.time || '',
-        getClassEndTime(clase.time, clase.duration), clase.sala || '', clase.capacity || '', clase.cuotaBase ?? '', clase.id || ''
-      ];
-      const classProjectionData = [activeCount, maintenanceCount, occupiedCount, freeSpotsSafe, classWarning];
+      const activeNames = activeStudents
+        .map(studentEntry => getStudentLineData(studentEntry).displayName)
+        .sort((a, b) => a.localeCompare(b, 'es'));
 
-      if (classStudents.length === 0) {
-        rows.push([
-          ...base, '', '', '', '', '', 'Clase sin alumnos', ...classProjectionData, '', 'Situación actual + gestiones pendientes'
-        ].map(escapeCsvCell).join(';'));
-        return;
+      const summaryLine = `${turno} · ${clase.subject || 'Clase'} · ${clase.teacher || 'Sin profesor'} · ocupación ${occupiedCount}/${cap || 'sin aforo'} · activos ${activeCount} · mantenimiento ${maintenanceCount} · libres ${freeSpotsLabel}`;
+
+      if (occupiedCount === 0) emptyClassesSummary.push(summaryLine);
+      else if (activeCount === 0 && maintenanceCount > 0) onlyMaintenanceSummary.push(summaryLine);
+      else if (activeCount === 1 && cap > 1) oneStudentSummary.push(`${summaryLine} · alumno activo: ${activeNames.join(', ') || 'sin nombre'}`);
+      else if (cap > 1 && activeCount > 0 && activeCount <= (cap / 2)) dangerSummary.push(`${summaryLine} · alumnos activos: ${activeNames.join(', ')}`);
+
+      if (freeSpots !== null && freeSpots > 0) {
+        freeSpotsSummary.push(`${turno} · ${clase.subject || 'Clase'} · ${clase.teacher || 'Sin profesor'} · ${freeSpots} plaza(s) libre(s)`);
       }
 
-      classStudents
-        .map(studentEntry => {
-          const studentInfo = studentById.get(studentEntry.id);
-          const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
-          const titularName = studentInfo?.name || '';
-          const realName = studentInfo?.alias || '';
-          const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
-          const crmStatus = studentInfo?.globalStatus || 'activo';
-          const classStatus = crmStatus === 'impago'
-            ? 'Incidencia administrativa / impago'
-            : (studentEntry.isPaused || crmStatus === 'congelado' ? 'Mantenimiento / plaza reservada' : 'Activo');
-          const movementLabel = (studentMovements.get(studentEntry.id) || []).join(' | ');
-          return { displayName, titularName, realName, email, crmStatus, classStatus, movementLabel };
-        })
-        .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'))
-        .forEach(student => {
-          rows.push([
-            ...base,
-            student.displayName,
-            student.titularName,
-            student.realName,
-            student.email,
-            student.crmStatus,
-            student.classStatus,
-            ...classProjectionData,
-            student.movementLabel,
-            'Situación actual + gestiones pendientes'
-          ].map(escapeCsvCell).join(';'));
+      lines.push(
+        '',
+        turno,
+        classLine,
+        `Cupo proyectado: ${occupiedCount}/${cap || 'sin aforo'} · Activos: ${activeCount} · Mantenimiento: ${maintenanceCount} · Libres: ${freeSpotsLabel}`,
+        `Estado proyectado: ${classWarning}`,
+        'Alumnos:'
+      );
+
+      if (classStudents.length === 0) {
+        lines.push('- Sin alumnos proyectados');
+      } else {
+        classStudents
+          .map(studentEntry => {
+            const { displayName, email, studentInfo } = getStudentLineData(studentEntry);
+            const crmStatus = studentInfo?.globalStatus || 'activo';
+            const isMaintenance = studentEntry.isPaused || crmStatus === 'congelado';
+            const statusLabel = crmStatus === 'impago'
+              ? ' · incidencia administrativa'
+              : (isMaintenance ? ' · mantenimiento / plaza reservada' : '');
+            const movementLabel = (studentMovements.get(studentEntry.id) || []).join(' | ');
+            return { displayName, email, statusLabel, movementLabel };
+          })
+          .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'))
+          .forEach(student => {
+            const movementSuffix = student.movementLabel ? ` · ${student.movementLabel}` : '';
+            lines.push(`- ${student.displayName} — ${student.email}${student.statusLabel}${movementSuffix}`);
+          });
+      }
+
+      const notes = (classMovementNotes.get(clase.id) || []).sort((a, b) => a.name.localeCompare(b.name, 'es'));
+      if (notes.length > 0) {
+        lines.push('Movimientos pendientes en esta clase:');
+        notes.forEach(note => {
+          lines.push(`- ${note.name} — ${note.email} · ${note.label}`);
         });
+      }
     });
 
-    if (movements.length > 0) {
-      rows.push(Array(headers.length).fill('').map(escapeCsvCell).join(';'));
-      movements.forEach(movement => {
-        const row = Array(headers.length).fill('');
-        row[0] = 'Gestión pendiente aplicada';
-        row[11] = movement.studentName;
-        row[14] = movement.email;
-        row[15] = movement.type;
-        row[22] = movement.result;
-        row[23] = movement.details || 'Gestión pendiente de bandeja';
-        rows.push(row.map(escapeCsvCell).join(';'));
-      });
+    lines.push('', '===============================================================', 'RESUMEN FINAL');
+
+    const pushSummaryBlock = (title, entries, emptyText) => {
+      lines.push('', title);
+      if (entries.length === 0) {
+        lines.push(`- ${emptyText}`);
+      } else {
+        entries.forEach(entry => lines.push(`- ${entry}`));
+      }
+    };
+
+    pushSummaryBlock('CLASES VACÍAS / HIBERNADAS PROYECTADAS', emptyClassesSummary, 'Ninguna clase queda vacía.');
+    pushSummaryBlock('CLASES SOLO CON MANTENIMIENTO', onlyMaintenanceSummary, 'Ninguna clase queda solo en mantenimiento.');
+    pushSummaryBlock('GRUPOS CON 1 ALUMNO ACTIVO', oneStudentSummary, 'Ningún grupo queda con un solo alumno activo.');
+    pushSummaryBlock('GRUPOS EN PELIGRO', dangerSummary, 'Ningún grupo queda en peligro según aforo/ocupación.');
+    pushSummaryBlock('PLAZAS LIBRES PROYECTADAS', freeSpotsSummary, 'No hay plazas libres proyectadas.');
+
+    lines.push('', 'GESTIONES PENDIENTES APLICADAS EN ESTA SIMULACIÓN');
+    if (movementsSummary.length === 0) {
+      lines.push('- No hay bajas, mantenimientos, reactivaciones, cambios o ampliaciones pendientes que afecten a clases fijas.');
+    } else {
+      movementsSummary.forEach(item => lines.push(item));
     }
 
-    const filename = `Proyeccion_Escuela_Los_Mitos_${getTodayLocalString()}.csv`;
-    downloadTextFile(filename, `\uFEFF${rows.join('\n')}`, 'text/csv;charset=utf-8');
+    lines.push('', 'Nota: la proyección no sustituye el cierre real de Tadosi ni la ejecución manual de los checks verdes en la bandeja.');
+
+    const filename = `Proyeccion_Escuela_Los_Mitos_${getTodayLocalString()}.txt`;
+    downloadTextFile(filename, lines.join('\n'), 'text/plain;charset=utf-8');
   };
+
 
   const handleGenerateSocialText = () => {
     let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";

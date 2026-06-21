@@ -37,6 +37,22 @@ const formatDateSpanish = (dateString) => {
   return date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
+const normalizeStudentClassStartDate = (value) => String(value || '').trim();
+
+const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassStartDate(
+  studentEntry.classStartDate || studentEntry.startDate || studentInfo.classStartDate || studentInfo.startDate || ''
+);
+
+const hasFutureClassStartDate = (studentEntry = {}, studentInfo = {}, todayStr = getTodayLocalString()) => {
+  const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+  return Boolean(startDate && startDate > todayStr);
+};
+
+const formatStudentClassStartLabel = (dateString) => {
+  if (!dateString) return '';
+  return `inicio clases: ${formatDateSpanish(dateString)}`;
+};
+
 const normalizeAnnouncementUrl = (url = '') => {
   const cleanUrl = String(url || '').trim();
   if (!cleanUrl) return '';
@@ -1228,6 +1244,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           id: studentId,
           name: displayName,
           email: studentInfo?.email || '',
+          classStartDate: studentInfo?.classStartDate || '',
           isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
           status: 'present',
           isRecovery: type === 'recuperacion',
@@ -1430,6 +1447,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         id: student.id,
         name: displayName,
         email: student.email || '',
+        classStartDate: student.classStartDate || '',
         isPaused: student.globalStatus === 'congelado',
         status: 'present',
         isRecovery: false
@@ -1721,9 +1739,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
             const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
             const crmStatus = studentInfo?.globalStatus || 'activo';
+            const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+            const futureStartLabel = startDate && startDate > todayStr ? ` · ${formatStudentClassStartLabel(startDate)}` : '';
             const statusLabel = crmStatus === 'impago'
-              ? ' · incidencia administrativa'
-              : (studentEntry.isPaused || crmStatus === 'congelado' ? ' · mantenimiento' : '');
+              ? ` · incidencia administrativa${futureStartLabel}`
+              : `${studentEntry.isPaused || crmStatus === 'congelado' ? ' · mantenimiento' : ''}${futureStartLabel}`;
             return { displayName, email, statusLabel };
           })
           .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'))
@@ -1822,6 +1842,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         id: studentInfo.id,
         name: displayName,
         email,
+        classStartDate: studentInfo?.classStartDate || '',
         isPaused,
         status: 'present',
         isRecovery: false
@@ -2012,10 +2033,12 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           .map(studentEntry => {
             const { displayName, email, studentInfo } = getStudentLineData(studentEntry);
             const crmStatus = studentInfo?.globalStatus || 'activo';
+            const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+            const futureStartLabel = startDate && startDate > todayStr ? ` · ${formatStudentClassStartLabel(startDate)}` : '';
             const isMaintenance = studentEntry.isPaused || crmStatus === 'congelado';
             const statusLabel = crmStatus === 'impago'
-              ? ' · incidencia administrativa'
-              : (isMaintenance ? ' · mantenimiento / plaza reservada' : '');
+              ? ` · incidencia administrativa${futureStartLabel}`
+              : `${isMaintenance ? ' · mantenimiento / plaza reservada' : ''}${futureStartLabel}`;
             const movementLabel = (studentMovements.get(studentEntry.id) || []).join(' | ');
             return { displayName, email, statusLabel, movementLabel };
           })
@@ -2468,7 +2491,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             hasMitoverso: false,
             triviaPoints: 0,
             triviaVictories: 0,
-            internalNotes: 'Importado masivamente de Tadosi'
+            internalNotes: 'Importado masivamente de Tadosi',
+            classStartDate: ''
           });
           count++;
         }
@@ -2580,6 +2604,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         id: studentInfo.id,
         name: getDisplayNameForProjection(studentInfo, gestion),
         email: getEmailForProjection(studentInfo, gestion),
+        classStartDate: studentInfo?.classStartDate || '',
         isPaused,
         status: 'present',
         isRecovery: false,
@@ -2967,6 +2992,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     // 👇 FIX: Nuevos estados para el Alias ninja
     const [alias, setAlias] = useState(editStudentModal.alias || '');
     const [useAlias, setUseAlias] = useState(editStudentModal.useAlias || false);
+    const [classStartDate, setClassStartDate] = useState(editStudentModal.classStartDate || '');
     
     const [saving, setSaving] = useState(false);
 
@@ -2975,25 +3001,31 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       setSaving(true);
       try {
         const finalDisplayName = useAlias && alias.trim() ? alias.trim() : name.trim();
+        const cleanClassStartDate = normalizeStudentClassStartDate(classStartDate);
 
         await updateDoc(doc(db, 'artifacts', appId, 'students', editStudentModal.id), { 
           name: name.trim(), 
           email: email.toLowerCase().trim(),
           alias: alias.trim(),
-          useAlias: useAlias
+          useAlias: useAlias,
+          classStartDate: cleanClassStartDate
         });
         
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === editStudentModal.id));
         const batch = writeBatch(db);
         classesWithStudent.forEach(c => {
           const updatedList = c.students.map(s => 
-            s.id === editStudentModal.id ? { ...s, name: finalDisplayName, email: email.toLowerCase().trim() } : s
+            s.id === editStudentModal.id
+              ? { ...s, name: finalDisplayName, email: email.toLowerCase().trim(), classStartDate: cleanClassStartDate }
+              : s
           );
           batch.update(doc(db, c.refPath), { students: updatedList });
         });
         await batch.commit();
         
-        alert('Datos del alumno actualizados en todo el sistema.');
+        alert(cleanClassStartDate
+          ? `Datos del alumno actualizados. No aparecerá en listas de asistencia hasta ${formatDateSpanish(cleanClassStartDate)} con el TeacherPortal actualizado.`
+          : 'Datos del alumno actualizados en todo el sistema. Inicio de clases: inmediato.');
         setEditStudentModal(null);
       } catch (e) {
         alert('Error al actualizar: ' + e.message);
@@ -3019,6 +3051,20 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo Electrónico (Acceso App)</label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vacio@sin-correo.com" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
               {!email && <p className="text-[10px] text-rose-500 font-bold mt-1">⚠️ Sin correo, el alumno no podrá entrar a la App.</p>}
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-emerald-600 mb-1 block flex items-center gap-1"><Calendar className="w-3 h-3"/> Fecha de inicio de las clases</label>
+              <input
+                type="date"
+                value={classStartDate}
+                onChange={e => setClassStartDate(e.target.value)}
+                className="w-full p-3 bg-emerald-50/60 border-2 border-emerald-100 rounded-xl font-bold text-sm outline-none focus:border-emerald-500 transition-colors"
+              />
+              <p className="text-[10px] text-zinc-500 font-bold mt-1 leading-relaxed">Déjalo vacío para inicio inmediato. Si marcas una fecha futura, el alumno seguirá matriculado, pero TeacherPortal no debe mostrarlo en listas hasta ese día.</p>
+              {classStartDate && (
+                <button type="button" onClick={() => setClassStartDate('')} className="mt-2 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black">Quitar fecha / inicio inmediato</button>
+              )}
             </div>
             
             {/* 👇 FIX: Campos para el Alias ninja */}
@@ -3494,13 +3540,15 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             hasMitoverso: false,
             triviaPoints: 0,
             triviaVictories: 0,
-            internalNotes: 'Añadido al reactivar grupo'
+            internalNotes: 'Añadido al reactivar grupo',
+            classStartDate: ''
           });
         }
         const newStudentPayload = {
           id: studentId,
           name: displayName,
           email: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
+          classStartDate: existingStudent?.classStartDate || '',
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
           isRecovery: false
@@ -3631,13 +3679,15 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             hasMitoverso: false,
             triviaPoints: 0,
             triviaVictories: 0,
-            internalNotes: 'Añadido desde panel de clase'
+            internalNotes: 'Añadido desde panel de clase',
+            classStartDate: ''
           });
         }
         const newStudentPayload = {
           id: studentId,
           name: displayName,
           email: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
+          classStartDate: existingStudent?.classStartDate || '',
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
           isRecovery: false
@@ -4373,6 +4423,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               </div>
                             )}
                             <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px] mt-0.5" title={student.email}>{student.email}</div>
+                            {student.classStartDate && student.classStartDate > todayStr && (
+                              <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700 mt-1 flex items-center gap-1">
+                                <Calendar className="w-3 h-3"/> Inicio clases: {formatDateSpanish(student.classStartDate)}
+                              </div>
+                            )}
                             
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               {student.claimed ? (
@@ -4411,9 +4466,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                   const timeShort = c.time.split(':')[0] + 'h';
                                   const studentInClass = (c.students || []).find(s => s.id === student.id);
                                   const isPausedInThisClass = studentInClass?.isPaused === true;
+                                  const classStartDate = getStudentClassStartDate(studentInClass, student);
+                                  const startsLater = classStartDate && classStartDate > todayStr;
                                   return (
-                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isPausedInThisClass ? 'bg-blue-50 border-blue-100 text-blue-600' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}`}>
-                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isPausedInThisClass ? ' · Reservada' : ''}
+                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isPausedInThisClass ? 'bg-blue-50 border-blue-100 text-blue-600' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
+                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isPausedInThisClass ? ' · Reservada' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
                                     </span>
                                   );
                                 })}

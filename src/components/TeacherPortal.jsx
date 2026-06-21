@@ -67,6 +67,17 @@ const formatDateSpanish = (dateString) => {
   return dateString.split('-').reverse().join('/');
 };
 
+const normalizeStudentClassStartDate = (value) => String(value || '').trim();
+
+const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassStartDate(
+  studentEntry.classStartDate || studentEntry.startDate || studentInfo.classStartDate || studentInfo.startDate || ''
+);
+
+const hasClassStartedForDate = (studentEntry = {}, studentInfo = {}, targetDate = '') => {
+  const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+  return !startDate || !targetDate || startDate <= targetDate;
+};
+
 const normalizeNumber = (value) => {
   const number = Number(String(value).replace(',', '.'));
   return Number.isFinite(number) ? number : 0;
@@ -878,12 +889,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const getClassOccupancyForDate = (clase = {}, targetDate = date) => {
-    const visibleStudents = (clase.students || []).filter(s =>
-      !s.isPaused &&
-      (!s.isRecovery || s.recoveryDate === targetDate)
-    );
+    const visibleStudents = (clase.students || []).filter(s => {
+      const studentInfo = globalStudents.find(g => g.id === s.id);
+      return !s.isPaused &&
+        hasClassStartedForDate(s, studentInfo, targetDate) &&
+        (!s.isRecovery || s.recoveryDate === targetDate);
+    });
     const fixedStudentIds = new Set((clase.students || [])
-      .filter(s => !s.isPaused && !s.isRecovery)
+      .filter(s => {
+        const studentInfo = globalStudents.find(g => g.id === s.id);
+        return !s.isPaused && !s.isRecovery && hasClassStartedForDate(s, studentInfo, targetDate);
+      })
       .map(s => s.id));
 
     return {
@@ -1085,7 +1101,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const isReusSpecial = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
       if (isGlobalSpecial || isTarragonaSpecial || isReusSpecial) return false;
 
-      const activeCount = item.data.students?.filter(s => !s.isPaused).length || 0;
+      const activeCount = item.data.students?.filter(s => {
+        const studentInfo = globalStudents.find(g => g.id === s.id);
+        return !s.isPaused && hasClassStartedForDate(s, studentInfo, date);
+      }).length || 0;
       return activeCount > 0;
     });
 
@@ -1149,7 +1168,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const hiddenStudents = [];
 
     (scheduledClass.students || []).forEach(s => {
-      if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
+      const globalStudentInfo = globalStudents.find(g => g.id === s.id);
+      if (!hasClassStartedForDate(s, globalStudentInfo, date)) {
+        hiddenStudents.push({ ...s, isFutureStartHidden: true });
+      } else if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
         hiddenStudents.push(s); 
       } else {
         let currentStatus = s.isPaused ? 'paused' : 'present';
@@ -1274,7 +1296,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           claimed: false,
           instruments: [currentSession.subject],
           classes: [currentSession.classId],
-          internalNotes: '' 
+          internalNotes: '',
+          classStartDate: '' 
         });
       } catch (error) {
         console.error("Error creando alumno global:", error);
@@ -1304,6 +1327,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           id: studentId,
           name: studentName,
           email: existingStudent ? existingStudent.email : studentEmail,
+          classStartDate: existingStudent?.classStartDate || '',
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
           recoveryDate: currentSession.isAddingRecovery ? date : null, 
@@ -1826,8 +1850,14 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 ) : (
                   <div className="space-y-4">
                     {dashboardItems.map((item, idx) => {
-                      const visibleCount = item.data.students?.filter(s => !s.isRecovery || s.recoveryDate === date).length || 0;
-                      const activeCount = item.data.students?.filter(s => !s.isPaused && (!s.isRecovery || s.recoveryDate === date)).length || 0;
+                      const visibleCount = item.data.students?.filter(s => {
+                        const studentInfo = globalStudents.find(g => g.id === s.id);
+                        return hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
+                      }).length || 0;
+                      const activeCount = item.data.students?.filter(s => {
+                        const studentInfo = globalStudents.find(g => g.id === s.id);
+                        return !s.isPaused && hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
+                      }).length || 0;
                       const planningGestionesForClass = getPlanningGestionesForClass(item.data);
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 

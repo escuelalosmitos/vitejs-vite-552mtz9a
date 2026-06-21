@@ -12,6 +12,36 @@ const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukele
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
+
+const PLANNING_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
+
+const PLANNING_GESTION_LABELS = {
+  baja: 'Baja pendiente',
+  mantenimiento: 'Mantenimiento pendiente',
+  reactivar_plaza: 'Reactivación pendiente',
+  cambio_horario: 'Cambio pendiente',
+  ampliar_clases: 'Ampliación pendiente'
+};
+
+const PLANNING_GESTION_STYLE = {
+  baja: 'bg-red-50 text-red-700 border-red-200',
+  mantenimiento: 'bg-blue-50 text-blue-700 border-blue-200',
+  reactivar_plaza: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  cambio_horario: 'bg-violet-50 text-violet-700 border-violet-200',
+  ampliar_clases: 'bg-amber-50 text-amber-800 border-amber-200'
+};
+
+const getPlanningGestionLabel = (gestion = {}) => PLANNING_GESTION_LABELS[gestion.type] || 'Gestión pendiente';
+const getPlanningGestionStyle = (gestion = {}) => PLANNING_GESTION_STYLE[gestion.type] || 'bg-zinc-50 text-zinc-700 border-zinc-200';
+
+const isFixedClassStudent = (studentEntry = {}) => !(
+  studentEntry?.isRecovery === true ||
+  studentEntry?.isTemporary === true ||
+  studentEntry?.isPunctual === true ||
+  studentEntry?.type === 'recovery' ||
+  studentEntry?.status === 'recovery'
+);
+
 const DEFAULT_DEAD_HOUR_TASKS = [
   'Ordenar y revisar material del aula',
   'Preparar ejercicios personalizados para alumnos',
@@ -600,33 +630,109 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   };
 
-  const notifications = useMemo(() => {
-    const myClassIds = new Set();
-    recurringClasses.forEach(c => {
-      myClassIds.add(c.id);
-    });
+  const teacherClassIds = useMemo(() => new Set(recurringClasses.map(c => c.id)), [recurringClasses]);
 
+  const isPlanningGestionRelevantForClass = (gestion = {}, classData = {}) => {
+    if (!gestion || gestion.status !== 'pendiente' || !PLANNING_GESTION_TYPES.has(gestion.type) || !classData) return false;
+    const classId = classData.id || classData.classId;
+
+    if (gestion.requestedClass && classId && gestion.requestedClass === classId) return true;
+
+    if (gestion.studentId) {
+      return (classData.students || []).some(studentEntry =>
+        studentEntry.id === gestion.studentId && isFixedClassStudent(studentEntry)
+      );
+    }
+
+    return false;
+  };
+
+  const pendingPlanningGestiones = useMemo(() => {
+    const teacherName = getTeacherName().toLowerCase();
+
+    return gestiones
+      .filter(g => g.status === 'pendiente' && PLANNING_GESTION_TYPES.has(g.type))
+      .filter(g => {
+        if (g.requestedClass && teacherClassIds.has(g.requestedClass)) return true;
+        if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === teacherName) return true;
+        return recurringClasses.some(c => isPlanningGestionRelevantForClass(g, c));
+      })
+      .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  }, [gestiones, recurringClasses, teacherClassIds, user]);
+
+  const getPlanningGestionesForClass = (classData = {}) => {
+    if (!classData) return [];
+    return pendingPlanningGestiones.filter(g => isPlanningGestionRelevantForClass(g, classData));
+  };
+
+  const getPlanningGestionesForStudent = (studentId, classData = null) => {
+    if (!studentId) return [];
+    return pendingPlanningGestiones.filter(g => {
+      if (g.studentId !== studentId) return false;
+      if (!classData) return true;
+      const classId = classData.id || classData.classId;
+      if (g.type === 'ampliar_clases') return g.requestedClass === classId;
+      return true;
+    });
+  };
+
+  const getPlanningGestionClassContext = (gestion = {}, classData = null) => {
+    const classId = classData?.id || classData?.classId || '';
+    if (gestion.type === 'cambio_horario') {
+      if (gestion.requestedClass && gestion.requestedClass === classId) return 'Entra en esta clase si Admin ejecuta el cambio.';
+      return 'Sale de esta clase si Admin ejecuta el cambio.';
+    }
+    if (gestion.type === 'ampliar_clases') return 'Entraría en esta clase si Admin ejecuta la ampliación.';
+    if (gestion.type === 'baja') return 'Dejará de venir si Admin ejecuta la baja.';
+    if (gestion.type === 'mantenimiento') return 'Quedará en mantenimiento/plaza reservada si Admin lo ejecuta.';
+    if (gestion.type === 'reactivar_plaza') return 'Volverá a estar activo si Admin ejecuta la reactivación.';
+    return 'Gestión pendiente de coordinación.';
+  };
+
+  const renderPlanningBadge = (gestion = {}, classData = null) => {
+    const label = getPlanningGestionLabel(gestion);
+    const style = getPlanningGestionStyle(gestion);
+    return (
+      <span key={gestion.id} title={getPlanningGestionClassContext(gestion, classData)} className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${style}`}>
+        {gestion.type === 'baja' && <UserMinus className="w-3 h-3" />}
+        {gestion.type === 'mantenimiento' && <Snowflake className="w-3 h-3" />}
+        {gestion.type === 'reactivar_plaza' && <CheckCircle className="w-3 h-3" />}
+        {gestion.type === 'cambio_horario' && <RefreshCcw className="w-3 h-3" />}
+        {gestion.type === 'ampliar_clases' && <PlusCircle className="w-3 h-3" />}
+        {label}
+        {gestion.targetMonth ? ` · ${gestion.targetMonth}` : ''}
+      </span>
+    );
+  };
+
+  const notifications = useMemo(() => {
     const isRelevantForTeacher = (g) => {
       if (g.status !== 'pendiente') return false;
 
-      if (g.type === 'aviso_ausencia' && g.requestedClass && myClassIds.has(g.requestedClass)) {
+      if (PLANNING_GESTION_TYPES.has(g.type)) {
+        if (g.requestedClass && teacherClassIds.has(g.requestedClass)) return true;
+        if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === getTeacherName().toLowerCase()) return true;
+        return recurringClasses.some(c => isPlanningGestionRelevantForClass(g, c));
+      }
+
+      if (g.type === 'aviso_ausencia' && g.requestedClass && teacherClassIds.has(g.requestedClass)) {
         return true;
       }
 
       if (g.type === 'recuperacion') {
-        if (g.requestedClass && myClassIds.has(g.requestedClass)) return true;
+        if (g.requestedClass && teacherClassIds.has(g.requestedClass)) return true;
         if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === getTeacherName().toLowerCase()) return true;
       }
 
       return false;
     };
 
-    if (isAdmin) {
-      return gestiones.filter(g => g.status === 'pendiente');
-    }
+    const visibleGestiones = isAdmin
+      ? gestiones.filter(g => g.status === 'pendiente')
+      : gestiones.filter(isRelevantForTeacher);
 
-    return gestiones.filter(isRelevantForTeacher);
-  }, [gestiones, recurringClasses, isAdmin, user]);
+    return visibleGestiones.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  }, [gestiones, recurringClasses, teacherClassIds, isAdmin, user]);
 
   const recordsForSelectedDate = useMemo(() => {
     return records
@@ -1078,6 +1184,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       exceptions: scheduledClass.exceptions || {}, 
       students: visibleStudents, 
       hiddenStudents: hiddenStudents, 
+      pendingPlanningGestiones: getPlanningGestionesForClass(scheduledClass),
       newStudentName: '',
       newStudentEmail: '',
       isAddingRecovery: false,
@@ -1721,6 +1828,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     {dashboardItems.map((item, idx) => {
                       const visibleCount = item.data.students?.filter(s => !s.isRecovery || s.recoveryDate === date).length || 0;
                       const activeCount = item.data.students?.filter(s => !s.isPaused && (!s.isRecovery || s.recoveryDate === date)).length || 0;
+                      const planningGestionesForClass = getPlanningGestionesForClass(item.data);
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 
                       const isTarragonaFestivo = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
@@ -1749,6 +1857,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                                 </>
                               )}
                             </p>
+                            {planningGestionesForClass.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {planningGestionesForClass.slice(0, 3).map(g => renderPlanningBadge(g, item.data))}
+                                {planningGestionesForClass.length > 3 && (
+                                  <span className="inline-flex items-center px-2 py-1 rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-500 text-[9px] font-black uppercase tracking-widest">
+                                    +{planningGestionesForClass.length - 3} más
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="w-full sm:w-auto text-right mt-4 sm:mt-0 flex items-center justify-end gap-2">
@@ -1820,6 +1938,24 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl flex items-center gap-3">
                       <Calendar className="text-purple-600 w-6 h-6 shrink-0"/>
                       <p className="text-xs font-bold text-purple-900">Estás viendo una fecha futura. El botón de pasar lista está bloqueado, pero puedes marcar alumnos que ya te han avisado y darle a <b>"Guardar Previsión"</b>.</p>
+                    </div>
+                  )}
+
+                  {getPlanningGestionesForClass(currentSession).length > 0 && (
+                    <div className="mb-6 p-4 bg-orange-50 border-2 border-orange-200 rounded-xl">
+                      <div className="flex items-center gap-2 text-orange-900 mb-3">
+                        <Bell className="w-5 h-5" />
+                        <p className="text-xs font-black uppercase tracking-widest">Cambios previstos para el mes que viene</p>
+                      </div>
+                      <div className="space-y-2">
+                        {getPlanningGestionesForClass(currentSession).map(g => (
+                          <div key={g.id} className="bg-white/80 border border-orange-100 rounded-xl p-3">
+                            <div className="flex flex-wrap gap-2 items-center mb-1">{renderPlanningBadge(g, currentSession)}</div>
+                            <p className="text-xs font-bold text-orange-900">{g.studentName || 'Alumno'} · {getPlanningGestionClassContext(g, currentSession)}</p>
+                            {g.details && <p className="text-[11px] font-medium text-orange-800/80 mt-1 italic">"{g.details}"</p>}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
 
@@ -2024,9 +2160,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       const globalSt = globalStudents.find(g => g.id === student.id);
                       const displayEmail = globalSt?.email || student.email;
                       const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
+                      const pendingPlanningForStudent = getPlanningGestionesForStudent(student.id, currentSession);
+                      const hasPendingPlanning = pendingPlanningForStudent.length > 0;
 
                       return (
-                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
+                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
                           <div className="flex flex-col">
                             <span className={`font-bold text-lg ${student.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
@@ -2044,6 +2182,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                               <span className="text-[10px] uppercase font-black text-red-600 tracking-widest flex items-center gap-1 mt-1" title="Incidencia administrativa abierta">
                                 <AlertCircle className="w-3 h-3" /> Incidencia abierta
                               </span>
+                            )}
+                            {pendingPlanningForStudent.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 mt-2">
+                                {pendingPlanningForStudent.map(g => renderPlanningBadge(g, currentSession))}
+                              </div>
                             )}
                           </div>
                           
@@ -2173,7 +2316,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Notificaciones</h2>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Gestiones pendientes solicitadas por tus alumnos.</p>
+                <p className="text-sm font-medium text-zinc-500 mt-1">Recuperaciones y cambios previstos que afectan a tus clases.</p>
               </div>
               <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${notifications.length > 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
                 {notifications.length} Pendientes
@@ -2189,23 +2332,43 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {notifications.map(n => {
                   const isRecoveryRequest = n.type === 'recuperacion';
-                  const targetClass = isRecoveryRequest ? getRecoveryClass(n) : null;
+                  const isPlanningRequest = PLANNING_GESTION_TYPES.has(n.type);
+                  const targetClass = (isRecoveryRequest || n.requestedClass) ? getRecoveryClass(n) : null;
                   const ticketInfo = isRecoveryRequest ? getRecoveryTicketInfo(n) : null;
                   const recoveryClassLine = n.requestedClassLine || (targetClass ? formatClassSummary(targetClass) : 'Clase no localizada');
                   const canApproveRecovery = isRecoveryRequest && targetClass?.refPath && ticketInfo?.free > 0;
+                  const affectedClasses = isPlanningRequest ? recurringClasses.filter(c => isPlanningGestionRelevantForClass(n, c)) : [];
 
                   return (
                   <div key={n.id} className="bg-white border-2 border-zinc-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
-                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : isRecoveryRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-500'}`}>
-                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : isRecoveryRequest ? <Ticket className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
+                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'mantenimiento' ? 'bg-blue-50 text-blue-600' : n.type === 'cambio_horario' ? 'bg-violet-50 text-violet-600' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : isRecoveryRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-500'}`}>
+                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'mantenimiento' ? <Snowflake className="w-6 h-6"/> : n.type === 'cambio_horario' ? <RefreshCcw className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : isRecoveryRequest ? <Ticket className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
                     </div>
                     <div className="flex-1">
                       <h3 className="font-black text-lg uppercase tracking-tight">{n.studentName}</h3>
                       <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">
-                        {isRecoveryRequest ? 'Solicita recuperación' : (n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`)}
+                        {isPlanningRequest ? `Planificación: ${getPlanningGestionLabel(n)}` : (isRecoveryRequest ? 'Solicita recuperación' : (n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`))}
                       </p>
 
-                      {isRecoveryRequest ? (
+                      {isPlanningRequest ? (
+                        <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 space-y-3">
+                          <div className="flex flex-wrap gap-2">{renderPlanningBadge(n, targetClass || affectedClasses[0] || null)}</div>
+                          <p className="text-sm font-bold text-orange-950">{getPlanningGestionClassContext(n, targetClass || affectedClasses[0] || null)}</p>
+                          {affectedClasses.length > 0 && (
+                            <div>
+                              <p className="text-[10px] font-black text-orange-800 uppercase tracking-widest mb-1">Clases afectadas</p>
+                              <ul className="space-y-1">
+                                {affectedClasses.map(c => <li key={c.id} className="text-xs font-bold text-slate-800">· {formatClassSummary(c)}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                          {targetClass && !affectedClasses.some(c => c.id === targetClass.id) && (
+                            <p className="text-xs font-bold text-slate-800">Clase destino: {formatClassSummary(targetClass)}</p>
+                          )}
+                          {n.details && <p className="text-xs font-medium text-zinc-600 italic pt-1">"{n.details}"</p>}
+                          <p className="text-[10px] font-black uppercase tracking-widest text-orange-700 pt-2 border-t border-orange-100">Admin debe gestionar Tadosi y ejecutar el trámite. Esta tarjeta solo es previsión.</p>
+                        </div>
+                      ) : isRecoveryRequest ? (
                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 space-y-2">
                           <p className="text-xs font-black text-blue-900 uppercase tracking-widest">Clase solicitada</p>
                           <p className="text-sm font-bold text-slate-800">{recoveryClassLine}</p>
@@ -2229,7 +2392,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       )}
                       
                       <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-col sm:flex-row gap-2">
-                        {isRecoveryRequest ? (
+                        {isPlanningRequest ? (
+                          <div className="w-full bg-zinc-50 border border-zinc-200 text-zinc-500 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2">
+                            <Bell className="w-4 h-4"/> Pendiente de coordinación
+                          </div>
+                        ) : isRecoveryRequest ? (
                           <>
                             <button
                               onClick={() => approveRecoveryRequest(n)}

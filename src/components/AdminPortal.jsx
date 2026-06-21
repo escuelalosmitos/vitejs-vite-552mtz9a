@@ -3,7 +3,7 @@ import {
   Inbox, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
-  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send
+  Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -2786,12 +2786,23 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       return acc;
     }, {});
 
-    if (mode === 'dia') return rows.reduce((acc, row) => {
-      const key = getDayName(row.dayOfWeek || 0) || 'Sin día';
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(row);
-      return acc;
-    }, {});
+    if (mode === 'dia') {
+      const dayOrder = [1, 2, 3, 4, 5, 6, 0];
+      const grouped = {};
+      dayOrder.forEach(dayNumber => {
+        const dayRows = rows
+          .filter(row => Number(row.dayOfWeek || 0) === dayNumber)
+          .sort((a, b) => {
+            const timeCompare = String(a.time || '').localeCompare(String(b.time || ''));
+            if (timeCompare !== 0) return timeCompare;
+            const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
+            if (sedeCompare !== 0) return sedeCompare;
+            return String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
+          });
+        if (dayRows.length > 0) grouped[getDayName(dayNumber)] = dayRows;
+      });
+      return grouped;
+    }
 
     return rows.reduce((acc, row) => {
       const labels = {

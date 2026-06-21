@@ -26,6 +26,11 @@ const defaultRoomCapacities = {
 
 const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 
+const PROJECTABLE_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
+const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
+const HISTORIAL_TRAMITES_BLOCK_SIZE = 30;
+
+
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
   const date = new Date(dateString);
@@ -232,6 +237,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [manualTaskModal, setManualTaskModal] = useState(false);
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
   const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
+  const [resolvedGestionesVisible, setResolvedGestionesVisible] = useState(HISTORIAL_TRAMITES_BLOCK_SIZE);
+  const [dangerViewMode, setDangerViewMode] = useState('actual');
+  const [bulkExecutingGestiones, setBulkExecutingGestiones] = useState(false);
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
@@ -1026,15 +1034,65 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     }
   };
 
-  const updateGestionStatus = async (gestionId, status, gestionData = null) => {
-    const accion = status === 'completado' ? 'APROBAR y EJECUTAR' : 'RECHAZAR';
-    if (!window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) return;
+  const gestionRequiresTadosi = (gestion = {}) => TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
+  const isGestionTadosiDone = (gestion = {}) => Boolean(gestion?.tadosiDone || gestion?.tadosiDoneAt || gestion?.workflowStatus === 'tadosi_hecho' || gestion?.workflowStatus === 'listo_ejecucion');
+  const isGestionReadyForExecution = (gestion = {}) => !gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion);
+
+  const getGestionWorkflowLabel = (gestion = {}) => {
+    if (gestion.status !== 'pendiente') return gestion.status || 'cerrado';
+    if (!gestionRequiresTadosi(gestion)) return 'No requiere Tadosi';
+    if (isGestionTadosiDone(gestion)) return 'Tadosi hecho';
+    return 'Pendiente Tadosi';
+  };
+
+  const markGestionTadosiDone = async (gestion) => {
+    if (!gestion?.id) return;
+    if (!gestionRequiresTadosi(gestion)) {
+      alert('Este trámite no requiere marcar Tadosi. Puedes ejecutarlo directamente.');
+      return;
+    }
+
+    if (isGestionTadosiDone(gestion)) {
+      alert('Este trámite ya está marcado como Tadosi hecho.');
+      return;
+    }
+
+    if (!window.confirm(`¿Marcar como TADOSI HECHO este trámite de ${gestion.studentName || 'alumno'}?\n\nEsto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecutarlo al cierre.`)) return;
+
+    await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
+      tadosiDone: true,
+      tadosiDoneAt: new Date().toISOString(),
+      tadosiDoneBy: user?.email || 'admin',
+      workflowStatus: 'tadosi_hecho'
+    });
+
+    alert('✅ Tadosi marcado como hecho. El trámite ya queda desbloqueado para ejecutar.');
+  };
+
+  const updateGestionStatus = async (gestionId, status, gestionData = null, options = {}) => {
+    const { skipConfirm = false, silent = false } = options;
+    const accion = status === 'completado' ? 'EJECUTAR AHORA' : 'RECHAZAR';
+    const notify = (message, extra = {}) => {
+      if (!silent) alert(message);
+      return { ok: true, message, ...extra };
+    };
+    const fail = (message, extra = {}) => {
+      if (!silent) alert(message);
+      return { ok: false, message, ...extra };
+    };
+
+    if (status === 'completado' && gestionData && !isGestionReadyForExecution(gestionData)) {
+      return fail(`⚠️ Primero marca Tadosi hecho para poder ejecutar este trámite.\n\nAsí evitamos cerrar cambios de clases antes de haber ajustado cobros.`);
+    }
+
+    if (!skipConfirm && !window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) {
+      return { ok: false, cancelled: true, message: 'Cancelado por el usuario.' };
+    }
 
     try {
       if (status !== 'completado' || !gestionData) {
         await finalizeGestionStatus(gestionId, status, gestionData);
-        alert(`Trámite marcado como ${status.toUpperCase()}.`);
-        return;
+        return notify(`Trámite marcado como ${status.toUpperCase()}.`);
       }
 
       const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData;
@@ -1074,8 +1132,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de baja ha sido tramitada correctamente.\n\nA partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData);
-        alert(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
+        return notify(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
@@ -1101,8 +1159,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de mantenimiento/congelación de plaza ha sido tramitada correctamente.\n\nTu plaza queda en mantenimiento según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData);
-        alert(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores/alumno han sido avisados.`);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
+        return notify(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores/alumno han sido avisados.`);
       }
       else if (type === 'reactivar_plaza') {
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
@@ -1128,38 +1186,28 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de reactivación de plaza ha sido tramitada correctamente.\n\nA partir de este momento, tu plaza vuelve a estar activa y podrás volver a asistir a clase y gestionar recuperaciones según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData);
-        alert(`✅ Plaza reactivada. El alumno vuelve a estar activo y los profesores/alumno han sido avisados.`);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
+        return notify(`✅ Plaza reactivada. El alumno vuelve a estar activo y los profesores/alumno han sido avisados.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
         if (studentInfo?.globalStatus === 'congelado') {
-          alert(`⚠️ No se puede ejecutar este trámite.\n\n${displayName} tiene la plaza en mantenimiento/congelada. Primero debe aprobarse la reactivación de plaza.`);
-          return;
+          return fail(`⚠️ No se puede ejecutar este trámite.\n\n${displayName} tiene la plaza en mantenimiento/congelada. Primero debe aprobarse la reactivación de plaza.`);
         }
 
         if (type === 'recuperacion') {
           const recoveryTicketStats = getTicketStatsForDate(studentId, recoveryDate, gestionId);
           if (recoveryTicketStats.free <= 0) {
-            alert(`⚠️ No se puede aprobar esta recuperación.
-
-${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).
-
-Tickets válidos ese día: ${recoveryTicketStats.active}
-Recuperaciones comprometidas: ${recoveryTicketStats.committed}
-Tickets libres: ${recoveryTicketStats.free}`);
-            return;
+            return fail(`⚠️ No se puede aprobar esta recuperación.\n\n${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).\n\nTickets válidos ese día: ${recoveryTicketStats.active}\nRecuperaciones comprometidas: ${recoveryTicketStats.committed}\nTickets libres: ${recoveryTicketStats.free}`);
           }
         }
 
         if (!requestedClass) {
-          alert("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se archivará el ticket.");
-          await finalizeGestionStatus(gestionId, 'completado', gestionData);
-          return;
+          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Archivado sin clase destino');
+          return notify("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se ha archivado el ticket.");
         }
         const targetClass = operationalClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
-          alert(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
-          return;
+          return fail(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
         }
 
         let logMessage = `Iniciando proceso para ${displayName}:\n\n`;
@@ -1188,7 +1236,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
         await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
-        await finalizeGestionStatus(gestionId, 'completado', gestionData);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
         logMessage += `✅ Trámite archivado con éxito.\n`;
 
         if (type === 'cambio_horario') {
@@ -1252,13 +1300,44 @@ Tickets libres: ${recoveryTicketStats.free}`);
           });
         }
 
-        alert(logMessage);
+        return notify(logMessage);
       } else {
-        await finalizeGestionStatus(gestionId, 'completado', gestionData);
-        alert("✅ Trámite genérico archivado correctamente.");
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Trámite genérico archivado');
+        return notify("✅ Trámite genérico archivado correctamente.");
       }
     } catch (error) {
-      alert(`❌ ERROR DEL SISTEMA:\n\n${error.message}`);
+      return fail(`❌ ERROR DEL SISTEMA:\n\n${error.message}`);
+    }
+  };
+
+  const executeAllReadyGestiones = async () => {
+    const readyGestiones = pendingGestiones.filter(isGestionReadyForExecution);
+    const blockedGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
+
+    if (readyGestiones.length === 0) {
+      alert(blockedGestiones.length > 0
+        ? `No hay trámites listos para ejecutar. Tienes ${blockedGestiones.length} pendiente(s) de marcar como Tadosi hecho.`
+        : 'No hay trámites pendientes para ejecutar.');
+      return;
+    }
+
+    if (!window.confirm(`¿Ejecutar ahora ${readyGestiones.length} trámite(s) listos?\n\nNo aparecerán ventanas por cada trámite. Al final verás un resumen.\n\nSe omitirán ${blockedGestiones.length} trámite(s) pendientes de Tadosi.`)) return;
+
+    setBulkExecutingGestiones(true);
+    const results = [];
+    try {
+      for (const gestion of readyGestiones) {
+        const result = await updateGestionStatus(gestion.id, 'completado', gestion, { skipConfirm: true, silent: true });
+        results.push({ gestion, result });
+      }
+
+      const ok = results.filter(r => r.result?.ok).length;
+      const errors = results.filter(r => !r.result?.ok);
+      const errorLines = errors.map(r => `- ${r.gestion.studentName || 'Sin alumno'} (${(r.gestion.type || 'trámite').replace('_', ' ')}): ${r.result?.message || 'Error no especificado'}`);
+
+      alert(`Cierre en bloque terminado.\n\nEjecutados correctamente: ${ok}\nCon error u omitidos: ${errors.length}\nPendientes de Tadosi omitidos: ${blockedGestiones.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
+    } finally {
+      setBulkExecutingGestiones(false);
     }
   };
 
@@ -2405,10 +2484,15 @@ Tickets libres: ${recoveryTicketStats.free}`);
   };
 
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
-  const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente').slice(0, 30);
+  const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
+  const visibleResolvedGestiones = resolvedGestiones.slice(0, resolvedGestionesVisible);
+  const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
+  const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
 
   const gestionPendingFilters = [
     { id: 'todas', label: 'Todas', matcher: () => true },
+    { id: 'tadosi_pendiente', label: 'Pend. Tadosi', matcher: (g) => gestionRequiresTadosi(g) && !isGestionTadosiDone(g) },
+    { id: 'tadosi_hecho', label: 'Tadosi hecho', matcher: (g) => gestionRequiresTadosi(g) && isGestionTadosiDone(g) },
     { id: 'mantenimiento', label: 'Mantenimiento', matcher: (g) => ['mantenimiento', 'reactivar_plaza'].includes(g.type) },
     { id: 'ausencias', label: 'Ausencias', matcher: (g) => (g.type || '').includes('ausencia') || (g.type || '').includes('falta') },
     { id: 'bajas', label: 'Bajas', matcher: (g) => (g.type || '').includes('baja') },
@@ -2455,18 +2539,146 @@ Tickets libres: ${recoveryTicketStats.free}`);
     });
   }, [recurringClassesOnly, students]);
 
+  const getActiveClassStudentCount = (clase, projected = false) => {
+    return (clase.students || []).filter(studentEntry => {
+      const studentInfo = students.find(student => student.id === studentEntry.id);
+      const projectedStatus = projected ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo') : (studentInfo?.globalStatus || 'activo');
+      return !studentEntry.isPaused && projectedStatus !== 'baja' && projectedStatus !== 'congelado';
+    }).length;
+  };
+
+  const getMaintenanceClassStudentCount = (clase, projected = false) => {
+    return (clase.students || []).filter(studentEntry => {
+      const studentInfo = students.find(student => student.id === studentEntry.id);
+      const projectedStatus = projected ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo') : (studentInfo?.globalStatus || 'activo');
+      return projectedStatus !== 'baja' && (studentEntry.isPaused || projectedStatus === 'congelado');
+    }).length;
+  };
+
+  const projectedPlanningClasses = useMemo(() => {
+    const studentStatusById = new Map(students.map(student => [student.id, student.globalStatus || 'activo']));
+    const studentDataById = new Map(students.map(student => [student.id, student]));
+    const projectedClasses = recurringClassesOnly.map(clase => ({
+      ...clase,
+      students: (clase.students || []).map(studentEntry => ({
+        ...studentEntry,
+        projectedGlobalStatus: studentStatusById.get(studentEntry.id) || 'activo'
+      }))
+    }));
+    const classById = new Map(projectedClasses.map(clase => [clase.id, clase]));
+
+    const getDisplayNameForProjection = (studentInfo, gestion) => {
+      if (studentInfo?.useAlias && studentInfo?.alias) return studentInfo.alias;
+      return gestion?.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
+    };
+
+    const getEmailForProjection = (studentInfo, gestion) => studentInfo?.email || gestion?.studentEmail || gestion?.email || '';
+
+    const addStudentToProjectedClass = (clase, studentInfo, gestion, isPaused = false) => {
+      if (!clase || !studentInfo?.id) return;
+      const payload = {
+        id: studentInfo.id,
+        name: getDisplayNameForProjection(studentInfo, gestion),
+        email: getEmailForProjection(studentInfo, gestion),
+        isPaused,
+        status: 'present',
+        isRecovery: false,
+        projectedGlobalStatus: isPaused ? 'congelado' : 'activo'
+      };
+      const exists = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
+      clase.students = exists
+        ? (clase.students || []).map(studentEntry => studentEntry.id === studentInfo.id ? { ...studentEntry, ...payload } : studentEntry)
+        : [...(clase.students || []), payload];
+    };
+
+    [...pendingGestiones]
+      .filter(gestion => PROJECTABLE_GESTION_TYPES.has(gestion.type))
+      .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
+      .forEach(gestion => {
+        if (!gestion.studentId) return;
+        const studentInfo = studentDataById.get(gestion.studentId) || {
+          id: gestion.studentId,
+          name: gestion.studentName || 'Alumno',
+          email: gestion.studentEmail || '',
+          globalStatus: 'activo'
+        };
+
+        if (gestion.type === 'baja') {
+          studentStatusById.set(gestion.studentId, 'baja');
+          projectedClasses.forEach(clase => {
+            clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
+          });
+          return;
+        }
+
+        if (gestion.type === 'mantenimiento') {
+          studentStatusById.set(gestion.studentId, 'congelado');
+          projectedClasses.forEach(clase => {
+            clase.students = (clase.students || []).map(studentEntry =>
+              studentEntry.id === gestion.studentId
+                ? { ...studentEntry, isPaused: true, projectedGlobalStatus: 'congelado' }
+                : studentEntry
+            );
+          });
+          return;
+        }
+
+        if (gestion.type === 'reactivar_plaza') {
+          studentStatusById.set(gestion.studentId, 'activo');
+          projectedClasses.forEach(clase => {
+            clase.students = (clase.students || []).map(studentEntry =>
+              studentEntry.id === gestion.studentId
+                ? { ...studentEntry, isPaused: false, projectedGlobalStatus: 'activo' }
+                : studentEntry
+            );
+          });
+          return;
+        }
+
+        if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
+          const targetClass = classById.get(gestion.requestedClass);
+          if (!targetClass) return;
+
+          if (gestion.type === 'cambio_horario') {
+            projectedClasses.forEach(clase => {
+              if (clase.id === targetClass.id) return;
+              if (clase.subject !== targetClass.subject) return;
+              clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
+            });
+          }
+          addStudentToProjectedClass(targetClass, studentInfo, gestion, false);
+        }
+      });
+
+    return projectedClasses;
+  }, [pendingGestiones, recurringClassesOnly, students]);
+
   const dangerClasses = useMemo(() => {
     return recurringClassesOnly.filter(c => {
-      const activeCount = (c.students || []).filter(studentEntry => {
-        const studentInfo = students.find(student => student.id === studentEntry.id);
-        return !studentEntry.isPaused && studentInfo?.globalStatus !== 'baja' && studentInfo?.globalStatus !== 'congelado';
-      }).length;
+      const activeCount = getActiveClassStudentCount(c, false);
       if (activeCount === 0) return false;
       const cap = parseInt(c.capacity, 10) || 0;
       if (cap <= 1) return false;
       return activeCount <= (cap / 2);
     }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
   }, [recurringClassesOnly, students]);
+
+  const projectedDangerClasses = useMemo(() => {
+    return projectedPlanningClasses.filter(c => {
+      const cap = parseInt(c.capacity, 10) || 0;
+      if (cap <= 1) return false;
+      const activeCount = getActiveClassStudentCount(c, true);
+      return activeCount <= (cap / 2);
+    }).sort((a, b) => {
+      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
+      if (sedeCompare !== 0) return sedeCompare;
+      const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
+      if (teacherCompare !== 0) return teacherCompare;
+      return a.dayOfWeek - b.dayOfWeek || String(a.time || '').localeCompare(String(b.time || ''));
+    });
+  }, [projectedPlanningClasses, students]);
+
+  const dangerClassesForView = dangerViewMode === 'proyeccion' ? projectedDangerClasses : dangerClasses;
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
@@ -3844,10 +4056,30 @@ Tickets libres: ${recoveryTicketStats.free}`);
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bandeja de Entrada</h2>
                 <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos y tareas manuales internas.</p>
               </div>
-              <button onClick={() => setManualTaskModal(true)} className="bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
-                <Plus className="w-4 h-4"/> Nueva Tarea Manual
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button onClick={executeAllReadyGestiones} disabled={bulkExecutingGestiones || readyPendingGestiones.length === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Ejecuta solo los trámites listos: Tadosi hecho o trámites que no requieren Tadosi">
+                  <CheckCircle className="w-4 h-4"/> Ejecutar todas ({readyPendingGestiones.length})
+                </button>
+                <button onClick={() => setManualTaskModal(true)} className="bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                  <Plus className="w-4 h-4"/> Nueva Tarea Manual
+                </button>
+              </div>
             </header>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Pendientes totales</p>
+                <p className="text-2xl font-black text-slate-900">{pendingGestiones.length}</p>
+              </div>
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Listas para ejecutar</p>
+                <p className="text-2xl font-black text-emerald-900">{readyPendingGestiones.length}</p>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Pendientes de Tadosi</p>
+                <p className="text-2xl font-black text-amber-900">{blockedByTadosiGestiones.length}</p>
+              </div>
+            </div>
 
             {pendingGestiones.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
@@ -3937,6 +4169,10 @@ Tickets libres: ${recoveryTicketStats.free}`);
                             <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${(g.type || '').includes('mitobox') ? 'bg-blue-100 text-blue-800' : (g.type || '').includes('baja') ? 'bg-red-100 text-red-800' : (g.type || '').includes('manual') || (g.source === 'manual_admin') ? 'bg-purple-100 text-purple-800' : 'bg-zinc-200 text-zinc-800'}`}>
                               {(g.type || 'tarea').replace('_', ' ')}
                             </span>
+                            <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isGestionReadyForExecution(g) ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                              {getGestionWorkflowLabel(g)}
+                            </div>
+                            {g.tadosiDoneAt && <div className="text-[9px] font-bold text-emerald-600 mt-1 uppercase">Tadosi: {new Date(g.tadosiDoneAt).toLocaleDateString('es-ES')}</div>}
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                             {g.type === 'recuperacion' && (() => {
@@ -3958,8 +4194,27 @@ Tickets libres: ${recoveryTicketStats.free}`);
                             </div>
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
-                            <button onClick={() => updateGestionStatus(g.id, 'completado', g)} className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg mr-2 transition-colors" title="Aprobar y Ejecutar"><Check className="w-4 h-4"/></button>
-                            <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
+                            <div className="flex justify-end gap-2">
+                              {gestionRequiresTadosi(g) && (
+                                <button
+                                  onClick={() => markGestionTadosiDone(g)}
+                                  disabled={isGestionTadosiDone(g)}
+                                  className={`p-2 rounded-lg transition-colors ${isGestionTadosiDone(g) ? 'bg-emerald-100 text-emerald-700 opacity-80 cursor-default' : 'bg-amber-100 hover:bg-amber-200 text-amber-700'}`}
+                                  title={isGestionTadosiDone(g) ? 'Tadosi ya marcado como hecho' : 'Marcar Tadosi hecho'}
+                                >
+                                  <DollarSign className="w-4 h-4"/>
+                                </button>
+                              )}
+                              <button
+                                onClick={() => updateGestionStatus(g.id, 'completado', g)}
+                                disabled={!isGestionReadyForExecution(g)}
+                                className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={isGestionReadyForExecution(g) ? 'Ejecutar ahora' : 'Primero marca Tadosi hecho'}
+                              >
+                                <Check className="w-4 h-4"/>
+                              </button>
+                              <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
+                            </div>
                           </td>
                         </tr>
                         );
@@ -3990,7 +4245,7 @@ Tickets libres: ${recoveryTicketStats.free}`);
                         </tr>
                       </thead>
                       <tbody className="text-sm font-medium text-slate-700">
-                        {resolvedGestiones.map(g => (
+                        {visibleResolvedGestiones.map(g => (
                           <tr key={g.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
                             <td className="p-4 whitespace-nowrap text-zinc-500">{formatDateSpanish(g.date)}</td>
                             <td className="p-4 font-black text-black">{g.studentName}</td>
@@ -4013,6 +4268,16 @@ Tickets libres: ${recoveryTicketStats.free}`);
                     </table>
                   </div>
                 </div>
+                {resolvedGestionesVisible < resolvedGestiones.length && (
+                  <div className="p-4 bg-zinc-50 border-t border-zinc-100 text-center">
+                    <button
+                      onClick={() => setResolvedGestionesVisible(prev => prev + HISTORIAL_TRAMITES_BLOCK_SIZE)}
+                      className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-6 py-3 rounded-xl transition-colors"
+                    >
+                      Cargar más trámites ({Math.min(HISTORIAL_TRAMITES_BLOCK_SIZE, resolvedGestiones.length - resolvedGestionesVisible)} más)
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -4535,56 +4800,118 @@ Tickets libres: ${recoveryTicketStats.free}`);
         {/* --- 5. CLASES EN PELIGRO --- */}
         {activeTab === 'danger' && (
           <div className="space-y-6 animate-in fade-in">
-            <header className="mb-6 flex items-center gap-3">
-              <div className="bg-red-100 p-3 rounded-xl"><AlertTriangle className="w-6 h-6 text-red-600"/></div>
-              <div>
-                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Grupos en Peligro</h2>
-                <p className="text-zinc-500 font-medium text-sm">Clases grupales activas al 50% de ocupación. Las hibernadas tienen su propia vista en Clases Globales.</p>
+            <header className="mb-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-red-100 p-3 rounded-xl"><AlertTriangle className="w-6 h-6 text-red-600"/></div>
+                <div>
+                  <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Grupos en Peligro</h2>
+                  <p className="text-zinc-500 font-medium text-sm">
+                    {dangerViewMode === 'actual'
+                      ? 'Vista real actual: clases grupales activas al 50% de ocupación.'
+                      : 'Vista proyectada: aplica virtualmente las gestiones pendientes para anticipar el mes que viene.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white p-1 rounded-2xl border border-zinc-200 shadow-sm flex gap-1 w-full sm:w-auto">
+                {[
+                  { id: 'actual', label: 'Ahora' },
+                  { id: 'proyeccion', label: 'Mes que viene' }
+                ].map(view => (
+                  <button
+                    key={view.id}
+                    onClick={() => setDangerViewMode(view.id)}
+                    className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerViewMode === view.id ? 'bg-black text-white shadow-md' : 'text-zinc-500 hover:text-black hover:bg-zinc-50'}`}
+                  >
+                    {view.label}
+                  </button>
+                ))}
               </div>
             </header>
 
-            {dangerClasses.length === 0 ? (
+            {dangerViewMode === 'proyeccion' && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 text-xs font-bold leading-relaxed">
+                Esta vista no modifica Firebase. Cruza la foto actual con bajas, mantenimientos, reactivaciones, cambios y ampliaciones pendientes. Sirve para decidir recolocaciones y cierres antes del día 1.
+              </div>
+            )}
+
+            {dangerClassesForView.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Grupos sanos</h3>
-                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo de aforo bajo.</p>
+                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo de aforo bajo en esta vista.</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                {dangerClasses.map(c => {
-                  const activeC = (c.students || []).filter(s => !s.isPaused).length;
-                  const isHibernated = activeC === 0;
-                  const isCritical = activeC === 1; 
+                {dangerClassesForView.map(c => {
+                  const activeC = getActiveClassStudentCount(c, dangerViewMode === 'proyeccion');
+                  const maintenanceC = getMaintenanceClassStudentCount(c, dangerViewMode === 'proyeccion');
+                  const cap = parseInt(c.capacity, 10) || 0;
+                  const isHibernated = activeC === 0 && maintenanceC === 0;
+                  const onlyMaintenance = activeC === 0 && maintenanceC > 0;
+                  const isCritical = activeC === 1;
+                  const activeNames = (c.students || [])
+                    .filter(studentEntry => {
+                      const studentInfo = students.find(student => student.id === studentEntry.id);
+                      const status = dangerViewMode === 'proyeccion' ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo') : (studentInfo?.globalStatus || 'activo');
+                      return !studentEntry.isPaused && status !== 'baja' && status !== 'congelado';
+                    })
+                    .map(studentEntry => studentEntry.name || studentEntry.studentName || students.find(student => student.id === studentEntry.id)?.alias || students.find(student => student.id === studentEntry.id)?.name || 'Alumno')
+                    .sort((a, b) => a.localeCompare(b, 'es'));
 
                   return (
-                    <div key={c.id} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
-                        <Trash2 className="w-4 h-4"/>
-                      </button>
+                    <div key={`${dangerViewMode}-${c.id}`} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : onlyMaintenance ? 'bg-blue-50 border-blue-200' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                      {dangerViewMode === 'actual' && (
+                        <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
+                          <Trash2 className="w-4 h-4"/>
+                        </button>
+                      )}
 
                       <div className="flex justify-between items-start mb-3 pr-8">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
-                          {isHibernated ? 'Hibernada' : isCritical ? 'Crítico' : 'Revisar'}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : onlyMaintenance ? 'bg-blue-200 text-blue-800' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
+                          {isHibernated ? 'Vacía' : onlyMaintenance ? 'Solo mant.' : isCritical ? 'Crítico' : 'Revisar'}
                         </span>
-                        {isHibernated ? <Ghost className="w-5 h-5 text-zinc-400"/> : <span className="font-black text-lg">{activeC} / {c.capacity}</span>}
+                        <span className="font-black text-lg">{activeC} / {cap || '—'}</span>
                       </div>
                       <h4 className="font-black uppercase tracking-tight text-slate-900">{c.subject}</h4>
-                      <p className="text-xs font-bold text-slate-600 mb-2">{getDayName(c.dayOfWeek)} a las {c.time}h</p>
+                      <p className="text-xs font-bold text-slate-600 mb-2">{c.sede || 'Tarragona'} · {getDayName(c.dayOfWeek)} a las {c.time}h · {c.sala || 'Sala 1'}</p>
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {c.teacher}</div>
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                        Activos: {activeC} · Mantenimiento: {maintenanceC} · Cupo: {cap || 'sin aforo'}
+                      </div>
+
+                      {activeNames.length > 0 && (
+                        <div className="mt-3 bg-white/70 border border-white rounded-xl p-3">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Alumnos activos</p>
+                          <p className="text-xs font-bold text-slate-700 leading-relaxed">{activeNames.join(', ')}</p>
+                        </div>
+                      )}
+                      {onlyMaintenance && (
+                        <div className="mt-3 bg-blue-100/70 border border-blue-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-blue-800">
+                          Cerrar operativamente en julio, conservando plazas reservadas.
+                        </div>
+                      )}
+                      {isHibernated && (
+                        <div className="mt-3 bg-zinc-100 border border-zinc-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                          Candidata a hibernar / cerrar turno.
+                        </div>
+                      )}
                       
                       <div className="mt-auto pt-4 flex gap-2">
-                        {isHibernated ? (
+                        {dangerViewMode === 'actual' && isHibernated ? (
                            <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
                              <PlusCircle className="w-3 h-3"/> Reactivar
                            </button>
                         ) : (
-                           <button onClick={() => setViewClassModal(c)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
-                             <Users className="w-3 h-3"/> Alumnos
+                           <button onClick={() => dangerViewMode === 'actual' ? setViewClassModal(c) : setPhotosModalOpen(true)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
+                             <Users className="w-3 h-3"/> {dangerViewMode === 'actual' ? 'Alumnos' : 'Ver fotos'}
                            </button>
                         )}
-                        <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                          <Globe className="w-3 h-3"/> Configurar / Web
-                        </button>
+                        {dangerViewMode === 'actual' && (
+                          <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                            <Globe className="w-3 h-3"/> Configurar / Web
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

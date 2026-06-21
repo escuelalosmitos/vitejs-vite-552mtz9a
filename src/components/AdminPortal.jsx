@@ -255,6 +255,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
   const [resolvedGestionesVisible, setResolvedGestionesVisible] = useState(HISTORIAL_TRAMITES_BLOCK_SIZE);
   const [dangerViewMode, setDangerViewMode] = useState('actual');
+  const [dangerSubView, setDangerSubView] = useState('ocupacion');
   const [bulkExecutingGestiones, setBulkExecutingGestiones] = useState(false);
   
   // VISTA ARQUITECTO E INFORMES
@@ -2563,20 +2564,85 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     });
   }, [recurringClassesOnly, students]);
 
+  const getClassStudentPlanningData = (clase, projected = false) => {
+    return (clase.students || [])
+      .filter(isFixedClassStudent)
+      .map(studentEntry => {
+        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+        const projectedStatus = projected
+          ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo')
+          : (studentInfo?.globalStatus || 'activo');
+        const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+        const isFutureStart = Boolean(startDate && startDate > todayStr);
+        const isMaintenance = projectedStatus !== 'baja' && (studentEntry.isPaused || projectedStatus === 'congelado');
+        const isActive = !isMaintenance && projectedStatus !== 'baja' && !isFutureStart;
+        const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
+        const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
+
+        return {
+          id: studentEntry.id,
+          displayName,
+          email,
+          status: projectedStatus,
+          isMaintenance,
+          isActive,
+          isFutureStart,
+          startDate
+        };
+      });
+  };
+
   const getActiveClassStudentCount = (clase, projected = false) => {
-    return (clase.students || []).filter(studentEntry => {
-      const studentInfo = students.find(student => student.id === studentEntry.id);
-      const projectedStatus = projected ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo') : (studentInfo?.globalStatus || 'activo');
-      return !studentEntry.isPaused && projectedStatus !== 'baja' && projectedStatus !== 'congelado';
-    }).length;
+    return getClassStudentPlanningData(clase, projected).filter(student => student.isActive).length;
   };
 
   const getMaintenanceClassStudentCount = (clase, projected = false) => {
-    return (clase.students || []).filter(studentEntry => {
-      const studentInfo = students.find(student => student.id === studentEntry.id);
-      const projectedStatus = projected ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo') : (studentInfo?.globalStatus || 'activo');
-      return projectedStatus !== 'baja' && (studentEntry.isPaused || projectedStatus === 'congelado');
-    }).length;
+    return getClassStudentPlanningData(clase, projected).filter(student => student.isMaintenance).length;
+  };
+
+  const getDangerThresholds = (capacity) => {
+    const cap = parseInt(capacity, 10) || 0;
+    if (cap <= 1) return null;
+    if (cap >= 8) return { critical: 3, review: 5 };
+    if (cap === 5) return { critical: 1, review: 2 };
+    if (cap === 4) return { critical: 1, review: 2 };
+    return { critical: 1, review: Math.ceil(cap / 2) };
+  };
+
+  const buildDangerClassAnalysis = (clase, projected = false) => {
+    const cap = parseInt(clase.capacity, 10) || 0;
+    const thresholds = getDangerThresholds(cap);
+    const studentRows = getClassStudentPlanningData(clase, projected);
+    const activeStudents = studentRows
+      .filter(student => student.isActive)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
+    const maintenanceStudents = studentRows
+      .filter(student => student.isMaintenance)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
+    const activeCount = activeStudents.length;
+    const maintenanceCount = maintenanceStudents.length;
+
+    if (!thresholds) {
+      return { include: false, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'omitida', statusLabel: 'Particular', statusHelp: 'Clase de aforo 1: no entra en grupos en peligro.', priority: 99 };
+    }
+
+    if (activeCount === 0 && maintenanceCount === 0) {
+      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'vacia', statusLabel: 'Vacía', statusHelp: 'Sin alumnos activos ni plazas en mantenimiento. Candidata a cerrar o hibernar.', priority: 0 };
+    }
+
+    if (activeCount === 0 && maintenanceCount > 0) {
+      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'solo_mantenimiento', statusLabel: 'Solo mant.', statusHelp: 'No hay alumnos activos; solo plazas reservadas en mantenimiento.', priority: 1 };
+    }
+
+    if (activeCount <= thresholds.critical) {
+      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'critico', statusLabel: 'Crítico', statusHelp: `Criterio: aforo ${cap}, crítico con ${thresholds.critical} alumno(s) activo(s) o menos.`, priority: 2 };
+    }
+
+    if (activeCount <= thresholds.review) {
+      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'revisar', statusLabel: 'Revisar', statusHelp: `Criterio: aforo ${cap}, revisar con ${thresholds.review} alumno(s) activo(s) o menos.`, priority: 3 };
+    }
+
+    return { include: false, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'sana', statusLabel: 'Sana', statusHelp: 'Ocupación suficiente.', priority: 99 };
   };
 
   const projectedPlanningClasses = useMemo(() => {
@@ -2678,32 +2744,81 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     return projectedClasses;
   }, [pendingGestiones, recurringClassesOnly, students]);
 
-  const dangerClasses = useMemo(() => {
-    return recurringClassesOnly.filter(c => {
-      const activeCount = getActiveClassStudentCount(c, false);
-      if (activeCount === 0) return false;
-      const cap = parseInt(c.capacity, 10) || 0;
-      if (cap <= 1) return false;
-      return activeCount <= (cap / 2);
-    }).sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
-  }, [recurringClassesOnly, students]);
+  const sortDangerRows = (rows = []) => [...rows].sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
+    if (sedeCompare !== 0) return sedeCompare;
+    const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
+    if (teacherCompare !== 0) return teacherCompare;
+    const dayCompare = Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0);
+    if (dayCompare !== 0) return dayCompare;
+    return String(a.time || '').localeCompare(String(b.time || ''));
+  });
 
-  const projectedDangerClasses = useMemo(() => {
-    return projectedPlanningClasses.filter(c => {
-      const cap = parseInt(c.capacity, 10) || 0;
-      if (cap <= 1) return false;
-      const activeCount = getActiveClassStudentCount(c, true);
-      return activeCount <= (cap / 2);
-    }).sort((a, b) => {
-      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
-      if (sedeCompare !== 0) return sedeCompare;
-      const teacherCompare = String(a.teacher || '').localeCompare(String(b.teacher || ''), 'es');
-      if (teacherCompare !== 0) return teacherCompare;
-      return a.dayOfWeek - b.dayOfWeek || String(a.time || '').localeCompare(String(b.time || ''));
-    });
-  }, [projectedPlanningClasses, students]);
+  const dangerRows = useMemo(() => {
+    const rows = recurringClassesOnly
+      .map(clase => ({ classData: clase, ...clase, ...buildDangerClassAnalysis(clase, false) }))
+      .filter(row => row.include);
+    return sortDangerRows(rows);
+  }, [recurringClassesOnly, students, todayStr]);
 
-  const dangerClassesForView = dangerViewMode === 'proyeccion' ? projectedDangerClasses : dangerClasses;
+  const projectedDangerRows = useMemo(() => {
+    const rows = projectedPlanningClasses
+      .map(clase => ({ classData: clase, ...clase, ...buildDangerClassAnalysis(clase, true) }))
+      .filter(row => row.include);
+    return sortDangerRows(rows);
+  }, [projectedPlanningClasses, students, todayStr]);
+
+  const dangerRowsForView = dangerViewMode === 'proyeccion' ? projectedDangerRows : dangerRows;
+
+  const groupDangerRows = (rows = [], mode = 'ocupacion') => {
+    if (mode === 'profesor') return rows.reduce((acc, row) => {
+      const key = row.teacher || 'Sin profesor';
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(row);
+      return acc;
+    }, {});
+
+    if (mode === 'sede') return rows.reduce((acc, row) => {
+      const key = row.sede || 'Tarragona';
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(row);
+      return acc;
+    }, {});
+
+    if (mode === 'dia') return rows.reduce((acc, row) => {
+      const key = getDayName(row.dayOfWeek || 0) || 'Sin día';
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(row);
+      return acc;
+    }, {});
+
+    return rows.reduce((acc, row) => {
+      const labels = {
+        vacia: 'Vacías / hibernadas',
+        solo_mantenimiento: 'Solo mantenimiento',
+        critico: 'Críticas',
+        revisar: 'Revisar'
+      };
+      const key = labels[row.statusKey] || row.statusLabel || 'Otros';
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(row);
+      return acc;
+    }, {});
+  };
+
+  const dangerContactRows = useMemo(() => {
+    return dangerRowsForView
+      .filter(row => row.statusKey === 'critico' && row.activeStudents.length > 0)
+      .flatMap(row => row.activeStudents.map(student => ({
+        key: `${row.id}-${student.id}`,
+        studentName: student.displayName,
+        email: student.email || 'sin email',
+        classLine: `${row.subject || 'Clase'} · ${getDayName(row.dayOfWeek)} ${row.time || ''}h · ${row.sede || 'Tarragona'} · ${row.teacher || 'Sin profesor'}`,
+        row
+      })))
+      .sort((a, b) => a.studentName.localeCompare(b.studentName, 'es'));
+  }, [dangerRowsForView]);
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
@@ -4864,7 +4979,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                   <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Grupos en Peligro</h2>
                   <p className="text-zinc-500 font-medium text-sm">
                     {dangerViewMode === 'actual'
-                      ? 'Vista real actual: clases grupales activas al 50% de ocupación.'
+                      ? 'Vista real actual con criterios afinados por aforo.'
                       : 'Vista proyectada: aplica virtualmente las gestiones pendientes para anticipar el mes que viene.'}
                   </p>
                 </div>
@@ -4886,93 +5001,188 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
               </div>
             </header>
 
+            <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-4">
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { id: 'ocupacion', label: 'Por ocupación' },
+                  { id: 'profesor', label: 'Por profesor' },
+                  { id: 'sede', label: 'Por sede' },
+                  { id: 'dia', label: 'Por día' },
+                  { id: 'contactar', label: `A contactar (${dangerContactRows.length})` }
+                ].map(view => (
+                  <button
+                    key={view.id}
+                    onClick={() => setDangerSubView(view.id)}
+                    className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerSubView === view.id ? 'bg-red-600 text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}
+                  >
+                    {view.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              {[
+                { label: 'Críticas', count: dangerRowsForView.filter(row => row.statusKey === 'critico').length, className: 'bg-red-50 border-red-200 text-red-900' },
+                { label: 'Revisar', count: dangerRowsForView.filter(row => row.statusKey === 'revisar').length, className: 'bg-amber-50 border-amber-200 text-amber-900' },
+                { label: 'Vacías', count: dangerRowsForView.filter(row => row.statusKey === 'vacia').length, className: 'bg-zinc-50 border-zinc-200 text-zinc-700' },
+                { label: 'Solo mant.', count: dangerRowsForView.filter(row => row.statusKey === 'solo_mantenimiento').length, className: 'bg-blue-50 border-blue-200 text-blue-900' }
+              ].map(item => (
+                <div key={item.label} className={`rounded-2xl border-2 p-4 ${item.className}`}>
+                  <p className="text-[10px] font-black uppercase tracking-widest opacity-70">{item.label}</p>
+                  <p className="text-2xl font-black leading-none mt-1">{item.count}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 text-slate-700 rounded-2xl p-4 text-xs font-bold leading-relaxed">
+              <strong className="uppercase tracking-widest text-[10px] text-slate-900 block mb-2">Criterios activos</strong>
+              Grupos de 8: <strong>crítico ≤3</strong>, revisar ≤5. Grupos de 4: <strong>crítico ≤1</strong>, revisar ≤2. Grupos de 5: <strong>crítico ≤1</strong>, revisar ≤2. Las clases 1/1 quedan fuera de esta vista.
+            </div>
+
             {dangerViewMode === 'proyeccion' && (
               <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 text-xs font-bold leading-relaxed">
                 Esta vista no modifica Firebase. Cruza la foto actual con bajas, mantenimientos, reactivaciones, cambios y ampliaciones pendientes. Sirve para decidir recolocaciones y cierres antes del día 1.
               </div>
             )}
 
-            {dangerClassesForView.length === 0 ? (
+            {dangerSubView === 'contactar' ? (
+              dangerContactRows.length === 0 ? (
+                <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
+                  <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-black text-slate-800 uppercase">Sin llamadas urgentes</h3>
+                  <p className="text-zinc-500 text-sm">No hay alumnos activos en clases críticas. Las clases en “Revisar” quedan omitidas aquí.</p>
+                </div>
+              ) : (
+                <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
+                  <div className="p-5 border-b border-zinc-100 bg-red-50">
+                    <h3 className="font-black uppercase tracking-tight text-red-900 flex items-center gap-2"><Mail className="w-5 h-5"/> Alumnos a contactar</h3>
+                    <p className="text-xs font-bold text-red-700 mt-1">Solo alumnos activos de clases en estado crítico. No incluye clases en “Revisar”.</p>
+                  </div>
+                  <div className="divide-y divide-zinc-100">
+                    {dangerContactRows.map(item => (
+                      <div key={item.key} className="p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3 hover:bg-zinc-50">
+                        <div>
+                          <p className="font-black text-slate-900 uppercase tracking-tight">{item.studentName}</p>
+                          <p className="text-xs font-bold text-zinc-500">{item.email}</p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-red-700 mt-1">{item.classLine}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="bg-red-100 text-red-800 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest">
+                            {item.row.activeCount}/{item.row.cap} activos
+                          </span>
+                          {item.email && item.email !== 'sin email' && (
+                            <a href={`mailto:${item.email}?subject=Reubicación%20de%20clase%20-%20Escuela%20Los%20Mitos`} className="bg-black text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-colors">
+                              Email
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            ) : dangerRowsForView.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Grupos sanos</h3>
-                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo de aforo bajo en esta vista.</p>
+                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo según los criterios actuales.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                {dangerClassesForView.map(c => {
-                  const activeC = getActiveClassStudentCount(c, dangerViewMode === 'proyeccion');
-                  const maintenanceC = getMaintenanceClassStudentCount(c, dangerViewMode === 'proyeccion');
-                  const cap = parseInt(c.capacity, 10) || 0;
-                  const isHibernated = activeC === 0 && maintenanceC === 0;
-                  const onlyMaintenance = activeC === 0 && maintenanceC > 0;
-                  const isCritical = activeC === 1;
-                  const activeNames = (c.students || [])
-                    .filter(studentEntry => {
-                      const studentInfo = students.find(student => student.id === studentEntry.id);
-                      const status = dangerViewMode === 'proyeccion' ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo') : (studentInfo?.globalStatus || 'activo');
-                      return !studentEntry.isPaused && status !== 'baja' && status !== 'congelado';
-                    })
-                    .map(studentEntry => studentEntry.name || studentEntry.studentName || students.find(student => student.id === studentEntry.id)?.alias || students.find(student => student.id === studentEntry.id)?.name || 'Alumno')
-                    .sort((a, b) => a.localeCompare(b, 'es'));
-
-                  return (
-                    <div key={`${dangerViewMode}-${c.id}`} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : onlyMaintenance ? 'bg-blue-50 border-blue-200' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
-                      {dangerViewMode === 'actual' && (
-                        <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
-                          <Trash2 className="w-4 h-4"/>
-                        </button>
-                      )}
-
-                      <div className="flex justify-between items-start mb-3 pr-8">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : onlyMaintenance ? 'bg-blue-200 text-blue-800' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
-                          {isHibernated ? 'Vacía' : onlyMaintenance ? 'Solo mant.' : isCritical ? 'Crítico' : 'Revisar'}
-                        </span>
-                        <span className="font-black text-lg">{activeC} / {cap || '—'}</span>
-                      </div>
-                      <h4 className="font-black uppercase tracking-tight text-slate-900">{c.subject}</h4>
-                      <p className="text-xs font-bold text-slate-600 mb-2">{c.sede || 'Tarragona'} · {getDayName(c.dayOfWeek)} a las {c.time}h · {c.sala || 'Sala 1'}</p>
-                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {c.teacher}</div>
-                      <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                        Activos: {activeC} · Mantenimiento: {maintenanceC} · Cupo: {cap || 'sin aforo'}
-                      </div>
-
-                      {activeNames.length > 0 && (
-                        <div className="mt-3 bg-white/70 border border-white rounded-xl p-3">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Alumnos activos</p>
-                          <p className="text-xs font-bold text-slate-700 leading-relaxed">{activeNames.join(', ')}</p>
-                        </div>
-                      )}
-                      {onlyMaintenance && (
-                        <div className="mt-3 bg-blue-100/70 border border-blue-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-blue-800">
-                          Cerrar operativamente en julio, conservando plazas reservadas.
-                        </div>
-                      )}
-                      {isHibernated && (
-                        <div className="mt-3 bg-zinc-100 border border-zinc-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                          Candidata a hibernar / cerrar turno.
-                        </div>
-                      )}
-                      
-                      <div className="mt-auto pt-4 flex gap-2">
-                        {dangerViewMode === 'actual' && isHibernated ? (
-                           <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
-                             <PlusCircle className="w-3 h-3"/> Reactivar
-                           </button>
-                        ) : (
-                           <button onClick={() => dangerViewMode === 'actual' ? setViewClassModal(c) : setPhotosModalOpen(true)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
-                             <Users className="w-3 h-3"/> {dangerViewMode === 'actual' ? 'Alumnos' : 'Ver fotos'}
-                           </button>
-                        )}
-                        {dangerViewMode === 'actual' && (
-                          <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                            <Globe className="w-3 h-3"/> Configurar / Web
-                          </button>
-                        )}
-                      </div>
+              <div className="space-y-6">
+                {Object.entries(groupDangerRows(dangerRowsForView, dangerSubView)).map(([groupName, rows]) => (
+                  <section key={`${dangerViewMode}-${dangerSubView}-${groupName}`} className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-5">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <h3 className="font-black uppercase tracking-tight text-slate-900 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-red-500"/> {groupName}
+                      </h3>
+                      <span className="text-[10px] font-black uppercase tracking-widest bg-zinc-100 text-zinc-500 px-3 py-1 rounded-lg">{rows.length} clase(s)</span>
                     </div>
-                  );
-                })}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {rows.map(row => {
+                        const c = row.classData || row;
+                        const isHibernated = row.statusKey === 'vacia';
+                        const onlyMaintenance = row.statusKey === 'solo_mantenimiento';
+                        const isCritical = row.statusKey === 'critico';
+                        const isReview = row.statusKey === 'revisar';
+                        const activeNames = row.activeStudents.map(student => student.displayName);
+                        const maintenanceNames = row.maintenanceStudents.map(student => student.displayName);
+
+                        return (
+                          <div key={`${dangerViewMode}-${row.id}`} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : onlyMaintenance ? 'bg-blue-50 border-blue-200' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
+                            {dangerViewMode === 'actual' && (
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
+                                <Trash2 className="w-4 h-4"/>
+                              </button>
+                            )}
+
+                            <div className="flex justify-between items-start mb-3 pr-8">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : onlyMaintenance ? 'bg-blue-200 text-blue-800' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
+                                {row.statusLabel}
+                              </span>
+                              <span className="font-black text-lg">{row.activeCount} / {row.cap || '—'}</span>
+                            </div>
+
+                            <h4 className="font-black uppercase tracking-tight text-slate-900">{row.subject}</h4>
+                            <p className="text-xs font-bold text-slate-600 mb-2">{row.sede || 'Tarragona'} · {getDayName(row.dayOfWeek)} a las {row.time}h · {row.sala || 'Sala 1'}</p>
+                            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {row.teacher}</div>
+                            <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                              Activos: {row.activeCount} · Mantenimiento: {row.maintenanceCount} · Cupo: {row.cap || 'sin aforo'}
+                            </div>
+                            <p className="mt-2 text-[10px] font-bold text-slate-500 leading-relaxed">{row.statusHelp}</p>
+
+                            {activeNames.length > 0 && (
+                              <div className="mt-3 bg-white/70 border border-white rounded-xl p-3">
+                                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Alumnos activos</p>
+                                <p className="text-xs font-bold text-slate-700 leading-relaxed">{activeNames.join(', ')}</p>
+                              </div>
+                            )}
+
+                            {maintenanceNames.length > 0 && (
+                              <div className="mt-3 bg-white/50 border border-white rounded-xl p-3">
+                                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Mantenimiento</p>
+                                <p className="text-xs font-bold text-slate-600 leading-relaxed">{maintenanceNames.join(', ')}</p>
+                              </div>
+                            )}
+
+                            {isReview && (
+                              <div className="mt-3 bg-amber-100/70 border border-amber-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-amber-800">
+                                Revisar evolución, pero no entra en “A contactar”.
+                              </div>
+                            )}
+                            {onlyMaintenance && (
+                              <div className="mt-3 bg-blue-100/70 border border-blue-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-blue-800">
+                                Cerrar operativamente si no hay actividad presencial.
+                              </div>
+                            )}
+                            {isHibernated && (
+                              <div className="mt-3 bg-zinc-100 border border-zinc-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                                Candidata a hibernar / cerrar turno.
+                              </div>
+                            )}
+                            
+                            <div className="mt-auto pt-4 flex gap-2">
+                              {dangerViewMode === 'actual' && isHibernated ? (
+                                <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
+                                  <PlusCircle className="w-3 h-3"/> Reactivar
+                                </button>
+                              ) : (
+                                <button onClick={() => dangerViewMode === 'actual' ? setViewClassModal(c) : setPhotosModalOpen(true)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
+                                  <Users className="w-3 h-3"/> {dangerViewMode === 'actual' ? 'Alumnos' : 'Ver fotos'}
+                                </button>
+                              )}
+                              {dangerViewMode === 'actual' && (
+                                <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                                  <Globe className="w-3 h-3"/> Configurar / Web
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
               </div>
             )}
           </div>

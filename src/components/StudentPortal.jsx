@@ -1516,6 +1516,15 @@ END:VCALENDAR`;
                       </div>
                       <p className={`font-bold uppercase text-[10px] tracking-widest mb-4 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>{holidayMatch.title || 'Escuela Cerrada'} • {classInfo.dateStr}</p>
                       <p className={`text-sm font-medium mb-4 ${isFestivo ? 'text-red-800' : 'text-purple-800'}`}>Tu próxima clase de {clase.subject} coincide con un día no lectivo oficial. La escuela permanecerá cerrada.</p>
+
+                      {clase.notes && !isRecoveryClassForMe && (
+                        <div className={`mt-5 p-5 rounded-2xl border ${isFestivo ? 'bg-white/70 border-red-100 text-red-900' : 'bg-white/70 border-purple-100 text-purple-900'}`}>
+                          <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>
+                            <BookOpen className="w-4 h-4"/> Tareas de la semana
+                          </h4>
+                          <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">{clase.notes}</p>
+                        </div>
+                      )}
                     </div>
                   );
                 }

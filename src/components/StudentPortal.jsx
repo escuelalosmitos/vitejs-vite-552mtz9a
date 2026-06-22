@@ -64,6 +64,17 @@ const getSafeAnnouncementUrl = (url = '') => {
   return cleanUrl;
 };
 
+const REVIEW_URLS = {
+  Tarragona: 'https://g.page/r/CbRESEBKdg37EBM/review',
+  Reus: 'https://g.page/r/CaVY9dFy-cmjEBM/review'
+};
+
+const SOCIAL_LINKS = [
+  { id: 'instagram', label: 'Instagram', url: 'https://instagram.com/losmitosescuelademusica/', Icon: Camera, hover: 'hover:border-pink-500', iconHover: 'group-hover:text-pink-500' },
+  { id: 'facebook', label: 'Facebook', url: 'https://www.facebook.com/Escuelalosmitos', Icon: ThumbsUp, hover: 'hover:border-blue-600', iconHover: 'group-hover:text-blue-600' },
+  { id: 'youtube', label: 'YouTube', url: 'https://www.youtube.com/@escuelalosmitos', Icon: Video, hover: 'hover:border-red-500', iconHover: 'group-hover:text-red-500' }
+];
+
 const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
 
 const isFixedClassStudent = (studentEntry = {}) => !(
@@ -169,6 +180,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [triviaResult, setTriviaResult] = useState(null); 
 
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [showSocialModal, setShowSocialModal] = useState(false);
+  const [showWhatsappModal, setShowWhatsappModal] = useState(false);
 
   const timeRules = getMonthNames();
   const dToday = new Date();
@@ -227,6 +240,52 @@ export default function StudentPortal({ user, logout, db, appId }) {
     !isPunctualClass(c) &&
     (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
   );
+
+  const studentSedes = [...new Set(
+    (fixedMyClasses.length > 0 ? fixedMyClasses : effectiveMyClasses)
+      .map(c => c.sede || 'Tarragona')
+      .filter(Boolean)
+  )];
+
+  const classWhatsappLinks = useMemo(() => {
+    const byUrl = new Map();
+
+    effectiveMyClasses.forEach(clase => {
+      const url = getSafeAnnouncementUrl(clase.whatsappGroupUrl || clase.whatsappUrl || '');
+      if (!url) return;
+
+      const myStudentEntry = (clase.students || []).find(s => s.id === profile?.id);
+      if (myStudentEntry?.isRecovery) return;
+
+      if (!byUrl.has(url)) {
+        byUrl.set(url, {
+          url,
+          label: `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}h · ${clase.sede || 'Sede'}`,
+          teacher: clase.teacher || '',
+          classId: clase.id
+        });
+      }
+    });
+
+    return [...byUrl.values()];
+  }, [effectiveMyClasses, profile?.id]);
+
+  const handleReviewClick = () => {
+    if (studentSedes.length === 1 && REVIEW_URLS[studentSedes[0]]) {
+      window.open(REVIEW_URLS[studentSedes[0]], '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setShowReviewModal(true);
+  };
+
+  const handleWhatsappClick = () => {
+    if (classWhatsappLinks.length === 0) return;
+    if (classWhatsappLinks.length === 1) {
+      window.open(classWhatsappLinks[0].url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    setShowWhatsappModal(true);
+  };
 
   const announcementMatchesStudent = (ann = {}) => {
     const audienceType = ann.audienceType || 'all';
@@ -1402,15 +1461,55 @@ END:VCALENDAR`;
             <div className="flex flex-col items-center text-center mb-6">
               <Star className="w-12 h-12 text-amber-400 fill-amber-400 mb-3" />
               <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Déjanos tu reseña</h2>
-              <p className="text-xs font-bold text-zinc-500 mt-2">¡Nos ayuda muchísimo a seguir creciendo! ¿De qué centro eres alumno?</p>
+              <p className="text-xs font-bold text-zinc-500 mt-2">¡Nos ayuda muchísimo a seguir creciendo! Elige sede si tienes clases en más de un centro.</p>
             </div>
             <div className="space-y-3">
-              <a href="https://g.page/r/CbRESEBKdg37EBM/review" target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+              <a href={REVIEW_URLS.Tarragona} target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
                 <MapPin className="w-4 h-4"/> Sede Tarragona
               </a>
-              <a href="https://g.page/r/CaVY9dFy-cmjEBM/review" target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+              <a href={REVIEW_URLS.Reus} target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
                 <MapPin className="w-4 h-4"/> Sede Reus
               </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSocialModal && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+            <button onClick={() => setShowSocialModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+            <div className="flex flex-col items-center text-center mb-6">
+              <Megaphone className="w-12 h-12 text-black mb-3" />
+              <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Redes de la Escuela</h2>
+              <p className="text-xs font-bold text-zinc-500 mt-2">Instagram, Facebook y YouTube reunidos en un solo botón.</p>
+            </div>
+            <div className="space-y-3">
+              {SOCIAL_LINKS.map(({ id, label, url, Icon, hover, iconHover }) => (
+                <a key={id} href={url} target="_blank" rel="noopener noreferrer" className={`w-full bg-zinc-100 ${hover} hover:bg-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2 border border-zinc-200 group`}>
+                  <Icon className={`w-4 h-4 text-zinc-500 ${iconHover}`} /> {label}
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showWhatsappModal && (
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+            <button onClick={() => setShowWhatsappModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+            <div className="flex flex-col items-center text-center mb-6">
+              <MessageCircle className="w-12 h-12 text-emerald-500 mb-3" />
+              <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Grupos de clase</h2>
+              <p className="text-xs font-bold text-zinc-500 mt-2">Elige el grupo de WhatsApp correspondiente a tu clase.</p>
+            </div>
+            <div className="space-y-3">
+              {classWhatsappLinks.map(link => (
+                <a key={`${link.classId}-${link.url}`} href={link.url} target="_blank" rel="noopener noreferrer" className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-100 font-black py-4 px-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors flex items-center justify-center gap-2 text-center leading-tight">
+                  <MessageCircle className="w-4 h-4 shrink-0" /> {link.label}
+                </a>
+              ))}
             </div>
           </div>
         </div>
@@ -1799,32 +1898,26 @@ END:VCALENDAR`;
               <Megaphone className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
-            <div className="mb-8">
-              <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><LinkIcon className="w-4 h-4"/> Enlaces de Interés</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <a href="https://www.escuelalosmitos.com/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-black transition-colors group">
-                  <Globe className="w-6 h-6 text-zinc-400 group-hover:text-black"/>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Nuestra Web</span>
+            <div className="mb-5">
+              <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3 px-2 flex items-center gap-2"><LinkIcon className="w-4 h-4"/> Enlaces rápidos</h3>
+              <div className={`grid ${classWhatsappLinks.length > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-2`}>
+                <a href="https://www.escuelalosmitos.com/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 px-2 py-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 shadow-sm hover:border-black transition-colors group min-h-[74px]">
+                  <Globe className="w-5 h-5 text-zinc-400 group-hover:text-black"/>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600">Web</span>
                 </a>
-                <a href="https://instagram.com/losmitosescuelademusica/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-pink-500 transition-colors group">
-                  <Camera className="w-6 h-6 text-zinc-400 group-hover:text-pink-500"/>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Instagram</span>
-                </a>
-                <a href="https://chat.whatsapp.com/DyygFclRX8DDGLAUNgq16A" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-emerald-500 transition-colors group">
-                  <MessageCircle className="w-6 h-6 text-zinc-400 group-hover:text-emerald-500"/>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Comunidad</span>
-                </a>
-                <a href="https://www.youtube.com/@escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-red-500 transition-colors group">
-                  <Video className="w-6 h-6 text-zinc-400 group-hover:text-red-500"/>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">YouTube</span>
-                </a>
-                <a href="https://www.facebook.com/Escuelalosmitos" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:border-blue-600 transition-colors group">
-                  <ThumbsUp className="w-6 h-6 text-zinc-400 group-hover:text-blue-600"/>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Facebook</span>
-                </a>
-                <button onClick={() => setShowReviewModal(true)} className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm hover:bg-amber-100 transition-colors group">
-                  <Star className="w-6 h-6 text-amber-500"/>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-amber-900">Valóranos</span>
+                {classWhatsappLinks.length > 0 && (
+                  <button onClick={handleWhatsappClick} className="bg-emerald-50 border border-emerald-100 px-2 py-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 shadow-sm hover:bg-emerald-100 transition-colors group min-h-[74px]">
+                    <MessageCircle className="w-5 h-5 text-emerald-500"/>
+                    <span className="text-[9px] font-black uppercase tracking-widest text-emerald-900">WhatsApp</span>
+                  </button>
+                )}
+                <button onClick={() => setShowSocialModal(true)} className="bg-white border border-zinc-200 px-2 py-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 shadow-sm hover:border-black transition-colors group min-h-[74px]">
+                  <Megaphone className="w-5 h-5 text-zinc-400 group-hover:text-black"/>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600">Redes</span>
+                </button>
+                <button onClick={handleReviewClick} className="bg-amber-50 border border-amber-200 px-2 py-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 shadow-sm hover:bg-amber-100 transition-colors group min-h-[74px]">
+                  <Star className="w-5 h-5 text-amber-500"/>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-amber-900">Valóranos</span>
                 </button>
               </div>
             </div>

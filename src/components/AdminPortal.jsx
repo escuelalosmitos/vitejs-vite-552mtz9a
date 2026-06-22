@@ -232,6 +232,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [availabilities, setAvailabilities] = useState({}); 
   const [allTickets, setAllTickets] = useState([]);
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
+  const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -250,6 +251,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
+  const [temporaryRelocationModal, setTemporaryRelocationModal] = useState(null);
   const [manualTaskModal, setManualTaskModal] = useState(false);
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
   const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
@@ -294,7 +296,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 9) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 10) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -348,7 +350,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); };
+    const unsubTemporaryRelocations = onSnapshot(collection(db, 'artifacts', appId, 'temporaryRelocations'), (snap) => {
+      setTemporaryRelocations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+      checkLoad();
+    });
+
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -600,6 +607,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const formatClassLine = (clase) => {
     if (!clase) return '';
     return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
+  };
+
+
+  const isTemporaryRelocationActiveForDate = (relocation = {}, dateStr = todayStr) => {
+    if (!relocation || relocation.status === 'cancelled') return false;
+    return Boolean(relocation.from && relocation.until && relocation.from <= dateStr && relocation.until >= dateStr);
+  };
+
+  const doDateRangesOverlap = (fromA, untilA, fromB, untilB) => {
+    if (!fromA || !untilA || !fromB || !untilB) return false;
+    return fromA <= untilB && fromB <= untilA;
+  };
+
+  const getStudentTemporaryRelocations = (studentId) => {
+    if (!studentId) return [];
+    return temporaryRelocations.filter(rel => rel.studentId === studentId && rel.status !== 'cancelled');
+  };
+
+  const getActiveStudentTemporaryRelocations = (studentId, dateStr = todayStr) => {
+    return getStudentTemporaryRelocations(studentId).filter(rel => isTemporaryRelocationActiveForDate(rel, dateStr));
   };
 
 
@@ -3344,6 +3371,201 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     );
   };
 
+  const TemporaryRelocationModalOverlay = () => {
+    if (!temporaryRelocationModal) return null;
+
+    const student = temporaryRelocationModal;
+    const assignedClasses = getStudentAssignedClasses(student.id).filter(c => !isPunctualClass(c));
+    const defaultSourceClassId = assignedClasses[0]?.id || '';
+    const [sourceClassId, setSourceClassId] = useState(defaultSourceClassId);
+    const [targetClassId, setTargetClassId] = useState('');
+    const [fromDate, setFromDate] = useState(todayStr);
+    const [untilDate, setUntilDate] = useState(todayStr);
+    const [notes, setNotes] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const sourceClass = recurringClassesOnly.find(c => c.id === sourceClassId) || assignedClasses[0] || null;
+    const possibleTargets = recurringClassesOnly
+      .filter(c => c.id !== sourceClassId)
+      .sort((a, b) => {
+        const subjectA = a.subject === sourceClass?.subject ? 0 : 1;
+        const subjectB = b.subject === sourceClass?.subject ? 0 : 1;
+        if (subjectA !== subjectB) return subjectA - subjectB;
+        return `${a.sede || ''}${a.dayOfWeek}${a.time}`.localeCompare(`${b.sede || ''}${b.dayOfWeek}${b.time}`);
+      });
+    const targetClass = recurringClassesOnly.find(c => c.id === targetClassId) || null;
+    const currentRelocations = getStudentTemporaryRelocations(student.id);
+
+    const cancelRelocation = async (relocation) => {
+      if (!window.confirm(`¿Cancelar esta recolocación temporal de ${student.name}?\n\n${relocation.sourceClassLine || relocation.sourceClassId}\n→ ${relocation.targetClassLine || relocation.targetClassId}`)) return;
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocation.id), {
+          status: 'cancelled',
+          cancelledAt: new Date().toISOString(),
+          cancelledBy: user?.email || 'admin'
+        });
+        alert('✅ Recolocación temporal cancelada.');
+      } catch (e) {
+        alert('Error al cancelar: ' + e.message);
+      }
+    };
+
+    const createRelocation = async () => {
+      if (!sourceClass?.id) return alert('El alumno no tiene clase de origen seleccionada.');
+      if (!targetClass?.id) return alert('Selecciona una clase de destino.');
+      if (!fromDate || !untilDate) return alert('Indica fecha desde y hasta.');
+      if (fromDate > untilDate) return alert('La fecha DESDE no puede ser posterior a la fecha HASTA.');
+      if (sourceClass.id === targetClass.id) return alert('La clase de origen y destino no pueden ser la misma.');
+
+      const overlapping = temporaryRelocations.find(rel =>
+        rel.studentId === student.id &&
+        rel.status !== 'cancelled' &&
+        doDateRangesOverlap(fromDate, untilDate, rel.from, rel.until)
+      );
+
+      if (overlapping) {
+        return alert(`Este alumno ya tiene una recolocación temporal que se solapa con esas fechas:\n\n${overlapping.sourceClassLine || overlapping.sourceClassId}\n→ ${overlapping.targetClassLine || overlapping.targetClassId}\n${formatDateSpanish(overlapping.from)} - ${formatDateSpanish(overlapping.until)}`);
+      }
+
+      const formalTargetCount = (targetClass.students || []).filter(s => !s.isRecovery && !s.isTemporary && !s.isPaused).length;
+      const targetCapacity = parseInt(targetClass.capacity || 0, 10);
+      if (targetCapacity > 0 && formalTargetCount >= targetCapacity) {
+        const ok = window.confirm(`⚠️ La clase destino ya está completa formalmente (${formalTargetCount}/${targetCapacity}).\n\nLa recolocación NO ocupará plaza formal, pero sí añadirá una persona real a la sala durante ese periodo.\n\n¿Continuar igualmente?`);
+        if (!ok) return;
+      }
+
+      const displayName = student.useAlias && student.alias ? student.alias : student.name;
+      const relocationId = `reloc-${Date.now()}`;
+      const payload = {
+        studentId: student.id,
+        studentName: displayName,
+        studentEmail: student.email || '',
+        sourceClassId: sourceClass.id,
+        sourceClassRefPath: sourceClass.refPath || '',
+        sourceClassLine: formatClassLine(sourceClass),
+        sourceTeacher: sourceClass.teacher || '',
+        targetClassId: targetClass.id,
+        targetClassRefPath: targetClass.refPath || '',
+        targetClassLine: formatClassLine(targetClass),
+        targetTeacher: targetClass.teacher || '',
+        from: fromDate,
+        until: untilDate,
+        status: 'active',
+        notes: notes.trim(),
+        createdAt: new Date().toISOString(),
+        createdBy: user?.email || 'admin'
+      };
+
+      setSaving(true);
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocationId), payload);
+
+        const periodLine = `${formatDateSpanish(fromDate)} al ${formatDateSpanish(untilDate)}`;
+        if (sourceClass.teacher) {
+          await sendTeacherNotification({
+            teacherName: sourceClass.teacher,
+            subject: `Recolocación temporal: ${displayName} deja tu clase temporalmente`,
+            body: `Hola ${sourceClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} será recolocado temporalmente fuera de tu clase durante este periodo:\n\n${periodLine}\n\nClase de origen:\n· ${formatClassLine(sourceClass)}\n\nClase temporal de destino:\n· ${formatClassLine(targetClass)}\n\nDurante ese periodo no aparecerá en tu lista de asistencia. Su plaza formal sigue reservada en tu clase.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
+
+        if (targetClass.teacher && targetClass.teacher !== sourceClass.teacher) {
+          await sendTeacherNotification({
+            teacherName: targetClass.teacher,
+            subject: `Alumno recolocado temporalmente: ${displayName}`,
+            body: `Hola ${targetClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} aparecerá temporalmente en tu lista de asistencia durante este periodo:\n\n${periodLine}\n\nClase temporal:\n· ${formatClassLine(targetClass)}\n\nAparecerá marcado como alumno recolocado temporalmente. No ocupa plaza formal en tu grupo, pero debes pasarle lista con normalidad.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+        }
+
+        await sendStudentNotification({
+          studentEmail: student.email || '',
+          subject: `Recolocación temporal de clase - Escuela Los Mitos`,
+          body: `Hola ${student.name},\n\nTe confirmamos tu recolocación temporal de clase para el periodo ${periodLine}.\n\nDurante este periodo tu clase será:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher || 'Profesor/a'}\n\nFuera de ese periodo volverás a figurar en tu clase habitual:\n· ${formatClassLine(sourceClass)}\n\nTu plaza habitual sigue reservada.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+
+        alert('✅ Recolocación temporal creada. TeacherPortal y StudentPortal la aplicarán durante el periodo indicado.');
+        setTemporaryRelocationModal(null);
+      } catch (e) {
+        alert('Error al crear la recolocación temporal: ' + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-4 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl relative my-4">
+          <button onClick={() => setTemporaryRelocationModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-slate-800 mb-2">
+            <ArrowRightLeft className="w-8 h-8 text-violet-600" />
+            <h2 className="text-xl font-black uppercase tracking-tight">Recolocación temporal</h2>
+          </div>
+          <p className="text-sm font-bold text-zinc-500 mb-6">{student.name}{student.alias ? ` · ${student.alias}` : ''}</p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase origen formal</label>
+              <select value={sourceClassId} onChange={e => { setSourceClassId(e.target.value); setTargetClassId(''); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
+                {assignedClasses.length === 0 && <option value="">Sin clase formal</option>}
+                {assignedClasses.map(c => <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher}</option>)}
+              </select>
+              <p className="text-[10px] text-zinc-400 font-bold mt-1">Esta plaza no se libera.</p>
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase destino temporal</label>
+              <select value={targetClassId} onChange={e => setTargetClassId(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
+                <option value="">Selecciona destino...</option>
+                {possibleTargets.map(c => {
+                  const formalCount = (c.students || []).filter(s => !s.isRecovery && !s.isTemporary && !s.isPaused).length;
+                  return <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher} · {formalCount}/{c.capacity || '?'}</option>;
+                })}
+              </select>
+              <p className="text-[10px] text-zinc-400 font-bold mt-1">No ocupará plaza formal en el destino.</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Desde</label>
+              <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+            </div>
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Hasta</label>
+              <input type="date" value={untilDate} onChange={e => setUntilDate(e.target.value)} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Notas internas opcionales</label>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej: cambio temporal por obras, conciliación, prueba de horario..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500 min-h-[90px]" />
+          </div>
+
+          {currentRelocations.length > 0 && (
+            <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Recolocaciones existentes</h3>
+              <div className="space-y-2">
+                {currentRelocations.map(rel => (
+                  <div key={rel.id} className="flex items-start justify-between gap-3 bg-white border border-zinc-200 rounded-xl p-3">
+                    <div>
+                      <p className="text-xs font-black text-slate-800">{formatDateSpanish(rel.from)} - {formatDateSpanish(rel.until)}</p>
+                      <p className="text-[10px] font-bold text-zinc-500 leading-relaxed">{rel.sourceClassLine || rel.sourceClassId} → {rel.targetClassLine || rel.targetClassId}</p>
+                      <p className={`mt-1 text-[9px] font-black uppercase tracking-widest ${isTemporaryRelocationActiveForDate(rel) ? 'text-emerald-600' : 'text-zinc-400'}`}>{isTemporaryRelocationActiveForDate(rel) ? 'Activa hoy' : 'No activa hoy'}</p>
+                    </div>
+                    <button onClick={() => cancelRelocation(rel)} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Cancelar</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button onClick={createRelocation} disabled={saving || assignedClasses.length === 0} className="w-full bg-violet-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-violet-700 transition-all shadow-md disabled:opacity-50">
+            {saving ? 'Creando recolocación...' : 'Crear recolocación temporal'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const EditWebModalOverlay = () => {
     if (!editWebModal) return null;
     const [formData, setFormData] = useState({
@@ -4081,6 +4303,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       {notesModal && <NotesModalOverlay />}
       {changeClassModal && <ChangeClassModalOverlay />}
       {editStudentModal && <EditStudentModalOverlay />} 
+      {temporaryRelocationModal && <TemporaryRelocationModalOverlay />}
       {resurrectClassModal && <ResurrectClassModalOverlay />}
       {viewClassModal && <ViewClassModalOverlay />}
       {photosModalOpen && <PhotosModalOverlay />}
@@ -4715,6 +4938,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                   <AlertCircle className="w-3 h-3" /> Impago
                                 </span>
                               )}
+                              {getActiveStudentTemporaryRelocations(student.id).map(rel => (
+                                <span key={rel.id} className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 border border-violet-100 px-2 py-0.5 rounded" title={`${rel.sourceClassLine || ''} → ${rel.targetClassLine || ''}`}>
+                                  <Clock className="w-3 h-3" /> Recolocado temporalmente
+                                </span>
+                              ))}
                             </div>
 
                             {assignedClasses.length > 0 && (
@@ -4764,6 +4992,9 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               </button>
                               <button onClick={() => setChangeClassModal(student)} className="p-2.5 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors" title="Cambiar a otra clase manualmente">
                                 <ArrowRightLeft className="w-4 h-4"/>
+                              </button>
+                              <button onClick={() => setTemporaryRelocationModal(student)} className="p-2.5 bg-violet-100 text-violet-700 rounded-lg hover:bg-violet-600 hover:text-white transition-colors" title="Recolocar temporalmente sin liberar su plaza formal">
+                                <Clock className="w-4 h-4"/>
                               </button>
                               <button onClick={() => grantRecoveryTicket(student)} className="p-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors" title="Regalar Ticket de Recuperación">
                                 <Gift className="w-4 h-4"/>

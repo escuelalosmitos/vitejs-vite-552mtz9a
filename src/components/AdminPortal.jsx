@@ -774,10 +774,35 @@ ${body}`,
     return [];
   };
 
+  const getAnnouncementTeacherTargets = () => {
+    const byEmail = new Map();
+
+    [...new Set([
+      ...(settings.teachersList || []),
+      ...recurringClassesOnly.map(c => c.teacher).filter(Boolean)
+    ])]
+      .filter(Boolean)
+      .forEach(teacherName => {
+        const email = normalizeEmail(getTeacherEmail(teacherName));
+        if (!email) return;
+        if (!byEmail.has(email)) {
+          byEmail.set(email, {
+            email,
+            name: teacherName,
+            teacherName,
+            classes: recurringClassesOnly.filter(c => c.teacher === teacherName).map(c => c.id)
+          });
+        }
+      });
+
+    return [...byEmail.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  };
+
   const matchesAnnouncementTarget = (clase, emailOptions = announceEmailOptions) => {
     const targetType = emailOptions.targetType || 'all';
     const targetValue = String(emailOptions.targetValue || '').trim();
     if (targetType === 'all') return true;
+    if (targetType === 'teachers') return false;
     if (!targetValue) return false;
     if (targetType === 'sede') return (clase.sede || 'Tarragona') === targetValue;
     if (targetType === 'instrumento') return (clase.subject || '') === targetValue;
@@ -786,6 +811,10 @@ ${body}`,
   };
 
   const getAnnouncementEmailTargets = (emailOptions = announceEmailOptions) => {
+    if ((emailOptions.targetType || 'all') === 'teachers') {
+      return getAnnouncementTeacherTargets();
+    }
+
     const byEmail = new Map();
 
     recurringClassesOnly
@@ -817,9 +846,10 @@ ${body}`,
     const targetType = emailOptions.targetType || 'all';
     const targetValue = String(emailOptions.targetValue || '').trim();
     if (targetType === 'all') return 'Todos los alumnos con clase fija';
+    if (targetType === 'teachers') return 'Todos los profesores';
     if (targetType === 'sede') return targetValue ? `Sede: ${targetValue}` : 'Sede no seleccionada';
     if (targetType === 'instrumento') return targetValue ? `Instrumento: ${targetValue}` : 'Instrumento no seleccionado';
-    if (targetType === 'profesor') return targetValue ? `Profesor/a: ${targetValue}` : 'Profesor no seleccionado';
+    if (targetType === 'profesor') return targetValue ? `Alumnos de profesor/a: ${targetValue}` : 'Profesor no seleccionado';
     return 'Filtro personalizado';
   };
 
@@ -838,7 +868,7 @@ ${content}${cleanUrl ? `\n\nENLACE:\n${cleanUrl}` : ''}
 
 ---
 Este correo corresponde a una comunicación operativa del servicio educativo de Escuela Los Mitos.
-También puedes consultar los avisos publicados accediendo al área del alumno.`;
+También puedes consultar los avisos publicados accediendo a tu portal.`;
   };
 
   const sendAnnouncementEmailToTargets = async ({ announcement, emailOptions = announceEmailOptions }) => {
@@ -858,7 +888,7 @@ También puedes consultar los avisos publicados accediendo al área del alumno.`
       to: ANNOUNCEMENT_EMAIL_TO,
       subject,
       body,
-      type: 'tablon_alumnos',
+      type: (emailOptions.targetType || 'all') === 'teachers' ? 'tablon_profesores' : 'tablon_alumnos',
       recipients: targets.map(t => t.email),
       targetLabel,
       batchSize: ANNOUNCEMENT_EMAIL_BATCH_SIZE
@@ -1653,7 +1683,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       targetType: announceEmailOptions.targetType || 'all',
       targetValue: announceEmailOptions.targetValue || ''
     };
-    if (audienceOptions.targetType !== 'all' && !String(audienceOptions.targetValue || '').trim()) {
+    if (!['all', 'teachers'].includes(audienceOptions.targetType) && !String(audienceOptions.targetValue || '').trim()) {
       return alert('Selecciona el segmento de destinatarios del aviso.');
     }
     const audienceLabel = getAnnouncementTargetLabel(audienceOptions);
@@ -1663,7 +1693,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       content: newAnnounce.content.trim(),
       url: cleanUrl || '',
       audienceType: audienceOptions.targetType,
-      audienceValue: audienceOptions.targetValue || '',
+      audienceValue: audienceOptions.targetType === 'teachers' ? '' : (audienceOptions.targetValue || ''),
       audienceLabel
     };
 
@@ -5878,7 +5908,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tablón de Avisos</h2>
-              <p className="text-zinc-500 font-medium text-sm">Publica noticias en el muro de los alumnos.</p>
+              <p className="text-zinc-500 font-medium text-sm">Publica noticias en el tablón de alumnos y profesores.</p>
             </header>
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-zinc-200 mb-8">
               <div className="space-y-4">
@@ -5889,7 +5919,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-4">
                   <div>
                     <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Destinatarios del aviso en el Tablón</span>
-                    <span className="block text-xs text-sky-700 font-semibold mt-1">El aviso solo aparecerá en el StudentPortal de los alumnos que coincidan con este filtro.</span>
+                    <span className="block text-xs text-sky-700 font-semibold mt-1">El aviso aparecerá según el filtro elegido. La opción profesores se publica solo para TeacherPortal.</span>
                   </div>
                   <div className="grid md:grid-cols-2 gap-3">
                     <select
@@ -5898,11 +5928,12 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                       className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-black text-xs uppercase tracking-widest text-sky-900"
                     >
                       <option value="all">Todos los alumnos con clase fija</option>
+                      <option value="teachers">Solo profesores</option>
                       <option value="sede">Solo una sede</option>
                       <option value="instrumento">Solo un instrumento</option>
                       <option value="profesor">Solo alumnos de un profesor</option>
                     </select>
-                    {announceEmailOptions.targetType !== 'all' && (
+                    {!['all', 'teachers'].includes(announceEmailOptions.targetType) && (
                       <select
                         value={announceEmailOptions.targetValue}
                         onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetValue: e.target.value })}

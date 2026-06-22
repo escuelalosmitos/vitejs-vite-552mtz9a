@@ -937,36 +937,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     try {
       await setDoc(doc(db, 'artifacts', appId, 'teacherTasks', taskId), payload);
 
-      if (payload.type === 'admin_request' && APPS_SCRIPT_URL && ADMIN_EMAIL) {
-        const requestLabel = TEACHER_TASK_REQUEST_TYPES.find(t => t.value === payload.requestType)?.label || 'Petición a coordinación';
-        const body = `TIPO: ${requestLabel}
-PROFESOR: ${payload.teacherName}
-EMAIL: ${payload.teacherEmail}
-CLASE_RELACIONADA: ${payload.relatedClassLine || 'No indicada'}
-PRIORIDAD: ${payload.priority}
-FECHA_LIMITE: ${payload.dueDate || 'No indicada'}
-
-TITULO:
-${payload.title}
-
-DETALLES:
-${payload.description || 'Sin detalles.'}`;
-
-        fetch(APPS_SCRIPT_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            type: 'notificacion_email',
-            to: ADMIN_EMAIL,
-            subject: `[Petición profesor] ${payload.title}`,
-            body
-          })
-        }).catch(e => console.warn('No se pudo enviar email de petición a coordinación', e));
-      }
+      // Las peticiones a coordinación se guardan en teacherTasks y las recoge AdminPortal.
+      // No enviamos email para evitar duplicar ruido interno.
 
       setTaskModal(null);
-      showNotification({ type: 'success', text: payload.type === 'admin_request' ? 'Petición enviada a coordinación.' : 'Tarea creada.' });
+      showNotification({ type: 'success', text: payload.type === 'admin_request' ? 'Petición registrada para coordinación.' : 'Tarea creada.' });
     } catch (e) {
       console.error('Error al guardar tarea de profesor', e);
       showNotification({ type: 'error', text: 'No se pudo guardar la tarea.' });

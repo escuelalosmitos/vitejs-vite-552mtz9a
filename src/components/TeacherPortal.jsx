@@ -4,7 +4,8 @@ import {
   UserPlus, Trash2, Calendar, Clock, User, Music, RefreshCw, Play, 
   MessageSquare, LogOut, CornerDownRight, BookOpen, CalendarOff, Ticket, 
   Snowflake, Timer, Palmtree, PartyPopper, Coffee, MapPin, Bell, UserMinus, 
-  RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost
+  RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
+  Megaphone, Send, Link as LinkIcon
 } from 'lucide-react';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup } from 'firebase/firestore';
 
@@ -29,6 +30,33 @@ const PLANNING_GESTION_STYLE = {
   reactivar_plaza: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   cambio_horario: 'bg-violet-50 text-violet-700 border-violet-200',
   ampliar_clases: 'bg-amber-50 text-amber-800 border-amber-200'
+};
+
+const TEACHER_TASK_REQUEST_TYPES = [
+  { value: 'clase_puntual', label: 'Crear clase puntual' },
+  { value: 'material', label: 'Material o aula' },
+  { value: 'alumno', label: 'Alumno o familia' },
+  { value: 'horario', label: 'Horario o agenda' },
+  { value: 'incidencia', label: 'Incidencia' },
+  { value: 'otro', label: 'Otra petición' }
+];
+
+const TEACHER_TASK_STATUS_LABELS = {
+  pendiente: 'Pendiente',
+  en_revision: 'En revisión',
+  completada: 'Completada',
+  resuelta: 'Resuelta',
+  rechazada: 'Rechazada',
+  cancelada: 'Cancelada'
+};
+
+const TEACHER_TASK_STATUS_STYLE = {
+  pendiente: 'bg-amber-50 text-amber-800 border-amber-200',
+  en_revision: 'bg-blue-50 text-blue-700 border-blue-200',
+  completada: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  resuelta: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  rechazada: 'bg-red-50 text-red-700 border-red-200',
+  cancelada: 'bg-zinc-50 text-zinc-500 border-zinc-200'
 };
 
 const getPlanningGestionLabel = (gestion = {}) => PLANNING_GESTION_LABELS[gestion.type] || 'Gestión pendiente';
@@ -66,6 +94,15 @@ const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
   return dateString.split('-').reverse().join('/');
 };
+
+const getSafeAnnouncementUrl = (url = '') => {
+  const cleanUrl = String(url || '').trim();
+  if (!/^https?:\/\//i.test(cleanUrl)) return '';
+  return cleanUrl;
+};
+
+const getTeacherTaskStatusLabel = (status = 'pendiente') => TEACHER_TASK_STATUS_LABELS[status] || 'Pendiente';
+const getTeacherTaskStatusStyle = (status = 'pendiente') => TEACHER_TASK_STATUS_STYLE[status] || TEACHER_TASK_STATUS_STYLE.pendiente;
 
 const normalizeStudentClassStartDate = (value) => String(value || '').trim();
 
@@ -403,8 +440,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [gestiones, setGestiones] = useState([]); 
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [announcements, setAnnouncements] = useState([]);
+  const [teacherTasks, setTeacherTasks] = useState([]);
   
   const [lastReportSentDate, setLastReportSentDate] = useState('');
+  const [lastSeenTeacherTablon, setLastSeenTeacherTablon] = useState('');
   const [historyLimit, setHistoryLimit] = useState(10);
 
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
@@ -421,6 +461,19 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   });
 
   const [activeTab, setActiveTab] = useState('attendance');
+  const [notificationsView, setNotificationsView] = useState('notifications');
+  const [tasksView, setTasksView] = useState('pending');
+  const [taskModal, setTaskModal] = useState(null);
+  const [taskForm, setTaskForm] = useState({
+    type: 'self_task',
+    requestType: 'otro',
+    title: '',
+    description: '',
+    priority: 'normal',
+    dueDate: '',
+    relatedClassId: ''
+  });
+  const [isSavingTask, setIsSavingTask] = useState(false);
   const [notification, setNotification] = useState(null);
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   
@@ -465,6 +518,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
     const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
     const temporaryRelocationsRef = collection(db, 'artifacts', appId, 'temporaryRelocations');
+    const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
+    const teacherTasksRef = collection(db, 'artifacts', appId, 'teacherTasks');
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
@@ -477,16 +532,20 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let gestionesLoaded = false;
     let payrollAdjustmentsLoaded = false;
     let temporaryRelocationsLoaded = false;
+    let announcementsLoaded = false;
+    let teacherTasksLoaded = false;
     let availLoaded = false;
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && announcementsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists() && docSnap.data().lastReportSentDate) {
-        setLastReportSentDate(docSnap.data().lastReportSentDate);
+      if (docSnap.exists()) {
+        const userDocData = docSnap.data();
+        if (userDocData.lastReportSentDate) setLastReportSentDate(userDocData.lastReportSentDate);
+        if (userDocData.lastSeenTeacherTablon) setLastSeenTeacherTablon(userDocData.lastSeenTeacherTablon);
       }
       userDocLoaded = true;
       checkLoading();
@@ -566,6 +625,22 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    const unsubAnnouncements = onSnapshot(announcementsRef, (snapshot) => {
+      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+      data.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+      setAnnouncements(data);
+      announcementsLoaded = true;
+      checkLoading();
+    });
+
+    const unsubTeacherTasks = onSnapshot(teacherTasksRef, (snapshot) => {
+      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+      data.sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
+      setTeacherTasks(data);
+      teacherTasksLoaded = true;
+      checkLoading();
+    });
+
     const unsubAvail = onSnapshot(availRef, (docSnap) => {
       if (docSnap.exists()) {
         setAvailability(docSnap.data().slots || { 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
@@ -587,6 +662,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubGestiones();
       unsubPayrollAdjustments();
       unsubTemporaryRelocations();
+      unsubAnnouncements();
+      unsubTeacherTasks();
       unsubAvail();
       unsubUserDoc();
     };
@@ -754,6 +831,187 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     return visibleGestiones.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
   }, [gestiones, recurringClasses, teacherClassIds, isAdmin, user]);
+
+
+
+  const teacherAnnouncementMatches = (ann = {}) => {
+    const audienceType = ann.audienceType || 'all';
+    const audienceValue = String(ann.audienceValue || '').trim();
+    if (audienceType === 'all') return true;
+    if (!audienceValue) return false;
+
+    const teacherName = getTeacherName().toLowerCase();
+    const teacherEmail = String(user?.email || '').toLowerCase();
+    const valueLower = audienceValue.toLowerCase();
+
+    if (audienceType === 'profesor') {
+      return valueLower === teacherName || valueLower === teacherEmail;
+    }
+    if (audienceType === 'sede') {
+      return recurringClasses.some(c => (c.sede || 'Tarragona') === audienceValue);
+    }
+    if (audienceType === 'instrumento') {
+      return recurringClasses.some(c => (c.subject || '') === audienceValue);
+    }
+
+    return true;
+  };
+
+  const visibleTeacherAnnouncements = useMemo(() => {
+    return announcements.filter(teacherAnnouncementMatches);
+  }, [announcements, recurringClasses, user]);
+
+  const latestTeacherAnnouncementId = visibleTeacherAnnouncements.length > 0 ? String(visibleTeacherAnnouncements[0].id) : null;
+  const hasUnreadTeacherTablon = Boolean(latestTeacherAnnouncementId && latestTeacherAnnouncementId !== lastSeenTeacherTablon);
+
+  useEffect(() => {
+    if (activeTab !== 'notifications' || notificationsView !== 'tablon' || !latestTeacherAnnouncementId || !user?.uid) return;
+    if (latestTeacherAnnouncementId === lastSeenTeacherTablon) return;
+
+    setDoc(doc(db, 'artifacts', appId, 'users', user.uid), {
+      lastSeenTeacherTablon: latestTeacherAnnouncementId
+    }, { merge: true }).catch(e => console.error('Error al marcar tablón de profesor como leído', e));
+    setLastSeenTeacherTablon(latestTeacherAnnouncementId);
+  }, [activeTab, notificationsView, latestTeacherAnnouncementId, lastSeenTeacherTablon, db, appId, user?.uid]);
+
+  const getTeacherTaskClassLine = (classId = '') => {
+    if (!classId) return '';
+    const selectedClass = recurringClasses.find(c => c.id === classId);
+    return selectedClass ? formatClassSummary(selectedClass) : '';
+  };
+
+  const openTaskModal = (type = 'self_task') => {
+    setTaskForm({
+      type,
+      requestType: type === 'admin_request' ? 'otro' : '',
+      title: '',
+      description: '',
+      priority: 'normal',
+      dueDate: '',
+      relatedClassId: ''
+    });
+    setTaskModal(type);
+  };
+
+  const closeTaskModal = () => {
+    if (isSavingTask) return;
+    setTaskModal(null);
+  };
+
+  const saveTeacherTask = async () => {
+    if (!taskForm.title.trim() || isSavingTask) {
+      showNotification({ type: 'error', text: 'Escribe un título para la tarea.' });
+      return;
+    }
+
+    setIsSavingTask(true);
+    const now = new Date().toISOString();
+    const taskId = `teacher-task-${Date.now()}`;
+    const selectedClass = recurringClasses.find(c => c.id === taskForm.relatedClassId) || null;
+    const payload = {
+      type: taskForm.type,
+      requestType: taskForm.type === 'admin_request' ? (taskForm.requestType || 'otro') : '',
+      teacherUid: user.uid,
+      teacherEmail: user.email,
+      teacherName: getTeacherName(),
+      title: taskForm.title.trim(),
+      description: taskForm.description.trim(),
+      priority: taskForm.priority || 'normal',
+      dueDate: taskForm.dueDate || '',
+      relatedClassId: selectedClass?.id || '',
+      relatedClassLine: selectedClass ? formatClassSummary(selectedClass) : '',
+      relatedClassTeacher: selectedClass?.teacher || '',
+      status: 'pendiente',
+      createdAt: now,
+      updatedAt: now,
+      createdFrom: 'teacher_portal'
+    };
+
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'teacherTasks', taskId), payload);
+
+      if (payload.type === 'admin_request' && APPS_SCRIPT_URL && ADMIN_EMAIL) {
+        const requestLabel = TEACHER_TASK_REQUEST_TYPES.find(t => t.value === payload.requestType)?.label || 'Petición a coordinación';
+        const body = `TIPO: ${requestLabel}
+PROFESOR: ${payload.teacherName}
+EMAIL: ${payload.teacherEmail}
+CLASE_RELACIONADA: ${payload.relatedClassLine || 'No indicada'}
+PRIORIDAD: ${payload.priority}
+FECHA_LIMITE: ${payload.dueDate || 'No indicada'}
+
+TITULO:
+${payload.title}
+
+DETALLES:
+${payload.description || 'Sin detalles.'}`;
+
+        fetch(APPS_SCRIPT_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            type: 'notificacion_email',
+            to: ADMIN_EMAIL,
+            subject: `[Petición profesor] ${payload.title}`,
+            body
+          })
+        }).catch(e => console.warn('No se pudo enviar email de petición a coordinación', e));
+      }
+
+      setTaskModal(null);
+      showNotification({ type: 'success', text: payload.type === 'admin_request' ? 'Petición enviada a coordinación.' : 'Tarea creada.' });
+    } catch (e) {
+      console.error('Error al guardar tarea de profesor', e);
+      showNotification({ type: 'error', text: 'No se pudo guardar la tarea.' });
+    } finally {
+      setIsSavingTask(false);
+    }
+  };
+
+  const updateTeacherTaskStatus = async (task, status) => {
+    if (!task?.id) return;
+    try {
+      const payload = {
+        status,
+        updatedAt: new Date().toISOString()
+      };
+      if (status === 'completada' || status === 'resuelta') payload.completedAt = new Date().toISOString();
+      await updateDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id), payload);
+      showNotification({ type: 'success', text: 'Tarea actualizada.' });
+    } catch (e) {
+      console.error('Error al actualizar tarea', e);
+      showNotification({ type: 'error', text: 'No se pudo actualizar la tarea.' });
+    }
+  };
+
+  const deleteTeacherTask = async (task) => {
+    if (!task?.id) return;
+    const ok = window.confirm('¿Eliminar esta tarea definitivamente?');
+    if (!ok) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id));
+      showNotification({ type: 'success', text: 'Tarea eliminada.' });
+    } catch (e) {
+      console.error('Error al eliminar tarea', e);
+      showNotification({ type: 'error', text: 'No se pudo eliminar la tarea.' });
+    }
+  };
+
+  const visibleTeacherTasks = useMemo(() => {
+    const teacherName = getTeacherName().toLowerCase();
+    const teacherEmail = String(user?.email || '').toLowerCase();
+    return teacherTasks.filter(task => {
+      if (isAdmin) return true;
+      if (task.teacherUid && task.teacherUid === user?.uid) return true;
+      if (task.teacherEmail && String(task.teacherEmail).toLowerCase() === teacherEmail) return true;
+      return task.teacherName && String(task.teacherName).toLowerCase() === teacherName;
+    });
+  }, [teacherTasks, user, isAdmin]);
+
+  const openTeacherTasksCount = visibleTeacherTasks.filter(task => ['pendiente', 'en_revision'].includes(task.status || 'pendiente')).length;
+  const pendingSelfTasks = visibleTeacherTasks.filter(task => task.type === 'self_task' && ['pendiente', 'en_revision'].includes(task.status || 'pendiente'));
+  const pendingAdminRequests = visibleTeacherTasks.filter(task => task.type === 'admin_request' && ['pendiente', 'en_revision'].includes(task.status || 'pendiente'));
+  const completedTeacherTasks = visibleTeacherTasks.filter(task => ['completada', 'resuelta', 'rechazada', 'cancelada'].includes(task.status || ''));
 
   const recordsForSelectedDate = useMemo(() => {
     return records
@@ -1770,6 +2028,203 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     await sendReportByEmail(dailyForm);
   };
 
+
+  const renderTaskModal = () => {
+    if (!taskModal) return null;
+    const isAdminRequest = taskForm.type === 'admin_request';
+
+    return (
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative my-8 animate-in zoom-in-95 duration-200">
+          <button onClick={closeTaskModal} disabled={isSavingTask} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
+          <div className="flex items-center gap-3 text-black mb-6">
+            {isAdminRequest ? <Send className="w-8 h-8 text-blue-600" /> : <CheckCircle className="w-8 h-8 text-emerald-600" />}
+            <div>
+              <h2 className="text-xl font-black uppercase tracking-tight leading-none">{isAdminRequest ? 'Petición a coordinación' : 'Nueva tarea interna'}</h2>
+              <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mt-1">{isAdminRequest ? 'Esto quedará visible para administración' : 'Solo para tu organización personal'}</p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {isAdminRequest && (
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Tipo de petición</label>
+                <select value={taskForm.requestType} onChange={e => setTaskForm({ ...taskForm, requestType: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black">
+                  {TEACHER_TASK_REQUEST_TYPES.map(type => <option key={type.value} value={type.value}>{type.label}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Título</label>
+              <input value={taskForm.title} onChange={e => setTaskForm({ ...taskForm, title: e.target.value })} placeholder={isAdminRequest ? 'Ej: Crear clase puntual de refuerzo' : 'Ej: Preparar ejercicio para el grupo de martes'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black" />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Detalles</label>
+              <textarea value={taskForm.description} onChange={e => setTaskForm({ ...taskForm, description: e.target.value })} placeholder={isAdminRequest ? 'Explica qué necesitas que revise coordinación...' : 'Añade notas internas, materiales, pasos o recordatorios...'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-medium text-sm text-slate-800 min-h-[120px] resize-y focus:border-black" />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Prioridad</label>
+                <select value={taskForm.priority} onChange={e => setTaskForm({ ...taskForm, priority: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black">
+                  <option value="normal">Normal</option>
+                  <option value="alta">Alta</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Fecha límite</label>
+                <input type="date" value={taskForm.dueDate} onChange={e => setTaskForm({ ...taskForm, dueDate: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black" />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Clase relacionada</label>
+              <select value={taskForm.relatedClassId} onChange={e => setTaskForm({ ...taskForm, relatedClassId: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black">
+                <option value="">Sin clase concreta</option>
+                {recurringClasses
+                  .filter(c => !isPunctualClass(c))
+                  .sort((a, b) => String(a.dayOfWeek).localeCompare(String(b.dayOfWeek)) || String(a.time).localeCompare(String(b.time)))
+                  .map(c => <option key={c.id} value={c.id}>{formatClassSummary(c)}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button onClick={closeTaskModal} disabled={isSavingTask} className="w-full bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors disabled:opacity-50">Cancelar</button>
+            <button onClick={saveTeacherTask} disabled={isSavingTask || !taskForm.title.trim()} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-colors disabled:opacity-40 flex items-center justify-center gap-2">
+              {isSavingTask ? 'Guardando...' : <>{isAdminRequest ? <Send className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />} {isAdminRequest ? 'Enviar petición' : 'Crear tarea'}</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTeacherTaskCard = (task = {}) => {
+    const isAdminRequest = task.type === 'admin_request';
+    const status = task.status || 'pendiente';
+    const requestLabel = TEACHER_TASK_REQUEST_TYPES.find(t => t.value === task.requestType)?.label || 'Petición';
+    const isOpen = ['pendiente', 'en_revision'].includes(status);
+
+    return (
+      <div key={task.id} className={`bg-white rounded-3xl border-2 p-6 shadow-sm ${task.priority === 'alta' && isOpen ? 'border-amber-300' : 'border-zinc-100'}`}>
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
+          <div className="flex items-start gap-4">
+            <div className={`p-3 rounded-2xl shrink-0 ${isAdminRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>
+              {isAdminRequest ? <Send className="w-6 h-6" /> : <CheckCircle className="w-6 h-6" />}
+            </div>
+            <div>
+              <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-tight">{task.title}</h3>
+              <div className="flex flex-wrap gap-2 mt-2">
+                <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(status)}`}>{getTeacherTaskStatusLabel(status)}</span>
+                <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${task.priority === 'alta' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-zinc-50 text-zinc-500 border-zinc-200'}`}>Prioridad {task.priority || 'normal'}</span>
+                {isAdminRequest && <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border-blue-200">{requestLabel}</span>}
+              </div>
+            </div>
+          </div>
+          {task.dueDate && (
+            <div className="bg-zinc-50 border border-zinc-100 rounded-xl px-3 py-2 text-right shrink-0">
+              <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Fecha límite</p>
+              <p className="text-xs font-black text-slate-700">{formatDateSpanish(task.dueDate)}</p>
+            </div>
+          )}
+        </div>
+
+        {task.relatedClassLine && (
+          <div className="mb-4 p-3 bg-zinc-50 border border-zinc-100 rounded-xl text-xs font-bold text-zinc-600 flex items-start gap-2">
+            <Calendar className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
+            <span>{task.relatedClassLine}</span>
+          </div>
+        )}
+
+        {task.description && <p className="text-sm font-medium text-zinc-600 leading-relaxed whitespace-pre-wrap mb-4">{task.description}</p>}
+
+        {task.adminResponse && (
+          <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl">
+            <p className="text-[10px] font-black uppercase tracking-widest text-blue-700 mb-1">Respuesta de coordinación</p>
+            <p className="text-sm font-bold text-blue-950 whitespace-pre-wrap">{task.adminResponse}</p>
+          </div>
+        )}
+
+        <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t border-zinc-100">
+          {task.type === 'self_task' && isOpen && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'completada')} className="w-full sm:w-auto bg-emerald-600 text-white font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">
+              <Check className="w-4 h-4" /> Completar
+            </button>
+          )}
+          {task.type === 'self_task' && !isOpen && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'pendiente')} className="w-full sm:w-auto bg-zinc-100 text-zinc-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4" /> Reabrir
+            </button>
+          )}
+          {task.type === 'admin_request' && isOpen && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'cancelada')} className="w-full sm:w-auto bg-zinc-100 text-zinc-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2">
+              <X className="w-4 h-4" /> Cancelar petición
+            </button>
+          )}
+          <button onClick={() => deleteTeacherTask(task)} className="w-full sm:w-auto bg-red-50 text-red-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
+            <Trash2 className="w-4 h-4" /> Eliminar
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTasksTab = () => {
+    const visibleList = tasksView === 'requests'
+      ? pendingAdminRequests
+      : tasksView === 'done'
+        ? completedTeacherTasks
+        : pendingSelfTasks;
+
+    return (
+      <div className="space-y-6 animate-in fade-in">
+        <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 p-6 md:p-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 mb-6">
+            <div>
+              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tareas</h2>
+              <p className="text-sm font-medium text-zinc-500 mt-1">Organización interna y peticiones a coordinación.</p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+              <button onClick={() => openTaskModal('self_task')} className="w-full sm:w-auto bg-black text-white font-black px-5 py-3 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-zinc-800 transition-colors">
+                <PlusCircle className="w-4 h-4" /> Nueva tarea
+              </button>
+              <button onClick={() => openTaskModal('admin_request')} className="w-full sm:w-auto bg-blue-600 text-white font-black px-5 py-3 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-blue-700 transition-colors">
+                <Send className="w-4 h-4" /> Pedir a coordinación
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 bg-zinc-50 border border-zinc-100 rounded-2xl p-2">
+            {[
+              { id: 'pending', label: `Mis tareas (${pendingSelfTasks.length})` },
+              { id: 'requests', label: `Peticiones (${pendingAdminRequests.length})` },
+              { id: 'done', label: `Finalizadas (${completedTeacherTasks.length})` }
+            ].map(view => (
+              <button key={view.id} onClick={() => setTasksView(view.id)} className={`py-3 px-3 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all ${tasksView === view.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-white'}`}>
+                {view.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {visibleList.length === 0 ? (
+          <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
+            <CheckCircle className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
+            <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay tareas en esta sección</h3>
+            <p className="text-sm font-medium text-zinc-400 mt-2">Crea una tarea interna o envía una petición a coordinación.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {visibleList.map(renderTeacherTaskCard)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderRulesModal = () => {
     if (!showRulesModal) return null;
     return (
@@ -1819,6 +2274,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
+      {renderTaskModal()}
+
       {deadHourModal && (
         <DeadHourModalComponent
           tasks={deadHourModal.tasks}
@@ -1881,14 +2338,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             { id: 'attendance', label: 'Listas', icon: ClipboardList },
             { id: 'availability', label: 'Horario', icon: Clock },
             { id: 'notifications', label: 'Avisos', icon: Bell }, 
+            { id: 'tasks', label: 'Tareas', icon: CheckCircle },
             { id: 'daily', label: 'Diario', icon: MessageSquare },
             { id: 'history', label: 'Historial', icon: History },
             { id: 'reports', label: 'Reportes', icon: BarChart3 }
           ].map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`relative flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
               <tab.icon className="w-4 h-4"/> {tab.label}
-              {tab.id === 'notifications' && notifications.length > 0 && (
+              {tab.id === 'notifications' && (notifications.length > 0 || hasUnreadTeacherTablon) && (
                 <span className="bg-red-500 w-2 h-2 rounded-full absolute top-2 right-2 animate-pulse"></span>
+              )}
+              {tab.id === 'tasks' && openTeacherTasksCount > 0 && (
+                <span className="bg-amber-400 w-2 h-2 rounded-full absolute top-2 right-2 animate-pulse"></span>
               )}
             </button>
           ))}
@@ -2471,117 +2932,174 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         {/* --- PESTAÑA NOTIFICACIONES (Avisos) --- */}
         {activeTab === 'notifications' && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
               <div>
-                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Notificaciones</h2>
-                <p className="text-sm font-medium text-zinc-500 mt-1">Recuperaciones y cambios previstos que afectan a tus clases.</p>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Avisos</h2>
+                <p className="text-sm font-medium text-zinc-500 mt-1">Notificaciones operativas y tablón general de la escuela.</p>
               </div>
-              <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${notifications.length > 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
-                {notifications.length} Pendientes
-              </span>
+              <div className="flex flex-wrap gap-2">
+                <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${notifications.length > 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
+                  {notifications.length} Notificaciones
+                </span>
+                <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${hasUnreadTeacherTablon ? 'bg-amber-400 text-amber-950 animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
+                  {visibleTeacherAnnouncements.length} Anuncios
+                </span>
+              </div>
             </div>
 
-            {notifications.length === 0 ? (
-              <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
-                <CheckCircle className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
-                <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay avisos pendientes</h3>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {notifications.map(n => {
-                  const isRecoveryRequest = n.type === 'recuperacion';
-                  const isPlanningRequest = PLANNING_GESTION_TYPES.has(n.type);
-                  const targetClass = (isRecoveryRequest || n.requestedClass) ? getRecoveryClass(n) : null;
-                  const ticketInfo = isRecoveryRequest ? getRecoveryTicketInfo(n) : null;
-                  const recoveryClassLine = n.requestedClassLine || (targetClass ? formatClassSummary(targetClass) : 'Clase no localizada');
-                  const canApproveRecovery = isRecoveryRequest && targetClass?.refPath && ticketInfo?.free > 0;
-                  const affectedClasses = isPlanningRequest ? recurringClasses.filter(c => isPlanningGestionRelevantForClass(n, c)) : [];
+            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-2 grid grid-cols-2 gap-2">
+              <button onClick={() => setNotificationsView('notifications')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${notificationsView === 'notifications' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+                <Bell className="w-4 h-4" /> Notificaciones
+                {notifications.length > 0 && <span className="bg-red-500 text-white rounded-full px-2 py-0.5 text-[9px]">{notifications.length}</span>}
+              </button>
+              <button onClick={() => setNotificationsView('tablon')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${notificationsView === 'tablon' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+                <Megaphone className="w-4 h-4" /> Tablón
+                {hasUnreadTeacherTablon && <span className="bg-amber-400 text-amber-950 rounded-full px-2 py-0.5 text-[9px]">Nuevo</span>}
+              </button>
+            </div>
 
-                  return (
-                  <div key={n.id} className="bg-white border-2 border-zinc-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
-                    <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'mantenimiento' ? 'bg-blue-50 text-blue-600' : n.type === 'cambio_horario' ? 'bg-violet-50 text-violet-600' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : isRecoveryRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-500'}`}>
-                      {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'mantenimiento' ? <Snowflake className="w-6 h-6"/> : n.type === 'cambio_horario' ? <RefreshCcw className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : isRecoveryRequest ? <Ticket className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
-                    </div>
-                    <div className="flex-1">
-                      <h3 className="font-black text-lg uppercase tracking-tight">{n.studentName}</h3>
-                      <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">
-                        {isPlanningRequest ? `Planificación: ${getPlanningGestionLabel(n)}` : (isRecoveryRequest ? 'Solicita recuperación' : (n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`))}
-                      </p>
+            {notificationsView === 'notifications' && (
+              <>
+                {notifications.length === 0 ? (
+                  <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
+                    <CheckCircle className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
+                    <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay avisos pendientes</h3>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {notifications.map(n => {
+                      const isRecoveryRequest = n.type === 'recuperacion';
+                      const isPlanningRequest = PLANNING_GESTION_TYPES.has(n.type);
+                      const targetClass = (isRecoveryRequest || n.requestedClass) ? getRecoveryClass(n) : null;
+                      const ticketInfo = isRecoveryRequest ? getRecoveryTicketInfo(n) : null;
+                      const recoveryClassLine = n.requestedClassLine || (targetClass ? formatClassSummary(targetClass) : 'Clase no localizada');
+                      const canApproveRecovery = isRecoveryRequest && targetClass?.refPath && ticketInfo?.free > 0;
+                      const affectedClasses = isPlanningRequest ? recurringClasses.filter(c => isPlanningGestionRelevantForClass(n, c)) : [];
 
-                      {isPlanningRequest ? (
-                        <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 space-y-3">
-                          <div className="flex flex-wrap gap-2">{renderPlanningBadge(n, targetClass || affectedClasses[0] || null)}</div>
-                          <p className="text-sm font-bold text-orange-950">{getPlanningGestionClassContext(n, targetClass || affectedClasses[0] || null)}</p>
-                          {affectedClasses.length > 0 && (
-                            <div>
-                              <p className="text-[10px] font-black text-orange-800 uppercase tracking-widest mb-1">Clases afectadas</p>
-                              <ul className="space-y-1">
-                                {affectedClasses.map(c => <li key={c.id} className="text-xs font-bold text-slate-800">· {formatClassSummary(c)}</li>)}
-                              </ul>
+                      return (
+                      <div key={n.id} className="bg-white border-2 border-zinc-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
+                        <div className={`p-3 rounded-2xl shrink-0 ${n.type === 'baja' ? 'bg-red-50 text-red-500' : n.type === 'mantenimiento' ? 'bg-blue-50 text-blue-600' : n.type === 'cambio_horario' ? 'bg-violet-50 text-violet-600' : n.type === 'aviso_ausencia' ? 'bg-amber-50 text-amber-500' : isRecoveryRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-500'}`}>
+                          {n.type === 'baja' ? <UserMinus className="w-6 h-6"/> : n.type === 'mantenimiento' ? <Snowflake className="w-6 h-6"/> : n.type === 'cambio_horario' ? <RefreshCcw className="w-6 h-6"/> : n.type === 'aviso_ausencia' ? <AlertCircle className="w-6 h-6"/> : isRecoveryRequest ? <Ticket className="w-6 h-6"/> : <PlusCircle className="w-6 h-6"/>}
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="font-black text-lg uppercase tracking-tight">{n.studentName}</h3>
+                          <p className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3">
+                            {isPlanningRequest ? `Planificación: ${getPlanningGestionLabel(n)}` : (isRecoveryRequest ? 'Solicita recuperación' : (n.type === 'aviso_ausencia' ? n.title : `Solicita: ${n.title}`))}
+                          </p>
+
+                          {isPlanningRequest ? (
+                            <div className="bg-orange-50 p-4 rounded-xl border border-orange-100 space-y-3">
+                              <div className="flex flex-wrap gap-2">{renderPlanningBadge(n, targetClass || affectedClasses[0] || null)}</div>
+                              <p className="text-sm font-bold text-orange-950">{getPlanningGestionClassContext(n, targetClass || affectedClasses[0] || null)}</p>
+                              {affectedClasses.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-black text-orange-800 uppercase tracking-widest mb-1">Clases afectadas</p>
+                                  <ul className="space-y-1">
+                                    {affectedClasses.map(c => <li key={c.id} className="text-xs font-bold text-slate-800">· {formatClassSummary(c)}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {targetClass && !affectedClasses.some(c => c.id === targetClass.id) && (
+                                <p className="text-xs font-bold text-slate-800">Clase destino: {formatClassSummary(targetClass)}</p>
+                              )}
+                              {n.details && <p className="text-xs font-medium text-zinc-600 italic pt-1">"{n.details}"</p>}
+                              <p className="text-[10px] font-black uppercase tracking-widest text-orange-700 pt-2 border-t border-orange-100">Admin debe gestionar Tadosi y ejecutar el trámite. Esta tarjeta solo es previsión.</p>
+                            </div>
+                          ) : isRecoveryRequest ? (
+                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 space-y-2">
+                              <p className="text-xs font-black text-blue-900 uppercase tracking-widest">Clase solicitada</p>
+                              <p className="text-sm font-bold text-slate-800">{recoveryClassLine}</p>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
+                                <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Fecha: <span className="text-slate-800">{formatDateSpanish(n.recoveryDate)}</span></p>
+                                <p className={`text-[10px] font-black uppercase tracking-widest ${ticketInfo?.free > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                  Tickets libres: {ticketInfo?.free || 0} / válidos: {ticketInfo?.valid || 0}
+                                </p>
+                              </div>
+                              {n.details && <p className="text-xs font-medium text-zinc-600 italic pt-2">"{n.details}"</p>}
+                              {!targetClass && <p className="text-[10px] font-black text-red-600 uppercase tracking-widest pt-2">No se ha localizado la clase en tu agenda.</p>}
+                            </div>
+                          ) : (
+                            <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+                              <p className="text-sm font-medium text-zinc-600 italic">"{n.details || 'Sin detalles adicionales'}"</p>
                             </div>
                           )}
-                          {targetClass && !affectedClasses.some(c => c.id === targetClass.id) && (
-                            <p className="text-xs font-bold text-slate-800">Clase destino: {formatClassSummary(targetClass)}</p>
-                          )}
-                          {n.details && <p className="text-xs font-medium text-zinc-600 italic pt-1">"{n.details}"</p>}
-                          <p className="text-[10px] font-black uppercase tracking-widest text-orange-700 pt-2 border-t border-orange-100">Admin debe gestionar Tadosi y ejecutar el trámite. Esta tarjeta solo es previsión.</p>
-                        </div>
-                      ) : isRecoveryRequest ? (
-                        <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 space-y-2">
-                          <p className="text-xs font-black text-blue-900 uppercase tracking-widest">Clase solicitada</p>
-                          <p className="text-sm font-bold text-slate-800">{recoveryClassLine}</p>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
-                            <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Fecha: <span className="text-slate-800">{formatDateSpanish(n.recoveryDate)}</span></p>
-                            <p className={`text-[10px] font-black uppercase tracking-widest ${ticketInfo?.free > 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                              Tickets libres: {ticketInfo?.free || 0} / válidos: {ticketInfo?.valid || 0}
-                            </p>
-                          </div>
-                          {n.details && <p className="text-xs font-medium text-zinc-600 italic pt-2">"{n.details}"</p>}
-                          {!targetClass && <p className="text-[10px] font-black text-red-600 uppercase tracking-widest pt-2">No se ha localizado la clase en tu agenda.</p>}
-                        </div>
-                      ) : (
-                        <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
-                          <p className="text-sm font-medium text-zinc-600 italic">"{n.details || 'Sin detalles adicionales'}"</p>
-                        </div>
-                      )}
 
-                      {n.targetMonth && (
-                        <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mt-3">Para el mes de: {n.targetMonth}</p>
-                      )}
-                      
-                      <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-col sm:flex-row gap-2">
-                        {isPlanningRequest ? (
-                          <div className="w-full bg-zinc-50 border border-zinc-200 text-zinc-500 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2">
-                            <Bell className="w-4 h-4"/> Pendiente de coordinación
+                          {n.targetMonth && (
+                            <p className="text-xs font-bold text-amber-600 uppercase tracking-widest mt-3">Para el mes de: {n.targetMonth}</p>
+                          )}
+                          
+                          <div className="mt-4 pt-4 border-t border-zinc-100 flex flex-col sm:flex-row gap-2">
+                            {isPlanningRequest ? (
+                              <div className="w-full bg-zinc-50 border border-zinc-200 text-zinc-500 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2">
+                                <Bell className="w-4 h-4"/> Pendiente de coordinación
+                              </div>
+                            ) : isRecoveryRequest ? (
+                              <>
+                                <button
+                                  onClick={() => approveRecoveryRequest(n)}
+                                  disabled={!canApproveRecovery}
+                                  className={`w-full sm:w-auto text-[10px] font-black uppercase tracking-widest px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2 ${canApproveRecovery ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                                >
+                                  <Check className="w-4 h-4"/> Aceptar recuperación
+                                </button>
+                                <button onClick={() => rejectRecoveryRequest(n)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                                  <X className="w-4 h-4"/> Rechazar
+                                </button>
+                              </>
+                            ) : (
+                              <button onClick={() => dismissNotification(n.id)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                                <Check className="w-4 h-4"/> Enterado / Ocultar
+                              </button>
+                            )}
                           </div>
-                        ) : isRecoveryRequest ? (
-                          <>
-                            <button
-                              onClick={() => approveRecoveryRequest(n)}
-                              disabled={!canApproveRecovery}
-                              className={`w-full sm:w-auto text-[10px] font-black uppercase tracking-widest px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2 ${canApproveRecovery ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
-                            >
-                              <Check className="w-4 h-4"/> Aceptar recuperación
-                            </button>
-                            <button onClick={() => rejectRecoveryRequest(n)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
-                              <X className="w-4 h-4"/> Rechazar
-                            </button>
-                          </>
-                        ) : (
-                          <button onClick={() => dismissNotification(n.id)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-zinc-100 hover:bg-zinc-200 text-zinc-600 px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
-                            <Check className="w-4 h-4"/> Enterado / Ocultar
-                          </button>
+
+                        </div>
+                      </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {notificationsView === 'tablon' && (
+              <div className="space-y-4">
+                {visibleTeacherAnnouncements.length === 0 ? (
+                  <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
+                    <Megaphone className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
+                    <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">El tablón está vacío</h3>
+                    <p className="text-sm font-medium text-zinc-400 mt-2">Cuando coordinación publique avisos para tu sede, instrumento o profesor, aparecerán aquí.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {visibleTeacherAnnouncements.map(ann => (
+                      <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
+                        <div className="flex items-start gap-3 mb-4">
+                          <div className="bg-black text-white p-3 rounded-2xl shrink-0">
+                            <Megaphone className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
+                            <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">{formatDateSpanish(ann.date)}</p>
+                          </div>
+                        </div>
+                        <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap">{ann.content}</p>
+                        {getSafeAnnouncementUrl(ann.url) && (
+                          <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
+                            <LinkIcon className="w-4 h-4"/> Abrir enlace
+                          </a>
                         )}
                       </div>
-
-                    </div>
+                    ))}
                   </div>
-                  );
-                })}
+                )}
               </div>
             )}
           </div>
         )}
+
+        {/* --- PESTAÑA TAREAS --- */}
+        {activeTab === 'tasks' && renderTasksTab()}
 
         {/* --- PESTAÑA DIARIO DEL PROFESOR --- */}
         {activeTab === 'daily' && (
@@ -2800,10 +3318,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-zinc-200 pb-safe z-40">
         <div className="flex justify-around p-2">
-          {[{id:'attendance', i:ClipboardList}, {id:'availability', i:Clock}, {id:'notifications', i:Bell}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
+          {[{id:'attendance', i:ClipboardList}, {id:'availability', i:Clock}, {id:'notifications', i:Bell}, {id:'tasks', i:CheckCircle}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-xl transition-all relative ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}>
               <t.i className="w-6 h-6"/>
-              {t.id === 'notifications' && notifications.length > 0 && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+              {t.id === 'notifications' && (notifications.length > 0 || hasUnreadTeacherTablon) && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+              {t.id === 'tasks' && openTeacherTasksCount > 0 && <span className="bg-amber-400 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
             </button>
           ))}
           {isAdmin && <button onClick={switchToAdmin} className={`p-4 rounded-xl transition-all bg-red-50 text-red-600`}><ShieldAlert className="w-6 h-6"/></button>}
@@ -2811,10 +3330,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       </nav>
 
       <nav className="hidden md:flex fixed top-1/2 -translate-y-1/2 left-6 flex-col gap-4 z-40">
-        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'availability', i:Clock, t:'Horario'}, {id:'notifications', i:Bell, t:'Avisos'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
+        {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'availability', i:Clock, t:'Horario'}, {id:'notifications', i:Bell, t:'Avisos'}, {id:'tasks', i:CheckCircle, t:'Tareas'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all relative ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black border-2'}`} title={t.t}>
             <t.i/>
-            {t.id === 'notifications' && notifications.length > 0 && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+            {t.id === 'notifications' && (notifications.length > 0 || hasUnreadTeacherTablon) && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+            {t.id === 'tasks' && openTeacherTasksCount > 0 && <span className="bg-amber-400 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
           </button>
         ))}
       </nav>

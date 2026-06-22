@@ -837,7 +837,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const teacherAnnouncementMatches = (ann = {}) => {
     const audienceType = ann.audienceType || 'all';
     const audienceValue = String(ann.audienceValue || '').trim();
+
+    // Avisos generales: los leen alumnos y profesores.
     if (audienceType === 'all') return true;
+
+    // Avisos internos publicados desde AdminPortal solo para profesores.
+    if (audienceType === 'teachers') return true;
+
     if (!audienceValue) return false;
 
     const teacherName = getTeacherName().toLowerCase();
@@ -854,7 +860,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       return recurringClasses.some(c => (c.subject || '') === audienceValue);
     }
 
-    return true;
+    // Cierre seguro: si aparece un tipo de audiencia nuevo, no lo mostramos por defecto.
+    return false;
   };
 
   const visibleTeacherAnnouncements = useMemo(() => {

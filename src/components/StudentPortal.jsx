@@ -291,6 +291,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const audienceType = ann.audienceType || 'all';
     const audienceValue = String(ann.audienceValue || '').trim();
 
+    // Los avisos dirigidos a profesores se leen solo desde TeacherPortal.
+    // StudentPortal debe ignorarlos aunque estén en la misma colección announcements.
+    if (audienceType === 'teachers') return false;
+
     if (audienceType === 'all') return true;
     if (!audienceValue || fixedMyClasses.length === 0) return false;
 
@@ -298,7 +302,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (audienceType === 'instrumento') return fixedMyClasses.some(c => (c.subject || '') === audienceValue);
     if (audienceType === 'profesor') return fixedMyClasses.some(c => (c.teacher || '') === audienceValue);
 
-    return true;
+    return false;
   };
 
   const visibleAnnouncements = announcements.filter(announcementMatchesStudent);

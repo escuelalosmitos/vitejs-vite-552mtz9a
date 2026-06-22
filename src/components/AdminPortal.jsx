@@ -8,7 +8,7 @@ import {
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
-const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "tarea_manual"]);
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario"]);
 const ANNOUNCEMENT_EMAIL_TO = "gestiones@escuelalosmitos.com";
 const ANNOUNCEMENT_EMAIL_BATCH_SIZE = 50;
 const BI_WEEKS_PER_MONTH = 4.333;
@@ -900,8 +900,9 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
 
 
   const isAdminCopyGestionType = (gestion = {}) => {
+    if (gestion?.source === 'manual_admin') return false;
     const type = gestion?.type || 'tarea_manual';
-    return ADMIN_COPY_GESTION_TYPES.has(type) || gestion?.source === 'manual_admin';
+    return ADMIN_COPY_GESTION_TYPES.has(type);
   };
 
   const getGestionTypeLabel = (type = 'tarea_manual') => String(type || 'tarea_manual').replace(/_/g, ' ');
@@ -3313,9 +3314,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           date: new Date().toISOString()
         };
         await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
-        await finalizeGestionStatus(taskId, 'pendiente', { ...taskPayload, id: taskId });
 
-        alert('✅ Tarea manual añadida a la bandeja y copiada a gestiones@.');
+        alert('✅ Tarea manual añadida a la bandeja.');
         setManualTaskModal(false);
       } catch (error) {
         alert('❌ Error al crear la tarea manual: ' + error.message);

@@ -30,6 +30,37 @@ const PROJECTABLE_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_p
 const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
 const HISTORIAL_TRAMITES_BLOCK_SIZE = 30;
 
+const TEACHER_TASK_REQUEST_TYPES = [
+  { value: 'clase_puntual', label: 'Crear clase puntual' },
+  { value: 'material', label: 'Material o aula' },
+  { value: 'alumno', label: 'Alumno o familia' },
+  { value: 'horario', label: 'Horario o agenda' },
+  { value: 'incidencia', label: 'Incidencia' },
+  { value: 'otro', label: 'Otra petición' }
+];
+
+const TEACHER_TASK_STATUS_LABELS = {
+  pendiente: 'Pendiente',
+  en_revision: 'En revisión',
+  completada: 'Completada',
+  resuelta: 'Resuelta',
+  rechazada: 'Rechazada',
+  cancelada: 'Cancelada'
+};
+
+const TEACHER_TASK_STATUS_STYLE = {
+  pendiente: 'bg-amber-50 text-amber-800 border-amber-200',
+  en_revision: 'bg-blue-50 text-blue-700 border-blue-200',
+  completada: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  resuelta: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  rechazada: 'bg-red-50 text-red-700 border-red-200',
+  cancelada: 'bg-zinc-50 text-zinc-500 border-zinc-200'
+};
+
+const getTeacherTaskRequestLabel = (value = 'otro') => TEACHER_TASK_REQUEST_TYPES.find(type => type.value === value)?.label || 'Otra petición';
+const getTeacherTaskStatusLabel = (status = 'pendiente') => TEACHER_TASK_STATUS_LABELS[status] || status || 'Pendiente';
+const getTeacherTaskStatusStyle = (status = 'pendiente') => TEACHER_TASK_STATUS_STYLE[status] || 'bg-zinc-50 text-zinc-600 border-zinc-200';
+
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -233,6 +264,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allTickets, setAllTickets] = useState([]);
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [teacherTasks, setTeacherTasks] = useState([]);
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -255,6 +287,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [manualTaskModal, setManualTaskModal] = useState(false);
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
   const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
+  const [gestionSearchTerm, setGestionSearchTerm] = useState('');
   const [resolvedGestionesVisible, setResolvedGestionesVisible] = useState(HISTORIAL_TRAMITES_BLOCK_SIZE);
   const [dangerViewMode, setDangerViewMode] = useState('actual');
   const [dangerSubView, setDangerSubView] = useState('ocupacion');
@@ -262,6 +295,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
+  const [archProjectionMode, setArchProjectionMode] = useState('actual'); // 'actual' o 'proyeccion'
   const [archDay, setArchDay] = useState('1'); // Lunes por defecto
   const [archTime, setArchTime] = useState('17:00');
   const [archSede, setArchSede] = useState('Tarragona');
@@ -296,7 +330,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 10) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 11) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -355,7 +389,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); };
+    const unsubTeacherTasks = onSnapshot(collection(db, 'artifacts', appId, 'teacherTasks'), (snap) => {
+      setTeacherTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)));
+      checkLoad();
+    });
+
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubTeacherTasks(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -919,6 +958,36 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
     }
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), baseUpdate);
+  };
+
+  const updateTeacherRequestStatus = async (task, status) => {
+    if (!task?.id) return;
+
+    const statusLabel = getTeacherTaskStatusLabel(status).toUpperCase();
+    let adminResponse = '';
+
+    if (['resuelta', 'rechazada'].includes(status)) {
+      const response = window.prompt(`Respuesta para el profesor al marcar como ${statusLabel} (opcional):`, task.adminResponse || '');
+      if (response === null) return;
+      adminResponse = String(response || '').trim();
+    } else if (!window.confirm(`¿Marcar esta petición de ${task.teacherName || 'profesor'} como ${statusLabel}?`)) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id), {
+        status,
+        adminResponse,
+        updatedAt: new Date().toISOString(),
+        reviewedAt: ['en_revision'].includes(status) ? new Date().toISOString() : (task.reviewedAt || ''),
+        resolvedAt: ['resuelta', 'rechazada'].includes(status) ? new Date().toISOString() : (task.resolvedAt || ''),
+        resolvedBy: ['resuelta', 'rechazada'].includes(status) ? (user?.email || 'admin') : (task.resolvedBy || ''),
+        reviewedBy: ['en_revision'].includes(status) ? (user?.email || 'admin') : (task.reviewedBy || '')
+      });
+      alert(`Petición marcada como ${getTeacherTaskStatusLabel(status)}.`);
+    } catch (e) {
+      alert('Error al actualizar la petición del profesor: ' + e.message);
+    }
   };
 
   const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, studentName, studentEmail, classData }) => {
@@ -2599,7 +2668,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       tadosiUrl: '',
       startDate: '',
       price: '',
-      publicDetails: ''
+      publicDetails: '',
+      whatsappGroupUrl: ''
     };
 
     try {
@@ -2669,12 +2739,20 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
+  const pendingTeacherRequests = teacherTasks.filter(task =>
+    task.type === 'admin_request' && ['pendiente', 'en_revision'].includes(task.status || 'pendiente')
+  );
+  const resolvedTeacherRequests = teacherTasks.filter(task =>
+    task.type === 'admin_request' && !['pendiente', 'en_revision'].includes(task.status || 'pendiente')
+  );
   const visibleResolvedGestiones = resolvedGestiones.slice(0, resolvedGestionesVisible);
   const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
+  const totalPendingInbox = pendingGestiones.length + pendingTeacherRequests.length;
 
   const gestionPendingFilters = [
     { id: 'todas', label: 'Todas', matcher: () => true },
+    { id: 'profesores', label: 'Profesores', matcher: () => false },
     { id: 'tadosi_pendiente', label: 'Pend. Tadosi', matcher: (g) => gestionRequiresTadosi(g) && !isGestionTadosiDone(g) },
     { id: 'tadosi_hecho', label: 'Tadosi hecho', matcher: (g) => gestionRequiresTadosi(g) && isGestionTadosiDone(g) },
     { id: 'mantenimiento', label: 'Mantenimiento', matcher: (g) => ['mantenimiento', 'reactivar_plaza'].includes(g.type) },
@@ -2683,10 +2761,37 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     { id: 'manuales', label: 'Manuales', matcher: (g) => g.source === 'manual_admin' || (g.type || '').includes('manual') || g.type === 'tarea_manual' || g.type === 'incidencia_manual' },
   ];
 
+  const normalizeSearchText = (value = '') => String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const gestionSearchNeedle = normalizeSearchText(gestionSearchTerm);
+
+  const matchesGestionSearch = (g = {}) => {
+    if (!gestionSearchNeedle) return true;
+    const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
+    const haystack = normalizeSearchText([
+      g.studentName, g.studentEmail, g.title, g.details, studentInfo?.name, studentInfo?.alias, studentInfo?.email
+    ].filter(Boolean).join(' '));
+    return haystack.includes(gestionSearchNeedle);
+  };
+
+  const matchesTeacherRequestSearch = (task = {}) => {
+    if (!gestionSearchNeedle) return true;
+    const haystack = normalizeSearchText([
+      task.teacherName, task.teacherEmail, task.title, task.description, task.relatedClassLine, getTeacherTaskRequestLabel(task.requestType)
+    ].filter(Boolean).join(' '));
+    return haystack.includes(gestionSearchNeedle);
+  };
+
   const activeGestionPendingFilter = gestionPendingFilters.find(f => f.id === gestionPendingFilter) || gestionPendingFilters[0];
-  const filteredPendingGestiones = pendingGestiones.filter(activeGestionPendingFilter.matcher);
+  const filteredPendingGestiones = gestionPendingFilter === 'profesores'
+    ? []
+    : pendingGestiones.filter(activeGestionPendingFilter.matcher).filter(matchesGestionSearch);
+  const filteredTeacherRequests = gestionPendingFilter === 'profesores'
+    ? pendingTeacherRequests.filter(matchesTeacherRequestSearch)
+    : [];
   const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
-    acc[filter.id] = pendingGestiones.filter(filter.matcher).length;
+    acc[filter.id] = filter.id === 'profesores'
+      ? pendingTeacherRequests.length
+      : pendingGestiones.filter(filter.matcher).length;
     return acc;
   }, {});
   
@@ -2902,6 +3007,9 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     return projectedClasses;
   }, [pendingGestiones, recurringClassesOnly, students]);
+
+  const architectClasses = archProjectionMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly;
+  const isArchitectProjection = archProjectionMode === 'proyeccion';
 
   const sortDangerRows = (rows = []) => [...rows].sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
@@ -3574,17 +3682,22 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       startDate: editWebModal.startDate || '',
       price: editWebModal.price || '',
       cuotaBase: editWebModal.cuotaBase || 60, 
-      publicDetails: editWebModal.publicDetails || ''
+      publicDetails: editWebModal.publicDetails || '',
+      whatsappGroupUrl: editWebModal.whatsappGroupUrl || ''
     });
     const [saving, setSaving] = useState(false);
     const handleSave = async () => {
+      const cleanWhatsappUrl = normalizeAnnouncementUrl(formData.whatsappGroupUrl);
+      if (cleanWhatsappUrl === null) return alert('La URL del grupo de WhatsApp debe empezar por https:// o http://');
+
       setSaving(true);
       try {
         await updateDoc(doc(db, editWebModal.refPath), {
           ...formData,
+          whatsappGroupUrl: cleanWhatsappUrl || '',
           cuotaBase: Number(formData.cuotaBase) || 0
         });
-        alert("Configuración web e informes guardada correctamente.");
+        alert("Configuración web, informes y grupo de WhatsApp guardada correctamente.");
         setEditWebModal(null);
       } catch(e) { alert("Error al guardar: " + e.message); } finally { setSaving(false); }
     };
@@ -3644,6 +3757,13 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                     <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Nivel iniciación..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500" />
                   </div>
                </div>
+            </div>
+
+            <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl">
+              <h4 className="text-[10px] font-black uppercase text-emerald-700 tracking-widest mb-3 flex items-center gap-1"><Send className="w-4 h-4"/> Grupo de WhatsApp de la clase</h4>
+              <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 block">URL del grupo <span className="text-emerald-500">(opcional)</span></label>
+              <input type="text" value={formData.whatsappGroupUrl} onChange={e => setFormData({...formData, whatsappGroupUrl: e.target.value})} placeholder="https://chat.whatsapp.com/..." className="w-full p-3 bg-white border-2 border-emerald-100 rounded-xl font-bold text-sm outline-none focus:border-emerald-500" />
+              <p className="text-[9px] text-emerald-700 mt-1 font-bold leading-relaxed">Campo interno. Si se rellena, StudentPortal podrá mostrar el acceso al grupo específico de esta clase. Déjalo vacío en particulares o clases sin grupo.</p>
             </div>
           </div>
           <button onClick={handleSave} disabled={saving} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-blue-700 transition-all shadow-md disabled:opacity-50">
@@ -4319,7 +4439,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         </div>
         <nav className="flex-1 flex md:flex-col p-4 gap-1 no-scrollbar overflow-x-auto md:overflow-visible">
           {[
-            { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: pendingGestiones.length },
+            { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalPendingInbox },
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
             { id: 'mitobox', icon: DoorOpen, label: 'Mitobox' }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
@@ -4585,7 +4705,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             <header className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bandeja de Entrada</h2>
-                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos y tareas manuales internas.</p>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos, tareas manuales internas y peticiones de profesores.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
                 <button onClick={executeAllReadyGestiones} disabled={bulkExecutingGestiones || readyPendingGestiones.length === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Ejecuta solo los trámites listos: Tadosi hecho o trámites que no requieren Tadosi">
@@ -4597,10 +4717,10 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
               </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Pendientes totales</p>
-                <p className="text-2xl font-black text-slate-900">{pendingGestiones.length}</p>
+                <p className="text-2xl font-black text-slate-900">{totalPendingInbox}</p>
               </div>
               <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Listas para ejecutar</p>
@@ -4610,15 +4730,30 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">Pendientes de Tadosi</p>
                 <p className="text-2xl font-black text-amber-900">{blockedByTadosiGestiones.length}</p>
               </div>
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">Peticiones profesores</p>
+                <p className="text-2xl font-black text-blue-900">{pendingTeacherRequests.length}</p>
+              </div>
             </div>
 
-            {pendingGestiones.length === 0 ? (
+            {totalPendingInbox === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <Check className="w-12 h-12 text-emerald-400 mx-auto mb-4 bg-emerald-50 rounded-full p-2" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Todo al día</h3>
               </div>
             ) : (
               <div className="space-y-4">
+                <div className="relative bg-white rounded-2xl border border-zinc-200 shadow-sm">
+                  <Search className="w-4 h-4 text-zinc-400 absolute left-4 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={gestionSearchTerm}
+                    onChange={e => setGestionSearchTerm(e.target.value)}
+                    placeholder="Buscar por nombre de alumno, email, profesor o texto de la solicitud..."
+                    className="w-full pl-11 pr-4 py-3 rounded-2xl outline-none font-bold text-sm text-slate-700"
+                  />
+                </div>
+
                 <div className="bg-white rounded-2xl p-2 border border-zinc-200 shadow-sm flex flex-wrap gap-2">
                   {gestionPendingFilters.map(filter => {
                     const active = gestionPendingFilter === filter.id;
@@ -4637,7 +4772,65 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                   })}
                 </div>
 
-                {filteredPendingGestiones.length === 0 ? (
+                {gestionPendingFilter === 'profesores' ? (
+                  filteredTeacherRequests.length === 0 ? (
+                    <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
+                      <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
+                      <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay peticiones de profesores en esta vista</h3>
+                      <p className="text-xs text-zinc-400 font-medium mt-2">Cuando un profesor pida algo desde TeacherPortal aparecerá aquí.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      {filteredTeacherRequests.map(task => {
+                        const status = task.status || 'pendiente';
+                        return (
+                          <div key={task.id} className={`bg-white rounded-3xl border-2 p-6 shadow-sm ${task.priority === 'alta' ? 'border-amber-300' : 'border-zinc-100'}`}>
+                            <div className="flex items-start gap-4 mb-4">
+                              <div className="p-3 rounded-2xl bg-blue-50 text-blue-600 shrink-0"><Send className="w-6 h-6" /></div>
+                              <div className="flex-1">
+                                <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-tight">{task.title}</h3>
+                                <div className="flex flex-wrap gap-2 mt-2">
+                                  <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(status)}`}>{getTeacherTaskStatusLabel(status)}</span>
+                                  <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border-blue-200">{getTeacherTaskRequestLabel(task.requestType)}</span>
+                                  {task.priority === 'alta' && <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-800 border-amber-200">Alta prioridad</span>}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-3 text-xs font-bold text-slate-600">
+                              <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3">
+                                <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Profesor</p>
+                                <p className="text-slate-800">{task.teacherName || 'Profesor'} · {task.teacherEmail || 'sin email'}</p>
+                              </div>
+                              {task.relatedClassLine && (
+                                <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3">
+                                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Clase relacionada</p>
+                                  <p>{task.relatedClassLine}</p>
+                                </div>
+                              )}
+                              {task.dueDate && (
+                                <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-amber-900">
+                                  <p className="text-[10px] font-black uppercase tracking-widest mb-1">Fecha límite</p>
+                                  <p>{formatDateSpanish(task.dueDate)}</p>
+                                </div>
+                              )}
+                              <div className="bg-white border border-zinc-100 rounded-xl p-3">
+                                <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Detalles</p>
+                                <p className="whitespace-pre-wrap leading-relaxed">{task.description || 'Sin detalles añadidos.'}</p>
+                              </div>
+                            </div>
+
+                            <div className="mt-5 pt-4 border-t border-zinc-100 flex flex-col sm:flex-row gap-2">
+                              <button onClick={() => updateTeacherRequestStatus(task, 'en_revision')} disabled={status === 'en_revision'} className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed">En revisión</button>
+                              <button onClick={() => updateTeacherRequestStatus(task, 'resuelta')} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Resolver</button>
+                              <button onClick={() => updateTeacherRequestStatus(task, 'rechazada')} className="flex-1 bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Rechazar</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                ) : filteredPendingGestiones.length === 0 ? (
                   <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                     <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
                     <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay trámites pendientes en esta vista</h3>
@@ -4811,6 +5004,28 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 )}
               </div>
             )}
+          {resolvedTeacherRequests.length > 0 && (
+            <div className="mt-12 pt-8 border-t border-zinc-200">
+              <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
+                <Send className="w-5 h-5 text-zinc-400"/> Historial de peticiones de profesores
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-80 hover:opacity-100 transition-opacity">
+                {resolvedTeacherRequests.slice(0, 12).map(task => (
+                  <div key={task.id} className="bg-white rounded-2xl border border-zinc-200 p-5 shadow-sm">
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div>
+                        <h4 className="font-black text-slate-800 uppercase tracking-tight">{task.title}</h4>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{task.teacherName || 'Profesor'} · {getTeacherTaskRequestLabel(task.requestType)}</p>
+                      </div>
+                      <span className={`px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(task.status || 'resuelta')}`}>{getTeacherTaskStatusLabel(task.status || 'resuelta')}</span>
+                    </div>
+                    <p className="text-xs font-medium text-zinc-500 whitespace-pre-wrap line-clamp-3">{task.description || 'Sin detalles.'}</p>
+                    {task.adminResponse && <p className="mt-3 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">Respuesta: {task.adminResponse}</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           </div>
         )}
 
@@ -5125,12 +5340,26 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                        {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
                      </select>
                      <input type="time" value={archTime} onChange={e=>setArchTime(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest"/>
+                     <button type="button" onClick={() => setArchProjectionMode(archProjectionMode === 'actual' ? 'proyeccion' : 'actual')} className={`w-full sm:w-auto px-4 py-3 rounded-xl border-2 font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${isArchitectProjection ? 'bg-black text-white border-black shadow-md' : 'bg-white text-zinc-600 border-zinc-200 hover:border-black'}`}>
+                       <Activity className="w-4 h-4"/> {isArchitectProjection ? 'Viendo mes que viene' : 'Ver mes que viene'}
+                     </button>
                   </div>
+
+                  {isArchitectProjection && (
+                    <div className="bg-black text-white p-4 rounded-2xl border border-zinc-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-black uppercase tracking-widest">Simulación de mes que viene</p>
+                        <p className="text-xs font-bold text-zinc-400 mt-1">Cuadrante actual + bajas, mantenimientos, reactivaciones, cambios y ampliaciones pendientes de la bandeja. No modifica Firebase.</p>
+                      </div>
+                      <span className="bg-white text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest w-max">{pendingGestiones.filter(g => PROJECTABLE_GESTION_TYPES.has(g.type)).length} trámite(s) aplicados</span>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                      {SALAS.map(sala => {
                         const maxCapFisica = settings.roomCapacities?.[archSede]?.[sala] || 0;
-                        const claseAsignada = recurringClassesOnly.find(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.time === archTime && c.sala === sala);
+                        const claseAsignada = architectClasses.find(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.time === archTime && c.sala === sala);
+                        const realClassForSlot = claseAsignada ? recurringClassesOnly.find(real => real.id === claseAsignada.id) : null;
 
                         if (claseAsignada) {
                            const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
@@ -5146,10 +5375,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                  </div>
                                  <div className="mt-4 pt-4 border-t flex justify-between items-center z-10" style={{ borderColor: 'rgba(255,255,255,.22)' }}>
                                     <span className="text-xs font-black" style={{ color: 'rgba(255,255,255,.86)' }}>Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-200' : 'text-emerald-200'}>{activeC}/{claseAsignada.capacity}</span></span>
+                                    {isArchitectProjection && <span className="bg-white/20 text-white px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Proyección</span>}
                                     <div className="flex gap-2">
-                                      <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>
-                                      <button onClick={() => openEditClassModal(claseAsignada)} className="bg-amber-100 hover:bg-amber-200 text-amber-800 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Editar</button>
-                                      <button onClick={() => setViewClassModal(claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
+                                      {!isArchitectProjection && <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>}
+                                      {!isArchitectProjection && <button onClick={() => openEditClassModal(claseAsignada)} className="bg-amber-100 hover:bg-amber-200 text-amber-800 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Editar</button>}
+                                      <button onClick={() => setViewClassModal(realClassForSlot || claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
                                     </div>
                                  </div>
                               </div>
@@ -5163,12 +5393,16 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                     <DoorOpen className="w-8 h-8 text-emerald-300"/>
                                     <span className="text-emerald-600 font-black uppercase tracking-widest text-lg">SALA LIBRE</span>
                                  </div>
-                                 <button onClick={() => {
-                                    setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: archTime, sede: archSede, sala: sala});
-                                    setCreateClassModal(true);
-                                 }} className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-all shadow-md flex items-center justify-center gap-2">
-                                    <PlusCircle className="w-4 h-4"/> Crear Clase Aquí
-                                 </button>
+                                 {!isArchitectProjection ? (
+                                   <button onClick={() => {
+                                      setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: archTime, sede: archSede, sala: sala});
+                                      setCreateClassModal(true);
+                                   }} className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-all shadow-md flex items-center justify-center gap-2">
+                                      <PlusCircle className="w-4 h-4"/> Crear Clase Aquí
+                                   </button>
+                                 ) : (
+                                   <div className="w-full mt-4 bg-zinc-100 text-zinc-400 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest border-2 border-dashed border-zinc-200 text-center">Hueco libre proyectado</div>
+                                 )}
                               </div>
                            );
                         }
@@ -5191,9 +5425,9 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
                                     {SALAS.map(sala => {
-                                       const classesInSlot = recurringClassesOnly.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.sala === sala && (c.time || '').startsWith(time.split(':')[0]));
+                                       const classesInSlot = architectClasses.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.sala === sala && (c.time || '').startsWith(time.split(':')[0]));
                                        return (
-                                          <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
+                                          <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(isArchitectProjection || e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
                                              {classesInSlot.length > 0 ? (
                                                 classesInSlot.map(c => {
                                                    const fixedActiveStudents = (c.students || [])
@@ -5205,8 +5439,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                                    const teacherTheme = getTeacherColorTheme(c.teacher, settings);
 
                                                    return (
-                                                      <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(c); }}>
-                                                         <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}</div>
+                                                      <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(recurringClassesOnly.find(real => real.id === c.id) || c); }}>
+                                                         <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
                                                          <div className="text-[10px] font-bold truncate mt-1" style={{ color: 'rgba(255,255,255,.76)' }}>Prof: {c.teacher}</div>
                                                          {visibleStudentNames.length > 0 && (
                                                             <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: 'rgba(255,255,255,.22)', color: 'rgba(255,255,255,.82)' }}>

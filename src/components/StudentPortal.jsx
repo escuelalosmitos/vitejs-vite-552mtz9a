@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
 
@@ -74,6 +74,16 @@ const isFixedClassStudent = (studentEntry = {}) => !(
   studentEntry?.status === 'recovery'
 );
 
+const isTemporaryRelocationActiveForDate = (relocation = {}, dateStr = '') => {
+  if (!relocation || relocation.status === 'cancelled') return false;
+  return Boolean(relocation.from && relocation.until && relocation.from <= dateStr && relocation.until >= dateStr);
+};
+
+const getTemporaryRelocationLabel = (relocation = {}) => {
+  if (!relocation.from || !relocation.until) return 'Clase temporal';
+  return `Clase temporal del ${formatDateSpanish(relocation.from)} al ${formatDateSpanish(relocation.until)}`;
+};
+
 const getNextClassInfo = (dayOfWeek, timeStr) => {
   const now = new Date();
   const targetDay = parseInt(dayOfWeek);
@@ -127,6 +137,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [announcements, setAnnouncements] = useState([]); 
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [myGestiones, setMyGestiones] = useState([]); 
+  const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
 
@@ -163,7 +174,56 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const dToday = new Date();
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
 
-  const fixedMyClasses = myClasses.filter(c =>
+  const effectiveMyClasses = useMemo(() => {
+    if (!profile?.id) return myClasses;
+
+    const activeRelocations = temporaryRelocations.filter(rel =>
+      rel.studentId === profile.id &&
+      isTemporaryRelocationActiveForDate(rel, todayStr)
+    );
+
+    const hiddenSourceClassIds = new Set(activeRelocations.map(rel => rel.sourceClassId).filter(Boolean));
+    const effectiveById = new Map();
+
+    myClasses
+      .filter(c => !hiddenSourceClassIds.has(c.id))
+      .forEach(c => effectiveById.set(c.id, c));
+
+    activeRelocations.forEach(rel => {
+      const targetClass = allClasses.find(c => c.id === rel.targetClassId);
+      if (!targetClass) return;
+
+      const displayName = profile.alias && profile.useAlias ? profile.alias : (profile.name || rel.studentName || 'Alumno');
+      const alreadyInTarget = (targetClass.students || []).some(s => s.id === profile.id);
+      const temporaryEntry = {
+        id: profile.id,
+        name: displayName,
+        email: profile.email || rel.studentEmail || '',
+        isPaused: false,
+        status: 'present',
+        isTemporaryRelocation: true,
+        temporaryRelocationId: rel.id,
+        temporaryFrom: rel.from,
+        temporaryUntil: rel.until,
+        sourceClassId: rel.sourceClassId,
+        sourceClassLine: rel.sourceClassLine || '',
+        relocationLabel: getTemporaryRelocationLabel(rel)
+      };
+
+      effectiveById.set(targetClass.id, {
+        ...targetClass,
+        isTemporaryRelocationClass: true,
+        temporaryRelocation: rel,
+        students: alreadyInTarget
+          ? targetClass.students
+          : [...(targetClass.students || []), temporaryEntry]
+      });
+    });
+
+    return [...effectiveById.values()];
+  }, [myClasses, allClasses, temporaryRelocations, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, todayStr]);
+
+  const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
     (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
   );
@@ -226,10 +286,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   }, [user.email]);
 
   useEffect(() => {
-    if (!profile || myClasses.length === 0) return;
+    if (!profile || effectiveMyClasses.length === 0) return;
 
     const misSedes = new Set();
-    myClasses.forEach(c => misSedes.add(c.sede || 'Tarragona'));
+    effectiveMyClasses.forEach(c => misSedes.add(c.sede || 'Tarragona'));
 
     const newCal = [];
     
@@ -250,7 +310,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     setSchoolCalendar(newCal);
 
-  }, [globalSettings, myClasses, profile]);
+  }, [globalSettings, effectiveMyClasses, profile]);
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -283,6 +343,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
     const unsubGestiones = onSnapshot(q, (snapshot) => {
       setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubTemporaryRelocations = onSnapshot(collection(db, 'artifacts', appId, 'temporaryRelocations'), (snapshot) => {
+      setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
     const ticketsQuery = collectionGroup(db, 'tickets');
@@ -318,6 +382,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubProfile();
       unsubClasses(); 
       unsubGestiones();
+      unsubTemporaryRelocations();
       unsubTickets(); 
     };
   }, [profile?.id, db, appId]);
@@ -765,7 +830,7 @@ END:VCALENDAR`;
   };
   
   if (profile) {
-    myClasses.forEach(clase => {
+    effectiveMyClasses.forEach(clase => {
       if (clase.exceptions) {
         Object.keys(clase.exceptions).forEach(dateStr => {
           if (dateStr >= todayStr) {
@@ -1293,7 +1358,7 @@ END:VCALENDAR`;
     return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando clases...</div>;
   }
 
-  if (myClasses.length === 0) {
+  if (effectiveMyClasses.length === 0) {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
         <div className="bg-amber-100 text-amber-600 p-6 rounded-full mb-6">
@@ -1427,18 +1492,19 @@ END:VCALENDAR`;
 
             <h3 className="font-black uppercase tracking-widest text-xs text-zinc-400 px-2 flex items-center gap-2 mt-8"><Calendar className="w-4 h-4"/> Mis Clases Asignadas</h3>
             
-            {myClasses.length === 0 ? (
+            {effectiveMyClasses.length === 0 ? (
               <div className="p-8 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
                 <Music className="w-12 h-12 text-zinc-200 mx-auto mb-3" />
                 <p className="font-bold text-zinc-400 uppercase tracking-widest text-sm">Todavía no tienes clases asignadas.</p>
               </div>
             ) : (
-              myClasses.map((clase, idx) => {
+              effectiveMyClasses.map((clase, idx) => {
                 const classInfo = getNextClassInfo(clase.dayOfWeek, clase.time);
                 const holidayMatch = schoolCalendar.find(c => c.date === classInfo.dateStr);
                 const hasNotifiedNext = clase.exceptions?.[classInfo.dateStr]?.[profile.id];
                 const myStudentEntry = clase.students?.find(s => s.id === profile.id);
                 const isRecoveryClassForMe = myStudentEntry?.isRecovery === true;
+                const isTemporaryRelocationClassForMe = myStudentEntry?.isTemporaryRelocation === true || clase.isTemporaryRelocationClass === true;
 
                 if (holidayMatch) {
                   const isFestivo = holidayMatch.type === 'festivo';
@@ -1461,6 +1527,12 @@ END:VCALENDAR`;
                       <p className={`${isCongelado ? 'text-zinc-500' : 'text-zinc-400'} font-bold uppercase text-[10px] tracking-widest mb-1`}>Clase de {clase.subject}</p>
                       <h2 className={`text-3xl font-black uppercase tracking-tighter ${isCongelado ? 'text-zinc-400' : ''}`}>{getDayName(clase.dayOfWeek)}</h2>
                       <p className={`text-lg font-medium mb-6 ${isCongelado ? 'text-zinc-500' : 'text-zinc-300'}`}>{clase.time}h</p>
+                      {isTemporaryRelocationClassForMe && (
+                        <div className="mb-5 inline-flex items-center gap-2 bg-violet-100 text-violet-800 border border-violet-200 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-widest">
+                          <Clock className="w-4 h-4" />
+                          {myStudentEntry?.relocationLabel || getTemporaryRelocationLabel(clase.temporaryRelocation)}
+                        </div>
+                      )}
                       
                       <div className={`flex flex-col sm:flex-row gap-3 text-sm font-medium mb-8 p-4 rounded-2xl border ${isCongelado ? 'bg-zinc-300/50 border-zinc-300 text-zinc-600' : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300'}`}>
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>

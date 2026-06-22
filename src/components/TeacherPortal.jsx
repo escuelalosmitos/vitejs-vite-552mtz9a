@@ -402,6 +402,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
+  const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   
   const [lastReportSentDate, setLastReportSentDate] = useState('');
   const [historyLimit, setHistoryLimit] = useState(10);
@@ -463,6 +464,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
     const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
+    const temporaryRelocationsRef = collection(db, 'artifacts', appId, 'temporaryRelocations');
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
@@ -474,11 +476,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let subsLoaded = false;
     let gestionesLoaded = false;
     let payrollAdjustmentsLoaded = false;
+    let temporaryRelocationsLoaded = false;
     let availLoaded = false;
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
@@ -557,6 +560,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    const unsubTemporaryRelocations = onSnapshot(temporaryRelocationsRef, (snapshot) => {
+      setTemporaryRelocations(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
+      temporaryRelocationsLoaded = true;
+      checkLoading();
+    });
+
     const unsubAvail = onSnapshot(availRef, (docSnap) => {
       if (docSnap.exists()) {
         setAvailability(docSnap.data().slots || { 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
@@ -577,6 +586,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubSubs();
       unsubGestiones();
       unsubPayrollAdjustments();
+      unsubTemporaryRelocations();
       unsubAvail();
       unsubUserDoc();
     };
@@ -861,6 +871,119 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''}`;
   };
 
+  const isTemporaryRelocationActiveForDate = (relocation = {}, targetDate = date) => {
+    if (!relocation || relocation.status === 'cancelled') return false;
+    return Boolean(relocation.from && relocation.until && relocation.from <= targetDate && relocation.until >= targetDate);
+  };
+
+  const getTemporaryRelocationsForDate = (targetDate = date) => {
+    return temporaryRelocations.filter(rel => isTemporaryRelocationActiveForDate(rel, targetDate));
+  };
+
+  const buildTemporaryRelocatedStudent = (relocation = {}) => {
+    const studentInfo = globalStudents.find(s => s.id === relocation.studentId) || {};
+    const displayName = studentInfo?.useAlias && studentInfo?.alias
+      ? studentInfo.alias
+      : (studentInfo?.name || relocation.studentName || 'Alumno');
+
+    return {
+      id: relocation.studentId,
+      name: displayName,
+      email: studentInfo?.email || relocation.studentEmail || '',
+      isPaused: false,
+      status: 'present',
+      isTemporaryRelocation: true,
+      temporaryRelocationId: relocation.id,
+      temporaryFrom: relocation.from,
+      temporaryUntil: relocation.until,
+      sourceClassId: relocation.sourceClassId,
+      sourceClassLine: relocation.sourceClassLine || '',
+      relocationLabel: `Recolocado temporalmente · ${formatDateSpanish(relocation.from)} - ${formatDateSpanish(relocation.until)}`
+    };
+  };
+
+  const getEffectiveStudentsForClass = (classData = {}, targetDate = date) => {
+    const activeRelocations = getTemporaryRelocationsForDate(targetDate);
+
+    const relocatedOutIds = new Set(
+      activeRelocations
+        .filter(rel => rel.sourceClassId === classData.id)
+        .map(rel => rel.studentId)
+    );
+
+    const baseStudents = (classData.students || []).filter(studentEntry =>
+      !relocatedOutIds.has(studentEntry.id)
+    );
+
+    const relocatedIn = activeRelocations
+      .filter(rel => rel.targetClassId === classData.id)
+      .filter(rel => !baseStudents.some(studentEntry => studentEntry.id === rel.studentId))
+      .map(buildTemporaryRelocatedStudent);
+
+    return [...baseStudents, ...relocatedIn];
+  };
+
+  const getEffectiveActiveStudentsForClass = (classData = {}, targetDate = date) => {
+    return getEffectiveStudentsForClass(classData, targetDate).filter(s => {
+      const studentInfo = globalStudents.find(g => g.id === s.id);
+      return !s.isPaused && hasClassStartedForDate(s, studentInfo, targetDate) && (!s.isRecovery || s.recoveryDate === targetDate);
+    });
+  };
+
+  const sanitizeTemplateStudentForSave = (student = {}) => {
+    const cleanStudent = {
+      id: student.id,
+      name: student.name,
+      email: student.email || '',
+      isPaused: student.isPaused || false
+    };
+
+    if (student.classStartDate) cleanStudent.classStartDate = student.classStartDate;
+    if (student.startDate) cleanStudent.startDate = student.startDate;
+    if (student.isRecovery) {
+      cleanStudent.isRecovery = true;
+      cleanStudent.recoveryDate = student.recoveryDate || null;
+    }
+
+    return cleanStudent;
+  };
+
+  const getTemplateStudentsForSave = (session = currentSession) => {
+    const byKey = new Map();
+    const addStudentToTemplate = (student = {}) => {
+      if (!student?.id || student.isTemporaryRelocation) return;
+      const key = student.isRecovery ? `${student.id}-recovery-${student.recoveryDate || ''}` : `${student.id}-fixed`;
+      byKey.set(key, sanitizeTemplateStudentForSave(student));
+    };
+
+    (session?.formalTemplateStudents || []).forEach(student => {
+      if (student?.isRecovery && student.recoveryDate === date) return;
+      addStudentToTemplate(student);
+    });
+
+    (session?.hiddenStudents || []).forEach(student => {
+      if (student?.isRecovery && student.recoveryDate === date) return;
+      addStudentToTemplate(student);
+    });
+
+    (session?.students || [])
+      .filter(student => !student.isRecovery && !student.isTemporaryRelocation)
+      .forEach(addStudentToTemplate);
+
+    return Array.from(byKey.values());
+  };
+
+  const getCapacityCountForSession = (session = currentSession) => {
+    return (session?.students || []).filter(s => !s.isTemporaryRelocation).length;
+  };
+
+  const formatAttendanceStudentName = (student = {}) => {
+    const tags = [];
+    if (student.isRecovery) tags.push('Recuperación');
+    if (student.isTemporaryRelocation) tags.push('Recolocado temporalmente');
+    return `${student.name}${tags.length ? ` (${tags.join(' · ')})` : ''}`;
+  };
+
   const getRecoveryTicketInfo = (gestion = {}) => {
     const recoveryDate = gestion.recoveryDate || date;
     const today = new Date().toISOString().split('T')[0];
@@ -889,16 +1012,18 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const getClassOccupancyForDate = (clase = {}, targetDate = date) => {
-    const visibleStudents = (clase.students || []).filter(s => {
+    const studentsForDate = getEffectiveStudentsForClass(clase, targetDate);
+
+    const visibleStudents = studentsForDate.filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
       return !s.isPaused &&
         hasClassStartedForDate(s, studentInfo, targetDate) &&
         (!s.isRecovery || s.recoveryDate === targetDate);
     });
-    const fixedStudentIds = new Set((clase.students || [])
+    const fixedStudentIds = new Set(studentsForDate
       .filter(s => {
         const studentInfo = globalStudents.find(g => g.id === s.id);
-        return !s.isPaused && !s.isRecovery && hasClassStartedForDate(s, studentInfo, targetDate);
+        return !s.isPaused && !s.isRecovery && !s.isTemporaryRelocation && hasClassStartedForDate(s, studentInfo, targetDate);
       })
       .map(s => s.id));
 
@@ -1027,17 +1152,17 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
 
       const present = students
         .filter(s => s.status === 'present')
-        .map(s => `- ${s.name}${s.isRecovery ? ' (Recuperación)' : ''}`)
+        .map(s => `- ${formatAttendanceStudentName(s)}`)
         .join('\n') || '- Ninguno';
 
       const notified = students
         .filter(s => s.status === 'notified')
-        .map(s => `- ${s.name}`)
+        .map(s => `- ${formatAttendanceStudentName(s)}`)
         .join('\n') || '- Ninguno';
 
       const absent = students
         .filter(s => s.status === 'absent')
-        .map(s => `- ${s.name}`)
+        .map(s => `- ${formatAttendanceStudentName(s)}`)
         .join('\n') || '- Ninguno';
 
       const nonComputableInfo = record.isRenounced
@@ -1101,10 +1226,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       const isReusSpecial = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
       if (isGlobalSpecial || isTarragonaSpecial || isReusSpecial) return false;
 
-      const activeCount = item.data.students?.filter(s => {
-        const studentInfo = globalStudents.find(g => g.id === s.id);
-        return !s.isPaused && hasClassStartedForDate(s, studentInfo, date);
-      }).length || 0;
+      const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
       return activeCount > 0;
     });
 
@@ -1167,7 +1289,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const visibleStudents = [];
     const hiddenStudents = [];
 
-    (scheduledClass.students || []).forEach(s => {
+    getEffectiveStudentsForClass(scheduledClass, date).forEach(s => {
       const globalStudentInfo = globalStudents.find(g => g.id === s.id);
       if (!hasClassStartedForDate(s, globalStudentInfo, date)) {
         hiddenStudents.push({ ...s, isFutureStartHidden: true });
@@ -1206,6 +1328,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       exceptions: scheduledClass.exceptions || {}, 
       students: visibleStudents, 
       hiddenStudents: hiddenStudents, 
+      formalTemplateStudents: scheduledClass.students || [],
+      hasTemporaryRelocations: getTemporaryRelocationsForDate(date).some(rel => rel.sourceClassId === scheduledClass.id || rel.targetClassId === scheduledClass.id),
       pendingPlanningGestiones: getPlanningGestionesForClass(scheduledClass),
       newStudentName: '',
       newStudentEmail: '',
@@ -1346,7 +1470,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
       return;
     }
-    if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
+    if (getCapacityCountForSession(currentSession) > parseInt(currentSession.capacity, 10)) {
       showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
       return;
     }
@@ -1354,10 +1478,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const dayToSave = currentSession.dayOfWeek;
 
     try {
-      const templateStudents = [
-        ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
-        ...(currentSession.hiddenStudents || [])
-      ];
+      const templateStudents = getTemplateStudentsForSave(currentSession);
 
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
@@ -1411,7 +1532,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
       return;
     }
-    if (currentSession.students.length > parseInt(currentSession.capacity, 10)) {
+    if (getCapacityCountForSession(currentSession) > parseInt(currentSession.capacity, 10)) {
       showNotification({ type: 'error', text: 'Hay más alumnos que la capacidad permitida.' });
       return;
     }
@@ -1433,7 +1554,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         const itemTime = item.data?.time || '';
         if (!itemTime || itemTime <= currentSession.time) return false;
 
-        const activeCount = (item.data?.students || []).filter(s => !s.isPaused).length;
+        const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
         if (activeCount === 0) return false;
 
         const isGlobalSpecial = settings.festivos?.includes(date) || settings.vacaciones?.includes(date);
@@ -1550,10 +1671,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         students: currentSession.students.map(s => ({ ...s }))
       });
 
-      const templateStudents = [
-        ...currentSession.students.filter(s => !s.isRecovery).map(s => ({ id: s.id, name: s.name, email: s.email || '', isPaused: s.isPaused || false })),
-        ...(currentSession.hiddenStudents || [])
-      ];
+      const templateStudents = getTemplateStudentsForSave(currentSession);
 
       const targetPath = doc(db, currentSession.refPath);
         
@@ -1604,7 +1722,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: classData.capacity || '',
         duration: classData.duration || 60,
         notes: classData.notes || '',
-        students: classData.students || []
+        students: getEffectiveStudentsForClass(classData, date)
       });
 
       if (classData.date) {
@@ -1685,7 +1803,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const isCapacityMissing = !currentSession?.capacity;
   const maxCap = parseInt(currentSession?.capacity, 10) || 0;
-  const currentCount = currentSession?.students?.length || 0;
+  const currentCount = getCapacityCountForSession(currentSession);
   const isCapacityReached = !isCapacityMissing && currentCount >= maxCap;
   const isOverCapacity = !isCapacityMissing && currentCount > maxCap;
   const isDisabledAdd = isCapacityMissing || isCapacityReached;
@@ -1850,14 +1968,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 ) : (
                   <div className="space-y-4">
                     {dashboardItems.map((item, idx) => {
-                      const visibleCount = item.data.students?.filter(s => {
+                      const studentsForDate = getEffectiveStudentsForClass(item.data, date);
+                      const visibleCount = studentsForDate.filter(s => {
                         const studentInfo = globalStudents.find(g => g.id === s.id);
                         return hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
-                      }).length || 0;
-                      const activeCount = item.data.students?.filter(s => {
-                        const studentInfo = globalStudents.find(g => g.id === s.id);
-                        return !s.isPaused && hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
-                      }).length || 0;
+                      }).length;
+                      const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
                       const planningGestionesForClass = getPlanningGestionesForClass(item.data);
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 
@@ -1994,6 +2110,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     <div className="mb-6 p-4 bg-red-50 border-2 border-red-200 rounded-xl flex items-center gap-3">
                       <AlertCircle className="text-red-600 w-6 h-6 shrink-0"/>
                       <p className="text-xs font-bold text-red-900">🚨 CLASE CANCELADA. Todos los alumnos avisaron con más de 2h de antelación. Esta hora no se cobra ni requiere tareas. Dale a "Guardar Asistencia" para archivarla.</p>
+                    </div>
+                  )}
+                  
+                  {currentSession.hasTemporaryRelocations && (
+                    <div className="mb-6 p-4 bg-violet-50 border-2 border-violet-200 rounded-xl flex items-center gap-3">
+                      <Clock className="text-violet-600 w-6 h-6 shrink-0"/>
+                      <p className="text-xs font-bold text-violet-900">Hay recolocaciones temporales activas en esta clase. La lista de hoy puede no coincidir con las plazas formales del grupo.</p>
                     </div>
                   )}
                   
@@ -2206,6 +2329,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                             {student.isRecovery && !student.isPaused && (
                               <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
                                 <CornerDownRight className="w-3 h-3" /> Recuperación
+                              </span>
+                            )}
+                            {student.isTemporaryRelocation && !student.isPaused && (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-[9px] font-black uppercase tracking-widest mt-1">
+                                <Clock className="w-3 h-3" /> Recolocado temporalmente
                               </span>
                             )}
                             {hasOpenAdminIncident && !student.isPaused && (
@@ -2567,6 +2695,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           </div>
                           {student.isRecovery && (
                             <span className="text-[10px] text-amber-600 font-black uppercase tracking-widest ml-8">Recuperación</span>
+                          )}
+                          {student.isTemporaryRelocation && (
+                            <span className="text-[10px] text-violet-600 font-black uppercase tracking-widest ml-8">Recolocado temporalmente</span>
                           )}
                         </div>
                       ))}

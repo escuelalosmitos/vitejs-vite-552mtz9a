@@ -99,6 +99,28 @@ const getTodayLocalString = () => {
   return `${y}-${m}-${day}`;
 };
 
+const getNextMonthEndString = (dateString = getTodayLocalString()) => {
+  const [yearRaw, monthRaw] = String(dateString || getTodayLocalString()).split('-').map(Number);
+  const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+  const month = Number.isFinite(monthRaw) ? monthRaw : (new Date().getMonth() + 1);
+  const nextMonthEnd = new Date(year, month + 1, 0);
+  const y = nextMonthEnd.getFullYear();
+  const m = String(nextMonthEnd.getMonth() + 1).padStart(2, '0');
+  const d = String(nextMonthEnd.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getNextMonthStartString = (dateString = getTodayLocalString()) => {
+  const [yearRaw, monthRaw] = String(dateString || getTodayLocalString()).split('-').map(Number);
+  const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+  const month = Number.isFinite(monthRaw) ? monthRaw : (new Date().getMonth() + 1);
+  const nextMonthStart = new Date(year, month, 1);
+  const y = nextMonthStart.getFullYear();
+  const m = String(nextMonthStart.getMonth() + 1).padStart(2, '0');
+  const d = String(nextMonthStart.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const isPunctualClass = (clase) => Boolean(clase?.date) || clase?.isRecurring === false;
 
 const isOperationalClass = (clase, todayStr = getTodayLocalString()) => {
@@ -413,6 +435,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   }, []);
 
   const todayStr = useMemo(() => getTodayLocalString(), []);
+  const nextMonthStartStr = useMemo(() => getNextMonthStartString(todayStr), [todayStr]);
+  const nextMonthEndStr = useMemo(() => getNextMonthEndString(todayStr), [todayStr]);
 
   const operationalClasses = useMemo(() => {
     return allClasses.filter(c => isOperationalClass(c, todayStr));
@@ -2843,34 +2867,75 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     return grouped;
   }, [operationalClasses]);
 
-  const hibernatedClasses = useMemo(() => {
-    return recurringClassesOnly.filter(c => {
-      const activeCount = (c.students || []).filter(studentEntry => {
-        const studentInfo = students.find(student => student.id === studentEntry.id);
-        return !studentEntry.isPaused && studentInfo?.globalStatus !== 'baja' && studentInfo?.globalStatus !== 'congelado';
-      }).length;
-      return activeCount === 0;
-    }).sort((a, b) => {
-      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
-      if (sedeCompare !== 0) return sedeCompare;
-      const dayCompare = Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0);
-      if (dayCompare !== 0) return dayCompare;
-      return String(a.time || '').localeCompare(String(b.time || ''));
+  const getArchitectReferenceDate = (projected = false) => projected ? nextMonthEndStr : todayStr;
+
+  const isArchitectPlanningStudent = (studentEntry = {}) => {
+    return !(
+      studentEntry?.isRecovery === true ||
+      studentEntry?.isPunctual === true ||
+      studentEntry?.type === 'recovery' ||
+      studentEntry?.status === 'recovery'
+    );
+  };
+
+  const getPlanningStudentsForClass = (clase = {}, projected = false) => {
+    const referenceDate = getArchitectReferenceDate(projected);
+    const activeRelocations = temporaryRelocations.filter(rel => {
+      if (!projected) return isTemporaryRelocationActiveForDate(rel, referenceDate);
+      if (!rel || rel.status === 'cancelled') return false;
+      return Boolean(rel.from && rel.until && rel.from <= nextMonthEndStr && rel.until >= nextMonthStartStr);
     });
-  }, [recurringClassesOnly, students]);
+    const relocatedOutIds = new Set(
+      activeRelocations
+        .filter(rel => rel.sourceClassId === clase.id)
+        .map(rel => rel.studentId)
+    );
+
+    const baseStudents = (clase.students || []).filter(studentEntry => !relocatedOutIds.has(studentEntry.id));
+
+    const relocatedInStudents = activeRelocations
+      .filter(rel => rel.targetClassId === clase.id)
+      .filter(rel => !baseStudents.some(studentEntry => studentEntry.id === rel.studentId))
+      .map(rel => {
+        const studentInfo = students.find(student => student.id === rel.studentId) || {};
+        const displayName = studentInfo?.useAlias && studentInfo?.alias
+          ? studentInfo.alias
+          : (studentInfo?.name || rel.studentName || 'Alumno');
+
+        return {
+          id: rel.studentId,
+          name: displayName,
+          email: studentInfo?.email || rel.studentEmail || '',
+          classStartDate: studentInfo?.classStartDate || '',
+          isPaused: false,
+          status: 'present',
+          isRecovery: false,
+          isTemporaryRelocation: true,
+          temporaryRelocationId: rel.id,
+          relocationLabel: `Recolocado temporalmente · ${formatDateSpanish(rel.from)} - ${formatDateSpanish(rel.until)}`,
+          sourceClassId: rel.sourceClassId,
+          sourceClassLine: rel.sourceClassLine || ''
+        };
+      });
+
+    return [...baseStudents, ...relocatedInStudents];
+  };
 
   const getClassStudentPlanningData = (clase, projected = false) => {
-    return (clase.students || [])
-      .filter(isFixedClassStudent)
+    const referenceDate = getArchitectReferenceDate(projected);
+
+    return getPlanningStudentsForClass(clase, projected)
+      .filter(isArchitectPlanningStudent)
       .map(studentEntry => {
         const studentInfo = students.find(student => student.id === studentEntry.id) || {};
         const projectedStatus = projected
           ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo')
           : (studentInfo?.globalStatus || 'activo');
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
-        const isFutureStart = Boolean(startDate && startDate > todayStr);
+        const isFutureStart = Boolean(startDate && startDate > referenceDate);
         const isMaintenance = projectedStatus !== 'baja' && (studentEntry.isPaused || projectedStatus === 'congelado');
-        const isActive = !isMaintenance && projectedStatus !== 'baja' && !isFutureStart;
+        const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
+        const isActive = projectedStatus !== 'baja' && !isMaintenance && !isFutureStart;
         const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
         const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
 
@@ -2882,6 +2947,8 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           isMaintenance,
           isActive,
           isFutureStart,
+          isRelocated,
+          relocationLabel: studentEntry.relocationLabel || '',
           startDate
         };
       });
@@ -2894,6 +2961,16 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
   const getMaintenanceClassStudentCount = (clase, projected = false) => {
     return getClassStudentPlanningData(clase, projected).filter(student => student.isMaintenance).length;
   };
+
+  const hibernatedClasses = useMemo(() => {
+    return recurringClassesOnly.filter(c => getActiveClassStudentCount(c, false) === 0).sort((a, b) => {
+      const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
+      if (sedeCompare !== 0) return sedeCompare;
+      const dayCompare = Number(a.dayOfWeek || 0) - Number(b.dayOfWeek || 0);
+      if (dayCompare !== 0) return dayCompare;
+      return String(a.time || '').localeCompare(String(b.time || ''));
+    });
+  }, [recurringClassesOnly, students, temporaryRelocations, todayStr]);
 
   const getDangerThresholds = (capacity) => {
     const cap = parseInt(capacity, 10) || 0;
@@ -2914,19 +2991,23 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     const maintenanceStudents = studentRows
       .filter(student => student.isMaintenance)
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
+    const futureStartStudents = studentRows
+      .filter(student => student.isFutureStart)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
     const activeCount = activeStudents.length;
     const maintenanceCount = maintenanceStudents.length;
+    const futureStartCount = futureStartStudents.length;
 
     if (!thresholds) {
-      return { include: false, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'omitida', statusLabel: 'Particular', statusHelp: 'Clase de aforo 1: no entra en grupos en peligro.', priority: 99 };
+      return { include: false, cap, activeCount, maintenanceCount, futureStartCount, activeStudents, maintenanceStudents, futureStartStudents, statusKey: 'omitida', statusLabel: 'Particular', statusHelp: 'Clase de aforo 1: no entra en grupos en peligro.', priority: 99 };
     }
 
-    if (activeCount === 0 && maintenanceCount === 0) {
-      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'vacia', statusLabel: 'Vacía', statusHelp: 'Sin alumnos activos ni plazas en mantenimiento. Candidata a cerrar o hibernar.', priority: 0 };
+    if (activeCount === 0 && maintenanceCount === 0 && futureStartCount === 0) {
+      return { include: true, cap, activeCount, maintenanceCount, futureStartCount, activeStudents, maintenanceStudents, futureStartStudents, statusKey: 'vacia', statusLabel: 'Vacía', statusHelp: 'Sin alumnos activos, sin mantenimiento y sin inicios futuros. Candidata a cerrar o hibernar.', priority: 0 };
     }
 
-    if (activeCount === 0 && maintenanceCount > 0) {
-      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'solo_mantenimiento', statusLabel: 'Solo mant.', statusHelp: 'No hay alumnos activos; solo plazas reservadas en mantenimiento.', priority: 1 };
+    if (activeCount === 0 && (maintenanceCount > 0 || futureStartCount > 0)) {
+      return { include: true, cap, activeCount, maintenanceCount, futureStartCount, activeStudents, maintenanceStudents, futureStartStudents, statusKey: 'solo_mantenimiento', statusLabel: 'Solo reserva', statusHelp: 'No hay alumnos activos; solo plazas en mantenimiento o alumnos con inicio futuro.', priority: 1 };
     }
 
     if (activeCount <= thresholds.critical) {
@@ -4270,7 +4351,12 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     const [emailInput, setEmailInput] = useState('');
     const [saving, setSaving] = useState(false);
     const maxCap = parseInt(c.capacity, 10) || 0;
-    const currentCount = c.students?.length || 0;
+    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection);
+    const currentCount = planningStudents.length;
+    const activeCount = planningStudents.filter(student => student.isActive).length;
+    const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
+    const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
+    const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
     const isFull = maxCap > 0 && currentCount >= maxCap;
     const isPunctual = isPunctualClass(c);
 
@@ -4412,25 +4498,39 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           </div>
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
-              Alumnos Matriculados ({currentCount}/{c.capacity})
+              Alumnos Matriculados ({currentCount}/{c.capacity}) · Activos: {activeCount}
+              {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0) && (
+                <span className="block mt-1 text-[10px] text-zinc-500">
+                  {maintenanceCount > 0 ? `${maintenanceCount} en mantenimiento` : ''}{maintenanceCount > 0 && (futureStartCount > 0 || relocatedCount > 0) ? ' · ' : ''}{futureStartCount > 0 ? `${futureStartCount} con inicio futuro` : ''}{futureStartCount > 0 && relocatedCount > 0 ? ' · ' : ''}{relocatedCount > 0 ? `${relocatedCount} recolocado(s)` : ''}
+                </span>
+              )}
             </h3>
-            {(!c.students || c.students.length === 0) ? (
+            {(planningStudents.length === 0) ? (
               <div className="p-4 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-xl text-center text-xs font-bold text-zinc-400 uppercase tracking-widest">
                 Clase vacía (Hibernada)
               </div>
             ) : (
-              c.students.map(s => {
-                const globalSt = students.find(g => g.id === s.id);
-                const displayEmail = globalSt?.email || s.email;
+              planningStudents.map(s => {
+                const statusTags = [
+                  s.isMaintenance ? 'Mantenimiento' : '',
+                  s.isFutureStart ? `Inicio: ${formatDateSpanish(s.startDate)}` : '',
+                  s.isRelocated ? 'Recolocado temporal' : '',
+                  s.status === 'baja' ? 'Baja' : ''
+                ].filter(Boolean);
                 return (
-                  <div key={s.id} className="flex items-center justify-between p-3 bg-white border border-zinc-200 shadow-sm rounded-xl hover:border-indigo-200 transition-colors">
+                  <div key={`${s.id}-${s.isRelocated ? 'reloc' : 'base'}`} className={`flex items-center justify-between p-3 bg-white border shadow-sm rounded-xl hover:border-indigo-200 transition-colors ${s.isActive ? 'border-zinc-200' : 'border-dashed border-zinc-300 opacity-80'}`}>
                     <div>
-                      <p className={`font-bold text-sm ${s.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>{s.name}</p>
-                      <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{displayEmail || 'Sin email'}</p>
+                      <p className={`font-bold text-sm ${s.isActive ? 'text-slate-800' : 'text-zinc-400 line-through'}`}>{s.displayName}</p>
+                      <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{s.email || 'Sin email'}</p>
+                      {statusTags.length > 0 && (
+                        <p className="text-[9px] text-indigo-500 font-black uppercase tracking-widest mt-1">{statusTags.join(' · ')}</p>
+                      )}
                     </div>
-                    <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.name)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
-                      <UserMinus className="w-4 h-4"/>
-                    </button>
+                    {!s.isRelocated && (
+                      <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.displayName)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
+                        <UserMinus className="w-4 h-4"/>
+                      </button>
+                    )}
                   </div>
                 )
               })
@@ -5392,7 +5492,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                         const realClassForSlot = claseAsignada ? recurringClassesOnly.find(real => real.id === claseAsignada.id) : null;
 
                         if (claseAsignada) {
-                           const activeC = (claseAsignada.students || []).filter(s => !s.isPaused).length;
+                           const planningStudents = getClassStudentPlanningData(claseAsignada, isArchitectProjection);
+                           const activeC = planningStudents.filter(student => student.isActive).length;
+                           const maintenanceC = planningStudents.filter(student => student.isMaintenance).length;
+                           const futureStartC = planningStudents.filter(student => student.isFutureStart).length;
+                           const relocatedC = planningStudents.filter(student => student.isRelocated).length;
                            const teacherTheme = getTeacherColorTheme(claseAsignada.teacher, settings);
                            return (
                               <div key={sala} className="text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border group transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, borderColor: teacherTheme.solidBorder }}>
@@ -5404,7 +5508,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                     <p className="text-xs font-bold uppercase mt-1 tracking-widest flex items-center gap-1" style={{ color: 'rgba(255,255,255,.78)' }}><User className="w-3 h-3"/> Prof: {claseAsignada.teacher}</p>
                                  </div>
                                  <div className="mt-4 pt-4 border-t flex justify-between items-center z-10" style={{ borderColor: 'rgba(255,255,255,.22)' }}>
-                                    <span className="text-xs font-black" style={{ color: 'rgba(255,255,255,.86)' }}>Aforo: <span className={activeC >= claseAsignada.capacity ? 'text-red-200' : 'text-emerald-200'}>{activeC}/{claseAsignada.capacity}</span></span>
+                                    <div className="flex flex-col gap-1">
+                                      <span className="text-xs font-black" style={{ color: 'rgba(255,255,255,.86)' }}>Activos: <span className={activeC >= claseAsignada.capacity ? 'text-red-200' : 'text-emerald-200'}>{activeC}/{claseAsignada.capacity}</span></span>
+                                      {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
+                                        <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,.72)' }}>
+                                          {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
+                                        </span>
+                                      )}
+                                    </div>
                                     {isArchitectProjection && <span className="bg-white/20 text-white px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Proyección</span>}
                                     <div className="flex gap-2">
                                       {!isArchitectProjection && <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>}
@@ -5460,10 +5571,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                           <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(isArchitectProjection || e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
                                              {classesInSlot.length > 0 ? (
                                                 classesInSlot.map(c => {
-                                                   const fixedActiveStudents = (c.students || [])
-                                                      .filter(s => !s.isPaused && !s.isRecovery)
-                                                      .map(s => s.name)
+                                                   const planningStudents = getClassStudentPlanningData(c, isArchitectProjection);
+                                                   const fixedActiveStudents = planningStudents
+                                                      .filter(student => student.isActive)
+                                                      .map(student => student.displayName)
                                                       .filter(Boolean);
+                                                   const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
+                                                   const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
+                                                   const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
                                                    const visibleStudentNames = fixedActiveStudents.slice(0, 6);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
                                                    const teacherTheme = getTeacherColorTheme(c.teacher, settings);
@@ -5475,6 +5590,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                                          {visibleStudentNames.length > 0 && (
                                                             <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: 'rgba(255,255,255,.22)', color: 'rgba(255,255,255,.82)' }}>
                                                                {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
+                                                            </div>
+                                                         )}
+                                                         {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0) && (
+                                                            <div className="mt-1 text-[8px] font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,.68)' }}>
+                                                               {maintenanceCount > 0 ? `${maintenanceCount} mant.` : ''}{maintenanceCount > 0 && (futureStartCount > 0 || relocatedCount > 0) ? ' · ' : ''}{futureStartCount > 0 ? `${futureStartCount} futuro` : ''}{futureStartCount > 0 && relocatedCount > 0 ? ' · ' : ''}{relocatedCount > 0 ? `${relocatedCount} recol.` : ''}
                                                             </div>
                                                          )}
                                                       </div>
@@ -5519,7 +5639,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                         {isExpanded && (
                           <div className="p-4 border-t grid grid-cols-1 sm:grid-cols-3 gap-3">
                             {classes.map(c => {
-                              const activeC = (c.students || []).filter(s => !s.isPaused).length;
+                              const planningStudents = getClassStudentPlanningData(c, false);
+                              const activeC = planningStudents.filter(student => student.isActive).length;
+                              const maintenanceC = planningStudents.filter(student => student.isMaintenance).length;
+                              const futureStartC = planningStudents.filter(student => student.isFutureStart).length;
+                              const relocatedC = planningStudents.filter(student => student.isRelocated).length;
                               const isHibernated = activeC === 0;
                               const teacherTheme = getTeacherColorTheme(c.teacher, settings);
                               return (
@@ -5534,7 +5658,12 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                                     {isPunctualClass(c) && <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Puntual {formatDateSpanish(c.date)}</span>}
                                   </div>
                                   <div className="text-xs font-bold uppercase mt-1" style={{ color: teacherTheme.text }}>{c.subject} • {c.sede} ({c.sala})</div>
-                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} Alumnos`}</div>
+                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} activos`}</div>
+                                  {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
+                                    <div className="text-right text-[9px] font-black uppercase tracking-widest mt-1" style={{ color: teacherTheme.text }}>
+                                      {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
+                                    </div>
+                                  )}
                                   <div className="flex gap-2 mt-3">
                                     <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>
                                     <button onClick={() => openEditClassModal(c)} className="flex-1 p-1 bg-amber-100 text-amber-700 text-[10px] font-black uppercase rounded"><Pencil className="w-3 h-3 inline"/> Editar</button>
@@ -5572,7 +5701,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {hibernatedClasses.map(c => {
-                      const totalEnLista = (c.students || []).length;
+                      const planningStudents = getClassStudentPlanningData(c, false);
+                      const totalEnLista = planningStudents.length;
+                      const maintenanceC = planningStudents.filter(student => student.isMaintenance).length;
+                      const futureStartC = planningStudents.filter(student => student.isFutureStart).length;
+                      const relocatedC = planningStudents.filter(student => student.isRelocated).length;
                       return (
                         <div key={c.id} className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-5 shadow-sm relative group">
                           <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
@@ -5585,6 +5718,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                           <h4 className="font-black uppercase tracking-tight text-slate-900 text-lg">{c.subject}</h4>
                           <p className="text-xs font-bold text-slate-600 mt-1">{getDayName(c.dayOfWeek)} · {c.time}h · {c.sede || 'Tarragona'} · {c.sala || 'Sala no indicada'}</p>
                           <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-2">Prof: {c.teacher || 'Sin asignar'} · Aforo: {c.capacity || '-'}</p>
+                          {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
+                            <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-600 bg-zinc-100 border border-zinc-200 px-2 py-1 rounded w-max">
+                              {maintenanceC > 0 ? `${maintenanceC} mantenimiento` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recolocación` : ''}
+                            </p>
+                          )}
                           {c.isWebVisible && <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded w-max">Visible en web</p>}
                           <div className="mt-4 flex gap-2">
                             <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-900 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">

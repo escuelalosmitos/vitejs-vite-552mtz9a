@@ -13,6 +13,8 @@ const ANNOUNCEMENT_EMAIL_TO = "gestiones@escuelalosmitos.com";
 const ANNOUNCEMENT_EMAIL_BATCH_SIZE = 50;
 const BI_WEEKS_PER_MONTH = 4.333;
 const MAINTENANCE_MONTHLY_FEE = 15;
+const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
+const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
 
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
@@ -1132,21 +1134,117 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
     }
   };
 
-  const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, studentName, studentEmail, classData }) => {
+  const promptForClassStartDate = (studentName = 'el alumno', defaultDate = todayStr) => {
+    const cleanDefaultDate = normalizeStudentClassStartDate(defaultDate) || todayStr;
+    const response = window.prompt(
+      `Fecha de inicio de las clases para ${studentName}
+
+Formato: AAAA-MM-DD
+Déjalo en blanco para usar hoy (${todayStr}).`,
+      cleanDefaultDate
+    );
+
+    if (response === null) return null;
+
+    const cleanDate = normalizeStudentClassStartDate(response) || todayStr;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      alert('La fecha debe tener formato AAAA-MM-DD. Ejemplo: 2026-09-15');
+      return null;
+    }
+
+    return cleanDate;
+  };
+
+  const getStudentFixedClassCount = (studentId, classIdToIgnore = '') => {
+    if (!studentId) return 0;
+    return recurringClassesOnly.filter(clase =>
+      clase.id !== classIdToIgnore &&
+      !isPunctualClass(clase) &&
+      (clase.students || []).some(studentEntry => studentEntry.id === studentId && isFixedClassStudent(studentEntry))
+    ).length;
+  };
+
+  const buildInitialClassAssignmentEmailBody = ({ studentName, studentEmail, classData, classStartDate }) => {
+    const formattedStartDate = formatDateSpanish(classStartDate || todayStr);
+
+    return `Hola ${studentName},
+
+¡Llegó el día de confirmar tu plaza!
+
+Te confirmamos que ya tienes tu plaza reservada en Escuela Los Mitos.
+
+Tu clase asignada es:
+
+· ${formatClassLine(classData)}
+Profesor/a: ${classData.teacher || 'Profesor/a'}
+
+Tu fecha de inicio será:
+
+${formattedStartDate}
+
+A partir de ese día podrás acceder a tu Área del Alumno, donde encontrarás tu información de clase, avisos importantes, calendario, recuperaciones y gestiones relacionadas con tu plaza.
+
+Para activar tu cuenta, sigue estos pasos:
+
+1. Entra en ${STUDENT_PORTAL_URL}
+2. Pulsa en “¿Primera vez aquí? Activa tu cuenta”.
+3. Introduce el mismo correo electrónico con el que realizaste tu inscripción:
+   ${studentEmail || 'el correo con el que realizaste tu inscripción'}
+4. Escribe la contraseña que quieras usar para acceder al portal. Puedes pulsar el icono del ojo para comprobar que la has escrito correctamente.
+5. Pulsa en “Crear contraseña”.
+
+Una vez hecho esto, accederás directamente a tu Área del Alumno.
+
+Te recomendamos guardar el enlace del portal para tenerlo siempre a mano o, mejor aún, ponerlo como acceso directo en el escritorio de tu móvil:
+
+${STUDENT_PORTAL_URL}
+
+Si tienes cualquier problema para activar tu cuenta o acceder, escríbenos a ${SUPPORT_EMAIL} y lo revisamos contigo.
+
+¡Bienvenido/a a la escuela!
+
+Un saludo,
+Coordinación Escuela Los Mitos`;
+  };
+
+  const buildNewFixedStudentTeacherEmailBody = ({ teacherName, displayName, classData, classStartDate, contextLabel = 'en tu clase' }) => {
+    const formattedStartDate = formatDateSpanish(classStartDate || todayStr);
+    const startsInFuture = Boolean(classStartDate && classStartDate > todayStr);
+
+    return `Hola ${teacherName || 'profesor/a'},
+
+Desde coordinación hemos añadido a ${displayName} como alumno fijo ${contextLabel}:
+
+· ${formatClassLine(classData)}
+
+Fecha de inicio: ${formattedStartDate}.
+
+${startsInFuture ? 'El alumno ya tiene la plaza reservada, pero no debe aparecer como activo en la lista de asistencia hasta esa fecha.' : 'El alumno aparece activo desde hoy en tu lista de asistencia de la App.'}
+
+Un saludo,
+Coordinación Los Mitos.`;
+  };
+
+  const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, isFirstFixedClass = false, studentName, studentEmail, classData, classStartDate }) => {
+    // Este email es SOLO para altas completamente nuevas creadas desde el panel.
+    // No se envía en cambios de clase, ampliaciones, reactivaciones, descongelados
+    // ni al recuperar un alumno que ya existía en CRM aunque estuviera sin plaza.
     if (!createdNow || !studentId || !classData || isPunctualClass(classData)) return false;
     if (existingStudent?.firstClassEmailSentAt || existingStudent?.welcomeEmailSentAt) return false;
 
+    const cleanClassStartDate = normalizeStudentClassStartDate(classStartDate) || todayStr;
     const sent = await sendStudentNotification({
       studentEmail,
-      subject: `Confirmación de alta - Escuela Los Mitos`,
-      body: `Hola ${studentName},\n\nTe confirmamos que ya tienes clase asignada en Escuela Los Mitos:\n\n· ${formatClassLine(classData)}\nProfesor/a: ${classData.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+      subject: `Plaza confirmada en Escuela Los Mitos`,
+      body: buildInitialClassAssignmentEmailBody({ studentName, studentEmail, classData, classStartDate: cleanClassStartDate })
     });
 
     if (sent) {
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
         firstClassEmailSentAt: new Date().toISOString(),
         firstClassEmailClassId: classData.id || null,
-        firstClassEmailClassLine: formatClassLine(classData)
+        firstClassEmailClassLine: formatClassLine(classData),
+        firstClassEmailStartDate: cleanClassStartDate
       });
     }
 
@@ -4328,6 +4426,26 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         } else {
           createdNow = true;
           studentId = Date.now().toString();
+        }
+
+        const selectedClassStartDate = createdNow && !isPunctualClass(resurrectClassModal)
+          ? promptForClassStartDate(searchName.trim(), todayStr)
+          : '';
+        if (createdNow && !isPunctualClass(resurrectClassModal) && !selectedClassStartDate) {
+          setSaving(false);
+          return;
+        }
+        const classStartDateForClass = createdNow
+          ? selectedClassStartDate
+          : normalizeStudentClassStartDate(existingStudent?.classStartDate || '');
+
+        if (existingStudent) {
+          const studentUpdate = {
+            email: existingStudent.email || email.trim().toLowerCase(),
+            updatedAt: new Date().toISOString()
+          };
+          await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), studentUpdate);
+        } else {
           await setDoc(doc(db, 'artifacts', appId, 'students', studentId), {
             name: searchName.trim(),
             email: email.trim().toLowerCase(),
@@ -4340,14 +4458,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido al reactivar grupo',
-            classStartDate: ''
+            classStartDate: selectedClassStartDate
           });
         }
         const newStudentPayload = {
           id: studentId,
           name: displayName,
-          email: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
-          classStartDate: existingStudent?.classStartDate || '',
+          email: existingStudent ? (existingStudent.email || email.trim().toLowerCase()) : email.trim().toLowerCase(),
+          classStartDate: classStartDateForClass,
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
           isRecovery: false
@@ -4361,7 +4479,13 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           await sendTeacherNotification({
             teacherName: resurrectClassModal.teacher,
             subject: `Nuevo alumno fijo: ${displayName} (${resurrectClassModal.subject})`,
-            body: `Hola ${resurrectClassModal.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo al reactivar tu grupo:\n\n· ${formatClassLine(resurrectClassModal)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+            body: buildNewFixedStudentTeacherEmailBody({
+              teacherName: resurrectClassModal.teacher,
+              displayName,
+              classData: resurrectClassModal,
+              classStartDate: classStartDateForClass,
+              contextLabel: 'al reactivar tu grupo'
+            })
           });
 
           initialEmailSent = await sendInitialClassAssignmentEmailIfNeeded({
@@ -4369,14 +4493,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             existingStudent,
             createdNow,
             studentName: searchName.trim(),
-            studentEmail: existingStudent ? existingStudent.email : email.trim().toLowerCase(),
-            classData: resurrectClassModal
+            studentEmail: existingStudent ? (existingStudent.email || email.trim().toLowerCase()) : email.trim().toLowerCase(),
+            classData: resurrectClassModal,
+            classStartDate: selectedClassStartDate
           });
         }
 
         alert(isPunctualClass(resurrectClassModal)
           ? "✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo."
-          : `🎉 ¡Clase reactivada! El profesor ya la tiene operativa y ha sido avisado por correo.${createdNow ? (initialEmailSent ? ' El alumno ha recibido el email de alta inicial.' : ' No se ha enviado email al alumno porque no hay email válido.') : ' No se ha enviado email al alumno porque no es alta inicial.'}`);
+          : createdNow
+            ? `🎉 ¡Clase reactivada con alumno nuevo! Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. El profesor ha sido avisado por correo.${initialEmailSent ? ' El alumno ha recibido el email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email válido o ya constaba enviado.'}`
+            : `🎉 ¡Clase reactivada! Alumno existente añadido. El profesor ha sido avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
         setResurrectClassModal(null);
       } catch (e) {
         alert("Error al reactivar: " + e.message);
@@ -4472,6 +4599,26 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         } else {
           createdNow = true;
           studentId = Date.now().toString();
+        }
+
+        const selectedClassStartDate = createdNow && !isPunctual
+          ? promptForClassStartDate(searchName.trim(), todayStr)
+          : '';
+        if (createdNow && !isPunctual && !selectedClassStartDate) {
+          setSaving(false);
+          return;
+        }
+        const classStartDateForClass = createdNow
+          ? selectedClassStartDate
+          : normalizeStudentClassStartDate(existingStudent?.classStartDate || '');
+
+        if (existingStudent) {
+          const studentUpdate = {
+            email: existingStudent.email || emailInput.trim().toLowerCase(),
+            updatedAt: new Date().toISOString()
+          };
+          await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), studentUpdate);
+        } else {
           await setDoc(doc(db, 'artifacts', appId, 'students', studentId), {
             name: searchName.trim(),
             email: emailInput.trim().toLowerCase(),
@@ -4484,14 +4631,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido desde panel de clase',
-            classStartDate: ''
+            classStartDate: selectedClassStartDate
           });
         }
         const newStudentPayload = {
           id: studentId,
           name: displayName,
-          email: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
-          classStartDate: existingStudent?.classStartDate || '',
+          email: existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase(),
+          classStartDate: classStartDateForClass,
           isPaused: existingStudent?.globalStatus === 'congelado' || false,
           status: 'present',
           isRecovery: false
@@ -4505,7 +4652,13 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           await sendTeacherNotification({
             teacherName: c.teacher,
             subject: `Nuevo alumno fijo: ${displayName} (${c.subject})`,
-            body: `Hola ${c.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(c)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+            body: buildNewFixedStudentTeacherEmailBody({
+              teacherName: c.teacher,
+              displayName,
+              classData: c,
+              classStartDate: classStartDateForClass,
+              contextLabel: 'en tu clase'
+            })
           });
 
           initialEmailSent = await sendInitialClassAssignmentEmailIfNeeded({
@@ -4513,14 +4666,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             existingStudent,
             createdNow,
             studentName: searchName.trim(),
-            studentEmail: existingStudent ? existingStudent.email : emailInput.trim().toLowerCase(),
-            classData: c
+            studentEmail: existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase(),
+            classData: c,
+            classStartDate: selectedClassStartDate
           });
         }
 
         alert(isPunctual
           ? `✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo.`
-          : `✅ Alumno añadido. Profesor avisado por correo.${createdNow ? (initialEmailSent ? ' Alumno avisado por email de alta inicial.' : ' No se ha enviado email al alumno porque no hay email válido.') : ' No se ha enviado email al alumno porque no es alta inicial.'}`);
+          : createdNow
+            ? `✅ Alumno nuevo añadido. Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. Profesor avisado por correo.${initialEmailSent ? ' Alumno avisado por email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email válido o ya constaba enviado.'}`
+            : `✅ Alumno existente añadido. Profesor avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
         setSearchName('');
         setEmailInput('');
       } catch (e) {

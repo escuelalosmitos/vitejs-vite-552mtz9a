@@ -182,6 +182,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
+  const [whatsappConfirmModal, setWhatsappConfirmModal] = useState(null);
 
   const timeRules = getMonthNames();
   const dToday = new Date();
@@ -281,10 +282,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const handleWhatsappClick = () => {
     if (classWhatsappLinks.length === 0) return;
     if (classWhatsappLinks.length === 1) {
-      window.open(classWhatsappLinks[0].url, '_blank', 'noopener,noreferrer');
+      setWhatsappConfirmModal(classWhatsappLinks[0]);
       return;
     }
     setShowWhatsappModal(true);
+  };
+
+  const openWhatsappGroup = (link) => {
+    if (!link?.url) return;
+    setWhatsappConfirmModal(null);
+    setShowWhatsappModal(false);
+    window.open(link.url, '_blank', 'noopener,noreferrer');
   };
 
   const announcementMatchesStudent = (ann = {}) => {
@@ -1510,10 +1518,51 @@ END:VCALENDAR`;
             </div>
             <div className="space-y-3">
               {classWhatsappLinks.map(link => (
-                <a key={`${link.classId}-${link.url}`} href={link.url} target="_blank" rel="noopener noreferrer" className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-100 font-black py-4 px-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors flex items-center justify-center gap-2 text-center leading-tight">
+                <button
+                  key={`${link.classId}-${link.url}`}
+                  onClick={() => {
+                    setShowWhatsappModal(false);
+                    setWhatsappConfirmModal(link);
+                  }}
+                  className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-100 font-black py-4 px-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors flex items-center justify-center gap-2 text-center leading-tight"
+                >
                   <MessageCircle className="w-4 h-4 shrink-0" /> {link.label}
-                </a>
+                </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {whatsappConfirmModal && (
+        <div className="fixed inset-0 bg-black/80 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl relative">
+            <button onClick={() => setWhatsappConfirmModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+            <div className="flex flex-col items-center text-center mb-5">
+              <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mb-3 border border-emerald-100">
+                <MessageCircle className="w-8 h-8" />
+              </div>
+              <h2 className="text-lg font-black uppercase tracking-tight text-slate-800 leading-tight">Grupo de WhatsApp de la clase</h2>
+              {whatsappConfirmModal.label && (
+                <p className="text-[10px] font-black text-emerald-700 uppercase tracking-widest mt-2 leading-tight">{whatsappConfirmModal.label}</p>
+              )}
+            </div>
+
+            <div className="space-y-3 text-sm text-zinc-600 font-medium leading-relaxed mb-6">
+              <p>Vas a entrar en un grupo compartido con otros miembros de tu clase.</p>
+              <p>El grupo se usa solo para coordinación, avisos, dudas y material relacionado con la escuela. Al entrar, tu nombre, número y foto de WhatsApp podrían ser visibles para otros participantes.</p>
+              <p>Si solicitas la baja o dejas esta clase, deberás abandonar el grupo para proteger tus datos.</p>
+              <p className="font-black text-slate-800">¿Quieres abrir WhatsApp?</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button onClick={() => setWhatsappConfirmModal(null)} className="bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">
+                Cancelar
+              </button>
+              <button onClick={() => openWhatsappGroup(whatsappConfirmModal)} className="bg-emerald-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-emerald-700 transition-colors shadow-md flex items-center justify-center gap-2">
+                <MessageCircle className="w-4 h-4"/> Abrir WhatsApp
+              </button>
             </div>
           </div>
         </div>

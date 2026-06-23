@@ -44,6 +44,7 @@ const TEACHER_TASK_REQUEST_TYPES = [
 const TEACHER_TASK_STATUS_LABELS = {
   pendiente: 'Pendiente',
   en_revision: 'En revisión',
+  en_curso: 'En curso',
   completada: 'Completada',
   resuelta: 'Resuelta',
   rechazada: 'Rechazada',
@@ -53,11 +54,24 @@ const TEACHER_TASK_STATUS_LABELS = {
 const TEACHER_TASK_STATUS_STYLE = {
   pendiente: 'bg-amber-50 text-amber-800 border-amber-200',
   en_revision: 'bg-blue-50 text-blue-700 border-blue-200',
+  en_curso: 'bg-violet-50 text-violet-700 border-violet-200',
   completada: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   resuelta: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   rechazada: 'bg-red-50 text-red-700 border-red-200',
   cancelada: 'bg-zinc-50 text-zinc-500 border-zinc-200'
 };
+
+const TEACHER_TASK_OPEN_STATUSES = new Set(['pendiente', 'en_revision', 'en_curso']);
+const TEACHER_TASK_CLOSED_STATUSES = new Set(['completada', 'resuelta', 'rechazada', 'cancelada']);
+
+const isAdminAssignmentTask = (task = {}) => (
+  task.type === 'admin_assignment' ||
+  task.type === 'admin_to_teacher' ||
+  task.direction === 'admin_to_teacher'
+);
+
+const isTeacherTaskOpen = (task = {}) => TEACHER_TASK_OPEN_STATUSES.has(task.status || 'pendiente');
+const isTeacherTaskClosed = (task = {}) => TEACHER_TASK_CLOSED_STATUSES.has(task.status || '');
 
 const getPlanningGestionLabel = (gestion = {}) => PLANNING_GESTION_LABELS[gestion.type] || 'Gestión pendiente';
 const getPlanningGestionStyle = (gestion = {}) => PLANNING_GESTION_STYLE[gestion.type] || 'bg-zinc-50 text-zinc-700 border-zinc-200';
@@ -952,12 +966,53 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
   const updateTeacherTaskStatus = async (task, status) => {
     if (!task?.id) return;
+
+    const now = new Date().toISOString();
+    const payload = {
+      status,
+      updatedAt: now,
+      updatedBy: user?.email || '',
+      updatedByName: getTeacherName()
+    };
+
+    if (isAdminAssignmentTask(task)) {
+      if (status === 'en_curso') {
+        payload.startedAt = task.startedAt || now;
+        payload.startedBy = user?.email || '';
+        payload.startedByName = getTeacherName();
+      }
+
+      if (status === 'completada') {
+        const response = window.prompt('Respuesta para coordinación al completar el encargo (opcional):', task.teacherResponse || task.completionNote || '');
+        if (response === null) return;
+        payload.completedAt = now;
+        payload.completedBy = user?.email || '';
+        payload.completedByName = getTeacherName();
+        payload.teacherResponse = String(response || '').trim();
+        payload.completionNote = String(response || '').trim();
+      }
+
+      if (status === 'rechazada') {
+        const reason = window.prompt('Motivo del rechazo para coordinación:', task.rejectionReason || '');
+        if (reason === null) return;
+        const cleanReason = String(reason || '').trim();
+        if (!cleanReason) {
+          showNotification({ type: 'error', text: 'Para rechazar un encargo debes escribir un motivo.' });
+          return;
+        }
+        payload.rejectedAt = now;
+        payload.rejectedBy = user?.email || '';
+        payload.rejectedByName = getTeacherName();
+        payload.rejectionReason = cleanReason;
+        payload.teacherResponse = cleanReason;
+      }
+    } else if (status === 'completada' || status === 'resuelta') {
+      payload.completedAt = now;
+      payload.completedBy = user?.email || '';
+      payload.completedByName = getTeacherName();
+    }
+
     try {
-      const payload = {
-        status,
-        updatedAt: new Date().toISOString()
-      };
-      if (status === 'completada' || status === 'resuelta') payload.completedAt = new Date().toISOString();
       await updateDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id), payload);
       showNotification({ type: 'success', text: 'Tarea actualizada.' });
     } catch (e) {
@@ -990,10 +1045,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
   }, [teacherTasks, user, isAdmin]);
 
-  const openTeacherTasksCount = visibleTeacherTasks.filter(task => ['pendiente', 'en_revision'].includes(task.status || 'pendiente')).length;
-  const pendingSelfTasks = visibleTeacherTasks.filter(task => task.type === 'self_task' && ['pendiente', 'en_revision'].includes(task.status || 'pendiente'));
-  const pendingAdminRequests = visibleTeacherTasks.filter(task => task.type === 'admin_request' && ['pendiente', 'en_revision'].includes(task.status || 'pendiente'));
-  const completedTeacherTasks = visibleTeacherTasks.filter(task => ['completada', 'resuelta', 'rechazada', 'cancelada'].includes(task.status || ''));
+  const openTeacherTasksCount = visibleTeacherTasks.filter(isTeacherTaskOpen).length;
+  const pendingSelfTasks = visibleTeacherTasks.filter(task => task.type === 'self_task' && isTeacherTaskOpen(task));
+  const pendingAdminRequests = visibleTeacherTasks.filter(task => task.type === 'admin_request' && isTeacherTaskOpen(task));
+  const pendingAdminAssignments = visibleTeacherTasks.filter(task => isAdminAssignmentTask(task) && isTeacherTaskOpen(task));
+  const completedTeacherTasks = visibleTeacherTasks.filter(isTeacherTaskClosed);
 
   const recordsForSelectedDate = useMemo(() => {
     return records
@@ -2086,16 +2142,26 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const renderTeacherTaskCard = (task = {}) => {
     const isAdminRequest = task.type === 'admin_request';
+    const isAdminAssignment = isAdminAssignmentTask(task);
     const status = task.status || 'pendiente';
     const requestLabel = TEACHER_TASK_REQUEST_TYPES.find(t => t.value === task.requestType)?.label || 'Petición';
-    const isOpen = ['pendiente', 'en_revision'].includes(status);
+    const isOpen = isTeacherTaskOpen(task);
+    const cardAccentClass = isAdminAssignment
+      ? 'border-violet-200 bg-violet-50/20'
+      : (task.priority === 'alta' && isOpen ? 'border-amber-300' : 'border-zinc-100');
+    const iconBoxClass = isAdminAssignment
+      ? 'bg-violet-50 text-violet-600'
+      : (isAdminRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600');
+    const mainIcon = isAdminAssignment
+      ? <ClipboardList className="w-6 h-6" />
+      : (isAdminRequest ? <Send className="w-6 h-6" /> : <CheckCircle className="w-6 h-6" />);
 
     return (
-      <div key={task.id} className={`bg-white rounded-3xl border-2 p-6 shadow-sm ${task.priority === 'alta' && isOpen ? 'border-amber-300' : 'border-zinc-100'}`}>
+      <div key={task.id} className={`bg-white rounded-3xl border-2 p-6 shadow-sm ${cardAccentClass}`}>
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-4">
           <div className="flex items-start gap-4">
-            <div className={`p-3 rounded-2xl shrink-0 ${isAdminRequest ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>
-              {isAdminRequest ? <Send className="w-6 h-6" /> : <CheckCircle className="w-6 h-6" />}
+            <div className={`p-3 rounded-2xl shrink-0 ${iconBoxClass}`}>
+              {mainIcon}
             </div>
             <div>
               <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-tight">{task.title}</h3>
@@ -2103,6 +2169,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                 <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(status)}`}>{getTeacherTaskStatusLabel(status)}</span>
                 <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${task.priority === 'alta' ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-zinc-50 text-zinc-500 border-zinc-200'}`}>Prioridad {task.priority || 'normal'}</span>
                 {isAdminRequest && <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border-blue-200">{requestLabel}</span>}
+                {isAdminAssignment && <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-violet-50 text-violet-700 border-violet-200">Encargo de coordinación</span>}
               </div>
             </div>
           </div>
@@ -2114,6 +2181,16 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           )}
         </div>
 
+        {isAdminAssignment && (
+          <div className="mb-4 p-4 bg-violet-50 border border-violet-100 rounded-xl">
+            <p className="text-[10px] font-black uppercase tracking-widest text-violet-700 mb-1">Encargo recibido de coordinación</p>
+            <p className="text-xs font-bold text-violet-950 leading-relaxed">Esta tarea te la ha asignado administración. Puedes ponerla en curso, marcarla como completada o rechazarla explicando el motivo.</p>
+            {(task.createdBy || task.createdByName) && (
+              <p className="text-[10px] font-black uppercase tracking-widest text-violet-500 mt-2">Asignado por: {task.createdByName || task.createdBy}</p>
+            )}
+          </div>
+        )}
+
         {task.relatedClassLine && (
           <div className="mb-4 p-3 bg-zinc-50 border border-zinc-100 rounded-xl text-xs font-bold text-zinc-600 flex items-start gap-2">
             <Calendar className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
@@ -2123,10 +2200,17 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
         {task.description && <p className="text-sm font-medium text-zinc-600 leading-relaxed whitespace-pre-wrap mb-4">{task.description}</p>}
 
-        {task.adminResponse && (
+        {task.adminResponse && !isAdminAssignment && (
           <div className="mb-4 p-4 bg-blue-50 border border-blue-100 rounded-xl">
             <p className="text-[10px] font-black uppercase tracking-widest text-blue-700 mb-1">Respuesta de coordinación</p>
             <p className="text-sm font-bold text-blue-950 whitespace-pre-wrap">{task.adminResponse}</p>
+          </div>
+        )}
+
+        {isAdminAssignment && (task.teacherResponse || task.completionNote || task.rejectionReason) && (
+          <div className={`mb-4 p-4 rounded-xl border ${status === 'rechazada' ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'}`}>
+            <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${status === 'rechazada' ? 'text-red-700' : 'text-emerald-700'}`}>{status === 'rechazada' ? 'Motivo enviado a coordinación' : 'Respuesta enviada a coordinación'}</p>
+            <p className={`text-sm font-bold whitespace-pre-wrap ${status === 'rechazada' ? 'text-red-950' : 'text-emerald-950'}`}>{task.rejectionReason || task.teacherResponse || task.completionNote}</p>
           </div>
         )}
 
@@ -2146,9 +2230,31 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
               <X className="w-4 h-4" /> Cancelar petición
             </button>
           )}
-          <button onClick={() => deleteTeacherTask(task)} className="w-full sm:w-auto bg-red-50 text-red-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
-            <Trash2 className="w-4 h-4" /> Eliminar
-          </button>
+          {isAdminAssignment && isOpen && status !== 'en_curso' && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'en_curso')} className="w-full sm:w-auto bg-violet-600 text-white font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-violet-700 transition-colors flex items-center justify-center gap-2">
+              <Play className="w-4 h-4" /> En curso
+            </button>
+          )}
+          {isAdminAssignment && isOpen && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'completada')} className="w-full sm:w-auto bg-emerald-600 text-white font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">
+              <Check className="w-4 h-4" /> Completar encargo
+            </button>
+          )}
+          {isAdminAssignment && isOpen && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'rechazada')} className="w-full sm:w-auto bg-red-50 text-red-700 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
+              <X className="w-4 h-4" /> Rechazar
+            </button>
+          )}
+          {isAdminAssignment && !isOpen && (
+            <button onClick={() => updateTeacherTaskStatus(task, 'pendiente')} className="w-full sm:w-auto bg-zinc-100 text-zinc-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4" /> Reabrir
+            </button>
+          )}
+          {!isAdminAssignment && (
+            <button onClick={() => deleteTeacherTask(task)} className="w-full sm:w-auto bg-red-50 text-red-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
+              <Trash2 className="w-4 h-4" /> Eliminar
+            </button>
+          )}
         </div>
       </div>
     );
@@ -2157,9 +2263,19 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const renderTasksTab = () => {
     const visibleList = tasksView === 'requests'
       ? pendingAdminRequests
-      : tasksView === 'done'
-        ? completedTeacherTasks
-        : pendingSelfTasks;
+      : tasksView === 'assignments'
+        ? pendingAdminAssignments
+        : tasksView === 'done'
+          ? completedTeacherTasks
+          : pendingSelfTasks;
+
+    const emptyMessage = tasksView === 'assignments'
+      ? 'No tienes encargos pendientes de coordinación.'
+      : tasksView === 'requests'
+        ? 'No tienes peticiones pendientes enviadas a coordinación.'
+        : tasksView === 'done'
+          ? 'No hay tareas finalizadas.'
+          : 'Crea una tarea interna o envía una petición a coordinación.';
 
     return (
       <div className="space-y-6 animate-in fade-in">
@@ -2167,7 +2283,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 mb-6">
             <div>
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tareas</h2>
-              <p className="text-sm font-medium text-zinc-500 mt-1">Organización interna y peticiones a coordinación.</p>
+              <p className="text-sm font-medium text-zinc-500 mt-1">Organización interna, peticiones a coordinación y encargos recibidos.</p>
             </div>
             <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
               <button onClick={() => openTaskModal('self_task')} className="w-full sm:w-auto bg-black text-white font-black px-5 py-3 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 hover:bg-zinc-800 transition-colors">
@@ -2179,10 +2295,11 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 bg-zinc-50 border border-zinc-100 rounded-2xl p-2">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-zinc-50 border border-zinc-100 rounded-2xl p-2">
             {[
               { id: 'pending', label: `Mis tareas (${pendingSelfTasks.length})` },
               { id: 'requests', label: `Peticiones (${pendingAdminRequests.length})` },
+              { id: 'assignments', label: `Encargos (${pendingAdminAssignments.length})` },
               { id: 'done', label: `Finalizadas (${completedTeacherTasks.length})` }
             ].map(view => (
               <button key={view.id} onClick={() => setTasksView(view.id)} className={`py-3 px-3 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all ${tasksView === view.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-white'}`}>
@@ -2196,7 +2313,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
             <CheckCircle className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
             <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay tareas en esta sección</h3>
-            <p className="text-sm font-medium text-zinc-400 mt-2">Crea una tarea interna o envía una petición a coordinación.</p>
+            <p className="text-sm font-medium text-zinc-400 mt-2">{emptyMessage}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

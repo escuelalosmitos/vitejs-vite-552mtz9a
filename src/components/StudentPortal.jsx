@@ -5,6 +5,7 @@ import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, coll
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario"]);
+const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
@@ -187,6 +188,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const timeRules = getMonthNames();
   const dToday = new Date();
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
+  const portalStartDate = String(profile?.classStartDate || '').trim();
+  const isPortalAccessScheduled = Boolean(portalStartDate && portalStartDate > todayStr);
 
   const effectiveMyClasses = useMemo(() => {
     if (!profile?.id) return myClasses;
@@ -1428,6 +1431,34 @@ END:VCALENDAR`;
   if (!classesLoaded) {
     return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando clases...</div>;
   }
+  if (isPortalAccessScheduled) {
+    return (
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
+        <div className="bg-emerald-100 text-emerald-600 p-6 rounded-full mb-6">
+          <Clock className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Tu plaza está reservada</h1>
+        <p className="text-zinc-500 font-medium mb-6 leading-relaxed">
+          Tus clases empiezan el día <strong className="text-black">{formatDateSpanish(portalStartDate)}</strong>.
+        </p>
+        <div className="bg-white border-2 border-emerald-100 p-6 rounded-2xl mb-8 w-full shadow-sm text-left">
+          <p className="text-sm text-slate-700 font-bold leading-relaxed mb-4">
+            Podrás acceder al Área del Alumno a partir de esa fecha. Mientras tanto, tu plaza ya está confirmada, pero las gestiones del portal todavía no estarán disponibles.
+          </p>
+          <p className="text-sm text-slate-700 font-bold leading-relaxed">
+            Si tienes cualquier duda, escríbenos a:
+          </p>
+          <a href={`mailto:${SUPPORT_EMAIL}?subject=Consulta%20sobre%20inicio%20de%20clases`} className="block mt-3 text-center bg-emerald-50 border border-emerald-100 text-emerald-700 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-emerald-100 transition-colors">
+            {SUPPORT_EMAIL}
+          </a>
+        </div>
+        <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
+          Cerrar Sesión
+        </button>
+      </div>
+    );
+  }
+
 
   if (effectiveMyClasses.length === 0) {
     return (

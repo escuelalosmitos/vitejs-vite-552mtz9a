@@ -167,6 +167,50 @@ const getClassEndTime = (time, duration = 60) => {
 
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
+const parseLocalDateString = (dateString) => {
+  const [yearRaw, monthRaw, dayRaw] = String(dateString || '').split('-').map(Number);
+  if (!Number.isFinite(yearRaw) || !Number.isFinite(monthRaw) || !Number.isFinite(dayRaw)) return null;
+  return new Date(yearRaw, monthRaw - 1, dayRaw);
+};
+
+const getDateDayIndex = (dateString) => {
+  const date = parseLocalDateString(dateString);
+  return date ? date.getDay() : null;
+};
+
+const formatDateWithWeekday = (dateString) => {
+  const date = parseLocalDateString(dateString);
+  if (!date) return '';
+  return date.toLocaleDateString('es-ES', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+};
+
+const getNextClassDateForDay = (dayOfWeek, fromDateString = getTodayLocalString()) => {
+  const targetDay = Number(dayOfWeek);
+  const fromDate = parseLocalDateString(fromDateString) || new Date();
+  if (!Number.isFinite(targetDay)) return getTodayLocalString();
+  const diff = (targetDay - fromDate.getDay() + 7) % 7;
+  const targetDate = new Date(fromDate);
+  targetDate.setDate(fromDate.getDate() + diff);
+  const y = targetDate.getFullYear();
+  const m = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const d = String(targetDate.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getClassStartDateWarning = (classStartDate, classDayOfWeek, todayStr = getTodayLocalString()) => {
+  const cleanDate = normalizeStudentClassStartDate(classStartDate);
+  if (!cleanDate) return '';
+  const selectedDay = getDateDayIndex(cleanDate);
+  const expectedDay = Number(classDayOfWeek);
+  if (selectedDay !== null && Number.isFinite(expectedDay) && selectedDay !== expectedDay) {
+    return `La fecha elegida cae en ${getDayName(selectedDay)}, pero esta clase es los ${getDayName(expectedDay)}.`;
+  }
+  if (cleanDate < todayStr) {
+    return 'La fecha elegida es anterior a hoy.';
+  }
+  return '';
+};
+
 const downloadTextFile = (filename, content, mimeType = 'text/plain;charset=utf-8') => {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -1134,36 +1178,6 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
     }
   };
 
-  const promptForClassStartDate = (studentName = 'el alumno', defaultDate = todayStr) => {
-    const cleanDefaultDate = normalizeStudentClassStartDate(defaultDate) || todayStr;
-    const response = window.prompt(
-      `Fecha de inicio de las clases para ${studentName}
-
-Formato: AAAA-MM-DD
-Déjalo en blanco para usar hoy (${todayStr}).`,
-      cleanDefaultDate
-    );
-
-    if (response === null) return null;
-
-    const cleanDate = normalizeStudentClassStartDate(response) || todayStr;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
-      alert('La fecha debe tener formato AAAA-MM-DD. Ejemplo: 2026-09-15');
-      return null;
-    }
-
-    return cleanDate;
-  };
-
-  const getStudentFixedClassCount = (studentId, classIdToIgnore = '') => {
-    if (!studentId) return 0;
-    return recurringClassesOnly.filter(clase =>
-      clase.id !== classIdToIgnore &&
-      !isPunctualClass(clase) &&
-      (clase.students || []).some(studentEntry => studentEntry.id === studentId && isFixedClassStudent(studentEntry))
-    ).length;
-  };
-
   const buildInitialClassAssignmentEmailBody = ({ studentName, studentEmail, classData, classStartDate }) => {
     const formattedStartDate = formatDateSpanish(classStartDate || todayStr);
 
@@ -1225,7 +1239,7 @@ Un saludo,
 Coordinación Los Mitos.`;
   };
 
-  const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, isFirstFixedClass = false, studentName, studentEmail, classData, classStartDate }) => {
+  const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, studentName, studentEmail, classData, classStartDate }) => {
     // Este email es SOLO para altas completamente nuevas creadas desde el panel.
     // No se envía en cambios de clase, ampliaciones, reactivaciones, descongelados
     // ni al recuperar un alumno que ya existía en CRM aunque estuviera sin plaza.
@@ -4404,7 +4418,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     if (!resurrectClassModal) return null;
     const [searchName, setSearchName] = useState('');
     const [email, setEmail] = useState('');
+    const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(resurrectClassModal) ? todayStr : getNextClassDateForDay(resurrectClassModal.dayOfWeek, todayStr));
     const [saving, setSaving] = useState(false);
+    const matchedStudentForResurrect = students.find(s =>
+      s.name.toLowerCase() === searchName.trim().toLowerCase() ||
+      (email && s.email === email.trim().toLowerCase())
+    );
+    const willCreateStudentForResurrect = Boolean(searchName.trim()) && !matchedStudentForResurrect;
+    const showClassStartDateForResurrect = willCreateStudentForResurrect && !isPunctualClass(resurrectClassModal);
+    const classStartDateWarningForResurrect = showClassStartDateForResurrect
+      ? getClassStartDateWarning(classStartDateInput, resurrectClassModal.dayOfWeek, todayStr)
+      : '';
     const handleResurrect = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
       setSaving(true);
@@ -4429,9 +4453,21 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         }
 
         const selectedClassStartDate = createdNow && !isPunctualClass(resurrectClassModal)
-          ? promptForClassStartDate(searchName.trim(), todayStr)
+          ? normalizeStudentClassStartDate(classStartDateInput)
           : '';
         if (createdNow && !isPunctualClass(resurrectClassModal) && !selectedClassStartDate) {
+          alert('Elige la fecha de inicio de las clases.');
+          setSaving(false);
+          return;
+        }
+        const startDateWarning = createdNow && !isPunctualClass(resurrectClassModal)
+          ? getClassStartDateWarning(selectedClassStartDate, resurrectClassModal.dayOfWeek, todayStr)
+          : '';
+        if (startDateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:
+
+${startDateWarning}
+
+¿Quieres continuar igualmente?`)) {
           setSaving(false);
           return;
         }
@@ -4550,6 +4586,24 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo Electrónico (Opcional)</label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Solo si es alumno nuevo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" />
             </div>
+            {showClassStartDateForResurrect && (
+              <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl">
+                <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 flex items-center gap-1"><Calendar className="w-3 h-3"/> Fecha de inicio de las clases *</label>
+                <input
+                  type="date"
+                  value={classStartDateInput}
+                  onChange={e => setClassStartDateInput(e.target.value)}
+                  className="w-full p-3 bg-white border-2 border-emerald-200 rounded-xl font-black text-sm outline-none focus:border-emerald-500"
+                />
+                {classStartDateInput && (
+                  <p className="mt-2 text-xs font-bold text-emerald-800">Empieza: {formatDateWithWeekday(classStartDateInput)}</p>
+                )}
+                {classStartDateWarningForResurrect && (
+                  <p className="mt-2 text-[10px] font-black text-amber-700 uppercase tracking-wide">⚠️ {classStartDateWarningForResurrect}</p>
+                )}
+                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(resurrectClassModal.dayOfWeek)}.</p>
+              </div>
+            )}
           </div>
           <button onClick={handleResurrect} disabled={saving || !searchName} className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando...' : 'Reactivar Clase'}
@@ -4564,6 +4618,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     const c = viewClassModal;
     const [searchName, setSearchName] = useState('');
     const [emailInput, setEmailInput] = useState('');
+    const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(c) ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
     const [saving, setSaving] = useState(false);
     const maxCap = parseInt(c.capacity, 10) || 0;
     const planningStudents = getClassStudentPlanningData(c, isArchitectProjection);
@@ -4574,6 +4629,15 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
     const isFull = maxCap > 0 && currentCount >= maxCap;
     const isPunctual = isPunctualClass(c);
+    const matchedStudentForAdd = students.find(s =>
+      s.name.toLowerCase() === searchName.trim().toLowerCase() ||
+      (emailInput && s.email === emailInput.trim().toLowerCase())
+    );
+    const willCreateStudentForAdd = Boolean(searchName.trim()) && !matchedStudentForAdd;
+    const showClassStartDateForAdd = willCreateStudentForAdd && !isPunctual;
+    const classStartDateWarningForAdd = showClassStartDateForAdd
+      ? getClassStartDateWarning(classStartDateInput, c.dayOfWeek, todayStr)
+      : '';
 
     const handleAddStudent = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
@@ -4602,9 +4666,21 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         }
 
         const selectedClassStartDate = createdNow && !isPunctual
-          ? promptForClassStartDate(searchName.trim(), todayStr)
+          ? normalizeStudentClassStartDate(classStartDateInput)
           : '';
         if (createdNow && !isPunctual && !selectedClassStartDate) {
+          alert('Elige la fecha de inicio de las clases.');
+          setSaving(false);
+          return;
+        }
+        const startDateWarning = createdNow && !isPunctual
+          ? getClassStartDateWarning(selectedClassStartDate, c.dayOfWeek, todayStr)
+          : '';
+        if (startDateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:
+
+${startDateWarning}
+
+¿Quieres continuar igualmente?`)) {
           setSaving(false);
           return;
         }
@@ -4679,6 +4755,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             : `✅ Alumno existente añadido. Profesor avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
         setSearchName('');
         setEmailInput('');
+        setClassStartDateInput(isPunctual ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
       } catch (e) {
         alert("Error al matricular: " + e.message);
       } finally {
@@ -4739,6 +4816,24 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 {saving ? '...' : 'Añadir'}
               </button>
             </div>
+            {showClassStartDateForAdd && (
+              <div className="mt-4 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl">
+                <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 flex items-center gap-1"><Calendar className="w-3 h-3"/> Fecha de inicio de las clases *</label>
+                <input
+                  type="date"
+                  value={classStartDateInput}
+                  onChange={e => setClassStartDateInput(e.target.value)}
+                  className="w-full p-3 bg-white border-2 border-emerald-200 rounded-xl font-black text-sm outline-none focus:border-emerald-500"
+                />
+                {classStartDateInput && (
+                  <p className="mt-2 text-xs font-bold text-emerald-800">Empieza: {formatDateWithWeekday(classStartDateInput)}</p>
+                )}
+                {classStartDateWarningForAdd && (
+                  <p className="mt-2 text-[10px] font-black text-amber-700 uppercase tracking-wide">⚠️ {classStartDateWarningForAdd}</p>
+                )}
+                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(c.dayOfWeek)}.</p>
+              </div>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">

@@ -28,6 +28,23 @@ const appId = 'default-app-id';
 const ADMIN_EMAIL = 'paco@escuelalosmitos.com';
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec';
 
+const getTodayLocalString = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const formatDateSpanish = (dateString) => {
+  if (!dateString) return '';
+  return String(dateString).split('-').reverse().join('/');
+};
+
+const getFutureAccessBlockMessage = (classStartDate) => (
+  `Tu plaza está reservada. Podrás activar y usar tu Área del Alumno a partir del ${formatDateSpanish(classStartDate)}.`
+);
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -62,12 +79,20 @@ export default function App() {
         await signInWithEmailAndPassword(auth, cleanEmail, password);
 
         // AUTOCURACIÓN: Si es un alumno y su cuenta sigue constando como "no activada" en el CRM, la marcamos como activada silenciosamente.
+        // Si tiene fecha futura de inicio, bloqueamos el acceso hasta ese día.
         if (cleanEmail !== ADMIN_EMAIL && !cleanEmail.endsWith('@escuelalosmitos.com')) {
           const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
           const snap = await getDocs(q);
           if (!snap.empty) {
             const studentDoc = snap.docs[0];
-            if (studentDoc.data().claimed !== true) {
+            const studentData = studentDoc.data();
+            const classStartDate = String(studentData.classStartDate || '').trim();
+            if (classStartDate && classStartDate > getTodayLocalString()) {
+              await signOut(auth);
+              setAuthError(getFutureAccessBlockMessage(classStartDate));
+              return;
+            }
+            if (studentData.claimed !== true) {
               await updateDoc(doc(db, 'artifacts', appId, 'students', studentDoc.id), { 
                 claimed: true 
               });
@@ -83,6 +108,15 @@ export default function App() {
         if (snapshot.empty && cleanEmail !== ADMIN_EMAIL) {
           setAuthError("Acceso denegado: Este email no consta en la base de datos de alumnos activos.");
           return;
+        }
+
+        if (!snapshot.empty) {
+          const studentData = snapshot.docs[0].data();
+          const classStartDate = String(studentData.classStartDate || '').trim();
+          if (classStartDate && classStartDate > getTodayLocalString()) {
+            setAuthError(getFutureAccessBlockMessage(classStartDate));
+            return;
+          }
         }
 
         // 1. Creamos la cuenta y contraseña en Firebase Auth

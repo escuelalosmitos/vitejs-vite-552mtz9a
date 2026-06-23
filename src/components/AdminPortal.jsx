@@ -446,15 +446,74 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return allClasses.filter(c => !isPunctualClass(c));
   }, [allClasses]);
 
+  const isFixedClassStudent = (studentEntry = {}) => {
+    return !(
+      studentEntry?.isRecovery === true ||
+      studentEntry?.isTemporary === true ||
+      studentEntry?.isPunctual === true ||
+      studentEntry?.isTemporaryRelocation === true ||
+      Boolean(studentEntry?.temporaryRelocationId) ||
+      studentEntry?.type === 'recovery' ||
+      studentEntry?.status === 'recovery'
+    );
+  };
+
+  const getCommercialSeatDataForClass = (clase = {}) => {
+    const cap = parseInt(clase.capacity, 10) || 0;
+    const studentRows = (clase.students || [])
+      .filter(isFixedClassStudent)
+      .map(studentEntry => {
+        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+        const crmStatus = studentInfo?.globalStatus || 'activo';
+        const isDropped = crmStatus === 'baja';
+        const isMaintenance = !isDropped && (studentEntry.isPaused === true || crmStatus === 'congelado');
+        const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+        const isFutureStart = !isDropped && Boolean(startDate && startDate > todayStr);
+        const isCommitted = !isDropped;
+
+        return {
+          id: studentEntry.id,
+          name: studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno',
+          email: studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '',
+          status: crmStatus,
+          startDate,
+          isDropped,
+          isMaintenance,
+          isFutureStart,
+          isCommitted
+        };
+      })
+      .filter(student => student.isCommitted);
+
+    const committedCount = studentRows.length;
+    const freeSpots = cap ? Math.max(cap - committedCount, 0) : 0;
+
+    return {
+      cap,
+      students: studentRows,
+      committedCount,
+      freeSpots,
+      maintenanceCount: studentRows.filter(student => student.isMaintenance).length,
+      futureStartCount: studentRows.filter(student => student.isFutureStart).length
+    };
+  };
+
+  const getCommercialCommittedSeatCount = (clase = {}) => getCommercialSeatDataForClass(clase).committedCount;
+  const getCommercialFreeSpots = (clase = {}) => getCommercialSeatDataForClass(clase).freeSpots;
+
   // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const businessIntelligence = useMemo(() => {
     let totalIngresosClases = 0;
     let costeTotalProfesores = 0;
+    let totalAlumnosActivos = 0;
+    let totalAlumnosInicioFuturo = 0;
+    let totalPlazasComprometidas = 0;
+    let totalImpagos = 0;
 
     const clasesRentabilidad = [];
     const porSede = {
-      Tarragona: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 },
-      Reus: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 }
+      Tarragona: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 },
+      Reus: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 }
     };
     const porProfe = {};
     const porInstrumento = {};
@@ -462,14 +521,30 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const frozenStudents = new Map();
 
     recurringClassesOnly.forEach(c => {
-      const classStudents = c.students || [];
+      const classStudents = (c.students || []).filter(isFixedClassStudent);
       let numAlumnos = 0;
       let numCongelados = 0;
+      let numInicioFuturo = 0;
+      let numPlazasComprometidas = 0;
+      let numImpagos = 0;
 
       classStudents.forEach((studentEntry, index) => {
         const studentInfo = studentById.get(studentEntry.id);
-        const isDropped = studentInfo?.globalStatus === 'baja';
-        const isFrozen = !isDropped && (studentEntry.isPaused === true || studentInfo?.globalStatus === 'congelado');
+        const crmStatus = studentInfo?.globalStatus || 'activo';
+        const isDropped = crmStatus === 'baja';
+        if (isDropped) return;
+
+        numPlazasComprometidas += 1;
+        const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+        const isFutureStart = Boolean(startDate && startDate > todayStr);
+        const isFrozen = studentEntry.isPaused === true || crmStatus === 'congelado';
+
+        // BI mide ingresos reales/previsibles de este momento, no reservas comerciales futuras.
+        // Un alumno con inicio futuro ocupa plaza, pero todavía no suma cuota mensual.
+        if (isFutureStart) {
+          numInicioFuturo += 1;
+          return;
+        }
 
         if (isFrozen) {
           numCongelados += 1;
@@ -486,7 +561,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           return;
         }
 
-        if (!isDropped) numAlumnos += 1;
+        // Los impagos se mantienen como plaza activa en BI, pero quedan señalizados como riesgo.
+        if (crmStatus === 'impago') numImpagos += 1;
+        numAlumnos += 1;
       });
 
       const cuota = Number(c.cuotaBase) || 0;
@@ -501,29 +578,45 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
       totalIngresosClases += ingresos;
       costeTotalProfesores += coste;
+      totalAlumnosActivos += numAlumnos;
+      totalAlumnosInicioFuturo += numInicioFuturo;
+      totalPlazasComprometidas += numPlazasComprometidas;
+      totalImpagos += numImpagos;
 
       clasesRentabilidad.push({
         id: c.id, subject: c.subject, teacher: c.teacher, sede: c.sede, time: c.time, dayOfWeek: c.dayOfWeek,
-        numAlumnos, numCongelados, ingresos, coste, beneficio
+        numAlumnos, numCongelados, numInicioFuturo, numPlazasComprometidas, numImpagos, ingresos, coste, beneficio
       });
 
       const sedeKey = c.sede || 'Tarragona';
-      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 };
+      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 };
       porSede[sedeKey].ingresos += ingresos;
       porSede[sedeKey].ingresosClases += ingresos;
+      porSede[sedeKey].alumnosActivos += numAlumnos;
+      porSede[sedeKey].alumnosInicioFuturo += numInicioFuturo;
+      porSede[sedeKey].plazasComprometidas += numPlazasComprometidas;
+      porSede[sedeKey].impagos += numImpagos;
       porSede[sedeKey].costesProf += coste;
 
       const profKey = c.teacher || 'Sin Asignar';
-      if (!porProfe[profKey]) porProfe[profKey] = { ingresos: 0, costes: 0, horasSemanales: 0 };
+      if (!porProfe[profKey]) porProfe[profKey] = { ingresos: 0, costes: 0, horasSemanales: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0 };
       porProfe[profKey].ingresos += ingresos;
       porProfe[profKey].costes += coste;
       porProfe[profKey].horasSemanales += duracionHoras;
+      porProfe[profKey].alumnosActivos += numAlumnos;
+      porProfe[profKey].alumnosInicioFuturo += numInicioFuturo;
+      porProfe[profKey].plazasComprometidas += numPlazasComprometidas;
+      porProfe[profKey].impagos += numImpagos;
 
       const instKey = c.subject || 'Otros';
-      if (!porInstrumento[instKey]) porInstrumento[instKey] = { ingresos: 0, costes: 0, numGrupos: 0 };
+      if (!porInstrumento[instKey]) porInstrumento[instKey] = { ingresos: 0, costes: 0, numGrupos: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0 };
       porInstrumento[instKey].ingresos += ingresos;
       porInstrumento[instKey].costes += coste;
       porInstrumento[instKey].numGrupos += 1;
+      porInstrumento[instKey].alumnosActivos += numAlumnos;
+      porInstrumento[instKey].alumnosInicioFuturo += numInicioFuturo;
+      porInstrumento[instKey].plazasComprometidas += numPlazasComprometidas;
+      porInstrumento[instKey].impagos += numImpagos;
     });
 
     const alumnosMantenimiento = frozenStudents.size;
@@ -531,15 +624,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     frozenStudents.forEach(student => {
       const sedeKey = student.sede || 'Tarragona';
-      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, costesProf: 0 };
+      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 };
       porSede[sedeKey].ingresos += MAINTENANCE_MONTHLY_FEE;
       porSede[sedeKey].mantenimiento += MAINTENANCE_MONTHLY_FEE;
       porSede[sedeKey].alumnosMantenimiento += 1;
     });
 
     if (ingresosMantenimiento > 0) {
-      porProfe['Mantenimiento (sin atribuir)'] = { ingresos: ingresosMantenimiento, costes: 0, horasSemanales: 0 };
-      porInstrumento['Mantenimiento'] = { ingresos: ingresosMantenimiento, costes: 0, numGrupos: 0 };
+      porProfe['Mantenimiento (sin atribuir)'] = { ingresos: ingresosMantenimiento, costes: 0, horasSemanales: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: alumnosMantenimiento, impagos: 0 };
+      porInstrumento['Mantenimiento'] = { ingresos: ingresosMantenimiento, costes: 0, numGrupos: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: alumnosMantenimiento, impagos: 0 };
     }
 
     clasesRentabilidad.sort((a,b) => b.beneficio - a.beneficio);
@@ -553,6 +646,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       totalIngresosClases,
       ingresosMantenimiento,
       alumnosMantenimiento,
+      totalAlumnosActivos,
+      totalAlumnosInicioFuturo,
+      totalPlazasComprometidas,
+      totalImpagos,
       mantenimientoMensualPorAlumno: MAINTENANCE_MONTHLY_FEE,
       semanasPrevision: BI_WEEKS_PER_MONTH,
       costeTotalProfesores,
@@ -563,7 +660,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
-  }, [recurringClassesOnly, settings, students]);
+  }, [recurringClassesOnly, settings, students, todayStr]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -770,16 +867,6 @@ ${body}`,
     return sendNotificationEmail({ to: cleanStudentEmail, subject, body, type: 'confirmacion_alumno' });
   };
 
-
-  const isFixedClassStudent = (studentEntry = {}) => {
-    return !(
-      studentEntry?.isRecovery === true ||
-      studentEntry?.isTemporary === true ||
-      studentEntry?.isPunctual === true ||
-      studentEntry?.type === 'recovery' ||
-      studentEntry?.status === 'recovery'
-    );
-  };
 
   const getAnnouncementTargetOptions = (targetType) => {
     if (targetType === 'sede') return SEDES;
@@ -1815,8 +1902,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       `Generado: ${dateLabel}`,
       '',
       'RESUMEN GLOBAL',
-      `Ingresos por clases activas: ${money(businessIntelligence.totalIngresosClases)}`,
+      `Ingresos por clases activas: ${money(businessIntelligence.totalIngresosClases)} (${businessIntelligence.totalAlumnosActivos || 0} alumno/s que ya generan cuota)`,
       `Ingresos por mantenimiento: ${money(businessIntelligence.ingresosMantenimiento)} (${businessIntelligence.alumnosMantenimiento} alumno/s × ${MAINTENANCE_MONTHLY_FEE} €)`,
+      `Inicios futuros sin ingreso todavía: ${businessIntelligence.totalAlumnosInicioFuturo || 0} alumno/s`,
+      `Plazas fijas comprometidas: ${businessIntelligence.totalPlazasComprometidas || 0}`,
+      `Impagos incluidos como plaza activa/riesgo: ${businessIntelligence.totalImpagos || 0}`,
       `Ingresos totales estimados: ${money(businessIntelligence.totalIngresos)}`,
       `Coste profesores previsto: ${money(businessIntelligence.costeTotalProfesores)}`,
       `Gastos fijos: ${money(businessIntelligence.totalFijos)}`,
@@ -1825,12 +1915,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       '',
       'POR SEDE',
       ...SEDES.flatMap(sede => {
-        const data = businessIntelligence.porSede[sede] || { ingresos: 0, ingresosClases: 0, mantenimiento: 0, costesProf: 0, alumnosMantenimiento: 0 };
+        const data = businessIntelligence.porSede[sede] || { ingresos: 0, ingresosClases: 0, mantenimiento: 0, costesProf: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0 };
         const gastoFijo = Number(settings.gastosFijos?.[sede.toLowerCase()]) || 0;
         return [
           `${sede}:`,
-          `  Ingresos clases: ${money(data.ingresosClases)}`,
+          `  Ingresos clases: ${money(data.ingresosClases)} (${data.alumnosActivos || 0} alumno/s activos)`,
           `  Mantenimiento: ${money(data.mantenimiento)} (${data.alumnosMantenimiento || 0} alumno/s)`,
+          `  Inicio futuro sin ingreso: ${data.alumnosInicioFuturo || 0} alumno/s`,
+          `  Plazas fijas comprometidas: ${data.plazasComprometidas || 0}`,
           `  Coste profesores: ${money(data.costesProf)}`,
           `  Gasto fijo local: ${money(gastoFijo)}`,
           `  Margen local estimado: ${money(data.ingresos - data.costesProf - gastoFijo)}`
@@ -1844,7 +1936,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} · coste ${money(i.costes)} · margen ${money(i.beneficio)} · ${i.numGrupos} grupo/s`),
       '',
       'DETALLE POR CLASE',
-      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · activos ${c.numAlumnos} · congelados ${c.numCongelados} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}`),
+      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · activos con ingreso ${c.numAlumnos} · mantenimiento ${c.numCongelados} · inicio futuro ${c.numInicioFuturo || 0} · plazas comprometidas ${c.numPlazasComprometidas || 0} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}`),
       '',
       'Nota: este informe es una previsión operativa, no sustituye la contabilidad real de Tadosi.'
     ];
@@ -2391,10 +2483,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     SEDES.forEach(sede => {
       const clasesSede = recurringClassesOnly.filter(c => (c.sede || 'Tarragona') === sede && c.isWebVisible === true);
-      const filteredWithSpots = clasesSede.filter(c => {
-        const activeStudents = (c.students || []).filter(s => !s.isPaused).length;
-        return (parseInt(c.capacity, 10) || 4) - activeStudents > 0;
-      });
+      const filteredWithSpots = clasesSede.filter(c => getCommercialFreeSpots(c) > 0);
 
       if (filteredWithSpots.length > 0) {
         foundAny = true;
@@ -2414,8 +2503,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           });
 
           grupos.forEach(c => {
-            const activeCount = (c.students || []).filter(s => !s.isPaused).length;
-            const libres = (parseInt(c.capacity, 10) || 4) - activeCount;
+            const libres = getCommercialFreeSpots(c);
             const tagPlazas = libres === 1 ? " - Última plaza" : "";
             
             t += `• ${getDayName(c.dayOfWeek)} ${formatTimeCompact(c.time)}${tagPlazas}\n`;
@@ -3646,7 +3734,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         return alert(`Este alumno ya tiene una recolocación temporal que se solapa con esas fechas:\n\n${overlapping.sourceClassLine || overlapping.sourceClassId}\n→ ${overlapping.targetClassLine || overlapping.targetClassId}\n${formatDateSpanish(overlapping.from)} - ${formatDateSpanish(overlapping.until)}`);
       }
 
-      const formalTargetCount = (targetClass.students || []).filter(s => !s.isRecovery && !s.isTemporary && !s.isPaused).length;
+      const formalTargetCount = getCommercialCommittedSeatCount(targetClass);
       const targetCapacity = parseInt(targetClass.capacity || 0, 10);
       if (targetCapacity > 0 && formalTargetCount >= targetCapacity) {
         const ok = window.confirm(`⚠️ La clase destino ya está completa formalmente (${formalTargetCount}/${targetCapacity}).\n\nLa recolocación NO ocupará plaza formal, pero sí añadirá una persona real a la sala durante ese periodo.\n\n¿Continuar igualmente?`);
@@ -3735,7 +3823,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
               <select value={targetClassId} onChange={e => setTargetClassId(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
                 <option value="">Selecciona destino...</option>
                 {possibleTargets.map(c => {
-                  const formalCount = (c.students || []).filter(s => !s.isRecovery && !s.isTemporary && !s.isPaused).length;
+                  const formalCount = getCommercialCommittedSeatCount(c);
                   return <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher} · {formalCount}/{c.capacity || '?'}</option>;
                 })}
               </select>
@@ -4186,7 +4274,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     if (!changeClassModal) return null;
     const student = changeClassModal;
     const targetInstrument = selectedInstForChange || (student.instruments && student.instruments[0]);
-    const availableClasses = targetInstrument ? recurringClassesOnly.filter(c => c.subject === targetInstrument && (c.students?.length || 0) < parseInt(c.capacity || 4)) : [];
+    const availableClasses = targetInstrument ? recurringClassesOnly.filter(c => c.subject === targetInstrument && getCommercialFreeSpots(c) > 0) : [];
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
@@ -4204,7 +4292,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
               availableClasses.map(c => (
                 <div key={c.id} onClick={() => executeDirectClassChange(student, c)} className="p-3 rounded-xl border-2 border-zinc-100 hover:border-blue-500 cursor-pointer transition-colors">
                   <div className="flex justify-between font-black text-sm uppercase"><span>{getDayName(c.dayOfWeek)}</span><span>{c.time}h</span></div>
-                  <div className="text-xs text-zinc-500 mt-1 flex justify-between"><span>Prof: {c.teacher}</span> <span className="text-blue-600 font-bold">{parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas libres</span></div>
+                  <div className="text-xs text-zinc-500 mt-1 flex justify-between"><span>Prof: {c.teacher}</span> <span className="text-blue-600 font-bold">{getCommercialFreeSpots(c)} plazas libres fijas</span></div>
                 </div>
               ))
             )}
@@ -4648,7 +4736,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                 <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
                   <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
-                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Clases: {businessIntelligence.totalIngresosClases.toLocaleString('es-ES')}€ · Mantenimiento: {businessIntelligence.ingresosMantenimiento.toLocaleString('es-ES')}€ ({businessIntelligence.alumnosMantenimiento})</p>
+                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Clases: {businessIntelligence.totalIngresosClases.toLocaleString('es-ES')}€ · Mantenimiento: {businessIntelligence.ingresosMantenimiento.toLocaleString('es-ES')}€ ({businessIntelligence.alumnosMantenimiento}) · Inicio futuro sin ingreso: {businessIntelligence.totalAlumnosInicioFuturo || 0}</p>
                 </div>
                 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
@@ -4687,6 +4775,9 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                           <h3 className="font-black text-2xl uppercase text-slate-800 tracking-tight border-b pb-3 flex items-center gap-2"><MapPin className="text-blue-500"/> Sede {sede}</h3>
                           <div className="mt-4 space-y-3 flex-1 text-sm font-bold">
                              <div className="flex justify-between text-slate-600"><span>Ingresos por clases:</span><span className="text-emerald-600">+{dataSede.ingresosClases}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Alumnos con cuota:</span><span>{dataSede.alumnosActivos || 0}</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Inicio futuro:</span><span>{dataSede.alumnosInicioFuturo || 0}</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Plazas comprometidas:</span><span>{dataSede.plazasComprometidas || 0}</span></div>
                              <div className="flex justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
@@ -4810,6 +4901,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
                               <span className={`px-2.5 py-1 rounded text-xs font-black ${c.numAlumnos > 0 ? 'bg-zinc-200 text-black' : 'bg-red-100 text-red-700'}`}>
                                 {c.numAlumnos} pax
                               </span>
+                              {(c.numCongelados > 0 || c.numInicioFuturo > 0 || c.numImpagos > 0) && (
+                                <div className="mt-1 text-[9px] font-bold text-zinc-400 uppercase leading-tight">
+                                  {c.numCongelados > 0 ? `Mant. ${c.numCongelados} ` : ''}{c.numInicioFuturo > 0 ? `Inicio futuro ${c.numInicioFuturo} ` : ''}{c.numImpagos > 0 ? `Impago ${c.numImpagos}` : ''}
+                                </div>
+                              )}
                             </td>
                             <td className="p-4 text-right font-black text-emerald-600">+{c.ingresos}€</td>
                             <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}€</td>

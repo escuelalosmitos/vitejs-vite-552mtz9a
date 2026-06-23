@@ -44,6 +44,7 @@ const TEACHER_TASK_REQUEST_TYPES = [
 const TEACHER_TASK_STATUS_LABELS = {
   pendiente: 'Pendiente',
   en_revision: 'En revisión',
+  en_curso: 'En curso',
   completada: 'Completada',
   resuelta: 'Resuelta',
   rechazada: 'Rechazada',
@@ -53,6 +54,7 @@ const TEACHER_TASK_STATUS_LABELS = {
 const TEACHER_TASK_STATUS_STYLE = {
   pendiente: 'bg-amber-50 text-amber-800 border-amber-200',
   en_revision: 'bg-blue-50 text-blue-700 border-blue-200',
+  en_curso: 'bg-violet-50 text-violet-700 border-violet-200',
   completada: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   resuelta: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   rechazada: 'bg-red-50 text-red-700 border-red-200',
@@ -1151,30 +1153,52 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
   const updateTeacherRequestStatus = async (task, status) => {
     if (!task?.id) return;
 
+    const isAdminAssignment = task.type === 'admin_assignment';
     const statusLabel = getTeacherTaskStatusLabel(status).toUpperCase();
-    let adminResponse = '';
+    let adminResponse = task.adminResponse || '';
+    const now = new Date().toISOString();
 
-    if (['resuelta', 'rechazada'].includes(status)) {
+    if (isAdminAssignment && status === 'cancelada') {
+      const response = window.prompt(`Motivo de cancelación del encargo para ${task.teacherName || 'profesor'} (opcional):`, task.adminResponse || '');
+      if (response === null) return;
+      adminResponse = String(response || '').trim();
+    } else if (!isAdminAssignment && ['resuelta', 'rechazada'].includes(status)) {
       const response = window.prompt(`Respuesta para el profesor al marcar como ${statusLabel} (opcional):`, task.adminResponse || '');
       if (response === null) return;
       adminResponse = String(response || '').trim();
-    } else if (!window.confirm(`¿Marcar esta petición de ${task.teacherName || 'profesor'} como ${statusLabel}?`)) {
+    } else if (!window.confirm(`¿Marcar ${isAdminAssignment ? 'este encargo' : 'esta petición'} de ${task.teacherName || 'profesor'} como ${statusLabel}?`)) {
       return;
     }
 
+    const payload = {
+      status,
+      updatedAt: now
+    };
+
+    if (adminResponse || status === 'cancelada') payload.adminResponse = adminResponse;
+
+    if (isAdminAssignment) {
+      if (status === 'cancelada') {
+        payload.cancelledAt = now;
+        payload.cancelledBy = user?.email || 'admin';
+        payload.cancelReason = adminResponse;
+      }
+    } else {
+      if (status === 'en_revision') {
+        payload.reviewedAt = now;
+        payload.reviewedBy = user?.email || 'admin';
+      }
+      if (['resuelta', 'rechazada'].includes(status)) {
+        payload.resolvedAt = now;
+        payload.resolvedBy = user?.email || 'admin';
+      }
+    }
+
     try {
-      await updateDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id), {
-        status,
-        adminResponse,
-        updatedAt: new Date().toISOString(),
-        reviewedAt: ['en_revision'].includes(status) ? new Date().toISOString() : (task.reviewedAt || ''),
-        resolvedAt: ['resuelta', 'rechazada'].includes(status) ? new Date().toISOString() : (task.resolvedAt || ''),
-        resolvedBy: ['resuelta', 'rechazada'].includes(status) ? (user?.email || 'admin') : (task.resolvedBy || ''),
-        reviewedBy: ['en_revision'].includes(status) ? (user?.email || 'admin') : (task.reviewedBy || '')
-      });
-      alert(`Petición marcada como ${getTeacherTaskStatusLabel(status)}.`);
+      await updateDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id), payload);
+      alert(`${isAdminAssignment ? 'Encargo' : 'Petición'} marcado como ${getTeacherTaskStatusLabel(status)}.`);
     } catch (e) {
-      alert('Error al actualizar la petición del profesor: ' + e.message);
+      alert(`Error al actualizar ${isAdminAssignment ? 'el encargo' : 'la petición'} del profesor: ${e.message}`);
     }
   };
 
@@ -2994,16 +3018,23 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
+  const isOpenTeacherTaskStatus = (status = 'pendiente') => ['pendiente', 'en_revision', 'en_curso'].includes(status || 'pendiente');
+  const isTeacherAdminAssignment = (task = {}) => task.type === 'admin_assignment' || task.direction === 'admin_to_teacher';
   const pendingTeacherRequests = teacherTasks.filter(task =>
-    task.type === 'admin_request' && ['pendiente', 'en_revision'].includes(task.status || 'pendiente')
+    task.type === 'admin_request' && isOpenTeacherTaskStatus(task.status || 'pendiente')
   );
+  const pendingAdminAssignments = teacherTasks.filter(task =>
+    isTeacherAdminAssignment(task) && isOpenTeacherTaskStatus(task.status || 'pendiente')
+  );
+  const pendingTeacherPanelTasks = [...pendingTeacherRequests, ...pendingAdminAssignments]
+    .sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
   const resolvedTeacherRequests = teacherTasks.filter(task =>
-    task.type === 'admin_request' && !['pendiente', 'en_revision'].includes(task.status || 'pendiente')
+    (task.type === 'admin_request' || isTeacherAdminAssignment(task)) && !isOpenTeacherTaskStatus(task.status || 'pendiente')
   );
   const visibleResolvedGestiones = resolvedGestiones.slice(0, resolvedGestionesVisible);
   const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
-  const totalPendingInbox = pendingGestiones.length + pendingTeacherRequests.length;
+  const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length;
 
   const gestionPendingFilters = [
     { id: 'todas', label: 'Todas', matcher: () => true },
@@ -3031,7 +3062,15 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
   const matchesTeacherRequestSearch = (task = {}) => {
     if (!gestionSearchNeedle) return true;
     const haystack = normalizeSearchText([
-      task.teacherName, task.teacherEmail, task.title, task.description, task.relatedClassLine, getTeacherTaskRequestLabel(task.requestType)
+      task.teacherName,
+      task.teacherEmail,
+      task.title,
+      task.description,
+      task.relatedClassLine,
+      task.teacherResponse,
+      task.rejectionReason,
+      task.adminResponse,
+      isTeacherAdminAssignment(task) ? 'encargo coordinación admin profesor' : getTeacherTaskRequestLabel(task.requestType)
     ].filter(Boolean).join(' '));
     return haystack.includes(gestionSearchNeedle);
   };
@@ -3041,11 +3080,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     ? []
     : pendingGestiones.filter(activeGestionPendingFilter.matcher).filter(matchesGestionSearch);
   const filteredTeacherRequests = gestionPendingFilter === 'profesores'
-    ? pendingTeacherRequests.filter(matchesTeacherRequestSearch)
+    ? pendingTeacherPanelTasks.filter(matchesTeacherRequestSearch)
     : [];
   const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
     acc[filter.id] = filter.id === 'profesores'
-      ? pendingTeacherRequests.length
+      ? pendingTeacherPanelTasks.length
       : pendingGestiones.filter(filter.matcher).length;
     return acc;
   }, {});
@@ -3563,8 +3602,22 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
   const ManualTaskModalOverlay = () => {
     if (!manualTaskModal) return null;
 
-    const [form, setForm] = useState({ title: '', details: '', person: '', type: 'tarea_manual' });
+    const teacherOptions = useMemo(() => [...new Set([
+      ...(settings.teachersList || []),
+      ...recurringClassesOnly.map(c => c.teacher).filter(Boolean)
+    ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')), [settings.teachersList, recurringClassesOnly]);
+
+    const [form, setForm] = useState({
+      title: '',
+      details: '',
+      person: '',
+      type: 'tarea_manual',
+      teacherName: teacherOptions[0] || '',
+      priority: 'normal',
+      dueDate: ''
+    });
     const [saving, setSaving] = useState(false);
+    const isTeacherAssignment = form.type === 'encargo_profesor';
 
     const handleClose = () => {
       if (saving) return;
@@ -3580,8 +3633,39 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         return;
       }
 
+      if (isTeacherAssignment && !String(form.teacherName || '').trim()) {
+        alert('Selecciona el profesor destinatario del encargo.');
+        return;
+      }
+
       setSaving(true);
       try {
+        const now = new Date().toISOString();
+
+        if (isTeacherAssignment) {
+          const teacherName = String(form.teacherName || '').trim();
+          const taskId = `admin-assignment-${Date.now()}`;
+          await setDoc(doc(db, 'artifacts', appId, 'teacherTasks', taskId), {
+            type: 'admin_assignment',
+            direction: 'admin_to_teacher',
+            title,
+            description: details,
+            teacherName,
+            teacherEmail: getTeacherEmail(teacherName),
+            priority: form.priority || 'normal',
+            dueDate: form.dueDate || '',
+            status: 'pendiente',
+            createdAt: now,
+            updatedAt: now,
+            createdBy: user?.email || 'admin',
+            createdFrom: 'admin_portal'
+          });
+
+          alert(`✅ Encargo enviado a ${teacherName}. Aparecerá en su TeacherPortal, pestaña Tareas > Encargos.`);
+          setManualTaskModal(false);
+          return;
+        }
+
         const taskId = `manual-${Date.now()}`;
         const taskPayload = {
           type: form.type || 'tarea_manual',
@@ -3592,7 +3676,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           studentEmail: '',
           source: 'manual_admin',
           status: 'pendiente',
-          date: new Date().toISOString()
+          date: now
         };
         await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
 
@@ -3607,51 +3691,92 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative">
-          <button onClick={handleClose} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+          <button onClick={handleClose} disabled={saving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
 
           <div className="flex items-center gap-3 text-slate-900 mb-6">
             <Inbox className="w-8 h-8 text-red-600" />
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight">Nueva Tarea Manual</h2>
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Para encargos verbales, llamadas o notas internas.</p>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Bandeja interna o encargo directo a un profesor.</p>
             </div>
           </div>
 
           <div className="space-y-4 mb-6">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Tipo</label>
-              <select value={form.type} onChange={e => setForm(prev => ({ ...prev, type: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
+              <select
+                value={form.type}
+                onChange={e => setForm(prev => ({
+                  ...prev,
+                  type: e.target.value,
+                  teacherName: e.target.value === 'encargo_profesor' ? (prev.teacherName || teacherOptions[0] || '') : prev.teacherName
+                }))}
+                className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black"
+              >
                 <option value="tarea_manual">Tarea manual</option>
                 <option value="llamada">Llamada pendiente</option>
                 <option value="seguimiento">Seguimiento</option>
                 <option value="incidencia_manual">Incidencia</option>
+                <option value="encargo_profesor">Encargo a profesor</option>
               </select>
             </div>
 
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
-              <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
-            </div>
+            {isTeacherAssignment ? (
+              <>
+                <div className="bg-violet-50 border border-violet-100 text-violet-900 p-4 rounded-2xl text-xs font-bold leading-relaxed">
+                  Este encargo no entra en la bandeja de alumnos. Se enviará a la pestaña <b>Tareas</b> del profesor elegido, donde podrá marcarlo en curso, completarlo o rechazarlo con motivo.
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Profesor destinatario *</label>
+                  <select value={form.teacherName} onChange={e => setForm(prev => ({ ...prev, teacherName: e.target.value }))} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-600">
+                    <option value="">Selecciona profesor...</option>
+                    {teacherOptions.map(teacherName => <option key={teacherName} value={teacherName}>{teacherName} · {getTeacherEmail(teacherName)}</option>)}
+                  </select>
+                  {teacherOptions.length === 0 && <p className="text-[10px] text-red-500 font-bold mt-1">No hay profesores configurados. Añádelos en ajustes o crea antes una clase con profesor.</p>}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Prioridad</label>
+                    <select value={form.priority} onChange={e => setForm(prev => ({ ...prev, priority: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
+                      <option value="normal">Normal</option>
+                      <option value="alta">Alta</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Fecha límite</label>
+                    <input type="date" value={form.dueDate} onChange={e => setForm(prev => ({ ...prev, dueDate: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
+                <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+              </div>
+            )}
 
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Título *</label>
-              <input type="text" value={form.title} onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder="Ej: Cambiar a Hugo de grupo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+              <input type="text" value={form.title} onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder={isTeacherAssignment ? 'Ej: Revisar cables de Sala 2' : 'Ej: Cambiar a Hugo de grupo'} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
             </div>
 
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles <span className="text-zinc-300">(opcional)</span></label>
-              <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder="Opcional. Añade contexto si el título no basta..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
+              <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder={isTeacherAssignment ? 'Explica claramente qué necesitas que haga el profesor...' : 'Opcional. Añade contexto si el título no basta...'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
             </div>
           </div>
 
-          <button onClick={handleCreate} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
-            {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> Añadir a Bandeja</>}
+          <button onClick={handleCreate} disabled={saving || !form.title.trim() || (isTeacherAssignment && !form.teacherName)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> {isTeacherAssignment ? 'Enviar encargo al profesor' : 'Añadir a Bandeja'}</>}
           </button>
         </div>
       </div>
     );
   };
+
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
     const globalStudentInfo = students.find(s => s.id === notesModal.id);
@@ -5208,8 +5333,8 @@ ${startDateWarning}
                 <p className="text-2xl font-black text-amber-900">{blockedByTadosiGestiones.length}</p>
               </div>
               <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 shadow-sm">
-                <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">Peticiones profesores</p>
-                <p className="text-2xl font-black text-blue-900">{pendingTeacherRequests.length}</p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">Tareas profesores</p>
+                <p className="text-2xl font-black text-blue-900">{pendingTeacherPanelTasks.length}</p>
               </div>
             </div>
 
@@ -5226,7 +5351,7 @@ ${startDateWarning}
                     type="text"
                     value={gestionSearchTerm}
                     onChange={e => setGestionSearchTerm(e.target.value)}
-                    placeholder="Buscar por nombre de alumno, email, profesor o texto de la solicitud..."
+                    placeholder="Buscar por nombre de alumno, email, profesor, encargo o texto de la solicitud..."
                     className="w-full pl-11 pr-4 py-3 rounded-2xl outline-none font-bold text-sm text-slate-700"
                   />
                 </div>
@@ -5253,22 +5378,29 @@ ${startDateWarning}
                   filteredTeacherRequests.length === 0 ? (
                     <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                       <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
-                      <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay peticiones de profesores en esta vista</h3>
-                      <p className="text-xs text-zinc-400 font-medium mt-2">Cuando un profesor pida algo desde TeacherPortal aparecerá aquí.</p>
+                      <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay tareas de profesores en esta vista</h3>
+                      <p className="text-xs text-zinc-400 font-medium mt-2">Aquí verás peticiones de profesores a coordinación y encargos enviados desde Admin.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                       {filteredTeacherRequests.map(task => {
                         const status = task.status || 'pendiente';
+                        const isAdminAssignmentTask = isTeacherAdminAssignment(task);
                         return (
-                          <div key={task.id} className={`bg-white rounded-3xl border-2 p-6 shadow-sm ${task.priority === 'alta' ? 'border-amber-300' : 'border-zinc-100'}`}>
+                          <div key={task.id} className={`bg-white rounded-3xl border-2 p-6 shadow-sm ${task.priority === 'alta' && isOpenTeacherTaskStatus(status) ? 'border-amber-300' : isAdminAssignmentTask ? 'border-violet-100' : 'border-zinc-100'}`}>
                             <div className="flex items-start gap-4 mb-4">
-                              <div className="p-3 rounded-2xl bg-blue-50 text-blue-600 shrink-0"><Send className="w-6 h-6" /></div>
+                              <div className={`p-3 rounded-2xl shrink-0 ${isAdminAssignmentTask ? 'bg-violet-50 text-violet-600' : 'bg-blue-50 text-blue-600'}`}>
+                                {isAdminAssignmentTask ? <ClipboardList className="w-6 h-6" /> : <Send className="w-6 h-6" />}
+                              </div>
                               <div className="flex-1">
                                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-tight">{task.title}</h3>
                                 <div className="flex flex-wrap gap-2 mt-2">
                                   <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(status)}`}>{getTeacherTaskStatusLabel(status)}</span>
-                                  <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border-blue-200">{getTeacherTaskRequestLabel(task.requestType)}</span>
+                                  {isAdminAssignmentTask ? (
+                                    <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-violet-50 text-violet-700 border-violet-200">Encargo de coordinación</span>
+                                  ) : (
+                                    <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border-blue-200">{getTeacherTaskRequestLabel(task.requestType)}</span>
+                                  )}
                                   {task.priority === 'alta' && <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-800 border-amber-200">Alta prioridad</span>}
                                 </div>
                               </div>
@@ -5295,12 +5427,30 @@ ${startDateWarning}
                                 <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Detalles</p>
                                 <p className="whitespace-pre-wrap leading-relaxed">{task.description || 'Sin detalles añadidos.'}</p>
                               </div>
+                              {task.teacherResponse && (
+                                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-emerald-900">
+                                  <p className="text-[10px] font-black uppercase tracking-widest mb-1">Respuesta del profesor</p>
+                                  <p className="whitespace-pre-wrap leading-relaxed">{task.teacherResponse}</p>
+                                </div>
+                              )}
+                              {task.rejectionReason && (
+                                <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-red-900">
+                                  <p className="text-[10px] font-black uppercase tracking-widest mb-1">Motivo del rechazo</p>
+                                  <p className="whitespace-pre-wrap leading-relaxed">{task.rejectionReason}</p>
+                                </div>
+                              )}
                             </div>
 
                             <div className="mt-5 pt-4 border-t border-zinc-100 flex flex-col sm:flex-row gap-2">
-                              <button onClick={() => updateTeacherRequestStatus(task, 'en_revision')} disabled={status === 'en_revision'} className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed">En revisión</button>
-                              <button onClick={() => updateTeacherRequestStatus(task, 'resuelta')} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Resolver</button>
-                              <button onClick={() => updateTeacherRequestStatus(task, 'rechazada')} className="flex-1 bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Rechazar</button>
+                              {isAdminAssignmentTask ? (
+                                <button onClick={() => updateTeacherRequestStatus(task, 'cancelada')} className="flex-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Cancelar encargo</button>
+                              ) : (
+                                <>
+                                  <button onClick={() => updateTeacherRequestStatus(task, 'en_revision')} disabled={status === 'en_revision'} className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed">En revisión</button>
+                                  <button onClick={() => updateTeacherRequestStatus(task, 'resuelta')} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Resolver</button>
+                                  <button onClick={() => updateTeacherRequestStatus(task, 'rechazada')} className="flex-1 bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Rechazar</button>
+                                </>
+                              )}
                             </div>
                           </div>
                         );
@@ -5484,7 +5634,7 @@ ${startDateWarning}
           {resolvedTeacherRequests.length > 0 && (
             <div className="mt-12 pt-8 border-t border-zinc-200">
               <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
-                <Send className="w-5 h-5 text-zinc-400"/> Historial de peticiones de profesores
+                <Send className="w-5 h-5 text-zinc-400"/> Historial de tareas de profesores
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 opacity-80 hover:opacity-100 transition-opacity">
                 {resolvedTeacherRequests.slice(0, 12).map(task => (
@@ -5492,12 +5642,14 @@ ${startDateWarning}
                     <div className="flex items-start justify-between gap-3 mb-2">
                       <div>
                         <h4 className="font-black text-slate-800 uppercase tracking-tight">{task.title}</h4>
-                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{task.teacherName || 'Profesor'} · {getTeacherTaskRequestLabel(task.requestType)}</p>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{task.teacherName || 'Profesor'} · {isTeacherAdminAssignment(task) ? 'Encargo de coordinación' : getTeacherTaskRequestLabel(task.requestType)}</p>
                       </div>
                       <span className={`px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(task.status || 'resuelta')}`}>{getTeacherTaskStatusLabel(task.status || 'resuelta')}</span>
                     </div>
                     <p className="text-xs font-medium text-zinc-500 whitespace-pre-wrap line-clamp-3">{task.description || 'Sin detalles.'}</p>
-                    {task.adminResponse && <p className="mt-3 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">Respuesta: {task.adminResponse}</p>}
+                    {task.adminResponse && <p className="mt-3 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">Respuesta admin: {task.adminResponse}</p>}
+                    {task.teacherResponse && <p className="mt-3 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3">Respuesta profesor: {task.teacherResponse}</p>}
+                    {task.rejectionReason && <p className="mt-3 text-xs font-bold text-red-700 bg-red-50 border border-red-100 rounded-xl p-3">Motivo rechazo: {task.rejectionReason}</p>}
                   </div>
                 ))}
               </div>

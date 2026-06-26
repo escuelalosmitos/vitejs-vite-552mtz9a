@@ -1177,7 +1177,9 @@ END:VCALENDAR`;
             </div>
           )}
 
-          <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
+          {!isMaintenanceRequest && (
+            <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
+          )}
 
           {isMaintenanceRequest && (
             <div className="mb-5 space-y-3 border-t border-b border-amber-100 py-4">

@@ -1374,6 +1374,23 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
 
   const getGestionTypeLabel = (type = 'tarea_manual') => String(type || 'tarea_manual').replace(/_/g, ' ');
 
+  const isTotalBajaGestion = (gestion = {}) => {
+    const scope = String(gestion.bajaScope || gestion.scope || gestion.bajaType || '').trim().toLowerCase();
+    return Boolean(
+      gestion.bajaTotal === true ||
+      gestion.isTotalBaja === true ||
+      gestion.totalBaja === true ||
+      scope === 'total' ||
+      scope === 'baja_total' ||
+      scope === 'todas'
+    );
+  };
+
+  const getBajaScopeLabel = (gestion = {}) => {
+    if ((gestion.type || '') !== 'baja') return '';
+    return isTotalBajaGestion(gestion) ? 'Baja total · todas las clases' : 'Baja parcial · plaza concreta';
+  };
+
   const getGestionClassLine = (gestion = {}) => {
     const sourceLine = getGestionSourceClassLine(gestion);
     const targetLine = getGestionTargetClassLine(gestion);
@@ -1406,6 +1423,7 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     const maintenancePeriodForEmail = gestion.type === 'mantenimiento' ? getMaintenancePeriodFromGestion(gestion) : null;
     const maintenancePeriodLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenancePeriodLine(maintenancePeriodForEmail) : '';
     const maintenanceFeeLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenanceFeeLine(maintenancePeriodForEmail) : '';
+    const bajaScopeLine = gestion.type === 'baja' ? getBajaScopeLabel(gestion) : '';
     const solicitud = gestion.date ? new Date(gestion.date).toLocaleString('es-ES') : '';
     const ejecucion = phase === 'ejecutada' ? new Date().toLocaleString('es-ES') : '';
 
@@ -1415,6 +1433,7 @@ FASE: ${phaseLabel}
 ALUMNO: ${gestion.studentName || ''}
 ${aliasLine}EMAIL: ${gestion.studentEmail || studentInfo?.email || ''}
 PROFESOR: ${gestion.requestedTeacher || ''}
+ALCANCE_BAJA: ${bajaScopeLine}
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_DESTINO: ${targetClassLine}
 CLASE: ${classLine}
@@ -1819,8 +1838,10 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         const sourceClass = getGestionSourceClass(gestionData);
         const sourceClassLine = getGestionSourceClassLine(gestionData);
         const hasScopedBaja = Boolean(gestionData.sourceClassId || gestionData.sourceClassLine);
+        const isTotalBaja = isTotalBajaGestion(gestionData);
+        const canExecutePartialBaja = hasScopedBaja && !isTotalBaja;
 
-        if (hasScopedBaja && !sourceClass?.refPath) {
+        if (canExecutePartialBaja && !sourceClass?.refPath) {
           return fail(`⚠️ No se puede ejecutar la baja por plaza.
 
 La solicitud indica una plaza concreta, pero esa clase de origen ya no existe o no tiene ruta válida.
@@ -1830,11 +1851,11 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         }
 
         const fixedClassesBefore = getFixedStudentClasses(studentId);
-        const remainingFixedClasses = hasScopedBaja && sourceClass
+        const remainingFixedClasses = canExecutePartialBaja && sourceClass
           ? fixedClassesBefore.filter(c => c.id !== sourceClass.id)
           : [];
 
-        if (hasScopedBaja && sourceClass && remainingFixedClasses.length > 0) {
+        if (canExecutePartialBaja && sourceClass && remainingFixedClasses.length > 0) {
           const updatedList = (sourceClass.students || []).filter(s => s.id !== studentId);
           await updateDoc(doc(db, sourceClass.refPath), { students: updatedList });
 
@@ -1913,12 +1934,20 @@ Coordinación Los Mitos.`
 
 Te confirmamos que tu solicitud de baja ha sido tramitada correctamente.
 
-${hasScopedBaja && sourceClassLine ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda registrada como baja completa de Escuela Los Mitos.\n` : 'A partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n'}
+${isTotalBaja
+  ? `Has solicitado la baja total, así que hemos dado de baja todas tus clases${sourceClassLine ? ` aunque la plaza de referencia fuera:\n· ${sourceClassLine}` : ''}.\n`
+  : hasScopedBaja && sourceClassLine
+    ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda registrada como baja completa de Escuela Los Mitos.\n`
+    : 'A partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n'}
 Un saludo,
 Coordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, hasScopedBaja && sourceClassLine ? `Baja total ejecutada al ser última plaza fija. Plaza solicitada: ${sourceClassLine}` : 'Ejecutado desde bandeja Admin');
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, isTotalBaja
+          ? `Baja total ejecutada por solicitud explícita del alumno${sourceClassLine ? `. Plaza de referencia: ${sourceClassLine}` : ''}`
+          : hasScopedBaja && sourceClassLine
+            ? `Baja total ejecutada al ser última plaza fija. Plaza solicitada: ${sourceClassLine}`
+            : 'Ejecutado desde bandeja Admin');
         return notify(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
@@ -2925,6 +2954,18 @@ Coordinación Los Mitos.`
       if (gestion.type === 'baja') {
         const sourceClass = classById.get(gestion.sourceClassId);
         const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+        const isTotalBaja = isTotalBajaGestion(gestion);
+
+        if (isTotalBaja) {
+          studentInfo.globalStatus = 'baja';
+          let removedFrom = 0;
+          projectedClasses.forEach(clase => {
+            if (removeStudentFromClass(clase, studentInfo.id, 'BAJA TOTAL PENDIENTE · sale de esta clase al cierre')) removedFrom += 1;
+          });
+          addStudentMovement(studentInfo.id, 'BAJA TOTAL PENDIENTE · todas las clases');
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA total pendiente · sale de ${removedFrom} clase(s)${gestion.sourceClassLine ? ` · plaza de referencia: ${gestion.sourceClassLine}` : ''}${details ? ` · ${details}` : ''}`);
+          return;
+        }
 
         if (hasScopedBaja && !sourceClass) {
           movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA no proyectada: no se encontró la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
@@ -4083,6 +4124,15 @@ Coordinación Los Mitos.`
         if (gestion.type === 'baja') {
           const sourceClass = classById.get(gestion.sourceClassId);
           const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+          const isTotalBaja = isTotalBajaGestion(gestion);
+
+          if (isTotalBaja) {
+            studentStatusById.set(gestion.studentId, 'baja');
+            projectedClasses.forEach(clase => {
+              clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
+            });
+            return;
+          }
 
           if (hasScopedBaja && !sourceClass) {
             return;
@@ -6343,6 +6393,7 @@ ${startDateWarning}
                         const teacherNames = g.studentId ? getStudentTeachers(g.studentId) : [];
                         const sourceClassLine = getGestionSourceClassLine(g);
                         const targetClassLine = getGestionTargetClassLine(g);
+                        const bajaScopeLabel = getBajaScopeLabel(g);
                         const detailsText = g.details || g.title || '';
 
                         return (
@@ -6383,6 +6434,11 @@ ${startDateWarning}
                               {getGestionWorkflowLabel(g)}
                             </div>
                             {g.tadosiDoneAt && <div className="text-[9px] font-bold text-emerald-600 mt-1 uppercase">Tadosi: {new Date(g.tadosiDoneAt).toLocaleDateString('es-ES')}</div>}
+                            {bajaScopeLabel && (
+                              <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isTotalBajaGestion(g) ? 'bg-red-100 text-red-700' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
+                                {bajaScopeLabel}
+                              </div>
+                            )}
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
                             {g.type === 'mantenimiento' && (() => {
                               const period = getMaintenancePeriodFromGestion(g);

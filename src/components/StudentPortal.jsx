@@ -82,6 +82,8 @@ const isFixedClassStudent = (studentEntry = {}) => !(
   studentEntry?.isRecovery === true ||
   studentEntry?.isTemporary === true ||
   studentEntry?.isPunctual === true ||
+  studentEntry?.isTemporaryRelocation === true ||
+  Boolean(studentEntry?.temporaryRelocationId) ||
   studentEntry?.type === 'recovery' ||
   studentEntry?.status === 'recovery'
 );
@@ -211,6 +213,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
   const [selectedSourceClass, setSelectedSourceClass] = useState(null);
+  const [bajaTotalRequested, setBajaTotalRequested] = useState(false);
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [maintenanceMonths, setMaintenanceMonths] = useState(1);
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
@@ -613,6 +616,7 @@ ESTADO: ${status}
 FASE: ${phaseLabel}
 ALUMNO: ${payload.studentName || ''}
 EMAIL: ${payload.studentEmail || ''}
+ALCANCE_BAJA: ${payload.type === 'baja' ? (payload.bajaScope === 'total' ? 'baja total de todas las clases' : 'baja de plaza concreta') : ''}
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_SOLICITADA: ${classLine}
 FECHA_RECUPERACION: ${requestedDate}
@@ -721,7 +725,11 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
     const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
-    const resolvedSourceClass = isSourceClassGestion ? (selectedSourceClass || (fixedSeatClasses.length === 1 ? fixedSeatClasses[0] : null)) : null;
+    const isBajaTotalRequest = gestionModal.type === 'baja' && isMultiSeatStudent && bajaTotalRequested;
+    const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
+    const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
+      ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
+      : null;
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionModal.type)) {
@@ -734,8 +742,12 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       return;
     }
 
-    if (isSourceClassGestion && !resolvedSourceClass) {
+    if (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) {
       showToast('Elige la plaza concreta sobre la que quieres hacer este trámite.', 'error');
+      return;
+    }
+    if (resolvedSourceClass && hasPendingGestionForClass(resolvedSourceClass.id)) {
+      showToast('Ya hay un trámite pendiente sobre esa plaza. Puedes gestionar otra plaza distinta, pero no repetir sobre la misma.', 'error');
       return;
     }
     
@@ -765,7 +777,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         sourceSala: resolvedSourceClass?.sala || '',
         sourceDayOfWeek: resolvedSourceClass?.dayOfWeek ?? null,
         sourceTime: resolvedSourceClass?.time || '',
-        isPartialSeatGestion: Boolean(resolvedSourceClass),
+        bajaScope: gestionModal.type === 'baja' ? (isBajaTotalRequest ? 'total' : 'plaza') : '',
+        bajaTotal: Boolean(isBajaTotalRequest),
+        isTotalBaja: Boolean(isBajaTotalRequest),
+        isPartialSeatGestion: Boolean(resolvedSourceClass && !isBajaTotalRequest),
         type: gestionModal.type,
         title: gestionModal.title,
         details: gestionText,
@@ -799,6 +814,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       setGestionText('');
       setSelectedNewClass(null);
       setSelectedSourceClass(null);
+      setBajaTotalRequested(false);
       setSelectedRecoveryDate('');
       setMaintenanceMonths(1);
       setAcceptLatePenalty(false);
@@ -983,7 +999,40 @@ END:VCALENDAR`;
     g.status === 'pendiente' && 
     ['baja', 'mantenimiento', 'reactivar_plaza', 'cambio_horario', 'ampliar_clases'].includes(g.type)
   );
+
+  const isMultiSeatStudent = fixedSeatClasses.length > 1;
+  const isSeatSpecificGestionType = (type = '') => ['baja', 'cambio_horario'].includes(type);
+  const isTotalBajaGestion = (gestion = {}) => gestion.type === 'baja' && (
+    gestion.bajaScope === 'total' ||
+    gestion.isTotalBaja === true ||
+    gestion.bajaTotal === true ||
+    gestion.totalBaja === true
+  );
+  const getGestionSourceClassId = (gestion = {}) => String(gestion.sourceClassId || gestion.sourceClass || gestion.affectedClassId || '').trim();
+  const isSeatSpecificPendingGestion = (gestion = {}) => (
+    isMultiSeatStudent &&
+    isSeatSpecificGestionType(gestion.type) &&
+    !isTotalBajaGestion(gestion) &&
+    Boolean(getGestionSourceClassId(gestion))
+  );
+  const pendingSeatSpecificGestiones = pendingAdminGestiones.filter(isSeatSpecificPendingGestion);
+  const pendingGlobalAdminGestiones = pendingAdminGestiones.filter(g => !isSeatSpecificPendingGestion(g));
   const hasPendingAdminGestion = pendingAdminGestiones.length > 0;
+  const hasGlobalPendingAdminGestion = pendingGlobalAdminGestiones.length > 0;
+  const pendingSeatGestionClassIds = new Set(pendingSeatSpecificGestiones.map(getGestionSourceClassId));
+  const hasPendingGestionForClass = (classId) => pendingSeatGestionClassIds.has(String(classId || '').trim());
+  const getAvailableFixedSeatClassesForGestion = (type = '') => (
+    isMultiSeatStudent && isSeatSpecificGestionType(type)
+      ? fixedSeatClasses.filter(c => !hasPendingGestionForClass(c.id))
+      : fixedSeatClasses
+  );
+  const hasAvailableSeatForGestion = (type = '') => getAvailableFixedSeatClassesForGestion(type).length > 0;
+  const getSeatGestionLockMessage = (type = 'trámite') => {
+    if (!isMultiSeatStudent) return 'Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.';
+    if (hasGlobalPendingAdminGestion) return 'Ya tienes un trámite que afecta a toda tu cuenta. No puedes solicitar otro hasta que se resuelva.';
+    if (isSeatSpecificGestionType(type) && !hasAvailableSeatForGestion(type)) return 'Ya tienes un trámite pendiente sobre todas tus plazas disponibles para esta gestión.';
+    return '';
+  };
 
   const pendingRecoveryGestiones = myGestiones.filter(g =>
     g.status === 'pendiente' &&
@@ -1003,22 +1052,43 @@ END:VCALENDAR`;
   const isStudentFrozen = Boolean(activeMaintenancePeriod);
   const maintenancePeriodText = activeMaintenancePeriod ? formatMaintenancePeriodLine(activeMaintenancePeriod) : '';
   const frozenRestrictedGestionTypes = ['recuperacion', 'cambio_horario', 'ampliar_clases'];
-  const isAcademicGestionLocked = isStudentFrozen || hasPendingAdminGestion;
+  const isAcademicGestionLocked = isStudentFrozen || hasGlobalPendingAdminGestion;
+  const isChangeHorarioLocked = isStudentFrozen || hasGlobalPendingAdminGestion || !hasAvailableSeatForGestion('cambio_horario');
+  const isBajaLocked = hasGlobalPendingAdminGestion || !hasAvailableSeatForGestion('baja');
+  const isMantenimientoLocked = hasPendingAdminGestion;
 
   const handleAdminGestionClick = (gestionPayload) => {
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionPayload.type)) {
       showToast('Con la plaza en mantenimiento no puedes solicitar cambios, ampliaciones ni recuperaciones hasta que termine el periodo.', 'error');
       return;
     }
-    if (hasPendingAdminGestion) {
-      showToast('Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.', 'error');
+
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type);
+    const availableSourceClasses = getAvailableFixedSeatClassesForGestion(gestionPayload.type);
+    const isGlobalGestion = ['mantenimiento', 'reactivar_plaza'].includes(gestionPayload.type);
+
+    if (isGlobalGestion && hasPendingAdminGestion) {
+      showToast('Ya tienes un trámite administrativo en curso. Como este trámite afecta a toda tu cuenta, espera a que se resuelva.', 'error');
       return;
     }
 
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type);
+    if (!isSourceClassGestion && hasGlobalPendingAdminGestion) {
+      showToast(getSeatGestionLockMessage(gestionPayload.type), 'error');
+      return;
+    }
+
+    if (isSourceClassGestion) {
+      const lockMessage = getSeatGestionLockMessage(gestionPayload.type);
+      if (lockMessage) {
+        showToast(lockMessage, 'error');
+        return;
+      }
+    }
+
     setSelectedNewClass(null);
     setSelectedRecoveryDate('');
-    setSelectedSourceClass(isSourceClassGestion && fixedSeatClasses.length === 1 ? fixedSeatClasses[0] : null);
+    setBajaTotalRequested(false);
+    setSelectedSourceClass(isSourceClassGestion && availableSourceClasses.length === 1 ? availableSourceClasses[0] : null);
 
     if (gestionPayload.type === 'mantenimiento') {
       setMaintenanceMonths(1);
@@ -1143,8 +1213,14 @@ END:VCALENDAR`;
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
     const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
-    const resolvedSourceClass = isSourceClassGestion ? (selectedSourceClass || (fixedSeatClasses.length === 1 ? fixedSeatClasses[0] : null)) : null;
-    const requiresSourceClassChoice = isSourceClassGestion && fixedSeatClasses.length > 1;
+    const isBajaRequest = gestionModal.type === 'baja';
+    const canChooseTotalBaja = isBajaRequest && isMultiSeatStudent;
+    const isBajaTotalRequest = canChooseTotalBaja && bajaTotalRequested;
+    const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
+    const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
+      ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
+      : null;
+    const requiresSourceClassChoice = isSourceClassGestion && !isBajaTotalRequest && sourceClassCandidates.length > 1;
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     const targetInstrument = gestionModal.type === 'ampliar_clases'
@@ -1178,7 +1254,7 @@ END:VCALENDAR`;
 
     const isSendDisabled = isSendingGestion || 
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
-      (isSourceClassGestion && !resolvedSourceClass) ||
+      (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
       isMaintenanceChoiceInvalid;
@@ -1186,7 +1262,7 @@ END:VCALENDAR`;
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedSourceClass(null); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedSourceClass(null); setBajaTotalRequested(false); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight text-black">{gestionModal.title}</h2>
@@ -1223,41 +1299,70 @@ END:VCALENDAR`;
 
           {isSourceClassGestion && (
             <div className="mb-5 space-y-3 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
-                {requiresSourceClassChoice ? '1. Elige la plaza afectada' : 'Plaza afectada'}
-              </p>
+              {canChooseTotalBaja && (
+                <label className="flex items-start gap-3 bg-red-50 border border-red-100 rounded-2xl p-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={bajaTotalRequested}
+                    onChange={e => {
+                      setBajaTotalRequested(e.target.checked);
+                      if (e.target.checked) {
+                        setSelectedSourceClass(null);
+                        setSelectedNewClass(null);
+                        setSelectedRecoveryDate('');
+                      }
+                    }}
+                    className="mt-1 w-4 h-4 accent-red-600 rounded shrink-0"
+                  />
+                  <span className="text-xs font-bold text-red-900 leading-relaxed">
+                    <strong className="font-black uppercase tracking-widest block text-[10px] mb-1">Quiero baja total</strong>
+                    Marca esta opción solo si quieres darte de baja de todas tus clases. Si no la marcas, elegiremos una plaza concreta.
+                  </span>
+                </label>
+              )}
 
-              {fixedSeatClasses.length > 1 ? (
-                <div className="space-y-2">
-                  {fixedSeatClasses.map(c => {
-                    const selected = resolvedSourceClass?.id === c.id;
-                    return (
-                      <button
-                        key={c.id}
-                        type="button"
-                        onClick={() => { setSelectedSourceClass(c); setSelectedNewClass(null); setSelectedRecoveryDate(''); }}
-                        className={`w-full p-3 rounded-2xl border-2 text-left transition-all ${selected ? 'border-black bg-zinc-50 text-slate-900 shadow-sm' : 'border-zinc-100 bg-white hover:border-zinc-300 text-slate-700'}`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-black uppercase tracking-tight">{c.subject || 'Clase'} · {getDayName(c.dayOfWeek)} {c.time || ''}h</p>
-                            <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{c.sede || 'Sede'}{c.sala ? ` · ${c.sala}` : ''}{c.teacher ? ` · Prof. ${c.teacher}` : ''}</p>
-                          </div>
-                          {selected && <CheckCircle className="w-5 h-5 text-black shrink-0" />}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : resolvedSourceClass ? (
+              {!isBajaTotalRequest && (
+                <>
+                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
+                    {requiresSourceClassChoice ? '1. Elige la plaza afectada' : 'Plaza afectada'}
+                  </p>
+
+                  {fixedSeatClasses.length > 1 ? (
+                    <div className="space-y-2">
+                      {fixedSeatClasses.map(c => {
+                        const selected = resolvedSourceClass?.id === c.id;
+                        const locked = hasPendingGestionForClass(c.id);
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            disabled={locked}
+                            onClick={() => { setSelectedSourceClass(c); setSelectedNewClass(null); setSelectedRecoveryDate(''); }}
+                            className={`w-full p-3 rounded-2xl border-2 text-left transition-all ${locked ? 'border-zinc-100 bg-zinc-50 text-zinc-400 cursor-not-allowed opacity-70' : selected ? 'border-black bg-zinc-50 text-slate-900 shadow-sm' : 'border-zinc-100 bg-white hover:border-zinc-300 text-slate-700'}`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-black uppercase tracking-tight">{c.subject || 'Clase'} · {getDayName(c.dayOfWeek)} {c.time || ''}h</p>
+                                <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{c.sede || 'Sede'}{c.sala ? ` · ${c.sala}` : ''}{c.teacher ? ` · Prof. ${c.teacher}` : ''}</p>
+                                {locked && <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mt-1">Trámite pendiente sobre esta plaza</p>}
+                              </div>
+                              {selected && <CheckCircle className="w-5 h-5 text-black shrink-0" />}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : resolvedSourceClass ? (
                 <div className="p-3 rounded-2xl border-2 border-zinc-100 bg-zinc-50 text-slate-800">
                   <p className="text-sm font-black uppercase tracking-tight">{resolvedSourceClass.subject || 'Clase'} · {getDayName(resolvedSourceClass.dayOfWeek)} {resolvedSourceClass.time || ''}h</p>
                   <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{resolvedSourceClass.sede || 'Sede'}{resolvedSourceClass.sala ? ` · ${resolvedSourceClass.sala}` : ''}{resolvedSourceClass.teacher ? ` · Prof. ${resolvedSourceClass.teacher}` : ''}</p>
                 </div>
-              ) : (
-                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100">
-                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">No hay plazas fijas disponibles para este trámite.</p>
-                </div>
+                  ) : (
+                    <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100">
+                      <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">No hay plazas fijas disponibles para este trámite.</p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1267,6 +1372,12 @@ END:VCALENDAR`;
               <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 text-xs font-bold text-amber-900 leading-relaxed">
                 Mantén tu plaza con nosotros y evita perderla. <strong>15€/mes</strong>. Máximo 2 meses.
               </div>
+
+              {isMultiSeatStudent && (
+                <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 text-xs font-bold text-blue-900 leading-relaxed">
+                  Importante: el mantenimiento es por persona, no por plaza. Si tienes varias clases, este estado afectará a todas tus clases durante el periodo elegido.
+                </div>
+              )}
 
               <div className="grid grid-cols-1 gap-2">
                 {maintenanceOptions.map(option => {
@@ -2264,7 +2375,9 @@ END:VCALENDAR`;
               </strong>
               <ul className="list-disc pl-4 space-y-2 mt-2 text-amber-800/90">
                 <li>Todas las gestiones (bajas, cambios de horario, mantenimientos) deben solicitarse antes del <strong>día 20 de cada mes</strong>. Las enviadas del 21 en adelante, tendrán efecto en el mes siguiente.</li>
-                <li><strong>Solo se puede hacer una de estas gestiones al mes</strong>, y el trámite no se puede rectificar una vez solicitado.</li>
+                <li><strong>Como norma general, solo se puede hacer una gestión administrativa al mes</strong>, y el trámite no se puede rectificar una vez solicitado.</li>
+                {isMultiSeatStudent && <li>Si tienes varias plazas, los cambios de horario y bajas se gestionan por plaza: no podrás repetir gestión sobre la misma plaza mientras esté pendiente, pero sí gestionar otra plaza distinta.</li>}
+                <li>El mantenimiento es una excepción: afecta a todas las clases de la persona, aunque tenga más de una plaza.</li>
                 <li>Para cualquier duda, podéis recurrir al botón de <strong>"Dudas u otras gestiones"</strong> al final de esta página.</li>
               </ul>
             </div>
@@ -2280,15 +2393,15 @@ END:VCALENDAR`;
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button 
-                disabled={isAcademicGestionLocked}
+                disabled={isChangeHorarioLocked}
                 onClick={() => handleAdminGestionClick({
                   type: 'cambio_horario', title: 'Cambiar Horario Fijo', icon: RefreshCcw, color: 'text-blue-500',
                   desc: 'Elige qué plaza quieres cambiar y busca una plaza libre en otro grupo del mismo instrumento.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isAcademicGestionLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isChangeHorarioLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isAcademicGestionLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isAcademicGestionLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isChangeHorarioLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isChangeHorarioLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Solicita otro día u hora'}</p>
               </button>
@@ -2308,6 +2421,7 @@ END:VCALENDAR`;
               </button>
 
               <button 
+                disabled={isMantenimientoLocked}
                 onClick={() => handleAdminGestionClick(isStudentFrozen ? {
                   type: 'reactivar_plaza', title: 'Finalizar Mantenimiento', icon: Snowflake, color: 'text-blue-500',
                   desc: 'Solicita terminar antes de tiempo tu periodo de mantenimiento y volver a la operativa normal de tu plaza.',
@@ -2317,22 +2431,23 @@ END:VCALENDAR`;
                   desc: 'Mantén tu plaza con nosotros y evita perderla. 15€/mes. Máximo 2 meses.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
-                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : isStudentFrozen ? 'border-blue-100 hover:border-blue-500' : 'border-zinc-100 hover:border-black'}`}
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isMantenimientoLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : isStudentFrozen ? 'border-blue-100 hover:border-blue-500' : 'border-zinc-100 hover:border-black'}`}
               >
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isMantenimientoLocked ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${isMantenimientoLocked ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Finalizar Mantenimiento' : 'Cuota Mantenimiento'}</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : '15€/mes · máximo 2 meses'}</p>
               </button>
 
               <button 
+                disabled={isBajaLocked}
                 onClick={() => handleAdminGestionClick({
                   type: 'baja', title: 'Dar de Baja mi Plaza', icon: UserMinus, color: 'text-red-500',
-                  desc: 'Solicita la baja de una plaza concreta. Si solo tienes una plaza activa, se tramitará como baja total.',
+                  desc: 'Solicita la baja de una plaza concreta. Si quieres darte de baja de todas tus clases, marca la casilla de baja total dentro del trámite.',
                   placeholder: '¿Podrías decirnos brevemente el motivo? Nos ayuda a mejorar (Opcional)...'
                 })}
-                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}
+                className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isBajaLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}
               >
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : 'text-red-500'}`}/></div>
+                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isBajaLocked ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${isBajaLocked ? 'text-zinc-400' : 'text-red-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Dar de Baja</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Cancela tu suscripción</p>
               </button>

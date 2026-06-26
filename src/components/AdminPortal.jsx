@@ -334,6 +334,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allTickets, setAllTickets] = useState([]);
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
   
   const [settings, setSettings] = useState({ 
@@ -400,7 +401,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 11) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 12) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -459,12 +460,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
+    const unsubMaintenancePeriods = onSnapshot(collection(db, 'artifacts', appId, 'maintenancePeriods'), (snap) => {
+      setMaintenancePeriods(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+      checkLoad();
+    });
+
     const unsubTeacherTasks = onSnapshot(collection(db, 'artifacts', appId, 'teacherTasks'), (snap) => {
       setTeacherTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)));
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubTeacherTasks(); };
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubMaintenancePeriods(); unsubTeacherTasks(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -506,6 +512,51 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     );
   };
 
+  const doDateRangesOverlap = (fromA, untilA, fromB, untilB) => {
+    if (!fromA || !untilA || !fromB || !untilB) return false;
+    return fromA <= untilB && fromB <= untilA;
+  };
+
+  const isMaintenancePeriodActiveForDate = (period = {}, dateStr = todayStr) => {
+    if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(period.status)) return false;
+    return Boolean(period.from && period.until && period.from <= dateStr && period.until >= dateStr);
+  };
+
+  const isMaintenancePeriodOverlappingRange = (period = {}, fromDate = todayStr, untilDate = todayStr) => {
+    if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(period.status)) return false;
+    return doDateRangesOverlap(fromDate, untilDate, period.from, period.until);
+  };
+
+  const getStudentMaintenancePeriods = (studentId) => {
+    if (!studentId) return [];
+    return maintenancePeriods.filter(period => period.studentId === studentId && !['cancelled', 'cancelada', 'finalizada'].includes(period.status));
+  };
+
+  const getActiveStudentMaintenancePeriods = (studentId, dateStr = todayStr) => {
+    return getStudentMaintenancePeriods(studentId).filter(period => isMaintenancePeriodActiveForDate(period, dateStr));
+  };
+
+  const getStudentMaintenancePeriodsInRange = (studentId, fromDate = todayStr, untilDate = todayStr) => {
+    return getStudentMaintenancePeriods(studentId).filter(period => isMaintenancePeriodOverlappingRange(period, fromDate, untilDate));
+  };
+
+  const isStudentInMaintenance = (studentId, dateStr = todayStr) => getActiveStudentMaintenancePeriods(studentId, dateStr).length > 0;
+
+  const isStudentInMaintenanceRange = (studentId, fromDate = todayStr, untilDate = todayStr) => getStudentMaintenancePeriodsInRange(studentId, fromDate, untilDate).length > 0;
+
+  const getActiveStudentMaintenancePeriod = (studentId, dateStr = todayStr) => getActiveStudentMaintenancePeriods(studentId, dateStr)[0] || null;
+
+  const getMaintenancePeriodFromGestion = (gestion = {}) => {
+    const from = String(gestion.maintenanceFrom || gestion.from || gestion.startDate || getNextMonthStartString(todayStr) || '').trim();
+    const until = String(gestion.maintenanceUntil || gestion.until || gestion.endDate || getNextMonthEndString(todayStr) || '').trim();
+    return { from, until };
+  };
+
+  const formatMaintenancePeriodLine = (period = {}) => {
+    if (!period?.from || !period?.until) return 'periodo no indicado';
+    return `del ${formatDateSpanish(period.from)} al ${formatDateSpanish(period.until)}`;
+  };
+
   const getCommercialSeatDataForClass = (clase = {}) => {
     const cap = parseInt(clase.capacity, 10) || 0;
     const studentRows = (clase.students || [])
@@ -514,7 +565,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const studentInfo = students.find(student => student.id === studentEntry.id) || {};
         const crmStatus = studentInfo?.globalStatus || 'activo';
         const isDropped = crmStatus === 'baja';
-        const isMaintenance = !isDropped && (studentEntry.isPaused === true || crmStatus === 'congelado');
+        const isMaintenance = !isDropped && isStudentInMaintenance(studentEntry.id, todayStr);
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
         const isFutureStart = !isDropped && Boolean(startDate && startDate > todayStr);
         const isCommitted = !isDropped;
@@ -585,7 +636,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         numPlazasComprometidas += 1;
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
         const isFutureStart = Boolean(startDate && startDate > todayStr);
-        const isFrozen = studentEntry.isPaused === true || crmStatus === 'congelado';
+        const isFrozen = isStudentInMaintenance(studentEntry.id, todayStr);
 
         // BI mide ingresos reales/previsibles de este momento, no reservas comerciales futuras.
         // Un alumno con inicio futuro ocupa plaza, pero todavía no suma cuota mensual.
@@ -708,7 +759,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
-  }, [recurringClassesOnly, settings, students, todayStr]);
+  }, [recurringClassesOnly, settings, students, maintenancePeriods, todayStr]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -798,8 +849,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const getStudentOperationalStatus = (student) => {
     const administrativeStatus = student?.globalStatus || 'activo';
     if (administrativeStatus === 'baja') return 'baja';
-    if (administrativeStatus === 'congelado') return 'congelado';
     if (administrativeStatus === 'impago') return 'impago';
+    if (isStudentInMaintenance(student?.id, todayStr)) return 'mantenimiento';
 
     const assignedClasses = getStudentAssignedClasses(student?.id);
     if (administrativeStatus === 'activo' && assignedClasses.length === 0) return 'sin_plaza';
@@ -823,10 +874,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return Boolean(relocation.from && relocation.until && relocation.from <= dateStr && relocation.until >= dateStr);
   };
 
-  const doDateRangesOverlap = (fromA, untilA, fromB, untilB) => {
-    if (!fromA || !untilA || !fromB || !untilB) return false;
-    return fromA <= untilB && fromB <= untilA;
-  };
 
   const getStudentTemporaryRelocations = (studentId) => {
     if (!studentId) return [];
@@ -1527,39 +1574,50 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         return notify(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
-        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'congelado' });
-        const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-        const groupedTeachers = groupClassesByTeacher(classesWithStudent);
-
-        for (let c of classesWithStudent) {
-          if (c.refPath) {
-            const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: true } : s);
-            await updateDoc(doc(db, c.refPath), { students: updatedList });
-          }
+        const { from, until } = getMaintenancePeriodFromGestion(gestionData);
+        if (!from || !until) {
+          return fail('⚠️ No se puede ejecutar el mantenimiento: falta fecha de inicio o fecha de fin.');
+        }
+        if (from > until) {
+          return fail('⚠️ No se puede ejecutar el mantenimiento: la fecha de inicio no puede ser posterior a la fecha de fin.');
         }
 
-        await sendGroupedTeacherSummary({
-          groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `Alumno en mantenimiento: ${displayName}`,
-          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha solicitado mantenimiento/congelación de plaza.\n\nAfecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nSaldrá sombreado en azul en tu lista de asistencia. No debes esperarlo mientras dure este estado.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
+        const overlapping = getStudentMaintenancePeriods(studentId).find(period => doDateRangesOverlap(from, until, period.from, period.until));
+        if (overlapping) {
+          return fail(`⚠️ Este alumno ya tiene un mantenimiento que se solapa con ese periodo:
 
-        await sendStudentNotification({
-          studentEmail,
-          subject: `Confirmación de mantenimiento de plaza - Escuela Los Mitos`,
-          body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de mantenimiento/congelación de plaza ha sido tramitada correctamente.\n\nTu plaza queda en mantenimiento según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
+${formatMaintenancePeriodLine(overlapping)}
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
-        return notify(`❄️ Cuenta congelada. El estado se ha actualizado y los profesores/alumno han sido avisados.`);
-      }
-      else if (type === 'reactivar_plaza') {
-        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
+Cancélalo o ajusta fechas antes de crear otro.`);
+        }
+
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
         const groupedTeachers = groupClassesByTeacher(classesWithStudent);
+        const maintenanceId = `maint-${studentId}-${Date.now()}`;
+        const periodLine = formatMaintenancePeriodLine({ from, until });
+
+        await setDoc(doc(db, 'artifacts', appId, 'maintenancePeriods', maintenanceId), {
+          studentId,
+          studentName: displayName,
+          studentEmail,
+          from,
+          until,
+          status: 'active',
+          fee: MAINTENANCE_MONTHLY_FEE,
+          notes: gestionData.details || '',
+          sourceGestionId: gestionId,
+          affectedClassIds: classesWithStudent.map(c => c.id),
+          affectedClassLines: classesWithStudent.map(c => formatClassLine(c)),
+          createdAt: new Date().toISOString(),
+          createdBy: user?.email || 'admin'
+        });
+
+        if (studentInfo?.globalStatus === 'congelado') {
+          await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
+        }
 
         for (let c of classesWithStudent) {
-          if (c.refPath) {
+          if (c.refPath && (c.students || []).some(s => s.id === studentId && s.isPaused === true)) {
             const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: false } : s);
             await updateDoc(doc(db, c.refPath), { students: updatedList });
           }
@@ -1567,22 +1625,104 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `Alumno reactivado: ${displayName}`,
-          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha reactivado su plaza y vuelve a estar activo en ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa aparecerá de nuevo como alumno activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
+          subjectBuilder: (group) => `Alumno en mantenimiento temporal: ${displayName}`,
+          bodyBuilder: (group) => `Hola ${group.teacherName},
+
+Desde coordinación te informamos que ${displayName} tendrá la plaza en mantenimiento temporal ${periodLine}.
+
+Afecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
+
+Durante ese periodo no debes esperarlo en clase. Fuera de esas fechas volverá a figurar como alumno activo automáticamente en la plataforma.
+
+Un saludo,
+Coordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail,
-          subject: `Confirmación de reactivación de plaza - Escuela Los Mitos`,
-          body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de reactivación de plaza ha sido tramitada correctamente.\n\nA partir de este momento, tu plaza vuelve a estar activa y podrás volver a asistir a clase y gestionar recuperaciones según las condiciones del centro.\n\nUn saludo,\nCoordinación Los Mitos.`
+          subject: `Confirmación de mantenimiento temporal de plaza - Escuela Los Mitos`,
+          body: `Hola ${studentName},
+
+Te confirmamos que tu solicitud de mantenimiento de plaza ha sido tramitada correctamente.
+
+Periodo de mantenimiento: ${periodLine}.
+
+Durante ese periodo conservas tu plaza con la cuota de mantenimiento de ${MAINTENANCE_MONTHLY_FEE}€/mes y tu acceso al portal quedará limitado según la normativa del centro. Al finalizar el periodo, tu plaza volverá a estar activa automáticamente en la plataforma.
+
+Un saludo,
+Coordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
-        return notify(`✅ Plaza reactivada. El alumno vuelve a estar activo y los profesores/alumno han sido avisados.`);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Mantenimiento temporal creado ${periodLine}`);
+        return notify(`❄️ Mantenimiento temporal creado para ${displayName}: ${periodLine}. Profesores y alumno avisados.`);
+      }
+      else if (type === 'reactivar_plaza') {
+        const periodsToCancel = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
+        if (periodsToCancel.length === 0) {
+          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'No había mantenimientos activos o futuros que cancelar');
+          return notify(`ℹ️ ${displayName} no tenía mantenimientos activos o futuros. El trámite queda archivado.`);
+        }
+
+        for (let period of periodsToCancel) {
+          await updateDoc(doc(db, 'artifacts', appId, 'maintenancePeriods', period.id), {
+            status: 'cancelled',
+            cancelledAt: new Date().toISOString(),
+            cancelledBy: user?.email || 'admin',
+            cancelReason: `Reactivación anticipada desde gestión ${gestionId}`
+          });
+        }
+
+        if (studentInfo?.globalStatus === 'congelado') {
+          await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
+        }
+
+        const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        const groupedTeachers = groupClassesByTeacher(classesWithStudent);
+        for (let c of classesWithStudent) {
+          if (c.refPath && (c.students || []).some(s => s.id === studentId && s.isPaused === true)) {
+            const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: false } : s);
+            await updateDoc(doc(db, c.refPath), { students: updatedList });
+          }
+        }
+
+        await sendGroupedTeacherSummary({
+          groupedClasses: groupedTeachers,
+          subjectBuilder: (group) => `Fin anticipado de mantenimiento: ${displayName}`,
+          bodyBuilder: (group) => `Hola ${group.teacherName},
+
+Desde coordinación te informamos que ${displayName} finaliza anticipadamente su mantenimiento temporal y vuelve a estar activo en ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
+
+La plataforma dejará de tratarlo como alumno en mantenimiento.
+
+Un saludo,
+Coordinación Los Mitos.`
+        });
+
+        await sendStudentNotification({
+          studentEmail,
+          subject: `Confirmación de fin de mantenimiento - Escuela Los Mitos`,
+          body: `Hola ${studentName},
+
+Te confirmamos que tu solicitud de finalizar el mantenimiento de plaza ha sido tramitada correctamente.
+
+A partir de este momento tu plaza vuelve a estar activa en la plataforma y podrás volver a asistir a clase y gestionar recuperaciones según las condiciones del centro.
+
+Un saludo,
+Coordinación Los Mitos.`
+        });
+
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Cancelados ${periodsToCancel.length} periodo(s) de mantenimiento`);
+        return notify(`✅ Mantenimiento finalizado anticipadamente. Periodos cancelados: ${periodsToCancel.length}. Profesores y alumno avisados.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
-        if (studentInfo?.globalStatus === 'congelado') {
-          return fail(`⚠️ No se puede ejecutar este trámite.\n\n${displayName} tiene la plaza en mantenimiento/congelada. Primero debe aprobarse la reactivación de plaza.`);
+        const maintenanceCheckDate = type === 'recuperacion' ? (recoveryDate || todayStr) : todayStr;
+        if (isStudentInMaintenance(studentId, maintenanceCheckDate)) {
+          const activeMaintenance = getActiveStudentMaintenancePeriod(studentId, maintenanceCheckDate);
+          return fail(`⚠️ No se puede ejecutar este trámite.\n\n${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(activeMaintenance)}. Primero debe finalizar ese periodo o aprobarse un fin anticipado.`);
         }
 
         if (type === 'recuperacion') {
@@ -1620,7 +1760,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           name: displayName,
           email: studentInfo?.email || '',
           classStartDate: studentInfo?.classStartDate || '',
-          isPaused: studentInfo?.globalStatus === 'congelado' || type === 'mantenimiento',
+          isPaused: false,
           status: 'present',
           isRecovery: type === 'recuperacion',
           recoveryDate: type === 'recuperacion' ? recoveryDate : null
@@ -1779,15 +1919,21 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         });
 
         alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
-      } else if (newStatus === 'congelado') {
-        const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, true);
-        alert(`❄️ Estado de ${studentName} cambiado a CONGELADO. Plaza marcada como mantenimiento en ${clasesActualizadas} clase(s).`);
       } else if (newStatus === 'activo') {
+        const activeOrFutureMaintenance = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
+        for (let period of activeOrFutureMaintenance) {
+          await updateDoc(doc(db, 'artifacts', appId, 'maintenancePeriods', period.id), {
+            status: 'cancelled',
+            cancelledAt: new Date().toISOString(),
+            cancelledBy: user?.email || 'admin',
+            cancelReason: 'Cambio manual de estado a activo desde ficha de alumno'
+          });
+        }
         const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, false);
-        alert(`✅ Estado de ${studentName} cambiado a ACTIVO. Plaza reactivada en ${clasesActualizadas} clase(s).`);
+        alert(`✅ Estado de ${studentName} cambiado a ACTIVO.${activeOrFutureMaintenance.length ? ` Mantenimientos cancelados: ${activeOrFutureMaintenance.length}.` : ''}${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
       } else if (newStatus === 'impago') {
         const clasesActualizadas = studentInfo?.globalStatus === 'congelado' ? await syncStudentPauseStateInClasses(studentId, false) : 0;
-        alert(`⚠️ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${clasesActualizadas ? ` Plaza reactivada en ${clasesActualizadas} clase(s).` : ''}`);
+        alert(`⚠️ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
@@ -1823,7 +1969,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         name: displayName,
         email: student.email || '',
         classStartDate: student.classStartDate || '',
-        isPaused: student.globalStatus === 'congelado',
+        isPaused: false,
         status: 'present',
         isRecovery: false
       };
@@ -2121,9 +2267,12 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
             const crmStatus = studentInfo?.globalStatus || 'activo';
             const startDate = getStudentClassStartDate(studentEntry, studentInfo);
             const futureStartLabel = startDate && startDate > todayStr ? ` · ${formatStudentClassStartLabel(startDate)}` : '';
+            const isMaintenance = isStudentInMaintenance(studentEntry.id, todayStr);
+            const maintenancePeriod = getActiveStudentMaintenancePeriod(studentEntry.id, todayStr);
+            const maintenanceLabel = isMaintenance ? ` · mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : '';
             const statusLabel = crmStatus === 'impago'
               ? ` · incidencia administrativa${futureStartLabel}`
-              : `${studentEntry.isPaused || crmStatus === 'congelado' ? ' · mantenimiento' : ''}${futureStartLabel}`;
+              : `${maintenanceLabel}${futureStartLabel}`;
             return { displayName, email, statusLabel };
           })
           .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'))
@@ -2266,34 +2415,33 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       }
 
       if (gestion.type === 'mantenimiento') {
-        studentInfo.globalStatus = 'congelado';
+        const { from, until } = getMaintenancePeriodFromGestion(gestion);
         let affected = 0;
         projectedClasses.forEach(clase => {
           const hasStudent = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
           if (!hasStudent) return;
           clase.students = (clase.students || []).map(studentEntry =>
-            studentEntry.id === studentInfo.id ? { ...studentEntry, isPaused: true } : studentEntry
+            studentEntry.id === studentInfo.id ? { ...studentEntry, projectedMaintenance: true, projectedMaintenanceFrom: from, projectedMaintenanceUntil: until } : studentEntry
           );
           affected += 1;
         });
-        addStudentMovement(studentInfo.id, 'MANTENIMIENTO PENDIENTE');
-        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · MANTENIMIENTO pendiente · conserva plaza en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
+        addStudentMovement(studentInfo.id, `MANTENIMIENTO PENDIENTE · ${formatMaintenancePeriodLine({ from, until })}`);
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · MANTENIMIENTO pendiente ${formatMaintenancePeriodLine({ from, until })} · conserva plaza en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
       if (gestion.type === 'reactivar_plaza') {
-        studentInfo.globalStatus = 'activo';
         let affected = 0;
         projectedClasses.forEach(clase => {
           const hasStudent = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
           if (!hasStudent) return;
           clase.students = (clase.students || []).map(studentEntry =>
-            studentEntry.id === studentInfo.id ? { ...studentEntry, isPaused: false } : studentEntry
+            studentEntry.id === studentInfo.id ? { ...studentEntry, projectedMaintenance: false } : studentEntry
           );
           affected += 1;
         });
-        addStudentMovement(studentInfo.id, 'REACTIVACIÓN PENDIENTE');
-        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · REACTIVACIÓN pendiente · vuelve activo en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
+        addStudentMovement(studentInfo.id, 'FIN ANTICIPADO MANTENIMIENTO PENDIENTE');
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · FIN ANTICIPADO DE MANTENIMIENTO pendiente · vuelve activo en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
@@ -2337,7 +2485,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           const crmStatus = studentInfo?.globalStatus || 'activo';
           const startDate = getStudentClassStartDate(studentEntry, studentInfo);
           const isFutureStart = Boolean(startDate && startDate > todayStr);
-          const isMaintenance = crmStatus !== 'baja' && (studentEntry.isPaused || crmStatus === 'congelado');
+          const isMaintenance = crmStatus !== 'baja' && (studentEntry.projectedMaintenance === true || isStudentInMaintenanceRange(studentEntry.id, nextMonthStartStr, nextMonthEndStr));
           const isActive = crmStatus !== 'baja' && !isMaintenance && !isFutureStart;
           return {
             id: studentEntry.id,
@@ -2589,7 +2737,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     lines.push('', 'GESTIONES PENDIENTES APLICADAS EN ESTA SIMULACIÓN');
     if (movementsSummary.length === 0) {
-      lines.push('- No hay bajas, mantenimientos, reactivaciones, cambios o ampliaciones pendientes que afecten a clases fijas.');
+      lines.push('- No hay bajas, mantenimientos temporales, fines anticipados, cambios o ampliaciones pendientes que afecten a clases fijas.');
     } else {
       movementsSummary.forEach(item => lines.push(item));
     }
@@ -3172,7 +3320,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           : (studentInfo?.globalStatus || 'activo');
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
         const isFutureStart = Boolean(startDate && startDate > referenceDate);
-        const isMaintenance = projectedStatus !== 'baja' && (studentEntry.isPaused || projectedStatus === 'congelado');
+        const isMaintenance = projectedStatus !== 'baja' && (
+          studentEntry.projectedMaintenance === true ||
+          (!projected && isStudentInMaintenance(studentEntry.id, referenceDate)) ||
+          (projected && isStudentInMaintenanceRange(studentEntry.id, nextMonthStartStr, nextMonthEndStr))
+        );
         const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
         const isActive = projectedStatus !== 'baja' && !isMaintenance && !isFutureStart;
         const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
@@ -3209,7 +3361,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       if (dayCompare !== 0) return dayCompare;
       return String(a.time || '').localeCompare(String(b.time || ''));
     });
-  }, [recurringClassesOnly, students, temporaryRelocations, todayStr]);
+  }, [recurringClassesOnly, students, temporaryRelocations, maintenancePeriods, todayStr]);
 
   const getDangerThresholds = (capacity) => {
     const cap = parseInt(capacity, 10) || 0;
@@ -3279,17 +3431,18 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     const getEmailForProjection = (studentInfo, gestion) => studentInfo?.email || gestion?.studentEmail || gestion?.email || '';
 
-    const addStudentToProjectedClass = (clase, studentInfo, gestion, isPaused = false) => {
+    const addStudentToProjectedClass = (clase, studentInfo, gestion, projectedMaintenance = false) => {
       if (!clase || !studentInfo?.id) return;
       const payload = {
         id: studentInfo.id,
         name: getDisplayNameForProjection(studentInfo, gestion),
         email: getEmailForProjection(studentInfo, gestion),
         classStartDate: studentInfo?.classStartDate || '',
-        isPaused,
+        isPaused: false,
         status: 'present',
         isRecovery: false,
-        projectedGlobalStatus: isPaused ? 'congelado' : 'activo'
+        projectedGlobalStatus: studentInfo?.globalStatus || 'activo',
+        projectedMaintenance
       };
       const exists = (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id);
       clase.students = exists
@@ -3318,11 +3471,10 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         }
 
         if (gestion.type === 'mantenimiento') {
-          studentStatusById.set(gestion.studentId, 'congelado');
           projectedClasses.forEach(clase => {
             clase.students = (clase.students || []).map(studentEntry =>
               studentEntry.id === gestion.studentId
-                ? { ...studentEntry, isPaused: true, projectedGlobalStatus: 'congelado' }
+                ? { ...studentEntry, isPaused: false, projectedMaintenance: true }
                 : studentEntry
             );
           });
@@ -3330,11 +3482,10 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         }
 
         if (gestion.type === 'reactivar_plaza') {
-          studentStatusById.set(gestion.studentId, 'activo');
           projectedClasses.forEach(clase => {
             clase.students = (clase.students || []).map(studentEntry =>
               studentEntry.id === gestion.studentId
-                ? { ...studentEntry, isPaused: false, projectedGlobalStatus: 'activo' }
+                ? { ...studentEntry, isPaused: false, projectedMaintenance: false }
                 : studentEntry
             );
           });
@@ -3357,7 +3508,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       });
 
     return projectedClasses;
-  }, [pendingGestiones, recurringClassesOnly, students]);
+  }, [pendingGestiones, recurringClassesOnly, students, maintenancePeriods, nextMonthStartStr, nextMonthEndStr]);
 
   const architectClasses = archProjectionMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly;
   const isArchitectProjection = archProjectionMode === 'proyeccion';
@@ -3378,14 +3529,14 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       .map(clase => ({ classData: clase, ...clase, ...buildDangerClassAnalysis(clase, false) }))
       .filter(row => row.include);
     return sortDangerRows(rows);
-  }, [recurringClassesOnly, students, todayStr]);
+  }, [recurringClassesOnly, students, maintenancePeriods, todayStr]);
 
   const projectedDangerRows = useMemo(() => {
     const rows = projectedPlanningClasses
       .map(clase => ({ classData: clase, ...clase, ...buildDangerClassAnalysis(clase, true) }))
       .filter(row => row.include);
     return sortDangerRows(rows);
-  }, [projectedPlanningClasses, students, todayStr]);
+  }, [projectedPlanningClasses, students, maintenancePeriods, todayStr]);
 
   const dangerRowsForView = dangerViewMode === 'proyeccion' ? projectedDangerRows : dangerRows;
 
@@ -3503,7 +3654,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         if (c.cancelledDates?.includes(mboxAdminDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxAdminDate] || {};
         const activeStudents = (c.students || []).filter(s => {
-          if (s.isPaused) return false;
+          if (isStudentInMaintenance(s.id, mboxAdminDate)) return false;
           const estadoHoy = exceptionsEseDia[s.id];
           if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
           return true;
@@ -3519,7 +3670,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       });
     }
     return slots;
-  }, [allClasses, mboxAdminDate, mboxAdminSede]);
+  }, [allClasses, maintenancePeriods, mboxAdminDate, mboxAdminSede]);
 
 
   // ==========================================
@@ -4226,7 +4377,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
           </div>
 
           <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-4 mb-6 text-xs font-bold text-slate-600 leading-relaxed">
-            La proyección no modifica Firebase. Solo simula bajas, mantenimientos, reactivaciones, cambios de horario y ampliaciones pendientes para ver cómo quedaría la escuela.
+            La proyección no modifica Firebase. Solo simula bajas, mantenimientos temporales, fines anticipados, cambios de horario y ampliaciones pendientes para ver cómo quedaría la escuela.
           </div>
 
           <div className="grid grid-cols-1 gap-3">
@@ -4627,7 +4778,7 @@ ${startDateWarning}
           name: displayName,
           email: existingStudent ? (existingStudent.email || email.trim().toLowerCase()) : email.trim().toLowerCase(),
           classStartDate: classStartDateForClass,
-          isPaused: existingStudent?.globalStatus === 'congelado' || false,
+          isPaused: false,
           status: 'present',
           isRecovery: false
         };
@@ -4840,7 +4991,7 @@ ${startDateWarning}
           name: displayName,
           email: existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase(),
           classStartDate: classStartDateForClass,
-          isPaused: existingStudent?.globalStatus === 'congelado' || false,
+          isPaused: false,
           status: 'present',
           isRecovery: false
         };
@@ -5525,6 +5676,10 @@ ${startDateWarning}
                             </div>
                             {g.tadosiDoneAt && <div className="text-[9px] font-bold text-emerald-600 mt-1 uppercase">Tadosi: {new Date(g.tadosiDoneAt).toLocaleDateString('es-ES')}</div>}
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
+                            {g.type === 'mantenimiento' && (() => {
+                              const period = getMaintenancePeriodFromGestion(g);
+                              return <div className="text-[10px] font-bold text-blue-700 mt-1 uppercase">Periodo: {formatDateSpanish(period.from)} - {formatDateSpanish(period.until)}</div>;
+                            })()}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                             {g.type === 'recuperacion' && (() => {
                               const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };
@@ -5672,7 +5827,7 @@ ${startDateWarning}
                   {[
                     { id: 'activo', label: 'Activos' },
                     { id: 'sin_plaza', label: 'Sin plaza' },
-                    { id: 'congelado', label: 'Congelados' },
+                    { id: 'mantenimiento', label: 'Mantenimiento' },
                     { id: 'impago', label: 'Impagos' },
                     { id: 'baja', label: 'Bajas' },
                     { id: 'sin_activar', label: 'Sin activar' }
@@ -5772,7 +5927,7 @@ ${startDateWarning}
                                   <AlertCircle className="w-3 h-3" /> Sin plaza
                                 </span>
                               )}
-                              {operationalStatus === 'congelado' && (
+                              {operationalStatus === 'mantenimiento' && (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
                                   <Snowflake className="w-3 h-3" /> Mantenimiento
                                 </span>
@@ -5795,12 +5950,13 @@ ${startDateWarning}
                                   const dayShort = getDayName(c.dayOfWeek).substring(0, 3);
                                   const timeShort = c.time.split(':')[0] + 'h';
                                   const studentInClass = (c.students || []).find(s => s.id === student.id);
-                                  const isPausedInThisClass = studentInClass?.isPaused === true;
+                                  const isMaintenanceNow = isStudentInMaintenance(student.id, todayStr);
+                                  const maintenancePeriod = getActiveStudentMaintenancePeriod(student.id, todayStr);
                                   const classStartDate = getStudentClassStartDate(studentInClass, student);
                                   const startsLater = classStartDate && classStartDate > todayStr;
                                   return (
-                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isPausedInThisClass ? 'bg-blue-50 border-blue-100 text-blue-600' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
-                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isPausedInThisClass ? ' · Reservada' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
+                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}${isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
+                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isMaintenanceNow ? ' · Mantenimiento' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
                                     </span>
                                   );
                                 })}
@@ -5850,18 +6006,18 @@ ${startDateWarning}
                           </td>
                           <td className="p-4 text-right">
                             <select 
-                              value={student.globalStatus || 'activo'}
+                              value={operationalStatus === 'mantenimiento' ? 'mantenimiento' : (student.globalStatus || 'activo')}
                               onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
                               className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[120px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
                                 operationalStatus === 'sin_plaza' ? 'bg-orange-50 border-orange-200 text-orange-700' :
-                                student.globalStatus === 'congelado' ? 'bg-amber-50 border-amber-200 text-amber-700' : 
+                                operationalStatus === 'mantenimiento' ? 'bg-blue-50 border-blue-200 text-blue-700' : 
                                 student.globalStatus === 'impago' ? 'bg-orange-50 border-orange-200 text-orange-700' :
                                 student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
                                 'bg-emerald-50 border-emerald-200 text-emerald-700'
                               }`}
                             >
                               <option value="activo">Activo</option>
-                              <option value="congelado">Congelado</option>
+                              <option value="mantenimiento" disabled>Mantenimiento temporal</option>
                               <option value="impago">Impago</option>
                               <option value="baja">Dar de Baja</option>
                             </select>
@@ -5978,7 +6134,7 @@ ${startDateWarning}
                     <div className="bg-black text-white p-4 rounded-2xl border border-zinc-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
                         <p className="text-sm font-black uppercase tracking-widest">Simulación de mes que viene</p>
-                        <p className="text-xs font-bold text-zinc-400 mt-1">Cuadrante actual + bajas, mantenimientos, reactivaciones, cambios y ampliaciones pendientes de la bandeja. No modifica Firebase.</p>
+                        <p className="text-xs font-bold text-zinc-400 mt-1">Cuadrante actual + bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes de la bandeja. No modifica Firebase.</p>
                       </div>
                       <span className="bg-white text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest w-max">{pendingGestiones.filter(g => PROJECTABLE_GESTION_TYPES.has(g.type)).length} trámite(s) aplicados</span>
                     </div>
@@ -6317,7 +6473,7 @@ ${startDateWarning}
 
             {dangerViewMode === 'proyeccion' && (
               <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 text-xs font-bold leading-relaxed">
-                Esta vista no modifica Firebase. Cruza la foto actual con bajas, mantenimientos, reactivaciones, cambios y ampliaciones pendientes. Sirve para decidir recolocaciones y cierres antes del día 1.
+                Esta vista no modifica Firebase. Cruza la foto actual con bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes. Sirve para decidir recolocaciones y cierres antes del día 1.
               </div>
             )}
 

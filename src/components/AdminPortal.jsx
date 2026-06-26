@@ -175,6 +175,33 @@ const parseLocalDateString = (dateString) => {
   return new Date(yearRaw, monthRaw - 1, dayRaw);
 };
 
+const addDaysToLocalDateString = (dateString, days = 1) => {
+  const date = parseLocalDateString(dateString);
+  if (!date) return '';
+  date.setDate(date.getDate() + Number(days || 0));
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const normalizeGestionDateString = (value = '') => {
+  const clean = String(value || '').trim();
+  if (!clean) return '';
+
+  const iso = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) {
+    return `${iso[1]}-${String(Number(iso[2])).padStart(2, '0')}-${String(Number(iso[3])).padStart(2, '0')}`;
+  }
+
+  const dmy = clean.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if (dmy) {
+    return `${dmy[3]}-${String(Number(dmy[2])).padStart(2, '0')}-${String(Number(dmy[1])).padStart(2, '0')}`;
+  }
+
+  return '';
+};
+
 const getDateDayIndex = (dateString) => {
   const date = parseLocalDateString(dateString);
   return date ? date.getDay() : null;
@@ -357,6 +384,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [temporaryRelocationModal, setTemporaryRelocationModal] = useState(null);
   const [manualTaskModal, setManualTaskModal] = useState(false);
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
+  const [inboxSection, setInboxSection] = useState('gestiones');
+  const [teacherTaskInboxFilter, setTeacherTaskInboxFilter] = useState('todas');
   const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
   const [gestionSearchTerm, setGestionSearchTerm] = useState('');
   const [resolvedGestionesVisible, setResolvedGestionesVisible] = useState(HISTORIAL_TRAMITES_BLOCK_SIZE);
@@ -3523,8 +3552,61 @@ Coordinación Los Mitos.`
     }
   };
 
+  const isAbsenceGestion = (gestion = {}) => {
+    const type = String(gestion.type || '').toLowerCase();
+    return type.includes('ausencia') || type.includes('falta');
+  };
+
+  const getAbsenceGestionDate = (gestion = {}) => {
+    const directDate = [
+      gestion.absenceDate,
+      gestion.classDate,
+      gestion.targetDate,
+      gestion.dateStr,
+      gestion.requestedDate,
+      gestion.originalDate,
+      gestion.sessionDate
+    ].map(normalizeGestionDateString).find(Boolean);
+
+    if (directDate) return directDate;
+
+    const text = `${gestion.details || ''} ${gestion.title || ''}`;
+    const isoMatch = text.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (isoMatch) return normalizeGestionDateString(isoMatch[0]);
+
+    const dmyMatch = text.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+    if (dmyMatch) return normalizeGestionDateString(dmyMatch[0]);
+
+    return '';
+  };
+
+  const shouldAutoArchiveAbsenceGestion = (gestion = {}) => {
+    if (gestion.status !== 'pendiente' || !isAbsenceGestion(gestion)) return false;
+    if (gestion.autoArchivedAt || gestion.archivedAt) return false;
+    const absenceDate = getAbsenceGestionDate(gestion);
+    if (!absenceDate) return false;
+    const archiveFromDate = addDaysToLocalDateString(absenceDate, 1);
+    return Boolean(archiveFromDate && todayStr >= archiveFromDate);
+  };
+
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
+
+  useEffect(() => {
+    const absencesToArchive = gestiones.filter(shouldAutoArchiveAbsenceGestion);
+    if (absencesToArchive.length === 0) return;
+
+    absencesToArchive.forEach(gestion => {
+      const absenceDate = getAbsenceGestionDate(gestion);
+      updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
+        status: 'archivado',
+        autoArchivedAt: new Date().toISOString(),
+        autoArchivedBy: 'admin_portal',
+        autoArchivedReason: `Aviso de ausencia archivado automáticamente un día después de la fecha de la ausencia${absenceDate ? ` (${absenceDate})` : ''}.`
+      }).catch(error => console.warn('No se pudo archivar automáticamente el aviso de ausencia', gestion.id, error));
+    });
+  }, [gestiones, db, appId, todayStr]);
+
   const isOpenTeacherTaskStatus = (status = 'pendiente') => ['pendiente', 'en_revision', 'en_curso'].includes(status || 'pendiente');
   const isTeacherAdminAssignment = (task = {}) => task.type === 'admin_assignment' || task.direction === 'admin_to_teacher';
   const pendingTeacherRequests = teacherTasks.filter(task =>
@@ -3544,14 +3626,19 @@ Coordinación Los Mitos.`
   const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length;
 
   const gestionPendingFilters = [
-    { id: 'todas', label: 'Todas', matcher: () => true },
-    { id: 'profesores', label: 'Profesores', matcher: () => false },
+    { id: 'todas', label: 'Todas gestiones', matcher: () => true },
     { id: 'tadosi_pendiente', label: 'Pend. Tadosi', matcher: (g) => gestionRequiresTadosi(g) && !isGestionTadosiDone(g) },
     { id: 'tadosi_hecho', label: 'Tadosi hecho', matcher: (g) => gestionRequiresTadosi(g) && isGestionTadosiDone(g) },
     { id: 'mantenimiento', label: 'Mantenimiento', matcher: (g) => ['mantenimiento', 'reactivar_plaza'].includes(g.type) },
-    { id: 'ausencias', label: 'Ausencias', matcher: (g) => (g.type || '').includes('ausencia') || (g.type || '').includes('falta') },
+    { id: 'ausencias', label: 'Ausencias', matcher: (g) => isAbsenceGestion(g) },
     { id: 'bajas', label: 'Bajas', matcher: (g) => (g.type || '').includes('baja') },
     { id: 'manuales', label: 'Manuales', matcher: (g) => g.source === 'manual_admin' || (g.type || '').includes('manual') || g.type === 'tarea_manual' || g.type === 'incidencia_manual' },
+  ];
+
+  const teacherTaskInboxFilters = [
+    { id: 'todas', label: 'Todo profesores', matcher: () => true },
+    { id: 'recibidas', label: 'Peticiones recibidas', matcher: (task) => !isTeacherAdminAssignment(task) },
+    { id: 'encargadas', label: 'Encargos enviados', matcher: (task) => isTeacherAdminAssignment(task) }
   ];
 
   const normalizeSearchText = (value = '') => String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
@@ -3583,16 +3670,17 @@ Coordinación Los Mitos.`
   };
 
   const activeGestionPendingFilter = gestionPendingFilters.find(f => f.id === gestionPendingFilter) || gestionPendingFilters[0];
-  const filteredPendingGestiones = gestionPendingFilter === 'profesores'
-    ? []
-    : pendingGestiones.filter(activeGestionPendingFilter.matcher).filter(matchesGestionSearch);
-  const filteredTeacherRequests = gestionPendingFilter === 'profesores'
-    ? pendingTeacherPanelTasks.filter(matchesTeacherRequestSearch)
-    : [];
+  const activeTeacherTaskInboxFilter = teacherTaskInboxFilters.find(f => f.id === teacherTaskInboxFilter) || teacherTaskInboxFilters[0];
+  const filteredPendingGestiones = pendingGestiones.filter(activeGestionPendingFilter.matcher).filter(matchesGestionSearch);
+  const filteredTeacherRequests = pendingTeacherPanelTasks
+    .filter(activeTeacherTaskInboxFilter.matcher)
+    .filter(matchesTeacherRequestSearch);
   const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
-    acc[filter.id] = filter.id === 'profesores'
-      ? pendingTeacherPanelTasks.length
-      : pendingGestiones.filter(filter.matcher).length;
+    acc[filter.id] = pendingGestiones.filter(filter.matcher).length;
+    return acc;
+  }, {});
+  const pendingTeacherFilterCounts = teacherTaskInboxFilters.reduce((acc, filter) => {
+    acc[filter.id] = pendingTeacherPanelTasks.filter(filter.matcher).length;
     return acc;
   }, {});
   
@@ -5866,25 +5954,80 @@ ${startDateWarning}
                   />
                 </div>
 
-                <div className="bg-white rounded-2xl p-2 border border-zinc-200 shadow-sm flex flex-wrap gap-2">
-                  {gestionPendingFilters.map(filter => {
-                    const active = gestionPendingFilter === filter.id;
-                    return (
-                      <button
-                        key={filter.id}
-                        onClick={() => setGestionPendingFilter(filter.id)}
-                        className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 ${active ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
-                      >
-                        {filter.label}
-                        <span className={`px-2 py-0.5 rounded-full text-[9px] ${active ? 'bg-white/20 text-white' : 'bg-white text-zinc-500 border border-zinc-200'}`}>
-                          {pendingGestionFilterCounts[filter.id] || 0}
-                        </span>
-                      </button>
-                    );
-                  })}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setInboxSection('gestiones')}
+                    className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'gestiones' ? 'bg-black text-white border-black shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-black'}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Gestiones administrativas</p>
+                        <p className="text-sm font-black uppercase tracking-tight mt-1">Alumnos, Tadosi, ausencias y tareas manuales</p>
+                      </div>
+                      <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'gestiones' ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-700'}`}>{pendingGestiones.length}</span>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => setInboxSection('profesores')}
+                    className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'profesores' ? 'bg-blue-700 text-white border-blue-700 shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-blue-500'}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Profesores</p>
+                        <p className="text-sm font-black uppercase tracking-tight mt-1">Peticiones recibidas y encargos enviados</p>
+                      </div>
+                      <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'profesores' ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700'}`}>{pendingTeacherPanelTasks.length}</span>
+                    </div>
+                  </button>
                 </div>
 
-                {gestionPendingFilter === 'profesores' ? (
+                {inboxSection === 'gestiones' && (
+                  <div className="bg-white rounded-2xl p-2 border border-zinc-200 shadow-sm flex flex-wrap gap-2">
+                    {gestionPendingFilters.map(filter => {
+                      const active = gestionPendingFilter === filter.id;
+                      return (
+                        <button
+                          key={filter.id}
+                          onClick={() => setGestionPendingFilter(filter.id)}
+                          className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 ${active ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
+                        >
+                          {filter.label}
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] ${active ? 'bg-white/20 text-white' : 'bg-white text-zinc-500 border border-zinc-200'}`}>
+                            {pendingGestionFilterCounts[filter.id] || 0}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {inboxSection === 'profesores' && (
+                  <div className="bg-blue-50 rounded-2xl p-3 border border-blue-100 shadow-sm space-y-3">
+                    <div>
+                      <h3 className="text-sm font-black uppercase tracking-tight text-blue-950 flex items-center gap-2"><Send className="w-4 h-4"/> Panel de profesores</h3>
+                      <p className="text-xs font-bold text-blue-800/70 mt-1">Separado de Tadosi, ausencias, mantenimiento y bajas.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {teacherTaskInboxFilters.map(filter => {
+                        const active = teacherTaskInboxFilter === filter.id;
+                        return (
+                          <button
+                            key={filter.id}
+                            onClick={() => setTeacherTaskInboxFilter(filter.id)}
+                            className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors flex items-center gap-2 ${active ? 'bg-blue-700 text-white shadow-md' : 'bg-white text-blue-700 hover:bg-blue-100 border border-blue-100'}`}
+                          >
+                            {filter.label}
+                            <span className={`px-2 py-0.5 rounded-full text-[9px] ${active ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700 border border-blue-100'}`}>
+                              {pendingTeacherFilterCounts[filter.id] || 0}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {inboxSection === 'profesores' ? (
                   filteredTeacherRequests.length === 0 ? (
                     <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                       <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
@@ -6137,7 +6280,7 @@ ${startDateWarning}
                               <div className="max-w-[200px] md:max-w-md truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</div>
                             </td>
                             <td className="p-4 text-right whitespace-nowrap">
-                              <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                              <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
                                 {g.status}
                               </span>
                             </td>

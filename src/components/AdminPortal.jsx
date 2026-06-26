@@ -1099,6 +1099,36 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
   };
 
+  const getGestionSourceClass = (gestion = {}, classes = allClasses) => {
+    const sourceId = String(gestion.sourceClassId || gestion.originClassId || gestion.previousClassId || '').trim();
+    if (!sourceId) return null;
+    return (classes || []).find(clase => clase.id === sourceId) || null;
+  };
+
+  const getGestionSourceClassLine = (gestion = {}, classes = allClasses) => {
+    if (gestion.sourceClassLine) return gestion.sourceClassLine;
+    const sourceClass = getGestionSourceClass(gestion, classes);
+    return sourceClass ? formatClassLine(sourceClass) : '';
+  };
+
+  const getGestionTargetClassLine = (gestion = {}, classes = allClasses) => {
+    if (gestion.requestedClassLine) return gestion.requestedClassLine;
+    if (gestion.requestedClass) {
+      const targetClass = (classes || []).find(clase => clase.id === gestion.requestedClass);
+      if (targetClass) return formatClassLine(targetClass);
+      return gestion.requestedClass;
+    }
+    return '';
+  };
+
+  const getFixedStudentClasses = (studentId, classes = recurringClassesOnly) => {
+    if (!studentId) return [];
+    return (classes || []).filter(clase =>
+      !isPunctualClass(clase) &&
+      (clase.students || []).some(studentEntry => studentEntry.id === studentId && isFixedClassStudent(studentEntry))
+    );
+  };
+
 
   const isTemporaryRelocationActiveForDate = (relocation = {}, dateStr = todayStr) => {
     if (!relocation || relocation.status === 'cancelled') return false;
@@ -1345,12 +1375,15 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
   const getGestionTypeLabel = (type = 'tarea_manual') => String(type || 'tarea_manual').replace(/_/g, ' ');
 
   const getGestionClassLine = (gestion = {}) => {
-    if (gestion.requestedClassLine) return gestion.requestedClassLine;
-    if (gestion.requestedClass) {
-      const c = allClasses.find(clase => clase.id === gestion.requestedClass);
-      if (c) return formatClassLine(c);
-      return gestion.requestedClass;
+    const sourceLine = getGestionSourceClassLine(gestion);
+    const targetLine = getGestionTargetClassLine(gestion);
+
+    if (sourceLine && targetLine && sourceLine !== targetLine) {
+      return `Plaza origen:\n${sourceLine}\n\nClase destino:\n${targetLine}`;
     }
+    if (targetLine) return targetLine;
+    if (sourceLine) return sourceLine;
+
     if (gestion.studentId) {
       const assigned = getStudentAssignedClasses(gestion.studentId).filter(c => !isPunctualClass(c));
       if (assigned.length > 0) return assigned.map(c => formatClassLine(c)).join('\n');
@@ -1368,6 +1401,8 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     const studentInfo = gestion.studentId ? students.find(s => s.id === gestion.studentId) : null;
     const aliasLine = studentInfo?.alias ? `NOMBRE_REAL_ALUMNO: ${studentInfo.alias}\n` : '';
     const classLine = getGestionClassLine(gestion);
+    const sourceClassLine = getGestionSourceClassLine(gestion);
+    const targetClassLine = getGestionTargetClassLine(gestion);
     const maintenancePeriodForEmail = gestion.type === 'mantenimiento' ? getMaintenancePeriodFromGestion(gestion) : null;
     const maintenancePeriodLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenancePeriodLine(maintenancePeriodForEmail) : '';
     const maintenanceFeeLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenanceFeeLine(maintenancePeriodForEmail) : '';
@@ -1380,6 +1415,8 @@ FASE: ${phaseLabel}
 ALUMNO: ${gestion.studentName || ''}
 ${aliasLine}EMAIL: ${gestion.studentEmail || studentInfo?.email || ''}
 PROFESOR: ${gestion.requestedTeacher || ''}
+PLAZA_ORIGEN: ${sourceClassLine}
+CLASE_DESTINO: ${targetClassLine}
 CLASE: ${classLine}
 MES_OBJETIVO: ${gestion.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
@@ -1779,6 +1816,66 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       }
 
       if (type === 'baja') {
+        const sourceClass = getGestionSourceClass(gestionData);
+        const sourceClassLine = getGestionSourceClassLine(gestionData);
+        const hasScopedBaja = Boolean(gestionData.sourceClassId || gestionData.sourceClassLine);
+
+        if (hasScopedBaja && !sourceClass?.refPath) {
+          return fail(`⚠️ No se puede ejecutar la baja por plaza.
+
+La solicitud indica una plaza concreta, pero esa clase de origen ya no existe o no tiene ruta válida.
+
+Plaza indicada:
+${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
+        }
+
+        const fixedClassesBefore = getFixedStudentClasses(studentId);
+        const remainingFixedClasses = hasScopedBaja && sourceClass
+          ? fixedClassesBefore.filter(c => c.id !== sourceClass.id)
+          : [];
+
+        if (hasScopedBaja && sourceClass && remainingFixedClasses.length > 0) {
+          const updatedList = (sourceClass.students || []).filter(s => s.id !== studentId);
+          await updateDoc(doc(db, sourceClass.refPath), { students: updatedList });
+
+          if (studentInfo?.globalStatus === 'baja') {
+            await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
+          }
+
+          await sendGroupedTeacherSummary({
+            groupedClasses: groupClassesByTeacher([sourceClass]),
+            subjectBuilder: () => `Baja parcial de alumno: ${displayName}`,
+            bodyBuilder: (group) => `Hola ${group.teacherName},
+
+Desde coordinación te informamos que ${displayName} ha dado de baja esta plaza concreta:
+
+· ${formatClassLine(sourceClass)}
+
+El alumno sigue activo en la escuela en otra(s) clase(s), pero ya no debe aparecer en esta lista de asistencia.
+
+Un saludo,
+Coordinación Los Mitos.`
+          });
+
+          await sendStudentNotification({
+            studentEmail,
+            subject: `Confirmación de baja de una plaza - Escuela Los Mitos`,
+            body: `Hola ${studentName},
+
+Te confirmamos que hemos tramitado la baja de esta plaza:
+
+· ${formatClassLine(sourceClass)}
+
+Sigues activo/a en la escuela en el resto de clases que mantienes actualmente.
+
+Un saludo,
+Coordinación Los Mitos.`
+          });
+
+          await finalizeGestionStatus(gestionId, 'completado', gestionData, `Baja parcial ejecutada. Plaza eliminada: ${formatClassLine(sourceClass)}. El alumno conserva ${remainingFixedClasses.length} plaza(s) fija(s).`);
+          return notify(`✅ Baja parcial ejecutada. ${displayName} eliminado solo de ${formatClassLine(sourceClass)}. Mantiene ${remainingFixedClasses.length} plaza(s) activa(s).`);
+        }
+
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
         await resetStudentTrivia(studentId);
         const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
@@ -1797,16 +1894,31 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
           subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
-          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} se ha dado de BAJA y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+          bodyBuilder: (group) => `Hola ${group.teacherName},
+
+Desde coordinación te informamos que ${displayName} se ha dado de BAJA y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
+
+Ya ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.
+
+Un saludo,
+Coordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail,
           subject: `Confirmación de baja - Escuela Los Mitos`,
-          body: `Hola ${studentName},\n\nTe confirmamos que tu solicitud de baja ha sido tramitada correctamente.\n\nA partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n\nUn saludo,\nCoordinación Los Mitos.`
+          body: `Hola ${studentName},
+
+Te confirmamos que tu solicitud de baja ha sido tramitada correctamente.
+
+${hasScopedBaja && sourceClassLine ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda registrada como baja completa de Escuela Los Mitos.\n` : 'A partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n'}
+Un saludo,
+Coordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, hasScopedBaja && sourceClassLine ? `Baja total ejecutada al ser última plaza fija. Plaza solicitada: ${sourceClassLine}` : 'Ejecutado desde bandeja Admin');
         return notify(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
@@ -2010,14 +2122,32 @@ Coordinación Los Mitos.`
 
         let logMessage = `Iniciando proceso para ${displayName}:\n\n`;
         let oldClasses = [];
+        let sourceStudentEntry = null;
 
         if (type === 'cambio_horario') {
-          oldClasses = recurringClassesOnly.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
+          const sourceClass = getGestionSourceClass(gestionData);
+          const sourceClassLine = getGestionSourceClassLine(gestionData);
+          const hasScopedChange = Boolean(gestionData.sourceClassId || gestionData.sourceClassLine);
+
+          if (hasScopedChange && !sourceClass?.refPath) {
+            return fail(`⚠️ No se puede ejecutar el cambio de horario por plaza.\n\nLa solicitud indica una plaza de origen, pero esa clase ya no existe o no tiene ruta válida.\n\nPlaza indicada:\n${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
+          }
+
+          if (hasScopedChange && sourceClass?.id === targetClass.id) {
+            return fail('⚠️ No se puede ejecutar el cambio: la plaza de origen y la clase de destino son la misma.');
+          }
+
+          oldClasses = hasScopedChange && sourceClass
+            ? [sourceClass]
+            : recurringClassesOnly.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
+
           for (let c of oldClasses) {
-            const updatedList = c.students.filter(s => s.id !== studentId);
+            const currentEntry = (c.students || []).find(s => s.id === studentId);
+            if (!sourceStudentEntry && currentEntry) sourceStudentEntry = currentEntry;
+            const updatedList = (c.students || []).filter(s => s.id !== studentId);
             if (c.refPath) {
               await updateDoc(doc(db, c.refPath), { students: updatedList });
-              logMessage += `➖ Borrado de la clase de ${c.subject} (${c.time}h).\n`;
+              logMessage += `➖ Borrado de ${formatClassLine(c)}.\n`;
             }
           }
         }
@@ -2026,7 +2156,7 @@ Coordinación Los Mitos.`
           id: studentId,
           name: displayName,
           email: studentInfo?.email || '',
-          classStartDate: studentInfo?.classStartDate || '',
+          classStartDate: sourceStudentEntry?.classStartDate || studentInfo?.classStartDate || '',
           isPaused: false,
           status: 'present',
           isRecovery: type === 'recuperacion',
@@ -2064,10 +2194,11 @@ Coordinación Los Mitos.`
             });
           }
 
+          const sourceClassLine = getGestionSourceClassLine(gestionData);
           await sendStudentNotification({
             studentEmail,
             subject: `Confirmación de cambio de horario - Escuela Los Mitos`,
-            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y tramitado correctamente.\n\nTu nuevo horario es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
+            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y tramitado correctamente.\n\n${sourceClassLine ? `Horario anterior:\n· ${sourceClassLine}\n\n` : ''}Tu nuevo horario es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
           });
         }
 
@@ -2792,6 +2923,33 @@ Coordinación Los Mitos.`
       }
 
       if (gestion.type === 'baja') {
+        const sourceClass = classById.get(gestion.sourceClassId);
+        const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+
+        if (hasScopedBaja && !sourceClass) {
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA no proyectada: no se encontró la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
+          return;
+        }
+
+        if (hasScopedBaja && sourceClass) {
+          const removed = removeStudentFromClass(sourceClass, studentInfo.id, 'BAJA PARCIAL PENDIENTE · sale de esta plaza al cierre');
+          const remainingFixed = projectedClasses.filter(clase =>
+            clase.id !== sourceClass.id &&
+            !isPunctualClass(clase) &&
+            (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id && isFixedClassStudent(studentEntry))
+          );
+
+          if (remainingFixed.length === 0) {
+            studentInfo.globalStatus = 'baja';
+            addStudentMovement(studentInfo.id, 'BAJA TOTAL PENDIENTE · última plaza fija');
+            movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA total pendiente · última plaza fija: ${describeProjectedClass(sourceClass)}${details ? ` · ${details}` : ''}`);
+          } else {
+            addStudentMovement(studentInfo.id, 'BAJA PARCIAL PENDIENTE');
+            movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA parcial pendiente · sale de ${removed ? describeProjectedClass(sourceClass) : (gestion.sourceClassLine || gestion.sourceClassId)} · mantiene ${remainingFixed.length} plaza(s) fija(s)${details ? ` · ${details}` : ''}`);
+          }
+          return;
+        }
+
         studentInfo.globalStatus = 'baja';
         let removedFrom = 0;
         projectedClasses.forEach(clase => {
@@ -2842,13 +3000,26 @@ Coordinación Los Mitos.`
 
         if (gestion.type === 'cambio_horario') {
           let removedFrom = 0;
-          projectedClasses.forEach(clase => {
-            if (clase.id === targetClass.id) return;
-            if (clase.subject !== targetClass.subject) return;
-            if (removeStudentFromClass(clase, studentInfo.id, `CAMBIO PENDIENTE · sale de esta clase y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
-          });
+          const sourceClass = classById.get(gestion.sourceClassId);
+          const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+
+          if (hasScopedChange && !sourceClass) {
+            movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · CAMBIO no proyectado: no se encontró la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
+            return;
+          }
+
+          if (hasScopedChange && sourceClass) {
+            if (sourceClass.id !== targetClass.id && removeStudentFromClass(sourceClass, studentInfo.id, `CAMBIO PENDIENTE · sale de esta plaza y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
+          } else {
+            projectedClasses.forEach(clase => {
+              if (clase.id === targetClass.id) return;
+              if (clase.subject !== targetClass.subject) return;
+              if (removeStudentFromClass(clase, studentInfo.id, `CAMBIO PENDIENTE · sale de esta clase y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
+            });
+          }
+
           addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'CAMBIO PENDIENTE · entra en esta clase');
-          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · CAMBIO pendiente · sale de ${removedFrom} clase(s) y entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · CAMBIO pendiente · sale de ${hasScopedChange ? (sourceClass ? describeProjectedClass(sourceClass) : (gestion.sourceClassLine || gestion.sourceClassId || 'plaza origen no encontrada')) : `${removedFrom} clase(s)`} y entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
         } else {
           addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'AMPLIACIÓN PENDIENTE · entra en esta clase');
           movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · AMPLIACIÓN pendiente · entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
@@ -3648,7 +3819,7 @@ Coordinación Los Mitos.`
     if (!gestionSearchNeedle) return true;
     const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
     const haystack = normalizeSearchText([
-      g.studentName, g.studentEmail, g.title, g.details, studentInfo?.name, studentInfo?.alias, studentInfo?.email
+      g.studentName, g.studentEmail, g.title, g.details, g.sourceClassLine, g.requestedClassLine, studentInfo?.name, studentInfo?.alias, studentInfo?.email
     ].filter(Boolean).join(' '));
     return haystack.includes(gestionSearchNeedle);
   };
@@ -3910,6 +4081,26 @@ Coordinación Los Mitos.`
         };
 
         if (gestion.type === 'baja') {
+          const sourceClass = classById.get(gestion.sourceClassId);
+          const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+
+          if (hasScopedBaja && !sourceClass) {
+            return;
+          }
+
+          if (hasScopedBaja && sourceClass) {
+            sourceClass.students = (sourceClass.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
+            const remainingFixed = projectedClasses.filter(clase =>
+              clase.id !== sourceClass.id &&
+              !isPunctualClass(clase) &&
+              (clase.students || []).some(studentEntry => studentEntry.id === gestion.studentId && isFixedClassStudent(studentEntry))
+            );
+            if (remainingFixed.length === 0) {
+              studentStatusById.set(gestion.studentId, 'baja');
+            }
+            return;
+          }
+
           studentStatusById.set(gestion.studentId, 'baja');
           projectedClasses.forEach(clase => {
             clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
@@ -3944,11 +4135,24 @@ Coordinación Los Mitos.`
           if (!targetClass) return;
 
           if (gestion.type === 'cambio_horario') {
-            projectedClasses.forEach(clase => {
-              if (clase.id === targetClass.id) return;
-              if (clase.subject !== targetClass.subject) return;
-              clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
-            });
+            const sourceClass = classById.get(gestion.sourceClassId);
+            const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+
+            if (hasScopedChange && !sourceClass) {
+              return;
+            }
+
+            if (hasScopedChange && sourceClass) {
+              if (sourceClass.id !== targetClass.id) {
+                sourceClass.students = (sourceClass.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
+              }
+            } else {
+              projectedClasses.forEach(clase => {
+                if (clase.id === targetClass.id) return;
+                if (clase.subject !== targetClass.subject) return;
+                clase.students = (clase.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
+              });
+            }
           }
           addStudentToProjectedClass(targetClass, studentInfo, gestion, false);
         }
@@ -6137,6 +6341,8 @@ ${startDateWarning}
                         const visibleClasses = studentClasses.slice(0, 2);
                         const hiddenClassCount = Math.max(studentClasses.length - visibleClasses.length, 0);
                         const teacherNames = g.studentId ? getStudentTeachers(g.studentId) : [];
+                        const sourceClassLine = getGestionSourceClassLine(g);
+                        const targetClassLine = getGestionTargetClassLine(g);
                         const detailsText = g.details || g.title || '';
 
                         return (
@@ -6196,6 +6402,18 @@ ${startDateWarning}
                                 </div>
                               );
                             })()}
+                            {sourceClassLine && (
+                              <div className="mt-2 p-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-bold text-indigo-800 leading-snug">
+                                <span className="font-black uppercase tracking-widest block mb-0.5">Plaza origen</span>
+                                {sourceClassLine}
+                              </div>
+                            )}
+                            {targetClassLine && (g.type === 'cambio_horario' || g.type === 'ampliar_clases' || g.type === 'recuperacion') && (
+                              <div className="mt-2 p-2 rounded-xl bg-emerald-50 border border-emerald-100 text-[10px] font-bold text-emerald-800 leading-snug">
+                                <span className="font-black uppercase tracking-widest block mb-0.5">Clase destino</span>
+                                {targetClassLine}
+                              </div>
+                            )}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                             {g.type === 'recuperacion' && (() => {
                               const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };

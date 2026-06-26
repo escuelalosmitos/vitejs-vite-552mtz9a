@@ -96,6 +96,51 @@ const getTemporaryRelocationLabel = (relocation = {}) => {
   return `Clase temporal del ${formatDateSpanish(relocation.from)} al ${formatDateSpanish(relocation.until)}`;
 };
 
+const formatLocalDateString = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const formatMonthYearSpanish = (dateString) => {
+  if (!dateString) return '';
+  const [yearRaw, monthRaw] = String(dateString).split('-').map(Number);
+  if (!Number.isFinite(yearRaw) || !Number.isFinite(monthRaw)) return '';
+  const date = new Date(yearRaw, monthRaw - 1, 1);
+  return date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+};
+
+const getMaintenancePeriodForMonths = (monthCount = 1, isLate = false) => {
+  const today = new Date();
+  const months = Number(monthCount) === 2 ? 2 : 1;
+  const startOffset = isLate ? 2 : 1;
+  const firstDay = new Date(today.getFullYear(), today.getMonth() + startOffset, 1);
+  const lastDay = new Date(today.getFullYear(), today.getMonth() + startOffset + months, 0);
+  const from = formatLocalDateString(firstDay);
+  const until = formatLocalDateString(lastDay);
+  const firstMonthLabel = formatMonthYearSpanish(from);
+  const lastMonthLabel = formatMonthYearSpanish(until);
+
+  return {
+    months,
+    from,
+    until,
+    fee: months * 15,
+    monthLabel: months === 1 ? firstMonthLabel : `${firstMonthLabel} y ${lastMonthLabel}`
+  };
+};
+
+const isMaintenancePeriodActiveForDate = (period = {}, dateStr = '') => {
+  if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(period.status)) return false;
+  return Boolean(period.from && period.until && period.from <= dateStr && period.until >= dateStr);
+};
+
+const formatMaintenancePeriodLine = (period = {}) => {
+  if (!period?.from || !period?.until) return 'periodo no indicado';
+  return `del ${formatDateSpanish(period.from)} al ${formatDateSpanish(period.until)}`;
+};
+
 const getNextClassInfo = (dayOfWeek, timeStr) => {
   const now = new Date();
   const targetDay = parseInt(dayOfWeek);
@@ -150,6 +195,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [myGestiones, setMyGestiones] = useState([]); 
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
 
@@ -165,6 +211,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
+  const [maintenanceMonths, setMaintenanceMonths] = useState(1);
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
   const [isSendingGestion, setIsSendingGestion] = useState(false);
   const [isSendingAbsence, setIsSendingAbsence] = useState(false);
@@ -190,6 +237,25 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
   const portalStartDate = String(profile?.classStartDate || '').trim();
   const isPortalAccessScheduled = Boolean(portalStartDate && portalStartDate > todayStr);
+  const maintenanceOptions = useMemo(() => [
+    getMaintenancePeriodForMonths(1, timeRules.isLate),
+    getMaintenancePeriodForMonths(2, timeRules.isLate)
+  ], [timeRules.isLate]);
+  const selectedMaintenanceOption = useMemo(() => (
+    maintenanceOptions.find(option => option.months === Number(maintenanceMonths)) || maintenanceOptions[0]
+  ), [maintenanceOptions, maintenanceMonths]);
+
+  const activeMaintenancePeriod = useMemo(() => {
+    if (!profile?.id) return null;
+    return maintenancePeriods
+      .filter(period => period.studentId === profile.id && isMaintenancePeriodActiveForDate(period, todayStr))
+      .sort((a, b) => String(a.from || '').localeCompare(String(b.from || '')))[0] || null;
+  }, [maintenancePeriods, profile?.id, todayStr]);
+
+  const isStudentInMaintenanceForDate = (studentId, dateStr = todayStr) => {
+    if (!studentId) return false;
+    return maintenancePeriods.some(period => period.studentId === studentId && isMaintenancePeriodActiveForDate(period, dateStr));
+  };
 
   const effectiveMyClasses = useMemo(() => {
     if (!profile?.id) return myClasses;
@@ -423,6 +489,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
+    const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentId', '==', profile.id));
+    const unsubMaintenancePeriods = onSnapshot(maintenanceQuery, (snapshot) => {
+      setMaintenancePeriods(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
     const ticketsQuery = collectionGroup(db, 'tickets');
     const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
       let validTicketsCount = 0;
@@ -457,6 +528,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubClasses(); 
       unsubGestiones();
       unsubTemporaryRelocations();
+      unsubMaintenancePeriods();
       unsubTickets(); 
     };
   }, [profile?.id, db, appId]);
@@ -526,6 +598,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const phaseLabel = phase === 'ejecutada' ? 'Gestión ejecutada' : 'Nueva gestión';
     const classLine = payload.requestedClassLine || formatClassLineForAdminCopy(selectedClass) || payload.requestedClass || '';
     const requestedDate = payload.recoveryDate ? formatDateSpanish(payload.recoveryDate) : '';
+    const maintenancePeriodLine = payload.maintenanceFrom && payload.maintenanceUntil ? formatMaintenancePeriodLine({ from: payload.maintenanceFrom, until: payload.maintenanceUntil }) : '';
     const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
 
     const body = `TIPO_GESTION: ${typeLabel}
@@ -536,6 +609,9 @@ EMAIL: ${payload.studentEmail || ''}
 CLASE_SOLICITADA: ${classLine}
 FECHA_RECUPERACION: ${requestedDate}
 MES_OBJETIVO: ${payload.targetMonth || ''}
+PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
+DURACION_MANTENIMIENTO: ${payload.maintenanceMonths ? `${payload.maintenanceMonths} mes(es)` : ''}
+CUOTA_MANTENIMIENTO: ${payload.maintenanceFee ? `${payload.maintenanceFee} €` : ''}
 FECHA_SOLICITUD: ${submittedAt}
 ID_GESTION: ${gestionId || ''}
 ORIGEN: Portal del alumno
@@ -576,7 +652,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       const currentExceptions = absenceModal.clase.exceptions?.[absenceModal.dateStr] || {};
       currentExceptions[profile.id] = status; 
       
-      const activeStudents = (absenceModal.clase.students || []).filter(s => !s.isPaused);
+      const activeStudents = (absenceModal.clase.students || []).filter(s => !isStudentInMaintenanceForDate(s.id, absenceModal.dateStr));
       const allAbsentNow = activeStudents.length > 0 && activeStudents.every(s => {
         const st = currentExceptions[s.id];
         return st === 'absent' || st === 'notified' || st === 'notified_no_ticket';
@@ -635,10 +711,16 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
   const sendGestion = async () => {
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
+    const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionModal.type)) {
-      showToast('Con la plaza congelada no puedes gestionar recuperaciones, cambios ni ampliaciones hasta reactivar tu plaza.', 'error');
+      showToast('Con la plaza en mantenimiento no puedes gestionar recuperaciones, cambios ni ampliaciones hasta que termine el periodo.', 'error');
+      return;
+    }
+
+    if (isMaintenanceRequest && ![1, 2].includes(Number(maintenanceMonths))) {
+      showToast('Elige si quieres mantenimiento durante 1 mes o 2 meses.', 'error');
       return;
     }
     
@@ -666,6 +748,12 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
         requestedTeacher: selectedNewClass?.teacher || '',
         recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, 
+        maintenanceMonths: isMaintenanceRequest ? selectedMaintenanceOption.months : null,
+        maintenanceFee: isMaintenanceRequest ? selectedMaintenanceOption.fee : null,
+        maintenanceFrom: isMaintenanceRequest ? selectedMaintenanceOption.from : null,
+        maintenanceUntil: isMaintenanceRequest ? selectedMaintenanceOption.until : null,
+        maintenancePeriodLine: isMaintenanceRequest ? formatMaintenancePeriodLine(selectedMaintenanceOption) : '',
+        maintenanceMonthLabel: isMaintenanceRequest ? selectedMaintenanceOption.monthLabel : '',
         targetMonth: (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
         isLateRequest: !isExemptFromLateRule && timeRules.isLate,
         status: 'pendiente',
@@ -686,6 +774,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       setGestionText('');
       setSelectedNewClass(null);
       setSelectedRecoveryDate('');
+      setMaintenanceMonths(1);
       setAcceptLatePenalty(false);
       setSelectedInst(''); 
       showToast('Solicitud enviada a Administración.');
@@ -885,20 +974,22 @@ END:VCALENDAR`;
   const committedRecoveryCount = pendingRecoveryGestiones.length + scheduledRecoveryGestiones.length;
   const availableRecoveryTickets = profile?.activeTickets || 0;
   const hasReachedRecoveryLimit = committedRecoveryCount >= availableRecoveryTickets;
-  const isStudentFrozen = profile?.globalStatus === 'congelado' || myClasses.some(c =>
-    (c.students || []).some(s => s.id === profile?.id && s.isPaused === true)
-  );
+  const isStudentFrozen = Boolean(activeMaintenancePeriod);
+  const maintenancePeriodText = activeMaintenancePeriod ? formatMaintenancePeriodLine(activeMaintenancePeriod) : '';
   const frozenRestrictedGestionTypes = ['recuperacion', 'cambio_horario', 'ampliar_clases'];
   const isAcademicGestionLocked = isStudentFrozen || hasPendingAdminGestion;
 
   const handleAdminGestionClick = (gestionPayload) => {
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionPayload.type)) {
-      showToast('Con la plaza congelada no puedes solicitar cambios, ampliaciones ni recuperaciones hasta reactivarla.', 'error');
+      showToast('Con la plaza en mantenimiento no puedes solicitar cambios, ampliaciones ni recuperaciones hasta que termine el periodo.', 'error');
       return;
     }
     if (hasPendingAdminGestion) {
       showToast('Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.', 'error');
       return;
+    }
+    if (gestionPayload.type === 'mantenimiento') {
+      setMaintenanceMonths(1);
     }
     setGestionModal(gestionPayload);
   };
@@ -1018,6 +1109,7 @@ END:VCALENDAR`;
     
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
+    const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     const targetInstrument = gestionModal.type === 'ampliar_clases' ? selectedInst : (profile.instruments && profile.instruments[0]);
@@ -1027,7 +1119,7 @@ END:VCALENDAR`;
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
         
-        const activeStudents = (c.students || []).filter(s => !s.isPaused).length;
+        const activeStudents = (c.students || []).filter(s => !isStudentInMaintenanceForDate(s.id, todayStr)).length;
         if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
@@ -1043,15 +1135,18 @@ END:VCALENDAR`;
       });
     }
 
+    const isMaintenanceChoiceInvalid = isMaintenanceRequest && ![1, 2].includes(Number(maintenanceMonths));
+
     const isSendDisabled = isSendingGestion || 
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
       (isClassSearch && !selectedNewClass) || 
-      (isTicketRedemption && !selectedRecoveryDate);
+      (isTicketRedemption && !selectedRecoveryDate) ||
+      isMaintenanceChoiceInvalid;
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
-          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedRecoveryDate(''); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
@@ -1085,6 +1180,49 @@ END:VCALENDAR`;
           )}
 
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
+
+          {isMaintenanceRequest && (
+            <div className="mb-6 space-y-4 border-t border-b border-amber-100 py-4">
+              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
+                Elige la duración del mantenimiento. La solicitud se aplicará por meses administrativos completos, no por días sueltos. Durante ese periodo conservarás tu plaza con cuota reducida y la plataforma limitará cambios, ampliaciones y recuperaciones.
+              </div>
+
+              <div className="space-y-3">
+                {maintenanceOptions.map(option => {
+                  const selected = Number(maintenanceMonths) === option.months;
+                  return (
+                    <button
+                      key={option.months}
+                      type="button"
+                      onClick={() => setMaintenanceMonths(option.months)}
+                      className={`w-full p-4 rounded-2xl border-2 text-left transition-all ${selected ? 'border-amber-500 bg-amber-50 text-amber-950 shadow-sm' : 'border-zinc-100 bg-white hover:border-amber-300 text-slate-700'}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black uppercase tracking-tight">{option.months} {option.months === 1 ? 'mes' : 'meses'} de mantenimiento</p>
+                          <p className="text-xs font-bold text-zinc-500 mt-1 leading-relaxed">
+                            Mantenimiento durante {option.monthLabel}.
+                          </p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-2">
+                            Periodo interno: {formatMaintenancePeriodLine(option)}
+                          </p>
+                        </div>
+                        <div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shrink-0 ${selected ? 'bg-amber-500 text-white' : 'bg-zinc-100 text-zinc-500'}`}>
+                          {option.fee}€
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {selectedMaintenanceOption && (
+                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 text-[11px] font-bold text-zinc-600 leading-relaxed">
+                  Solicitud seleccionada: <strong className="text-black">{selectedMaintenanceOption.months} {selectedMaintenanceOption.months === 1 ? 'mes' : 'meses'}</strong> · Coste total de mantenimiento: <strong className="text-black">{selectedMaintenanceOption.fee}€</strong>.
+                </div>
+              )}
+            </div>
+          )}
           
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
@@ -1171,7 +1309,7 @@ END:VCALENDAR`;
         if (c.cancelledDates?.includes(mboxDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
         const activeStudents = (c.students || []).filter(s => {
-          if (s.isPaused) return false;
+          if (isStudentInMaintenanceForDate(s.id, mboxDate)) return false;
           const estadoHoy = exceptionsEseDia[s.id];
           if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
           return true;
@@ -1712,7 +1850,7 @@ END:VCALENDAR`;
                   );
                 }
 
-                const isCongelado = profile?.globalStatus === 'congelado' || myStudentEntry?.isPaused === true;
+                const isCongelado = isStudentFrozen;
 
                 return (
                   <div key={idx} className={`rounded-3xl p-6 shadow-xl relative overflow-hidden mb-4 transition-all ${isCongelado ? 'bg-zinc-200 text-zinc-500 border-2 border-zinc-300' : 'bg-black text-white'}`}>
@@ -1742,7 +1880,7 @@ END:VCALENDAR`;
                       {isCongelado ? (
                         <div className="w-full bg-blue-100 text-blue-800 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-3 uppercase text-[10px] sm:text-xs tracking-widest border border-blue-200 text-center leading-tight">
                           <Snowflake className="w-5 h-5 shrink-0" />
-                          <span>Tienes la plaza congelada.<br/>Te la estamos guardando este mes.</span>
+                          <span>Tienes la plaza en mantenimiento.<br/>{maintenancePeriodText ? `Periodo ${maintenancePeriodText}.` : 'Tu plaza queda reservada durante este periodo.'}</span>
                         </div>
                       ) : isRecoveryClassForMe ? (
                         <div className="w-full bg-amber-100 text-amber-900 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-amber-200 text-center">
@@ -1776,7 +1914,7 @@ END:VCALENDAR`;
                 disabled={isStudentFrozen || !profile.activeTickets || hasReachedRecoveryLimit} 
                 onClick={() => {
                   if (isStudentFrozen) {
-                    showToast('Tus tickets se conservan, pero no puedes canjearlos mientras tu plaza esté congelada.', 'error');
+                    showToast('Tus tickets se conservan, pero no puedes canjearlos mientras tu plaza esté en mantenimiento.', 'error');
                     return;
                   }
                   if (hasReachedRecoveryLimit) {
@@ -1791,13 +1929,13 @@ END:VCALENDAR`;
                 }}
                 className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 && !hasReachedRecoveryLimit && !isStudentFrozen ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
               >
-                {isStudentFrozen ? 'Tickets conservados · plaza congelada' : profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
+                {isStudentFrozen ? 'Tickets conservados · mantenimiento' : profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
               </button>
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">
                   {isStudentFrozen
-                    ? 'Tus tickets se mantienen guardados, pero no podrás gestionarlos ni recuperar clases hasta que reactives tu plaza.'
+                    ? 'Tus tickets se mantienen guardados, pero no podrás gestionarlos ni recuperar clases hasta que termine tu periodo de mantenimiento.'
                     : profile.futureSummerTickets > 0
                       ? 'Tienes tickets especiales de verano guardados. No se podrán gestionar hasta septiembre y estarán disponibles hasta diciembre.'
                       : 'Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.'}
@@ -2062,7 +2200,7 @@ END:VCALENDAR`;
                 <strong className="font-black uppercase tracking-widest text-[11px] block mb-2 flex items-center gap-2">
                   <Snowflake className="w-4 h-4"/> Plaza en mantenimiento
                 </strong>
-                Mientras tu plaza esté congelada puedes consultar la app, leer avisos, jugar al trivial y conservar tus tickets, pero no puedes cambiar horario, ampliar clases ni canjear recuperaciones.
+                Mientras tu plaza esté en mantenimiento {maintenancePeriodText ? `(${maintenancePeriodText})` : ''} puedes consultar la app, leer avisos, jugar al trivial y conservar tus tickets, pero no puedes cambiar horario, ampliar clases ni canjear recuperaciones. Al terminar el periodo, la plataforma volverá a tratar tu plaza como activa automáticamente.
               </div>
             )}
 
@@ -2078,7 +2216,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isAcademicGestionLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isAcademicGestionLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible con plaza congelada' : 'Solicita otro día u hora'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Solicita otro día u hora'}</p>
               </button>
 
               <button 
@@ -2092,24 +2230,24 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isAcademicGestionLocked ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${isAcademicGestionLocked ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Ampliar Mis Clases</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible con plaza congelada' : 'Apunta un nuevo instrumento'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Apunta un nuevo instrumento'}</p>
               </button>
 
               <button 
                 onClick={() => handleAdminGestionClick(isStudentFrozen ? {
-                  type: 'reactivar_plaza', title: 'Reactivar mi Plaza', icon: Snowflake, color: 'text-blue-500',
-                  desc: 'Solicita salir de mantenimiento para volver a asistir a clase y recuperar la operativa normal de tu plaza.',
-                  placeholder: 'Indica desde cuándo quieres reactivar tu plaza o cualquier observación para Administración...'
+                  type: 'reactivar_plaza', title: 'Finalizar Mantenimiento', icon: Snowflake, color: 'text-blue-500',
+                  desc: 'Solicita terminar antes de tiempo tu periodo de mantenimiento y volver a la operativa normal de tu plaza.',
+                  placeholder: 'Indica desde cuándo quieres finalizar el mantenimiento o cualquier observación para Administración...'
                 } : {
                   type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
-                  desc: 'Congela tu plaza temporalmente por 15€/Mes. Esta gestión solo es posible un total de 2 meses al año. El alumno verá reactivada su cuota habitual tras dos meses de mantenimiento si no comunica nada mas en este periodo.',
+                  desc: 'Solicita mantenimiento de plaza durante 1 mes (15€) o 2 meses (30€), siempre por meses administrativos completos.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : isStudentFrozen ? 'border-blue-100 hover:border-blue-500' : 'border-zinc-100 hover:border-black'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
-                <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Reactivar Plaza' : 'Cuota Mantenimiento'}</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita salir de mantenimiento' : 'Congela tu plaza temporalmente'}</p>
+                <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Finalizar Mantenimiento' : 'Cuota Mantenimiento'}</h3>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : 'Congela tu plaza por periodo'}</p>
               </button>
 
               <button 

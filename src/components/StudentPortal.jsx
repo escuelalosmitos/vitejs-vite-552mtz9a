@@ -1010,7 +1010,6 @@ END:VCALENDAR`;
   );
   const getGestionSourceClassId = (gestion = {}) => String(gestion.sourceClassId || gestion.sourceClass || gestion.affectedClassId || '').trim();
   const isSeatSpecificPendingGestion = (gestion = {}) => (
-    isMultiSeatStudent &&
     isSeatSpecificGestionType(gestion.type) &&
     !isTotalBajaGestion(gestion) &&
     Boolean(getGestionSourceClassId(gestion))
@@ -1028,9 +1027,12 @@ END:VCALENDAR`;
   );
   const hasAvailableSeatForGestion = (type = '') => getAvailableFixedSeatClassesForGestion(type).length > 0;
   const getSeatGestionLockMessage = (type = 'trámite') => {
-    if (!isMultiSeatStudent) return 'Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.';
     if (hasGlobalPendingAdminGestion) return 'Ya tienes un trámite que afecta a toda tu cuenta. No puedes solicitar otro hasta que se resuelva.';
-    if (isSeatSpecificGestionType(type) && !hasAvailableSeatForGestion(type)) return 'Ya tienes un trámite pendiente sobre todas tus plazas disponibles para esta gestión.';
+    if (isSeatSpecificGestionType(type) && !hasAvailableSeatForGestion(type)) {
+      return isMultiSeatStudent
+        ? 'Ya tienes un trámite pendiente sobre todas tus plazas disponibles para esta gestión.'
+        : 'Ya tienes un trámite pendiente sobre esta plaza. No puedes repetir gestión sobre la misma hasta que se resuelva.';
+    }
     return '';
   };
 

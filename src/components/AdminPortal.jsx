@@ -702,6 +702,63 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return `${monthlyFee}€/mes (${totalFee}€ en total para ${months} meses)`;
   };
 
+  const getMaintenanceStartFromAdminMonthInput = (value = '') => {
+    const clean = String(value || '').trim();
+    if (!clean) return nextMonthStartStr;
+
+    const monthMatch = clean.match(/^(\d{4})-(\d{1,2})$/);
+    if (monthMatch) {
+      const year = Number(monthMatch[1]);
+      const month = Number(monthMatch[2]);
+      if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return '';
+      return `${year}-${String(month).padStart(2, '0')}-01`;
+    }
+
+    const dateMatch = clean.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (dateMatch) {
+      return getMonthStartStringFromDate(`${dateMatch[1]}-${String(Number(dateMatch[2])).padStart(2, '0')}-${String(Number(dateMatch[3])).padStart(2, '0')}`);
+    }
+
+    return '';
+  };
+
+  const promptManualMaintenancePeriod = (studentName = 'alumno') => {
+    const defaultStart = nextMonthStartStr;
+    const monthInput = window.prompt(
+      `Crear mantenimiento temporal manual para ${studentName}.\n\nIndica el mes de inicio en formato AAAA-MM.\nDéjalo vacío para el próximo mes administrativo.\n\nEjemplo: 2026-07`,
+      defaultStart.substring(0, 7)
+    );
+
+    if (monthInput === null) return null;
+
+    const start = getMaintenanceStartFromAdminMonthInput(monthInput);
+    if (!start) {
+      alert('Mes no válido. Usa el formato AAAA-MM, por ejemplo 2026-07.');
+      return null;
+    }
+
+    const oneMonth = buildMaintenancePeriodByMonths(start, 1);
+    const twoMonths = buildMaintenancePeriodByMonths(start, 2);
+
+    const answer = window.prompt(
+      `¿Duración del mantenimiento de ${studentName}?\n\n1 = ${formatMaintenancePeriodLine(oneMonth)} · 15€\n2 = ${formatMaintenancePeriodLine(twoMonths)} · 30€\n\nEscribe 1 o 2:`,
+      '1'
+    );
+
+    if (answer === null) return null;
+
+    const months = parseMaintenanceMonths(answer);
+    if (![1, 2].includes(months)) {
+      alert('Duración no válida. Escribe 1 para un mes o 2 para dos meses.');
+      return null;
+    }
+
+    return {
+      ...buildMaintenancePeriodByMonths(start, months),
+      isManualCrm: true
+    };
+  };
+
   const getCommercialSeatDataForClass = (clase = {}) => {
     const cap = parseInt(clase.capacity, 10) || 0;
     const studentRows = (clase.students || [])
@@ -2073,7 +2130,117 @@ Coordinación Los Mitos.`
     }
   };
 
+  const createManualMaintenanceForStudent = async (studentId, studentName) => {
+    if (!studentId) return false;
+
+    const studentInfo = students.find(s => s.id === studentId);
+    const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (studentName || studentInfo?.name || 'Alumno');
+    const studentEmail = normalizeEmail(studentInfo?.email || '');
+
+    if (studentInfo?.globalStatus === 'baja') {
+      alert(`${displayName} está dado de baja. No se puede crear un mantenimiento temporal sobre una baja.`);
+      return false;
+    }
+
+    if (studentInfo?.globalStatus === 'impago') {
+      const okImpago = window.confirm(`${displayName} está marcado como IMPAGO.\n\nPuedes crear igualmente el mantenimiento temporal, pero mientras siga en impago el acceso del alumno seguirá bloqueado por incidencia administrativa.\n\n¿Quieres continuar?`);
+      if (!okImpago) return false;
+    }
+
+    const period = promptManualMaintenancePeriod(displayName);
+    if (!period) return false;
+
+    const overlapping = getStudentMaintenancePeriods(studentId).find(existingPeriod => doDateRangesOverlap(period.from, period.until, existingPeriod.from, existingPeriod.until));
+    if (overlapping) {
+      alert(`⚠️ ${displayName} ya tiene un mantenimiento que se solapa con ese periodo:\n\n${formatMaintenancePeriodLine(overlapping)}\n\nCancélalo o elige otro mes.`);
+      return false;
+    }
+
+    const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+    const periodLine = formatMaintenancePeriodLine(period);
+    const maintenanceFeeLine = formatMaintenanceFeeLine(period);
+
+    const ok = window.confirm(`¿Crear mantenimiento temporal manual para ${displayName}?\n\nPeriodo: ${periodLine}\nCuota: ${maintenanceFeeLine}\nClases afectadas: ${classesWithStudent.length}\n\nNo se cambiará globalStatus a congelado. Se creará un periodo en maintenancePeriods.`);
+    if (!ok) return false;
+
+    try {
+      const groupedTeachers = groupClassesByTeacher(classesWithStudent);
+      const maintenanceId = `maint-manual-${studentId}-${Date.now()}`;
+      const now = new Date().toISOString();
+
+      await setDoc(doc(db, 'artifacts', appId, 'maintenancePeriods', maintenanceId), {
+        studentId,
+        studentName: displayName,
+        studentEmail,
+        from: period.from,
+        until: period.until,
+        months: period.months,
+        status: 'active',
+        fee: MAINTENANCE_MONTHLY_FEE,
+        monthlyFee: MAINTENANCE_MONTHLY_FEE,
+        totalFee: period.totalFee,
+        notes: 'Mantenimiento creado manualmente desde Alumnos CRM.',
+        source: 'manual_crm',
+        sourceGestionId: '',
+        affectedClassIds: classesWithStudent.map(c => c.id),
+        affectedClassLines: classesWithStudent.map(c => formatClassLine(c)),
+        createdAt: now,
+        createdBy: user?.email || 'admin'
+      });
+
+      if (studentInfo?.globalStatus === 'congelado') {
+        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
+      }
+
+      await syncStudentPauseStateInClasses(studentId, false);
+
+      await sendGroupedTeacherSummary({
+        groupedClasses: groupedTeachers,
+        subjectBuilder: () => `Alumno en mantenimiento temporal: ${displayName}`,
+        bodyBuilder: (group) => `Hola ${group.teacherName},
+
+Desde coordinación te informamos que ${displayName} tendrá la plaza en mantenimiento temporal ${periodLine}.
+
+Afecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
+
+Durante ese periodo no debes esperarlo en clase. Fuera de esas fechas volverá a figurar como alumno activo automáticamente en la plataforma.
+
+Un saludo,
+Coordinación Los Mitos.`
+      });
+
+      await sendStudentNotification({
+        studentEmail,
+        subject: `Confirmación de mantenimiento temporal de plaza - Escuela Los Mitos`,
+        body: `Hola ${studentName},
+
+Te confirmamos que desde coordinación hemos registrado el mantenimiento temporal de tu plaza.
+
+Periodo de mantenimiento: ${periodLine}.
+Cuota: ${maintenanceFeeLine}.
+
+Durante ese periodo conservas tu plaza y tu acceso al portal quedará limitado según la normativa del centro. Al finalizar el periodo, tu plaza volverá a estar activa automáticamente en la plataforma.
+
+Un saludo,
+Coordinación Los Mitos.`
+      });
+
+      alert(`❄️ Mantenimiento temporal creado manualmente para ${displayName}: ${periodLine}. Cuota: ${maintenanceFeeLine}. Profesores y alumno avisados.`);
+      return true;
+    } catch (error) {
+      alert('Error al crear el mantenimiento temporal manual: ' + error.message);
+      return false;
+    }
+  };
+
   const handleUpdateStudentStatus = async (studentId, studentName, newStatus) => {
+    if (newStatus === 'mantenimiento') {
+      await createManualMaintenanceForStudent(studentId, studentName);
+      return;
+    }
+
     if (newStatus === 'baja') {
       const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
       if (!confirmBaja) return;
@@ -6223,7 +6390,7 @@ ${startDateWarning}
                               }`}
                             >
                               <option value="activo">Activo</option>
-                              <option value="mantenimiento" disabled>Mantenimiento temporal</option>
+                              <option value="mantenimiento">Mantenimiento temporal</option>
                               <option value="impago">Impago</option>
                               <option value="baja">Dar de Baja</option>
                             </select>

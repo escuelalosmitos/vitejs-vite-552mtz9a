@@ -726,6 +726,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
     const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
     const isBajaTotalRequest = gestionModal.type === 'baja' && isMultiSeatStudent && bajaTotalRequested;
+    const gestionUiCopyForPayload = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
     const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
     const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
       ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
@@ -782,7 +783,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         isTotalBaja: Boolean(isBajaTotalRequest),
         isPartialSeatGestion: Boolean(resolvedSourceClass && !isBajaTotalRequest),
         type: gestionModal.type,
-        title: gestionModal.title,
+        title: gestionUiCopyForPayload.title || gestionModal.title,
         details: gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
         requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
@@ -1059,6 +1060,83 @@ END:VCALENDAR`;
   const isBajaLocked = hasGlobalPendingAdminGestion || !hasAvailableSeatForGestion('baja');
   const isMantenimientoLocked = hasPendingAdminGestion;
 
+  const getGestionUiCopy = (type = '', { isBajaTotalRequest = false } = {}) => {
+    const commonPlaceholder = 'Añade observaciones para Administración, si lo necesitas.';
+    const bajaPlaceholder = 'Puedes indicarnos brevemente el motivo de la baja. Nos ayuda a mejorar.';
+
+    if (type === 'cambio_horario') {
+      return isMultiSeatStudent
+        ? {
+            title: 'Cambiar horario fijo',
+            description: 'Elige primero qué plaza quieres cambiar. Después verás grupos disponibles para ese mismo instrumento. El resto de tus clases no se modifican.',
+            sourceLabel: '¿Qué plaza quieres cambiar?',
+            searchLabel: 'Grupos disponibles para esa plaza',
+            placeholder: commonPlaceholder
+          }
+        : {
+            title: 'Cambiar horario fijo',
+            description: 'Busca otro grupo disponible para tu misma asignatura. Tu plaza actual se mantiene hasta que Administración confirme el cambio.',
+            sourceLabel: 'Tu plaza actual',
+            searchLabel: 'Grupos disponibles',
+            placeholder: commonPlaceholder
+          };
+    }
+
+    if (type === 'mantenimiento') {
+      return isMultiSeatStudent
+        ? {
+            title: 'Pasar a mantenimiento',
+            description: 'El mantenimiento es por persona, no por clase. 15€/mes. Máximo 2 meses.',
+            notice: 'Si tienes varias clases, el mantenimiento afectará a todas durante el periodo elegido.',
+            placeholder: commonPlaceholder
+          }
+        : {
+            title: 'Pasar a mantenimiento',
+            description: 'Mantén tu plaza reservada durante una pausa temporal. 15€/mes. Máximo 2 meses.',
+            notice: 'Durante el mantenimiento no asistirás a clase, pero conservarás tu plaza hasta que termine el periodo.',
+            placeholder: commonPlaceholder
+          };
+    }
+
+    if (type === 'baja') {
+      if (isMultiSeatStudent && isBajaTotalRequest) {
+        return {
+          title: 'Dar de baja',
+          description: 'Has seleccionado baja total de todas tus clases.',
+          notice: 'Esta opción cancelará todas tus plazas y desactivará tu acceso al portal. También perderás los tickets de recuperación pendientes y los puntos acumulados del trivial.',
+          sourceLabel: 'Baja total',
+          placeholder: bajaPlaceholder
+        };
+      }
+
+      return isMultiSeatStudent
+        ? {
+            title: 'Dar de baja',
+            description: 'Elige qué plaza quieres dar de baja. Seguirás activo en las demás clases que mantengas.',
+            notice: 'Si solo das de baja una plaza, conservarás el acceso al portal, tus otras clases, tus tickets de recuperación y tus puntos del trivial.',
+            sourceLabel: '¿Qué plaza quieres dar de baja?',
+            totalBajaCheckboxTitle: 'Quiero darme de baja de todas mis clases',
+            totalBajaCheckboxText: 'Marca esta opción solo si quieres cancelar todas tus plazas.',
+            placeholder: bajaPlaceholder
+          }
+        : {
+            title: 'Dar de baja',
+            description: 'Solicita la baja de tu plaza actual. Al tramitarse, dejarás de asistir a clase y se desactivará tu acceso al portal.',
+            notice: 'La baja implica perder los tickets de recuperación pendientes y los puntos acumulados del trivial.',
+            sourceLabel: 'Tu plaza actual',
+            placeholder: bajaPlaceholder
+          };
+    }
+
+    return {
+      title: '',
+      description: '',
+      sourceLabel: 'Plaza afectada',
+      searchLabel: '',
+      placeholder: commonPlaceholder
+    };
+  };
+
   const handleAdminGestionClick = (gestionPayload) => {
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionPayload.type)) {
       showToast('Con la plaza en mantenimiento no puedes solicitar cambios, ampliaciones ni recuperaciones hasta que termine el periodo.', 'error');
@@ -1218,11 +1296,16 @@ END:VCALENDAR`;
     const isBajaRequest = gestionModal.type === 'baja';
     const canChooseTotalBaja = isBajaRequest && isMultiSeatStudent;
     const isBajaTotalRequest = canChooseTotalBaja && bajaTotalRequested;
+    const gestionUiCopy = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
+    const modalTitle = gestionUiCopy.title || gestionModal.title;
+    const modalDescription = gestionUiCopy.description || gestionModal.desc || '';
+    const modalPlaceholder = gestionUiCopy.placeholder || gestionModal.placeholder || 'Añade observaciones para Administración, si lo necesitas.';
     const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
     const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
       ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
       : null;
     const requiresSourceClassChoice = isSourceClassGestion && !isBajaTotalRequest && sourceClassCandidates.length > 1;
+    const sourceClassLabel = gestionUiCopy.sourceLabel || (requiresSourceClassChoice ? 'Elige la plaza afectada' : 'Plaza afectada');
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     const targetInstrument = gestionModal.type === 'ampliar_clases'
@@ -1267,7 +1350,7 @@ END:VCALENDAR`;
           <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedSourceClass(null); setBajaTotalRequested(false); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
-            <h2 className="text-xl font-black uppercase tracking-tight leading-tight text-black">{gestionModal.title}</h2>
+            <h2 className="text-xl font-black uppercase tracking-tight leading-tight text-black">{modalTitle}</h2>
           </div>
           
           {!isExemptFromLateRule && (
@@ -1296,7 +1379,7 @@ END:VCALENDAR`;
           )}
 
           {!isMaintenanceRequest && (
-            <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
+            <p className="text-sm font-medium text-zinc-500 mb-6">{modalDescription}</p>
           )}
 
           {isSourceClassGestion && (
@@ -1317,16 +1400,22 @@ END:VCALENDAR`;
                     className="mt-1 w-4 h-4 accent-red-600 rounded shrink-0"
                   />
                   <span className="text-xs font-bold text-red-900 leading-relaxed">
-                    <strong className="font-black uppercase tracking-widest block text-[10px] mb-1">Quiero baja total</strong>
-                    Marca esta opción solo si quieres darte de baja de todas tus clases. Si no la marcas, elegiremos una plaza concreta.
+                    <strong className="font-black uppercase tracking-widest block text-[10px] mb-1">{gestionUiCopy.totalBajaCheckboxTitle || 'Quiero darme de baja de todas mis clases'}</strong>
+                    {gestionUiCopy.totalBajaCheckboxText || 'Marca esta opción solo si quieres cancelar todas tus plazas.'}
                   </span>
                 </label>
+              )}
+
+              {isBajaRequest && gestionUiCopy.notice && (
+                <div className={`rounded-2xl p-3 text-xs font-bold leading-relaxed border ${isBajaTotalRequest ? 'bg-red-50 border-red-100 text-red-900' : 'bg-zinc-50 border-zinc-100 text-zinc-700'}`}>
+                  {gestionUiCopy.notice}
+                </div>
               )}
 
               {!isBajaTotalRequest && (
                 <>
                   <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
-                    {requiresSourceClassChoice ? '1. Elige la plaza afectada' : 'Plaza afectada'}
+                    {sourceClassLabel}
                   </p>
 
                   {fixedSeatClasses.length > 1 ? (
@@ -1372,12 +1461,12 @@ END:VCALENDAR`;
           {isMaintenanceRequest && (
             <div className="mb-5 space-y-3 border-t border-b border-amber-100 py-4">
               <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 text-xs font-bold text-amber-900 leading-relaxed">
-                Mantén tu plaza con nosotros y evita perderla. <strong>15€/mes</strong>. Máximo 2 meses.
+                {modalDescription}
               </div>
 
-              {isMultiSeatStudent && (
+              {gestionUiCopy.notice && (
                 <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 text-xs font-bold text-blue-900 leading-relaxed">
-                  Importante: el mantenimiento es por persona, no por plaza. Si tienes varias clases, este estado afectará a todas tus clases durante el periodo elegido.
+                  {gestionUiCopy.notice}
                 </div>
               )}
 
@@ -1409,7 +1498,7 @@ END:VCALENDAR`;
           
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige grupo con disponibilidad' : gestionModal.type === 'cambio_horario' && requiresSourceClassChoice ? '2. Busca disponibilidad en directo' : '1. Busca disponibilidad en directo'}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige grupo con disponibilidad' : gestionModal.type === 'cambio_horario' && requiresSourceClassChoice ? '2. Grupos disponibles para esa plaza' : (gestionUiCopy.searchLabel || '1. Busca disponibilidad en directo')}</p>
               
               {gestionModal.type === 'ampliar_clases' && (
                 <select value={selectedInst} onChange={e => {setSelectedInst(e.target.value); setSelectedNewClass(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
@@ -1466,7 +1555,7 @@ END:VCALENDAR`;
             </div>
           )}
 
-          <textarea placeholder={gestionModal.placeholder} value={gestionText} onChange={(e) => setGestionText(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-sm font-medium mb-6"/>
+          <textarea placeholder={modalPlaceholder} value={gestionText} onChange={(e) => setGestionText(e.target.value)} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[100px] resize-y text-sm font-medium mb-6"/>
           
           <button onClick={sendGestion} disabled={isSendDisabled} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
             {isSendingGestion ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar Solicitud</>}
@@ -2397,9 +2486,9 @@ END:VCALENDAR`;
               <button 
                 disabled={isChangeHorarioLocked}
                 onClick={() => handleAdminGestionClick({
-                  type: 'cambio_horario', title: 'Cambiar Horario Fijo', icon: RefreshCcw, color: 'text-blue-500',
-                  desc: 'Elige qué plaza quieres cambiar y busca una plaza libre en otro grupo del mismo instrumento.',
-                  placeholder: 'Añade observaciones para Administración (Opcional)...'
+                  type: 'cambio_horario', title: 'Cambiar horario fijo', icon: RefreshCcw, color: 'text-blue-500',
+                  desc: getGestionUiCopy('cambio_horario').description,
+                  placeholder: getGestionUiCopy('cambio_horario').placeholder
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isChangeHorarioLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
@@ -2429,29 +2518,29 @@ END:VCALENDAR`;
                   desc: 'Solicita terminar antes de tiempo tu periodo de mantenimiento y volver a la operativa normal de tu plaza.',
                   placeholder: 'Indica desde cuándo quieres finalizar el mantenimiento o cualquier observación para Administración...'
                 } : {
-                  type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
-                  desc: 'Mantén tu plaza con nosotros y evita perderla. 15€/mes. Máximo 2 meses.',
-                  placeholder: 'Añade observaciones para Administración (Opcional)...'
+                  type: 'mantenimiento', title: 'Pasar a mantenimiento', icon: Snowflake, color: 'text-amber-500',
+                  desc: getGestionUiCopy('mantenimiento').description,
+                  placeholder: getGestionUiCopy('mantenimiento').placeholder
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isMantenimientoLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : isStudentFrozen ? 'border-blue-100 hover:border-blue-500' : 'border-zinc-100 hover:border-black'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isMantenimientoLocked ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${isMantenimientoLocked ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Finalizar Mantenimiento' : 'Cuota Mantenimiento'}</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : '15€/mes · máximo 2 meses'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : isMultiSeatStudent ? 'Afecta a todas tus clases' : '15€/mes · máximo 2 meses'}</p>
               </button>
 
               <button 
                 disabled={isBajaLocked}
                 onClick={() => handleAdminGestionClick({
-                  type: 'baja', title: 'Dar de Baja mi Plaza', icon: UserMinus, color: 'text-red-500',
-                  desc: 'Solicita la baja de una plaza concreta. Si quieres darte de baja de todas tus clases, marca la casilla de baja total dentro del trámite.',
-                  placeholder: '¿Podrías decirnos brevemente el motivo? Nos ayuda a mejorar (Opcional)...'
+                  type: 'baja', title: 'Dar de baja', icon: UserMinus, color: 'text-red-500',
+                  desc: getGestionUiCopy('baja').description,
+                  placeholder: getGestionUiCopy('baja').placeholder
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isBajaLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isBajaLocked ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${isBajaLocked ? 'text-zinc-400' : 'text-red-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Dar de Baja</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Cancela tu suscripción</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
               </button>
 
               <a 

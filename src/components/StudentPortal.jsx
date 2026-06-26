@@ -1039,8 +1039,8 @@ END:VCALENDAR`;
     const isLate = absenceModal.diffHours < 16;
     if (showRules) {
       return (
-        <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
+        <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
             <button onClick={() => setShowRules(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
             <div className="flex items-center gap-3 text-black mb-6"><FileText className="w-8 h-8" /><h2 className="text-xl font-black uppercase tracking-tight">Normativa</h2></div>
             <div className="space-y-4 text-sm text-zinc-600 font-medium">
@@ -1056,8 +1056,8 @@ END:VCALENDAR`;
       );
     }
     return (
-      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative animate-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative animate-in zoom-in-95 duration-200 my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
           <button onClick={() => setAbsenceModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           {isLate ? (
             <>
@@ -1145,11 +1145,11 @@ END:VCALENDAR`;
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
-        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
           <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
-            <h2 className="text-xl font-black uppercase tracking-tight leading-tight">{gestionModal.title}</h2>
+            <h2 className="text-xl font-black uppercase tracking-tight leading-tight text-black">{gestionModal.title}</h2>
           </div>
           
           {!isExemptFromLateRule && (
@@ -1320,8 +1320,8 @@ END:VCALENDAR`;
     }
 
     return (
-      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
           <button onClick={() => {setMitoboxModal(false); setMboxDate(''); setMboxSelectedSlot(null);}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           
           <div className="flex items-center gap-3 text-black mb-6">
@@ -1390,8 +1390,8 @@ END:VCALENDAR`;
   const renderContract = () => {
     if (!showContract) return null;
     return (
-      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-2xl w-full p-8 shadow-2xl relative flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-2xl w-full p-5 sm:p-8 shadow-2xl relative flex flex-col max-h-[calc(100vh-2rem)] animate-in zoom-in-95 duration-200 my-4 sm:my-8">
           <button onClick={() => setShowContract(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full z-10"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-6 shrink-0">
             <FileText className="w-8 h-8" />
@@ -1409,8 +1409,8 @@ END:VCALENDAR`;
   const renderTriviaModal = () => {
     if (!triviaModal) return null;
     return (
-      <div className="fixed inset-0 bg-black/95 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative flex flex-col items-center">
+      <div className="fixed inset-0 bg-black/95 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative flex flex-col items-center my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
           
           <div className="w-full bg-zinc-100 rounded-full h-2 mb-8 overflow-hidden">
             <div className="bg-amber-400 h-full transition-all duration-1000 linear" style={{ width: `${(triviaTime / 10) * 100}%` }}></div>
@@ -1623,8 +1623,8 @@ END:VCALENDAR`;
       {renderTriviaModal()}
 
       {showReviewModal && (
-        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
             <button onClick={() => setShowReviewModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
             <div className="flex flex-col items-center text-center mb-6">
               <Star className="w-12 h-12 text-amber-400 fill-amber-400 mb-3" />
@@ -1644,8 +1644,8 @@ END:VCALENDAR`;
       )}
 
       {showSocialModal && (
-        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
             <button onClick={() => setShowSocialModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
             <div className="flex flex-col items-center text-center mb-6">
               <Megaphone className="w-12 h-12 text-black mb-3" />
@@ -1664,8 +1664,8 @@ END:VCALENDAR`;
       )}
 
       {showWhatsappModal && (
-        <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+        <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
             <button onClick={() => setShowWhatsappModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
             <div className="flex flex-col items-center text-center mb-6">
               <MessageCircle className="w-12 h-12 text-emerald-500 mb-3" />
@@ -1692,8 +1692,8 @@ END:VCALENDAR`;
 
 
       {whatsappConfirmModal && (
-        <div className="fixed inset-0 bg-black/80 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl relative">
+        <div className="fixed inset-0 bg-black/80 z-[110] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
             <button onClick={() => setWhatsappConfirmModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
             <div className="flex flex-col items-center text-center mb-5">
               <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mb-3 border border-emerald-100">

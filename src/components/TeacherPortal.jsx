@@ -19,7 +19,7 @@ const PLANNING_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaz
 const PLANNING_GESTION_LABELS = {
   baja: 'Baja pendiente',
   mantenimiento: 'Mantenimiento pendiente',
-  reactivar_plaza: 'Reactivación pendiente',
+  reactivar_plaza: 'Fin mantenimiento pendiente',
   cambio_horario: 'Cambio pendiente',
   ampliar_clases: 'Ampliación pendiente'
 };
@@ -454,6 +454,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [gestiones, setGestiones] = useState([]); 
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
   
@@ -532,6 +533,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
     const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
     const temporaryRelocationsRef = collection(db, 'artifacts', appId, 'temporaryRelocations');
+    const maintenancePeriodsRef = collection(db, 'artifacts', appId, 'maintenancePeriods');
     const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
     const teacherTasksRef = collection(db, 'artifacts', appId, 'teacherTasks');
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
@@ -546,13 +548,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let gestionesLoaded = false;
     let payrollAdjustmentsLoaded = false;
     let temporaryRelocationsLoaded = false;
+    let maintenancePeriodsLoaded = false;
     let announcementsLoaded = false;
     let teacherTasksLoaded = false;
     let availLoaded = false;
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && announcementsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && maintenancePeriodsLoaded && announcementsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
@@ -639,6 +642,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    const unsubMaintenancePeriods = onSnapshot(maintenancePeriodsRef, (snapshot) => {
+      setMaintenancePeriods(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
+      maintenancePeriodsLoaded = true;
+      checkLoading();
+    });
+
     const unsubAnnouncements = onSnapshot(announcementsRef, (snapshot) => {
       const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
       data.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
@@ -676,6 +685,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubGestiones();
       unsubPayrollAdjustments();
       unsubTemporaryRelocations();
+      unsubMaintenancePeriods();
       unsubAnnouncements();
       unsubTeacherTasks();
       unsubAvail();
@@ -797,7 +807,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     if (gestion.type === 'ampliar_clases') return 'Entraría en esta clase si Admin ejecuta la ampliación.';
     if (gestion.type === 'baja') return 'Dejará de venir si Admin ejecuta la baja.';
     if (gestion.type === 'mantenimiento') return 'Quedará en mantenimiento/plaza reservada si Admin lo ejecuta.';
-    if (gestion.type === 'reactivar_plaza') return 'Volverá a estar activo si Admin ejecuta la reactivación.';
+    if (gestion.type === 'reactivar_plaza') return 'Finalizará anticipadamente el mantenimiento si Admin lo ejecuta.';
     return 'Gestión pendiente de coordinación.';
   };
 
@@ -1134,7 +1144,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
-  }, [date, records, recurringClasses]);
+  }, [date, records, recurringClasses, globalStudents, temporaryRelocations, maintenancePeriods]);
 
   const isExpiredDate = useMemo(() => {
     const classDate = new Date(date);
@@ -1176,6 +1186,43 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return temporaryRelocations.filter(rel => isTemporaryRelocationActiveForDate(rel, targetDate));
   };
 
+  const isMaintenanceStatusClosed = (status = '') => ['cancelled', 'cancelada', 'finalizada'].includes(status);
+
+  const isMaintenancePeriodActiveForDate = (period = {}, targetDate = date) => {
+    if (!period || isMaintenanceStatusClosed(period.status)) return false;
+    return Boolean(period.from && period.until && period.from <= targetDate && period.until >= targetDate);
+  };
+
+  const getActiveStudentMaintenancePeriod = (studentId, targetDate = date) => {
+    if (!studentId) return null;
+    return maintenancePeriods.find(period =>
+      period.studentId === studentId && isMaintenancePeriodActiveForDate(period, targetDate)
+    ) || null;
+  };
+
+  const isStudentInMaintenance = (studentId, targetDate = date) => Boolean(getActiveStudentMaintenancePeriod(studentId, targetDate));
+
+  const formatMaintenancePeriodLine = (period = {}) => {
+    if (!period?.from || !period?.until) return 'mantenimiento temporal';
+    return `mantenimiento temporal · ${formatDateSpanish(period.from)} - ${formatDateSpanish(period.until)}`;
+  };
+
+  const isAttendanceBlockedStudent = (student = {}) => Boolean(student.isPaused || student.isMaintenance);
+
+  const enrichStudentMaintenanceState = (studentEntry = {}, targetDate = date) => {
+    const maintenancePeriod = getActiveStudentMaintenancePeriod(studentEntry.id, targetDate);
+    if (!maintenancePeriod) return { ...studentEntry, isMaintenance: false, maintenancePeriod: null, maintenanceLabel: '' };
+
+    return {
+      ...studentEntry,
+      isMaintenance: true,
+      maintenancePeriod,
+      maintenanceFrom: maintenancePeriod.from || '',
+      maintenanceUntil: maintenancePeriod.until || '',
+      maintenanceLabel: formatMaintenancePeriodLine(maintenancePeriod)
+    };
+  };
+
   const buildTemporaryRelocatedStudent = (relocation = {}) => {
     const studentInfo = globalStudents.find(s => s.id === relocation.studentId) || {};
     const displayName = studentInfo?.useAlias && studentInfo?.alias
@@ -1207,14 +1254,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         .map(rel => rel.studentId)
     );
 
-    const baseStudents = (classData.students || []).filter(studentEntry =>
-      !relocatedOutIds.has(studentEntry.id)
-    );
+    const baseStudents = (classData.students || [])
+      .filter(studentEntry => !relocatedOutIds.has(studentEntry.id))
+      .map(studentEntry => enrichStudentMaintenanceState(studentEntry, targetDate));
 
     const relocatedIn = activeRelocations
       .filter(rel => rel.targetClassId === classData.id)
       .filter(rel => !baseStudents.some(studentEntry => studentEntry.id === rel.studentId))
-      .map(buildTemporaryRelocatedStudent);
+      .map(rel => enrichStudentMaintenanceState(buildTemporaryRelocatedStudent(rel), targetDate));
 
     return [...baseStudents, ...relocatedIn];
   };
@@ -1222,7 +1269,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const getEffectiveActiveStudentsForClass = (classData = {}, targetDate = date) => {
     return getEffectiveStudentsForClass(classData, targetDate).filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
-      return !s.isPaused && hasClassStartedForDate(s, studentInfo, targetDate) && (!s.isRecovery || s.recoveryDate === targetDate);
+      return !isAttendanceBlockedStudent(s) && hasClassStartedForDate(s, studentInfo, targetDate) && (!s.isRecovery || s.recoveryDate === targetDate);
     });
   };
 
@@ -1231,7 +1278,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       id: student.id,
       name: student.name,
       email: student.email || '',
-      isPaused: student.isPaused || false
+      isPaused: Boolean(student.isPaused && !student.isMaintenance)
     };
 
     if (student.classStartDate) cleanStudent.classStartDate = student.classStartDate;
@@ -1277,6 +1324,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const tags = [];
     if (student.isRecovery) tags.push('Recuperación');
     if (student.isTemporaryRelocation) tags.push('Recolocado temporalmente');
+    if (student.isMaintenance) tags.push('Mantenimiento temporal');
     return `${student.name}${tags.length ? ` (${tags.join(' · ')})` : ''}`;
   };
 
@@ -1312,14 +1360,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     const visibleStudents = studentsForDate.filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
-      return !s.isPaused &&
+      return !isAttendanceBlockedStudent(s) &&
         hasClassStartedForDate(s, studentInfo, targetDate) &&
         (!s.isRecovery || s.recoveryDate === targetDate);
     });
     const fixedStudentIds = new Set(studentsForDate
       .filter(s => {
         const studentInfo = globalStudents.find(g => g.id === s.id);
-        return !s.isPaused && !s.isRecovery && !s.isTemporaryRelocation && hasClassStartedForDate(s, studentInfo, targetDate);
+        return !s.isRecovery && !s.isTemporaryRelocation && hasClassStartedForDate(s, studentInfo, targetDate);
       })
       .map(s => s.id));
 
@@ -1346,8 +1394,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
 
     const studentInfo = globalStudents.find(s => s.id === gestion.studentId);
-    if (studentInfo?.globalStatus === 'baja' || studentInfo?.globalStatus === 'congelado' || studentInfo?.globalStatus === 'impago') {
-      showNotification({ type: 'error', text: 'El alumno no está en estado activo. Coordina la recuperación desde administración.' });
+    if (studentInfo?.globalStatus === 'baja' || studentInfo?.globalStatus === 'impago' || studentInfo?.globalStatus === 'congelado' || isStudentInMaintenance(gestion.studentId, recoveryDate)) {
+      showNotification({ type: 'error', text: 'El alumno no está operativo para recuperación en esa fecha. Coordina la recuperación desde administración.' });
       return;
     }
 
@@ -1592,9 +1640,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       } else if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
         hiddenStudents.push(s); 
       } else {
-        let currentStatus = s.isPaused ? 'paused' : 'present';
+        let currentStatus = isAttendanceBlockedStudent(s) ? 'paused' : 'present';
         // 👇 FIX: Si el status es 'notified_no_ticket', lo mapeamos visualmente a 'notified' para la UI
-        if (exceptionsToday[s.id]) {
+        if (!isAttendanceBlockedStudent(s) && exceptionsToday[s.id]) {
           currentStatus = exceptionsToday[s.id] === 'notified_no_ticket' ? 'notified' : exceptionsToday[s.id];
         }
         visibleStudents.push({ ...s, status: currentStatus, originalException: exceptionsToday[s.id] || null });
@@ -1626,6 +1674,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       hiddenStudents: hiddenStudents, 
       formalTemplateStudents: scheduledClass.students || [],
       hasTemporaryRelocations: getTemporaryRelocationsForDate(date).some(rel => rel.sourceClassId === scheduledClass.id || rel.targetClassId === scheduledClass.id),
+      hasMaintenancePeriods: visibleStudents.some(student => student.isMaintenance),
       pendingPlanningGestiones: getPlanningGestionesForClass(scheduledClass),
       newStudentName: '',
       newStudentEmail: '',
@@ -1751,7 +1800,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
           recoveryDate: currentSession.isAddingRecovery ? date : null, 
-          isPaused: existingStudent?.globalStatus === 'congelado' || false
+          isPaused: false,
+          ...enrichStudentMaintenanceState({ id: studentId }, date)
         }
       ],
       newStudentName: '',
@@ -1836,7 +1886,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const confirmacion = window.confirm("⚠️ ATENCIÓN: ESTA ACCIÓN NO SE PUEDE DESHACER.\n\nRevisa bien quién está presente, quién avisó y quién ha faltado sin avisar.\n\n¿Estás seguro de que quieres guardar la lista definitivamente?");
     if (!confirmacion) return;
 
-    const activeStudents = currentSession.students.filter(s => !s.isPaused);
+    const activeStudents = currentSession.students.filter(s => !isAttendanceBlockedStudent(s));
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
@@ -1902,7 +1952,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
       const ticketPromises = currentSession.students.map(async (s) => {
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
-        if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !s.isPaused) {
+        if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !isAttendanceBlockedStudent(s)) {
           const isSummerTicket = isSummerRecoveryDate(date);
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
           if (isSummerTicket || monthTickets.length < 2) {
@@ -2531,7 +2581,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       const studentsForDate = getEffectiveStudentsForClass(item.data, date);
                       const visibleCount = studentsForDate.filter(s => {
                         const studentInfo = globalStudents.find(g => g.id === s.id);
-                        return hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
+                        return !isAttendanceBlockedStudent(s) && hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
                       }).length;
                       const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
                       const planningGestionesForClass = getPlanningGestionesForClass(item.data);
@@ -2680,6 +2730,13 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                     </div>
                   )}
                   
+                  {currentSession.hasMaintenancePeriods && (
+                    <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-200 rounded-xl flex items-center gap-3">
+                      <Snowflake className="text-blue-600 w-6 h-6 shrink-0"/>
+                      <p className="text-xs font-bold text-blue-900">Hay alumnos con mantenimiento temporal activo. Conservan la plaza, pero no computan para asistencia ni hora muerta durante su periodo.</p>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
                     <div className="space-y-2">
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><Clock className="w-3 h-3" /> Horario</label>
@@ -2875,28 +2932,34 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
                       const pendingPlanningForStudent = getPlanningGestionesForStudent(student.id, currentSession);
                       const hasPendingPlanning = pendingPlanningForStudent.length > 0;
+                      const isBlockedStudent = isAttendanceBlockedStudent(student);
 
                       return (
-                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${student.isPaused ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
+                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${isBlockedStudent ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
                           <div className="flex flex-col">
-                            <span className={`font-bold text-lg ${student.isPaused ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
+                            <span className={`font-bold text-lg ${isBlockedStudent ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
                               {student.name}
                             </span>
                             <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
                                 {displayEmail || 'Sin email'}
                             </span>
-                            {student.isRecovery && !student.isPaused && (
+                            {student.isRecovery && !isBlockedStudent && (
                               <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
                                 <CornerDownRight className="w-3 h-3" /> Recuperación
                               </span>
                             )}
-                            {student.isTemporaryRelocation && !student.isPaused && (
+                            {student.isTemporaryRelocation && !isBlockedStudent && (
                               <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-[9px] font-black uppercase tracking-widest mt-1">
                                 <Clock className="w-3 h-3" /> Recolocado temporalmente
                               </span>
                             )}
-                            {hasOpenAdminIncident && !student.isPaused && (
+                            {student.isMaintenance && (
+                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 text-[9px] font-black uppercase tracking-widest mt-1">
+                                <Snowflake className="w-3 h-3" /> {student.maintenanceLabel || 'Mantenimiento temporal'}
+                              </span>
+                            )}
+                            {hasOpenAdminIncident && !isBlockedStudent && (
                               <span className="text-[10px] uppercase font-black text-red-600 tracking-widest flex items-center gap-1 mt-1" title="Incidencia administrativa abierta">
                                 <AlertCircle className="w-3 h-3" /> Incidencia abierta
                               </span>
@@ -2916,9 +2979,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         </div>
 
                         <div className="flex items-center gap-2 w-full sm:w-auto">
-                          {student.isPaused ? (
+                          {isBlockedStudent ? (
                             <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
-                              <Snowflake className="w-4 h-4"/> En Mantenimiento
+                              <Snowflake className="w-4 h-4"/> {student.isMaintenance ? 'Mantenimiento temporal' : 'En Mantenimiento'}
                             </div>
                           ) : (
                             <div className="grid grid-cols-3 sm:flex w-full bg-white p-1.5 rounded-xl border border-zinc-200">
@@ -3315,6 +3378,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                           )}
                           {student.isTemporaryRelocation && (
                             <span className="text-[10px] text-violet-600 font-black uppercase tracking-widest ml-8">Recolocado temporalmente</span>
+                          )}
+                          {student.isMaintenance && (
+                            <span className="text-[10px] text-blue-600 font-black uppercase tracking-widest ml-8">Mantenimiento temporal</span>
                           )}
                         </div>
                       ))}

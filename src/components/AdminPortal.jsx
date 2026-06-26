@@ -546,15 +546,160 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const getActiveStudentMaintenancePeriod = (studentId, dateStr = todayStr) => getActiveStudentMaintenancePeriods(studentId, dateStr)[0] || null;
 
+  const formatLocalDateStringFromDate = (date) => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const getMonthStartStringFromDate = (dateString = todayStr) => {
+    const date = parseLocalDateString(dateString) || parseLocalDateString(todayStr) || new Date();
+    return formatLocalDateStringFromDate(new Date(date.getFullYear(), date.getMonth(), 1));
+  };
+
+  const getMonthStartStringWithOffset = (dateString = todayStr, offsetMonths = 1) => {
+    const date = parseLocalDateString(dateString) || parseLocalDateString(todayStr) || new Date();
+    return formatLocalDateStringFromDate(new Date(date.getFullYear(), date.getMonth() + offsetMonths, 1));
+  };
+
+  const getMonthIndexFromSpanishLabel = (label = '') => {
+    const clean = String(label || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+    const months = [
+      'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+    ];
+
+    const directIndex = months.findIndex(monthName => clean.includes(monthName));
+    if (directIndex >= 0) return directIndex;
+
+    // Variante frecuente sin "p".
+    if (clean.includes('setiembre')) return 8;
+    return null;
+  };
+
+  const getMaintenanceDefaultStartFromGestion = (gestion = {}) => {
+    const explicitStart = String(gestion.maintenanceFrom || gestion.from || gestion.startDate || '').trim();
+    if (explicitStart) return getMonthStartStringFromDate(explicitStart);
+
+    const targetMonthIndex = getMonthIndexFromSpanishLabel(gestion.targetMonth || gestion.maintenanceMonthLabel || '');
+    if (targetMonthIndex !== null) {
+      const todayDate = parseLocalDateString(todayStr) || new Date();
+      const currentMonthIndex = todayDate.getMonth();
+      const year = targetMonthIndex < currentMonthIndex ? todayDate.getFullYear() + 1 : todayDate.getFullYear();
+      return formatLocalDateStringFromDate(new Date(year, targetMonthIndex, 1));
+    }
+
+    return gestion.isLateRequest
+      ? getMonthStartStringWithOffset(todayStr, 2)
+      : nextMonthStartStr;
+  };
+
+  const parseMaintenanceMonths = (value) => {
+    const months = parseInt(String(value || '').trim(), 10);
+    return Number.isFinite(months) && months > 0 ? months : 0;
+  };
+
+  const calculateMaintenanceMonthsFromRange = (from, until) => {
+    const start = parseLocalDateString(from);
+    const end = parseLocalDateString(until);
+    if (!start || !end || start > end) return 0;
+    return Math.max(((end.getFullYear() - start.getFullYear()) * 12) + (end.getMonth() - start.getMonth()) + 1, 1);
+  };
+
+  const buildMaintenancePeriodByMonths = (startDateString, monthsRaw = 1) => {
+    const months = parseMaintenanceMonths(monthsRaw) || 1;
+    const startDate = parseLocalDateString(startDateString) || parseLocalDateString(nextMonthStartStr) || new Date();
+    const firstDay = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+    const lastDay = new Date(startDate.getFullYear(), startDate.getMonth() + months, 0);
+
+    return {
+      from: formatLocalDateStringFromDate(firstDay),
+      until: formatLocalDateStringFromDate(lastDay),
+      months,
+      monthlyFee: MAINTENANCE_MONTHLY_FEE,
+      totalFee: months * MAINTENANCE_MONTHLY_FEE
+    };
+  };
+
   const getMaintenancePeriodFromGestion = (gestion = {}) => {
-    const from = String(gestion.maintenanceFrom || gestion.from || gestion.startDate || getNextMonthStartString(todayStr) || '').trim();
-    const until = String(gestion.maintenanceUntil || gestion.until || gestion.endDate || getNextMonthEndString(todayStr) || '').trim();
-    return { from, until };
+    const explicitFrom = String(gestion.maintenanceFrom || gestion.from || gestion.startDate || '').trim();
+    const explicitUntil = String(gestion.maintenanceUntil || gestion.until || gestion.endDate || '').trim();
+    const structuredMonths = parseMaintenanceMonths(gestion.maintenanceMonths || gestion.months || gestion.durationMonths);
+
+    if (explicitFrom && explicitUntil) {
+      const months = structuredMonths || calculateMaintenanceMonthsFromRange(explicitFrom, explicitUntil) || 1;
+      const totalFee = Number(gestion.maintenanceFee || gestion.totalFee || gestion.totalMaintenanceFee) || (months * MAINTENANCE_MONTHLY_FEE);
+      return {
+        from: explicitFrom,
+        until: explicitUntil,
+        months,
+        monthlyFee: MAINTENANCE_MONTHLY_FEE,
+        totalFee,
+        isLegacyMissingDuration: false
+      };
+    }
+
+    if (structuredMonths) {
+      return {
+        ...buildMaintenancePeriodByMonths(getMaintenanceDefaultStartFromGestion(gestion), structuredMonths),
+        isLegacyMissingDuration: false
+      };
+    }
+
+    return {
+      from: '',
+      until: '',
+      months: 0,
+      monthlyFee: MAINTENANCE_MONTHLY_FEE,
+      totalFee: 0,
+      defaultStart: getMaintenanceDefaultStartFromGestion(gestion),
+      isLegacyMissingDuration: true
+    };
   };
 
   const formatMaintenancePeriodLine = (period = {}) => {
     if (!period?.from || !period?.until) return 'periodo no indicado';
     return `del ${formatDateSpanish(period.from)} al ${formatDateSpanish(period.until)}`;
+  };
+
+  const promptLegacyMaintenancePeriod = (gestion = {}) => {
+    const defaultStart = getMaintenanceDefaultStartFromGestion(gestion);
+    const oneMonth = buildMaintenancePeriodByMonths(defaultStart, 1);
+    const twoMonths = buildMaintenancePeriodByMonths(defaultStart, 2);
+
+    const answer = window.prompt(
+      `Esta solicitud de mantenimiento es antigua y no indica duración.\n\nElige la duración que quieres aplicar:\n\n1 = ${formatMaintenancePeriodLine(oneMonth)} · 15€\n2 = ${formatMaintenancePeriodLine(twoMonths)} · 30€\n\nEscribe 1 o 2:`,
+      '1'
+    );
+
+    if (answer === null) return null;
+
+    const months = parseMaintenanceMonths(answer);
+    if (![1, 2].includes(months)) {
+      alert('Duración no válida. Escribe 1 para un mes o 2 para dos meses.');
+      return null;
+    }
+
+    return {
+      ...buildMaintenancePeriodByMonths(defaultStart, months),
+      isLegacyMissingDuration: false,
+      resolvedFromLegacyPrompt: true
+    };
+  };
+
+  const formatMaintenanceFeeLine = (period = {}) => {
+    const months = parseMaintenanceMonths(period.months) || calculateMaintenanceMonthsFromRange(period.from, period.until) || 1;
+    const monthlyFee = Number(period.monthlyFee || MAINTENANCE_MONTHLY_FEE);
+    const totalFee = Number(period.totalFee || period.maintenanceFee || (months * monthlyFee));
+
+    if (months <= 1) return `${monthlyFee}€`;
+    return `${monthlyFee}€/mes (${totalFee}€ en total para ${months} meses)`;
   };
 
   const getCommercialSeatDataForClass = (clase = {}) => {
@@ -1137,6 +1282,9 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     const studentInfo = gestion.studentId ? students.find(s => s.id === gestion.studentId) : null;
     const aliasLine = studentInfo?.alias ? `NOMBRE_REAL_ALUMNO: ${studentInfo.alias}\n` : '';
     const classLine = getGestionClassLine(gestion);
+    const maintenancePeriodForEmail = gestion.type === 'mantenimiento' ? getMaintenancePeriodFromGestion(gestion) : null;
+    const maintenancePeriodLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenancePeriodLine(maintenancePeriodForEmail) : '';
+    const maintenanceFeeLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenanceFeeLine(maintenancePeriodForEmail) : '';
     const solicitud = gestion.date ? new Date(gestion.date).toLocaleString('es-ES') : '';
     const ejecucion = phase === 'ejecutada' ? new Date().toLocaleString('es-ES') : '';
 
@@ -1148,6 +1296,8 @@ ${aliasLine}EMAIL: ${gestion.studentEmail || studentInfo?.email || ''}
 PROFESOR: ${gestion.requestedTeacher || ''}
 CLASE: ${classLine}
 MES_OBJETIVO: ${gestion.targetMonth || ''}
+PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
+CUOTA_MANTENIMIENTO: ${maintenanceFeeLine}
 FECHA_RECUPERACION: ${gestion.recoveryDate ? formatDateSpanish(gestion.recoveryDate) : ''}
 FECHA_SOLICITUD: ${solicitud}
 FECHA_EJECUCION: ${ejecucion}
@@ -1574,13 +1724,38 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         return notify(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       }
       else if (type === 'mantenimiento') {
-        const { from, until } = getMaintenancePeriodFromGestion(gestionData);
+        let maintenancePeriod = getMaintenancePeriodFromGestion(gestionData);
+
+        if (maintenancePeriod.isLegacyMissingDuration) {
+          if (silent) {
+            return fail(`⚠️ Mantenimiento antiguo sin duración para ${displayName}. Ejecútalo individualmente para elegir 1 mes o 2 meses antes de crear el periodo.`);
+          }
+
+          const selectedPeriod = promptLegacyMaintenancePeriod(gestionData);
+          if (!selectedPeriod) {
+            return { ok: false, cancelled: true, message: 'Duración de mantenimiento no seleccionada.' };
+          }
+          maintenancePeriod = selectedPeriod;
+        }
+
+        const { from, until } = maintenancePeriod;
         if (!from || !until) {
           return fail('⚠️ No se puede ejecutar el mantenimiento: falta fecha de inicio o fecha de fin.');
         }
         if (from > until) {
           return fail('⚠️ No se puede ejecutar el mantenimiento: la fecha de inicio no puede ser posterior a la fecha de fin.');
         }
+
+        const maintenanceMonths = parseMaintenanceMonths(maintenancePeriod.months) || calculateMaintenanceMonthsFromRange(from, until) || 1;
+        const maintenanceMonthlyFee = Number(maintenancePeriod.monthlyFee || MAINTENANCE_MONTHLY_FEE);
+        const maintenanceTotalFee = Number(maintenancePeriod.totalFee || gestionData.maintenanceFee || (maintenanceMonths * maintenanceMonthlyFee));
+        const maintenanceFeeLine = formatMaintenanceFeeLine({
+          from,
+          until,
+          months: maintenanceMonths,
+          monthlyFee: maintenanceMonthlyFee,
+          totalFee: maintenanceTotalFee
+        });
 
         const overlapping = getStudentMaintenancePeriods(studentId).find(period => doDateRangesOverlap(from, until, period.from, period.until));
         if (overlapping) {
@@ -1602,10 +1777,16 @@ Cancélalo o ajusta fechas antes de crear otro.`);
           studentEmail,
           from,
           until,
+          months: maintenanceMonths,
           status: 'active',
-          fee: MAINTENANCE_MONTHLY_FEE,
+          fee: maintenanceMonthlyFee,
+          monthlyFee: maintenanceMonthlyFee,
+          totalFee: maintenanceTotalFee,
+          maintenanceFeeLine,
           notes: gestionData.details || '',
           sourceGestionId: gestionId,
+          sourceGestionTargetMonth: gestionData.targetMonth || '',
+          resolvedFromLegacyPrompt: Boolean(maintenancePeriod.resolvedFromLegacyPrompt),
           affectedClassIds: classesWithStudent.map(c => c.id),
           affectedClassLines: classesWithStudent.map(c => formatClassLine(c)),
           createdAt: new Date().toISOString(),
@@ -1649,14 +1830,14 @@ Te confirmamos que tu solicitud de mantenimiento de plaza ha sido tramitada corr
 
 Periodo de mantenimiento: ${periodLine}.
 
-Durante ese periodo conservas tu plaza con la cuota de mantenimiento de ${MAINTENANCE_MONTHLY_FEE}€/mes y tu acceso al portal quedará limitado según la normativa del centro. Al finalizar el periodo, tu plaza volverá a estar activa automáticamente en la plataforma.
+Durante ese periodo conservas tu plaza con cuota de mantenimiento: ${maintenanceFeeLine}. Tu acceso al portal quedará limitado según la normativa del centro. Al finalizar el periodo, tu plaza volverá a estar activa automáticamente en la plataforma.
 
 Un saludo,
 Coordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Mantenimiento temporal creado ${periodLine}`);
-        return notify(`❄️ Mantenimiento temporal creado para ${displayName}: ${periodLine}. Profesores y alumno avisados.`);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Mantenimiento temporal creado ${periodLine} · ${maintenanceFeeLine}`);
+        return notify(`❄️ Mantenimiento temporal creado para ${displayName}: ${periodLine}. Cuota: ${maintenanceFeeLine}. Profesores y alumno avisados.`);
       }
       else if (type === 'reactivar_plaza') {
         const periodsToCancel = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
@@ -1843,17 +2024,28 @@ Coordinación Los Mitos.`
   };
 
   const executeAllReadyGestiones = async () => {
-    const readyGestiones = pendingGestiones.filter(isGestionReadyForExecution);
+    const readyGestionesBase = pendingGestiones.filter(isGestionReadyForExecution);
     const blockedGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
+    const legacyMaintenanceGestiones = readyGestionesBase.filter(g =>
+      g.type === 'mantenimiento' && getMaintenancePeriodFromGestion(g).isLegacyMissingDuration
+    );
+    const readyGestiones = readyGestionesBase.filter(g =>
+      !(g.type === 'mantenimiento' && getMaintenancePeriodFromGestion(g).isLegacyMissingDuration)
+    );
 
     if (readyGestiones.length === 0) {
+      if (legacyMaintenanceGestiones.length > 0) {
+        alert(`No hay trámites listos para ejecutar en bloque.\n\nTienes ${legacyMaintenanceGestiones.length} mantenimiento(s) antiguo(s) sin duración. Ejecútalos individualmente para elegir 1 mes o 2 meses.`);
+        return;
+      }
+
       alert(blockedGestiones.length > 0
         ? `No hay trámites listos para ejecutar. Tienes ${blockedGestiones.length} pendiente(s) de marcar como Tadosi hecho.`
         : 'No hay trámites pendientes para ejecutar.');
       return;
     }
 
-    if (!window.confirm(`¿Ejecutar ahora ${readyGestiones.length} trámite(s) listos?\n\nNo aparecerán ventanas por cada trámite. Al final verás un resumen.\n\nSe omitirán ${blockedGestiones.length} trámite(s) pendientes de Tadosi.`)) return;
+    if (!window.confirm(`¿Ejecutar ahora ${readyGestiones.length} trámite(s) listos?\n\nNo aparecerán ventanas por cada trámite. Al final verás un resumen.\n\nSe omitirán ${blockedGestiones.length} trámite(s) pendientes de Tadosi.\nSe omitirán ${legacyMaintenanceGestiones.length} mantenimiento(s) antiguo(s) sin duración: esos deben ejecutarse individualmente.`)) return;
 
     setBulkExecutingGestiones(true);
     const results = [];
@@ -1867,7 +2059,7 @@ Coordinación Los Mitos.`
       const errors = results.filter(r => !r.result?.ok);
       const errorLines = errors.map(r => `- ${r.gestion.studentName || 'Sin alumno'} (${(r.gestion.type || 'trámite').replace('_', ' ')}): ${r.result?.message || 'Error no especificado'}`);
 
-      alert(`Cierre en bloque terminado.\n\nEjecutados correctamente: ${ok}\nCon error u omitidos: ${errors.length}\nPendientes de Tadosi omitidos: ${blockedGestiones.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
+      alert(`Cierre en bloque terminado.\n\nEjecutados correctamente: ${ok}\nCon error u omitidos: ${errors.length}\nPendientes de Tadosi omitidos: ${blockedGestiones.length}\nMantenimientos antiguos sin duración omitidos: ${legacyMaintenanceGestiones.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
     } finally {
       setBulkExecutingGestiones(false);
     }
@@ -5678,7 +5870,21 @@ ${startDateWarning}
                             {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
                             {g.type === 'mantenimiento' && (() => {
                               const period = getMaintenancePeriodFromGestion(g);
-                              return <div className="text-[10px] font-bold text-blue-700 mt-1 uppercase">Periodo: {formatDateSpanish(period.from)} - {formatDateSpanish(period.until)}</div>;
+                              if (period.isLegacyMissingDuration) {
+                                return (
+                                  <div className="text-[10px] font-black text-blue-700 mt-1 uppercase leading-snug">
+                                    Periodo: pendiente de elegir al ejecutar · 1 mes / 2 meses
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div className="text-[10px] font-bold text-blue-700 mt-1 uppercase leading-snug">
+                                  Periodo: {formatDateSpanish(period.from)} - {formatDateSpanish(period.until)}
+                                  {period.months ? ` · ${period.months} mes${period.months > 1 ? 'es' : ''}` : ''}
+                                  {period.totalFee ? ` · ${period.totalFee}€` : ''}
+                                </div>
+                              );
                             })()}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                             {g.type === 'recuperacion' && (() => {

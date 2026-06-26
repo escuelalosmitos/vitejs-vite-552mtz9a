@@ -1144,8 +1144,8 @@ END:VCALENDAR`;
       isMaintenanceChoiceInvalid;
 
     return (
-      <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8">
           <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
@@ -1153,21 +1153,19 @@ END:VCALENDAR`;
           </div>
           
           {!isExemptFromLateRule && (
-            <>
-              <div className="bg-zinc-100 rounded-xl p-3 mb-6 text-xs font-bold text-zinc-500 uppercase tracking-widest flex items-center gap-2"><Clock className="w-4 h-4"/> Normativa del día 20</div>
-              {timeRules.isLate ? (
-                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl">
-                  <h3 className="text-sm font-black text-red-800 uppercase mb-1 flex items-center gap-2"><AlertCircle className="w-4 h-4"/> Solicitud fuera de plazo</h3>
-                  <p className="text-xs text-red-700 font-medium mb-3">Estás pidiendo este trámite del día 21 en adelante. Según el contrato de prestación de servicios, no podrá tramitarse para <strong>{timeRules.next}</strong>.</p>
-                  <label className="flex items-start gap-3 cursor-pointer">
-                    <input type="checkbox" checked={acceptLatePenalty} onChange={e => setAcceptLatePenalty(e.target.checked)} className="mt-1 w-4 h-4 text-red-600 rounded" />
-                    <span className="text-xs font-bold text-red-900">Sí, quiero que tengáis mi petición en cuenta para <strong>{timeRules.nextNext}</strong>.</span>
-                  </label>
-                </div>
-              ) : (
-                <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl"><p className="text-xs font-bold text-emerald-800 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> En plazo. Tu solicitud aplicará para <strong>{timeRules.next}</strong>.</p></div>
-              )}
-            </>
+            timeRules.isLate ? (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl">
+                <h3 className="text-xs font-black text-red-800 uppercase mb-2 flex items-center gap-2"><AlertCircle className="w-4 h-4"/> Fuera de plazo</h3>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input type="checkbox" checked={acceptLatePenalty} onChange={e => setAcceptLatePenalty(e.target.checked)} className="mt-0.5 w-4 h-4 text-red-600 rounded shrink-0" />
+                  <span className="text-xs font-bold text-red-900 leading-relaxed">Solicitar que se tenga en cuenta para <strong>{timeRules.nextNext}</strong>.</span>
+                </label>
+              </div>
+            ) : (
+              <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <p className="text-xs font-bold text-emerald-800 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> En plazo para <strong>{timeRules.next}</strong>.</p>
+              </div>
+            )
           )}
 
           {isAmpliarClases && (
@@ -1182,12 +1180,12 @@ END:VCALENDAR`;
           <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
 
           {isMaintenanceRequest && (
-            <div className="mb-6 space-y-4 border-t border-b border-amber-100 py-4">
-              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
-                Elige la duración del mantenimiento. La solicitud se aplicará por meses administrativos completos, no por días sueltos. Durante ese periodo conservarás tu plaza con cuota reducida y la plataforma limitará cambios, ampliaciones y recuperaciones.
+            <div className="mb-5 space-y-3 border-t border-b border-amber-100 py-4">
+              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 text-xs font-bold text-amber-900 leading-relaxed">
+                Mantén tu plaza con nosotros y evita perderla. <strong>15€/mes</strong>. Máximo 2 meses.
               </div>
 
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-2">
                 {maintenanceOptions.map(option => {
                   const selected = Number(maintenanceMonths) === option.months;
                   return (
@@ -1195,17 +1193,12 @@ END:VCALENDAR`;
                       key={option.months}
                       type="button"
                       onClick={() => setMaintenanceMonths(option.months)}
-                      className={`w-full p-4 rounded-2xl border-2 text-left transition-all ${selected ? 'border-amber-500 bg-amber-50 text-amber-950 shadow-sm' : 'border-zinc-100 bg-white hover:border-amber-300 text-slate-700'}`}
+                      className={`w-full p-3 rounded-2xl border-2 text-left transition-all ${selected ? 'border-amber-500 bg-amber-50 text-amber-950 shadow-sm' : 'border-zinc-100 bg-white hover:border-amber-300 text-slate-700'}`}
                     >
-                      <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center justify-between gap-3">
                         <div>
-                          <p className="text-sm font-black uppercase tracking-tight">{option.months} {option.months === 1 ? 'mes' : 'meses'} de mantenimiento</p>
-                          <p className="text-xs font-bold text-zinc-500 mt-1 leading-relaxed">
-                            Mantenimiento durante {option.monthLabel}.
-                          </p>
-                          <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-2">
-                            Periodo interno: {formatMaintenancePeriodLine(option)}
-                          </p>
+                          <p className="text-sm font-black uppercase tracking-tight">{option.months} {option.months === 1 ? 'mes' : 'meses'}</p>
+                          <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{option.monthLabel}</p>
                         </div>
                         <div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shrink-0 ${selected ? 'bg-amber-500 text-white' : 'bg-zinc-100 text-zinc-500'}`}>
                           {option.fee}€
@@ -1215,12 +1208,6 @@ END:VCALENDAR`;
                   );
                 })}
               </div>
-
-              {selectedMaintenanceOption && (
-                <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 text-[11px] font-bold text-zinc-600 leading-relaxed">
-                  Solicitud seleccionada: <strong className="text-black">{selectedMaintenanceOption.months} {selectedMaintenanceOption.months === 1 ? 'mes' : 'meses'}</strong> · Coste total de mantenimiento: <strong className="text-black">{selectedMaintenanceOption.fee}€</strong>.
-                </div>
-              )}
             </div>
           )}
           
@@ -2240,14 +2227,14 @@ END:VCALENDAR`;
                   placeholder: 'Indica desde cuándo quieres finalizar el mantenimiento o cualquier observación para Administración...'
                 } : {
                   type: 'mantenimiento', title: 'Pasar a Mantenimiento', icon: Snowflake, color: 'text-amber-500',
-                  desc: 'Solicita mantenimiento de plaza durante 1 mes (15€) o 2 meses (30€), siempre por meses administrativos completos.',
+                  desc: 'Mantén tu plaza con nosotros y evita perderla. 15€/mes. Máximo 2 meses.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : isStudentFrozen ? 'border-blue-100 hover:border-blue-500' : 'border-zinc-100 hover:border-black'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${hasPendingAdminGestion ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${hasPendingAdminGestion ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Finalizar Mantenimiento' : 'Cuota Mantenimiento'}</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : 'Congela tu plaza por periodo'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : '15€/mes · máximo 2 meses'}</p>
               </button>
 
               <button 

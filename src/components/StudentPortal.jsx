@@ -210,6 +210,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [gestionText, setGestionText] = useState('');
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
+  const [selectedSourceClass, setSelectedSourceClass] = useState(null);
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [maintenanceMonths, setMaintenanceMonths] = useState(1);
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
@@ -307,6 +308,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
   }, [myClasses, allClasses, temporaryRelocations, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, todayStr]);
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
+    !isPunctualClass(c) &&
+    (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
+  );
+
+  const fixedSeatClasses = myClasses.filter(c =>
     !isPunctualClass(c) &&
     (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
   );
@@ -597,6 +603,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const typeLabel = (payload.type || 'gestion').replace(/_/g, ' ');
     const phaseLabel = phase === 'ejecutada' ? 'Gestión ejecutada' : 'Nueva gestión';
     const classLine = payload.requestedClassLine || formatClassLineForAdminCopy(selectedClass) || payload.requestedClass || '';
+    const sourceClassLine = payload.sourceClassLine || '';
     const requestedDate = payload.recoveryDate ? formatDateSpanish(payload.recoveryDate) : '';
     const maintenancePeriodLine = payload.maintenanceFrom && payload.maintenanceUntil ? formatMaintenancePeriodLine({ from: payload.maintenanceFrom, until: payload.maintenanceUntil }) : '';
     const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
@@ -606,6 +613,7 @@ ESTADO: ${status}
 FASE: ${phaseLabel}
 ALUMNO: ${payload.studentName || ''}
 EMAIL: ${payload.studentEmail || ''}
+PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_SOLICITADA: ${classLine}
 FECHA_RECUPERACION: ${requestedDate}
 MES_OBJETIVO: ${payload.targetMonth || ''}
@@ -712,6 +720,8 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
+    const resolvedSourceClass = isSourceClassGestion ? (selectedSourceClass || (fixedSeatClasses.length === 1 ? fixedSeatClasses[0] : null)) : null;
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionModal.type)) {
@@ -721,6 +731,11 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
 
     if (isMaintenanceRequest && ![1, 2].includes(Number(maintenanceMonths))) {
       showToast('Elige si quieres mantenimiento durante 1 mes o 2 meses.', 'error');
+      return;
+    }
+
+    if (isSourceClassGestion && !resolvedSourceClass) {
+      showToast('Elige la plaza concreta sobre la que quieres hacer este trámite.', 'error');
       return;
     }
     
@@ -741,6 +756,16 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         studentId: profile.id,
         studentName: profile.name,
         studentEmail: profile.email,
+        sourceClassId: resolvedSourceClass ? resolvedSourceClass.id : null,
+        sourceClass: resolvedSourceClass ? resolvedSourceClass.id : null,
+        sourceClassLine: resolvedSourceClass ? formatClassLineForAdminCopy(resolvedSourceClass) : '',
+        sourceSubject: resolvedSourceClass?.subject || '',
+        sourceTeacher: resolvedSourceClass?.teacher || '',
+        sourceSede: resolvedSourceClass?.sede || '',
+        sourceSala: resolvedSourceClass?.sala || '',
+        sourceDayOfWeek: resolvedSourceClass?.dayOfWeek ?? null,
+        sourceTime: resolvedSourceClass?.time || '',
+        isPartialSeatGestion: Boolean(resolvedSourceClass),
         type: gestionModal.type,
         title: gestionModal.title,
         details: gestionText,
@@ -773,6 +798,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       setGestionModal(null);
       setGestionText('');
       setSelectedNewClass(null);
+      setSelectedSourceClass(null);
       setSelectedRecoveryDate('');
       setMaintenanceMonths(1);
       setAcceptLatePenalty(false);
@@ -988,6 +1014,12 @@ END:VCALENDAR`;
       showToast('Ya tienes un trámite administrativo en curso. No puedes solicitar otro hasta que se resuelva.', 'error');
       return;
     }
+
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type);
+    setSelectedNewClass(null);
+    setSelectedRecoveryDate('');
+    setSelectedSourceClass(isSourceClassGestion && fixedSeatClasses.length === 1 ? fixedSeatClasses[0] : null);
+
     if (gestionPayload.type === 'mantenimiento') {
       setMaintenanceMonths(1);
     }
@@ -1110,12 +1142,19 @@ END:VCALENDAR`;
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
+    const resolvedSourceClass = isSourceClassGestion ? (selectedSourceClass || (fixedSeatClasses.length === 1 ? fixedSeatClasses[0] : null)) : null;
+    const requiresSourceClassChoice = isSourceClassGestion && fixedSeatClasses.length > 1;
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
 
-    const targetInstrument = gestionModal.type === 'ampliar_clases' ? selectedInst : (profile.instruments && profile.instruments[0]);
+    const targetInstrument = gestionModal.type === 'ampliar_clases'
+      ? selectedInst
+      : gestionModal.type === 'cambio_horario'
+        ? resolvedSourceClass?.subject
+        : (profile.instruments && profile.instruments[0]);
 
     let availableClasses = [];
-    if (isClassSearch && targetInstrument) {
+    if (isClassSearch && targetInstrument && (gestionModal.type !== 'cambio_horario' || resolvedSourceClass)) {
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
         
@@ -1139,6 +1178,7 @@ END:VCALENDAR`;
 
     const isSendDisabled = isSendingGestion || 
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
+      (isSourceClassGestion && !resolvedSourceClass) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
       isMaintenanceChoiceInvalid;
@@ -1146,7 +1186,7 @@ END:VCALENDAR`;
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedSourceClass(null); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight text-black">{gestionModal.title}</h2>
@@ -1179,6 +1219,47 @@ END:VCALENDAR`;
 
           {!isMaintenanceRequest && (
             <p className="text-sm font-medium text-zinc-500 mb-6">{gestionModal.desc}</p>
+          )}
+
+          {isSourceClassGestion && (
+            <div className="mb-5 space-y-3 border-t border-b border-zinc-100 py-4">
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">
+                {requiresSourceClassChoice ? '1. Elige la plaza afectada' : 'Plaza afectada'}
+              </p>
+
+              {fixedSeatClasses.length > 1 ? (
+                <div className="space-y-2">
+                  {fixedSeatClasses.map(c => {
+                    const selected = resolvedSourceClass?.id === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => { setSelectedSourceClass(c); setSelectedNewClass(null); setSelectedRecoveryDate(''); }}
+                        className={`w-full p-3 rounded-2xl border-2 text-left transition-all ${selected ? 'border-black bg-zinc-50 text-slate-900 shadow-sm' : 'border-zinc-100 bg-white hover:border-zinc-300 text-slate-700'}`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-black uppercase tracking-tight">{c.subject || 'Clase'} · {getDayName(c.dayOfWeek)} {c.time || ''}h</p>
+                            <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{c.sede || 'Sede'}{c.sala ? ` · ${c.sala}` : ''}{c.teacher ? ` · Prof. ${c.teacher}` : ''}</p>
+                          </div>
+                          {selected && <CheckCircle className="w-5 h-5 text-black shrink-0" />}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : resolvedSourceClass ? (
+                <div className="p-3 rounded-2xl border-2 border-zinc-100 bg-zinc-50 text-slate-800">
+                  <p className="text-sm font-black uppercase tracking-tight">{resolvedSourceClass.subject || 'Clase'} · {getDayName(resolvedSourceClass.dayOfWeek)} {resolvedSourceClass.time || ''}h</p>
+                  <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{resolvedSourceClass.sede || 'Sede'}{resolvedSourceClass.sala ? ` · ${resolvedSourceClass.sala}` : ''}{resolvedSourceClass.teacher ? ` · Prof. ${resolvedSourceClass.teacher}` : ''}</p>
+                </div>
+              ) : (
+                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100">
+                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">No hay plazas fijas disponibles para este trámite.</p>
+                </div>
+              )}
+            </div>
           )}
 
           {isMaintenanceRequest && (
@@ -1215,7 +1296,7 @@ END:VCALENDAR`;
           
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige grupo con disponibilidad' : '1. Busca disponibilidad en directo'}</p>
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige grupo con disponibilidad' : gestionModal.type === 'cambio_horario' && requiresSourceClassChoice ? '2. Busca disponibilidad en directo' : '1. Busca disponibilidad en directo'}</p>
               
               {gestionModal.type === 'ampliar_clases' && (
                 <select value={selectedInst} onChange={e => {setSelectedInst(e.target.value); setSelectedNewClass(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
@@ -1224,7 +1305,11 @@ END:VCALENDAR`;
                 </select>
               )}
 
-              {!(gestionModal.type === 'ampliar_clases' && !selectedInst) && (
+              {gestionModal.type === 'cambio_horario' && !resolvedSourceClass ? (
+                <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100">
+                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Elige primero la plaza que quieres cambiar.</p>
+                </div>
+              ) : !(gestionModal.type === 'ampliar_clases' && !selectedInst) && (
                 availableClasses.length > 0 ? (
                   <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
                     {availableClasses.map(c => (
@@ -2198,7 +2283,7 @@ END:VCALENDAR`;
                 disabled={isAcademicGestionLocked}
                 onClick={() => handleAdminGestionClick({
                   type: 'cambio_horario', title: 'Cambiar Horario Fijo', icon: RefreshCcw, color: 'text-blue-500',
-                  desc: 'Busca una plaza libre en otro grupo y solicita el cambio para el mes que viene.',
+                  desc: 'Elige qué plaza quieres cambiar y busca una plaza libre en otro grupo del mismo instrumento.',
                   placeholder: 'Añade observaciones para Administración (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isAcademicGestionLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
@@ -2242,7 +2327,7 @@ END:VCALENDAR`;
               <button 
                 onClick={() => handleAdminGestionClick({
                   type: 'baja', title: 'Dar de Baja mi Plaza', icon: UserMinus, color: 'text-red-500',
-                  desc: 'Solicita la cancelación de tu suscripción en la escuela. Te echaremos de menos.',
+                  desc: 'Solicita la baja de una plaza concreta. Si solo tienes una plaza activa, se tramitará como baja total.',
                   placeholder: '¿Podrías decirnos brevemente el motivo? Nos ayuda a mejorar (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${hasPendingAdminGestion ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}

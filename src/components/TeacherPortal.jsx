@@ -80,6 +80,8 @@ const isFixedClassStudent = (studentEntry = {}) => !(
   studentEntry?.isRecovery === true ||
   studentEntry?.isTemporary === true ||
   studentEntry?.isPunctual === true ||
+  studentEntry?.isTemporaryRelocation === true ||
+  Boolean(studentEntry?.temporaryRelocationId) ||
   studentEntry?.type === 'recovery' ||
   studentEntry?.status === 'recovery'
 );
@@ -118,16 +120,41 @@ const getSafeAnnouncementUrl = (url = '') => {
 const getTeacherTaskStatusLabel = (status = 'pendiente') => TEACHER_TASK_STATUS_LABELS[status] || 'Pendiente';
 const getTeacherTaskStatusStyle = (status = 'pendiente') => TEACHER_TASK_STATUS_STYLE[status] || TEACHER_TASK_STATUS_STYLE.pendiente;
 
-const normalizeStudentClassStartDate = (value) => String(value || '').trim();
+const normalizeStudentClassDate = (value) => String(value || '').trim();
 
-const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassStartDate(
-  studentEntry.classStartDate || studentEntry.startDate || studentInfo.classStartDate || studentInfo.startDate || ''
+const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassDate(
+  studentEntry.classStartDate ||
+  studentEntry.startDate ||
+  studentInfo.classStartDate ||
+  studentInfo.startDate ||
+  ''
+);
+
+const getStudentClassEndDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassDate(
+  studentEntry.classEndDate ||
+  studentEntry.scheduledEndDate ||
+  studentEntry.endDate ||
+  studentEntry.until ||
+  studentInfo.scheduledBajaClassEndDate ||
+  studentInfo.classEndDate ||
+  studentInfo.endDate ||
+  ''
 );
 
 const hasClassStartedForDate = (studentEntry = {}, studentInfo = {}, targetDate = '') => {
   const startDate = getStudentClassStartDate(studentEntry, studentInfo);
   return !startDate || !targetDate || startDate <= targetDate;
 };
+
+const hasClassEndedBeforeDate = (studentEntry = {}, studentInfo = {}, targetDate = '') => {
+  const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+  return Boolean(endDate && targetDate && endDate < targetDate);
+};
+
+const isStudentClassActiveForDate = (studentEntry = {}, studentInfo = {}, targetDate = '') => (
+  hasClassStartedForDate(studentEntry, studentInfo, targetDate) &&
+  !hasClassEndedBeforeDate(studentEntry, studentInfo, targetDate)
+);
 
 const normalizeNumber = (value) => {
   const number = Number(String(value).replace(',', '.'));
@@ -1256,6 +1283,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     const baseStudents = (classData.students || [])
       .filter(studentEntry => !relocatedOutIds.has(studentEntry.id))
+      .filter(studentEntry => {
+        const studentInfo = globalStudents.find(g => g.id === studentEntry.id);
+        return isStudentClassActiveForDate(studentEntry, studentInfo, targetDate);
+      })
       .map(studentEntry => enrichStudentMaintenanceState(studentEntry, targetDate));
 
     const relocatedIn = activeRelocations
@@ -1269,7 +1300,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const getEffectiveActiveStudentsForClass = (classData = {}, targetDate = date) => {
     return getEffectiveStudentsForClass(classData, targetDate).filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
-      return !isAttendanceBlockedStudent(s) && hasClassStartedForDate(s, studentInfo, targetDate) && (!s.isRecovery || s.recoveryDate === targetDate);
+      return !isAttendanceBlockedStudent(s) &&
+        isStudentClassActiveForDate(s, studentInfo, targetDate) &&
+        (!s.isRecovery || s.recoveryDate === targetDate);
     });
   };
 
@@ -1283,6 +1316,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     if (student.classStartDate) cleanStudent.classStartDate = student.classStartDate;
     if (student.startDate) cleanStudent.startDate = student.startDate;
+    if (student.classEndDate) cleanStudent.classEndDate = student.classEndDate;
+    if (student.scheduledEndDate) cleanStudent.scheduledEndDate = student.scheduledEndDate;
+    if (student.endDate) cleanStudent.endDate = student.endDate;
     if (student.isRecovery) {
       cleanStudent.isRecovery = true;
       cleanStudent.recoveryDate = student.recoveryDate || null;
@@ -1361,13 +1397,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const visibleStudents = studentsForDate.filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
       return !isAttendanceBlockedStudent(s) &&
-        hasClassStartedForDate(s, studentInfo, targetDate) &&
+        isStudentClassActiveForDate(s, studentInfo, targetDate) &&
         (!s.isRecovery || s.recoveryDate === targetDate);
     });
     const fixedStudentIds = new Set(studentsForDate
       .filter(s => {
         const studentInfo = globalStudents.find(g => g.id === s.id);
-        return !s.isRecovery && !s.isTemporaryRelocation && hasClassStartedForDate(s, studentInfo, targetDate);
+        return !s.isRecovery && !s.isTemporaryRelocation && isStudentClassActiveForDate(s, studentInfo, targetDate);
       })
       .map(s => s.id));
 
@@ -1635,8 +1671,12 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
     getEffectiveStudentsForClass(scheduledClass, date).forEach(s => {
       const globalStudentInfo = globalStudents.find(g => g.id === s.id);
-      if (!hasClassStartedForDate(s, globalStudentInfo, date)) {
-        hiddenStudents.push({ ...s, isFutureStartHidden: true });
+      if (!isStudentClassActiveForDate(s, globalStudentInfo, date)) {
+        hiddenStudents.push({
+          ...s,
+          isFutureStartHidden: !hasClassStartedForDate(s, globalStudentInfo, date),
+          isEndedHidden: hasClassEndedBeforeDate(s, globalStudentInfo, date)
+        });
       } else if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
         hiddenStudents.push(s); 
       } else {
@@ -2581,7 +2621,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                       const studentsForDate = getEffectiveStudentsForClass(item.data, date);
                       const visibleCount = studentsForDate.filter(s => {
                         const studentInfo = globalStudents.find(g => g.id === s.id);
-                        return !isAttendanceBlockedStudent(s) && hasClassStartedForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
+                        return !isAttendanceBlockedStudent(s) && isStudentClassActiveForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
                       }).length;
                       const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
                       const planningGestionesForClass = getPlanningGestionesForClass(item.data);

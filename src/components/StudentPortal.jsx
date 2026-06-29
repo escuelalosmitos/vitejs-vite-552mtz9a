@@ -261,6 +261,72 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return maintenancePeriods.some(period => period.studentId === studentId && isMaintenancePeriodActiveForDate(period, dateStr));
   };
 
+  const normalizeClassDate = (value = '') => String(value || '').trim();
+
+  const getStudentEntryInClass = (clase = {}, studentId = profile?.id) => {
+    if (!studentId) return null;
+    return (clase.students || []).find(studentEntry => studentEntry.id === studentId) || null;
+  };
+
+  const getClassEntryStartDate = (studentEntry = {}, studentInfo = {}) => normalizeClassDate(
+    studentEntry.classStartDate ||
+    studentEntry.startDate ||
+    studentInfo.classStartDate ||
+    studentInfo.startDate ||
+    ''
+  );
+
+  const getClassEntryEndDate = (studentEntry = {}, studentInfo = {}) => normalizeClassDate(
+    studentEntry.classEndDate ||
+    studentEntry.scheduledEndDate ||
+    studentEntry.endDate ||
+    studentEntry.until ||
+    studentInfo.scheduledBajaClassEndDate ||
+    studentInfo.classEndDate ||
+    studentInfo.endDate ||
+    ''
+  );
+
+  const isStudentEntryActiveOnDate = (studentEntry = {}, studentInfo = {}, dateStr = todayStr) => {
+    const startDate = getClassEntryStartDate(studentEntry, studentInfo);
+    const endDate = getClassEntryEndDate(studentEntry, studentInfo);
+    if (startDate && startDate > dateStr) return false;
+    if (endDate && endDate < dateStr) return false;
+    return true;
+  };
+
+  const isStudentEntryCommittedOnDate = (studentEntry = {}, studentInfo = {}, dateStr = todayStr) => {
+    const endDate = getClassEntryEndDate(studentEntry, studentInfo);
+    return !(endDate && endDate < dateStr);
+  };
+
+  const getCommittedSeatCountForClass = (clase = {}, dateStr = todayStr) => (
+    (clase.students || []).filter(studentEntry =>
+      isFixedClassStudent(studentEntry) && isStudentEntryCommittedOnDate(studentEntry, {}, dateStr)
+    ).length
+  );
+
+  const getClassReferenceDateForStudent = (clase = {}) => {
+    if (isPunctualClass(clase)) return clase.date || todayStr;
+    return getNextClassInfo(clase.dayOfWeek, clase.time || '00:00').dateStr;
+  };
+
+  const isStudentClassVisibleForNextSession = (clase = {}) => {
+    const studentEntry = getStudentEntryInClass(clase);
+    if (!studentEntry) return false;
+    return isStudentEntryActiveOnDate(studentEntry, profile || {}, getClassReferenceDateForStudent(clase));
+  };
+
+  const isStudentClassScheduledToEnd = (clase = {}) => {
+    const studentEntry = getStudentEntryInClass(clase);
+    if (!studentEntry) return false;
+    const endDate = getClassEntryEndDate(studentEntry, profile || {});
+    return Boolean(endDate && endDate >= todayStr);
+  };
+
+  const scheduledBajaEffectiveDate = normalizeClassDate(profile?.scheduledBajaEffectiveDate || profile?.bajaEffectiveDate || profile?.effectiveBajaDate || '');
+  const isProfileBajaEffective = profile?.globalStatus === 'baja' || Boolean(profile?.scheduledBaja && scheduledBajaEffectiveDate && scheduledBajaEffectiveDate <= todayStr);
+
   const effectiveMyClasses = useMemo(() => {
     if (!profile?.id) return myClasses;
 
@@ -274,6 +340,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     myClasses
       .filter(c => !hiddenSourceClassIds.has(c.id))
+      .filter(isStudentClassVisibleForNextSession)
       .forEach(c => effectiveById.set(c.id, c));
 
     activeRelocations.forEach(rel => {
@@ -308,7 +375,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     });
 
     return [...effectiveById.values()];
-  }, [myClasses, allClasses, temporaryRelocations, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, todayStr]);
+  }, [myClasses, allClasses, temporaryRelocations, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBajaClassEndDate, todayStr]);
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
@@ -317,6 +384,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const fixedSeatClasses = myClasses.filter(c =>
     !isPunctualClass(c) &&
+    isStudentClassVisibleForNextSession(c) &&
+    !isStudentClassScheduledToEnd(c) &&
     (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
   );
 
@@ -1319,11 +1388,14 @@ END:VCALENDAR`;
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
         
-        const activeStudents = (c.students || []).filter(s => !isStudentInMaintenanceForDate(s.id, todayStr)).length;
+        const activeStudents = (c.students || []).filter(s => {
+          if (!isStudentEntryActiveOnDate(s, {}, todayStr)) return false;
+          return !isStudentInMaintenanceForDate(s.id, todayStr);
+        }).length;
         if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
-        const currentStudents = c.students?.length || 0;
+        const currentStudents = getCommittedSeatCountForClass(c, todayStr);
         if (currentStudents >= maxCap) return false;
         if (c.students?.some(s => s.id === profile.id)) return false;
         
@@ -1525,7 +1597,7 @@ END:VCALENDAR`;
                             <MapPin className="w-3 h-3" /> {c.sede || 'Tarragona'}
                           </span>
                           <span>Prof: {c.teacher}</span>
-                          <span>Quedan {parseInt(c.capacity || 4) - (c.students?.length || 0)} plazas</span>
+                          <span>Quedan {Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas</span>
                         </div>
                       </div>
                     ))}
@@ -1585,6 +1657,7 @@ END:VCALENDAR`;
         if (c.cancelledDates?.includes(mboxDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
         const activeStudents = (c.students || []).filter(s => {
+          if (!isStudentEntryActiveOnDate(s, {}, mboxDate)) return false;
           if (isStudentInMaintenanceForDate(s.id, mboxDate)) return false;
           const estadoHoy = exceptionsEseDia[s.id];
           if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
@@ -1784,7 +1857,7 @@ END:VCALENDAR`;
     );
   }
 
-  if (profile.globalStatus === 'baja') {
+  if (isProfileBajaEffective) {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
         <div className="bg-zinc-200 text-zinc-500 p-6 rounded-full mb-6">

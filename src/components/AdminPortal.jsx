@@ -78,14 +78,42 @@ const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normal
   studentEntry.classStartDate || studentEntry.startDate || studentInfo.classStartDate || studentInfo.startDate || ''
 );
 
+const normalizeStudentClassEndDate = (value) => String(value || '').trim();
+
+const getStudentClassEndDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassEndDate(
+  studentEntry.classEndDate || studentEntry.endDate || studentInfo.classEndDate || studentInfo.endDate || ''
+);
+
 const hasFutureClassStartDate = (studentEntry = {}, studentInfo = {}, todayStr = getTodayLocalString()) => {
   const startDate = getStudentClassStartDate(studentEntry, studentInfo);
   return Boolean(startDate && startDate > todayStr);
 };
 
+const hasStudentClassEndedBeforeDate = (studentEntry = {}, studentInfo = {}, dateStr = getTodayLocalString()) => {
+  const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+  return Boolean(endDate && endDate < dateStr);
+};
+
+const isStudentClassActiveOnDate = (studentEntry = {}, studentInfo = {}, dateStr = getTodayLocalString()) => {
+  const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+  const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+  if (startDate && startDate > dateStr) return false;
+  if (endDate && endDate < dateStr) return false;
+  return true;
+};
+
+const isStudentClassCommittedOnDate = (studentEntry = {}, studentInfo = {}, dateStr = getTodayLocalString()) => {
+  return !hasStudentClassEndedBeforeDate(studentEntry, studentInfo, dateStr);
+};
+
 const formatStudentClassStartLabel = (dateString) => {
   if (!dateString) return '';
   return `inicio clases: ${formatDateSpanish(dateString)}`;
+};
+
+const formatStudentClassEndLabel = (dateString) => {
+  if (!dateString) return '';
+  return `fin clases: ${formatDateSpanish(dateString)}`;
 };
 
 const normalizeAnnouncementUrl = (url = '') => {
@@ -612,6 +640,72 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return null;
   };
 
+  const getMonthStartFromGestionTarget = (gestion = {}) => {
+    const explicitStart = normalizeGestionDateString(gestion.effectiveStartDate || gestion.scheduledStartDate || gestion.newClassStartDate || gestion.classStartDate || '');
+    if (explicitStart) return explicitStart;
+
+    const targetMonthIndex = getMonthIndexFromSpanishLabel(gestion.targetMonth || gestion.targetMonthLabel || gestion.monthLabel || '');
+    if (targetMonthIndex !== null) {
+      const todayDate = parseLocalDateString(todayStr) || new Date();
+      const currentMonthIndex = todayDate.getMonth();
+      const year = targetMonthIndex < currentMonthIndex ? todayDate.getFullYear() + 1 : todayDate.getFullYear();
+      return formatLocalDateStringFromDate(new Date(year, targetMonthIndex, 1));
+    }
+
+    return gestion.isLateRequest
+      ? getMonthStartStringWithOffset(todayStr, 2)
+      : nextMonthStartStr;
+  };
+
+  const getDefaultScheduledClassEndDate = (gestion = {}) => {
+    const explicitEnd = normalizeGestionDateString(gestion.effectiveEndDate || gestion.scheduledEndDate || gestion.classEndDate || gestion.endDate || '');
+    if (explicitEnd) return explicitEnd;
+
+    const startDate = getMonthStartFromGestionTarget(gestion);
+    return addDaysToLocalDateString(startDate, -1);
+  };
+
+  const getScheduledClassStartAfterEndDate = (endDate) => addDaysToLocalDateString(endDate, 1);
+
+  const promptScheduledClassEndDate = (gestion = {}, actionLabel = 'este trámite', silentMode = false) => {
+    const defaultEndDate = getDefaultScheduledClassEndDate(gestion);
+    if (silentMode) return defaultEndDate;
+
+    const defaultStartDate = getScheduledClassStartAfterEndDate(defaultEndDate);
+    const answer = window.prompt(
+      `Fecha efectiva de fin para ${actionLabel}.\n\nPor defecto se aplica al último día del mes administrativo: ${formatDateSpanish(defaultEndDate)}.\nDesde ${formatDateSpanish(defaultStartDate)} dejará de aparecer en Student/Teacher.\n\nPuedes cambiarla si necesitas una fecha especial. Formato: AAAA-MM-DD`,
+      defaultEndDate
+    );
+
+    if (answer === null) return null;
+    const cleanDate = normalizeGestionDateString(answer);
+    if (!cleanDate) {
+      alert('Fecha no válida. Usa formato AAAA-MM-DD, por ejemplo 2026-06-30.');
+      return null;
+    }
+    return cleanDate;
+  };
+
+  const buildScheduledExecutionUpdate = (endDate, extra = {}) => ({
+    workflowStatus: 'programado',
+    executionMode: 'scheduled',
+    scheduledClassEndDate: endDate,
+    scheduledEffectiveDate: getScheduledClassStartAfterEndDate(endDate),
+    scheduledAt: new Date().toISOString(),
+    scheduledBy: user?.email || 'admin',
+    ...extra
+  });
+
+  const applyScheduledEndToStudentEntry = (studentEntry = {}, endDate, reason, gestionId = '') => ({
+    ...studentEntry,
+    classEndDate: endDate,
+    scheduledEndDate: endDate,
+    scheduledEndReason: reason,
+    scheduledGestionId: gestionId,
+    scheduledAt: new Date().toISOString(),
+    scheduledBy: user?.email || 'admin'
+  });
+
   const getMaintenanceDefaultStartFromGestion = (gestion = {}) => {
     const explicitStart = String(gestion.maintenanceFrom || gestion.from || gestion.startDate || '').trim();
     if (explicitStart) return getMonthStartStringFromDate(explicitStart);
@@ -796,10 +890,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const studentInfo = students.find(student => student.id === studentEntry.id) || {};
         const crmStatus = studentInfo?.globalStatus || 'activo';
         const isDropped = crmStatus === 'baja';
-        const isMaintenance = !isDropped && isStudentInMaintenance(studentEntry.id, todayStr);
+        const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, todayStr);
+        const isMaintenance = !isDropped && !isPastEnd && isStudentInMaintenance(studentEntry.id, todayStr);
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
-        const isFutureStart = !isDropped && Boolean(startDate && startDate > todayStr);
-        const isCommitted = !isDropped;
+        const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+        const isFutureStart = !isDropped && !isPastEnd && Boolean(startDate && startDate > todayStr);
+        const isCommitted = !isDropped && !isPastEnd;
 
         return {
           id: studentEntry.id,
@@ -807,6 +903,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           email: studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '',
           status: crmStatus,
           startDate,
+          endDate,
           isDropped,
           isMaintenance,
           isFutureStart,
@@ -862,7 +959,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const studentInfo = studentById.get(studentEntry.id);
         const crmStatus = studentInfo?.globalStatus || 'activo';
         const isDropped = crmStatus === 'baja';
-        if (isDropped) return;
+        const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, todayStr);
+        if (isDropped || isPastEnd) return;
 
         numPlazasComprometidas += 1;
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
@@ -1061,19 +1159,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return stats;
   }, [allTickets, gestiones]);
 
-  const getStudentTeachers = (studentId) => {
+  const getStudentTeachers = (studentId, dateStr = todayStr) => {
     if (!studentId) return [];
     const teacherNames = recurringClassesOnly
-      .filter(c => (c.students || []).some(s => s.id === studentId))
+      .filter(c => (c.students || []).some(s => {
+        const studentInfo = students.find(student => student.id === s.id) || {};
+        return s.id === studentId && isStudentClassCommittedOnDate(s, studentInfo, dateStr);
+      }))
       .map(c => c.teacher)
       .filter(Boolean);
     return [...new Set(teacherNames)];
   };
 
-  const getStudentAssignedClasses = (studentId) => {
+  const getStudentAssignedClasses = (studentId, dateStr = todayStr) => {
     if (!studentId) return [];
     return recurringClassesOnly.filter(c =>
-      (c.students || []).some(s => s.id === studentId)
+      (c.students || []).some(s => {
+        const studentInfo = students.find(student => student.id === s.id) || {};
+        return s.id === studentId && isStudentClassCommittedOnDate(s, studentInfo, dateStr);
+      })
     );
   };
 
@@ -1121,11 +1225,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return '';
   };
 
-  const getFixedStudentClasses = (studentId, classes = recurringClassesOnly) => {
+  const getFixedStudentClasses = (studentId, classes = recurringClassesOnly, dateStr = todayStr) => {
     if (!studentId) return [];
     return (classes || []).filter(clase =>
       !isPunctualClass(clase) &&
-      (clase.students || []).some(studentEntry => studentEntry.id === studentId && isFixedClassStudent(studentEntry))
+      (clase.students || []).some(studentEntry => {
+        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+        return studentEntry.id === studentId && isFixedClassStudent(studentEntry) && isStudentClassCommittedOnDate(studentEntry, studentInfo, dateStr);
+      })
     );
   };
 
@@ -1291,7 +1398,7 @@ ${body}`,
           .filter(isFixedClassStudent)
           .forEach(studentEntry => {
             const studentInfo = students.find(st => st.id === studentEntry.id) || null;
-            if (studentInfo?.globalStatus === 'baja') return;
+            if (studentInfo?.globalStatus === 'baja' || hasStudentClassEndedBeforeDate(studentEntry, studentInfo || {}, todayStr)) return;
             const email = normalizeEmail(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '');
             if (!email) return;
             if (!byEmail.has(email)) {
@@ -1426,6 +1533,8 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     const bajaScopeLine = gestion.type === 'baja' ? getBajaScopeLabel(gestion) : '';
     const solicitud = gestion.date ? new Date(gestion.date).toLocaleString('es-ES') : '';
     const ejecucion = phase === 'ejecutada' ? new Date().toLocaleString('es-ES') : '';
+    const scheduledClassEndLine = gestion.scheduledClassEndDate || gestion.bajaClassEndDate || gestion.effectiveEndDate || '';
+    const scheduledEffectiveLine = gestion.scheduledEffectiveDate || gestion.bajaEffectiveDate || gestion.effectiveStartDate || '';
 
     const body = `TIPO_GESTION: ${typeLabel}
 ESTADO: ${status}
@@ -1443,6 +1552,8 @@ CUOTA_MANTENIMIENTO: ${maintenanceFeeLine}
 FECHA_RECUPERACION: ${gestion.recoveryDate ? formatDateSpanish(gestion.recoveryDate) : ''}
 FECHA_SOLICITUD: ${solicitud}
 FECHA_EJECUCION: ${ejecucion}
+FECHA_FIN_PROGRAMADA: ${scheduledClassEndLine}
+FECHA_EFECTIVA_PROGRAMADA: ${scheduledEffectiveLine}
 EJECUTADO_POR: ${phase === 'ejecutada' ? (user?.email || 'admin') : ''}
 ID_GESTION: ${gestion.id || ''}
 ORIGEN: ${gestion.source === 'manual_admin' ? 'Tarea manual AdminPortal' : 'Portal del alumno'}
@@ -1458,9 +1569,9 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
     });
   };
 
-  const finalizeGestionStatus = async (gestionId, status, gestionData = null, executionNotes = '') => {
+  const finalizeGestionStatus = async (gestionId, status, gestionData = null, executionNotes = '', extraUpdate = {}) => {
     const now = new Date().toISOString();
-    const baseUpdate = { status };
+    const baseUpdate = { status, ...extraUpdate };
 
     if (gestionData && isAdminCopyGestionType(gestionData)) {
       const alreadySent = status === 'pendiente'
@@ -1468,7 +1579,7 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
         : gestionData.adminExecutionCopySentAt;
       if (!alreadySent) {
         const sent = await sendAdminGestionEmail({
-          gestion: { ...gestionData, id: gestionId },
+          gestion: { ...gestionData, ...extraUpdate, id: gestionId },
           phase: status === 'pendiente' ? 'recibida' : 'ejecutada',
           status,
           executionNotes
@@ -1840,9 +1951,20 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         const hasScopedBaja = Boolean(gestionData.sourceClassId || gestionData.sourceClassLine);
         const isTotalBaja = isTotalBajaGestion(gestionData);
         const canExecutePartialBaja = hasScopedBaja && !isTotalBaja;
+        const scheduledEndDate = promptScheduledClassEndDate(gestionData, 'la baja', silent);
+        if (!scheduledEndDate) {
+          return { ok: false, cancelled: true, message: 'Fecha efectiva no seleccionada.' };
+        }
+        const scheduledEffectiveDate = getScheduledClassStartAfterEndDate(scheduledEndDate);
+        const scheduledExecutionUpdate = buildScheduledExecutionUpdate(scheduledEndDate, {
+          scheduledAction: isTotalBaja ? 'baja_total' : 'baja',
+          bajaEffectiveDate: scheduledEffectiveDate,
+          bajaClassEndDate: scheduledEndDate,
+          bajaScopeResolved: isTotalBaja ? 'total' : (canExecutePartialBaja ? 'partial' : 'total')
+        });
 
         if (canExecutePartialBaja && !sourceClass?.refPath) {
-          return fail(`⚠️ No se puede ejecutar la baja por plaza.
+          return fail(`⚠️ No se puede programar la baja por plaza.
 
 La solicitud indica una plaza concreta, pero esa clase de origen ya no existe o no tiene ruta válida.
 
@@ -1856,7 +1978,9 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           : [];
 
         if (canExecutePartialBaja && sourceClass && remainingFixedClasses.length > 0) {
-          const updatedList = (sourceClass.students || []).filter(s => s.id !== studentId);
+          const updatedList = (sourceClass.students || []).map(s =>
+            s.id === studentId ? applyScheduledEndToStudentEntry(s, scheduledEndDate, 'baja_parcial', gestionId) : s
+          );
           await updateDoc(doc(db, sourceClass.refPath), { students: updatedList });
 
           if (studentInfo?.globalStatus === 'baja') {
@@ -1865,14 +1989,17 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
           await sendGroupedTeacherSummary({
             groupedClasses: groupClassesByTeacher([sourceClass]),
-            subjectBuilder: () => `Baja parcial de alumno: ${displayName}`,
+            subjectBuilder: () => `Baja parcial programada: ${displayName}`,
             bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinación te informamos que ${displayName} ha dado de baja esta plaza concreta:
+Desde coordinación te informamos que ${displayName} tiene programada la baja de esta plaza:
 
 · ${formatClassLine(sourceClass)}
 
-El alumno sigue activo en la escuela en otra(s) clase(s), pero ya no debe aparecer en esta lista de asistencia.
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} ya no debe aparecer como alumno activo en esta clase.
+
+El alumno sigue activo en la escuela en otra(s) clase(s).
 
 Un saludo,
 Coordinación Los Mitos.`
@@ -1883,9 +2010,12 @@ Coordinación Los Mitos.`
             subject: `Confirmación de baja de una plaza - Escuela Los Mitos`,
             body: `Hola ${studentName},
 
-Te confirmamos que hemos tramitado la baja de esta plaza:
+Te confirmamos que hemos programado la baja de esta plaza:
 
 · ${formatClassLine(sourceClass)}
+
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} dejará de aparecer como clase activa en tu portal.
 
 Sigues activo/a en la escuela en el resto de clases que mantienes actualmente.
 
@@ -1893,35 +2023,52 @@ Un saludo,
 Coordinación Los Mitos.`
           });
 
-          await finalizeGestionStatus(gestionId, 'completado', gestionData, `Baja parcial ejecutada. Plaza eliminada: ${formatClassLine(sourceClass)}. El alumno conserva ${remainingFixedClasses.length} plaza(s) fija(s).`);
-          return notify(`✅ Baja parcial ejecutada. ${displayName} eliminado solo de ${formatClassLine(sourceClass)}. Mantiene ${remainingFixedClasses.length} plaza(s) activa(s).`);
+          await finalizeGestionStatus(
+            gestionId,
+            'completado',
+            gestionData,
+            `Baja parcial programada. Plaza: ${formatClassLine(sourceClass)}. Último día: ${formatDateSpanish(scheduledEndDate)}. Mantiene ${remainingFixedClasses.length} plaza(s) fija(s).`,
+            scheduledExecutionUpdate
+          );
+          return notify(`✅ Baja parcial programada. ${displayName} seguirá en ${formatClassLine(sourceClass)} hasta ${formatDateSpanish(scheduledEndDate)}. Desde ${formatDateSpanish(scheduledEffectiveDate)} dejará de aparecer en esa clase.`);
         }
 
-        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'baja' });
-        await resetStudentTrivia(studentId);
-        const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
-        let borradas = 0;
-        const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
+        const classesWithStudent = getFixedStudentClasses(studentId);
+        if (classesWithStudent.length === 0) {
+          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Baja archivada: el alumno no tenía plazas fijas activas.', scheduledExecutionUpdate);
+          return notify(`ℹ️ ${displayName} no tenía plazas fijas activas. El trámite queda archivado.`);
+        }
+
         const groupedTeachers = groupClassesByTeacher(classesWithStudent);
-
         for (let c of classesWithStudent) {
-          const updatedList = c.students.filter(s => s.id !== studentId);
-          if (c.refPath) {
-            await updateDoc(doc(db, c.refPath), { students: updatedList });
-            borradas++;
-          }
+          const updatedList = (c.students || []).map(s =>
+            s.id === studentId ? applyScheduledEndToStudentEntry(s, scheduledEndDate, 'baja_total', gestionId) : s
+          );
+          if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
         }
+
+        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+          globalStatus: studentInfo?.globalStatus === 'baja' ? 'baja' : 'activo',
+          scheduledBaja: true,
+          scheduledBajaScope: 'total',
+          scheduledBajaClassEndDate: scheduledEndDate,
+          scheduledBajaEffectiveDate: scheduledEffectiveDate,
+          scheduledBajaSourceGestionId: gestionId,
+          scheduledBajaAt: new Date().toISOString(),
+          scheduledBajaBy: user?.email || 'admin'
+        });
 
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
+          subjectBuilder: (group) => `Baja programada de alumno: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinación te informamos que ${displayName} se ha dado de BAJA y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+Desde coordinación te informamos que ${displayName} tiene programada la baja y dejará de asistir a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
 
 ${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
 
-Ya ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} ya no debe aparecer como alumno activo en tu lista de asistencia.
 
 Un saludo,
 Coordinación Los Mitos.`
@@ -1929,26 +2076,30 @@ Coordinación Los Mitos.`
 
         await sendStudentNotification({
           studentEmail,
-          subject: `Confirmación de baja - Escuela Los Mitos`,
+          subject: `Confirmación de baja programada - Escuela Los Mitos`,
           body: `Hola ${studentName},
 
-Te confirmamos que tu solicitud de baja ha sido tramitada correctamente.
+Te confirmamos que tu solicitud de baja ha sido programada correctamente.
+
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} tu baja será efectiva y dejarás de aparecer como alumno/a activo/a en la plataforma.
 
 ${isTotalBaja
-  ? `Has solicitado la baja total, así que hemos dado de baja todas tus clases${sourceClassLine ? ` aunque la plaza de referencia fuera:\n· ${sourceClassLine}` : ''}.\n`
+  ? `Has solicitado la baja total, así que se programan todas tus clases${sourceClassLine ? ` aunque la plaza de referencia fuera:\n· ${sourceClassLine}` : ''}.\n`
   : hasScopedBaja && sourceClassLine
-    ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda registrada como baja completa de Escuela Los Mitos.\n`
-    : 'A partir de este momento, tu baja queda registrada en Escuela Los Mitos.\n'}
+    ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda programada como baja completa de Escuela Los Mitos.\n`
+    : 'La baja queda programada según la normativa administrativa del centro.\n'}
 Un saludo,
 Coordinación Los Mitos.`
         });
 
         await finalizeGestionStatus(gestionId, 'completado', gestionData, isTotalBaja
-          ? `Baja total ejecutada por solicitud explícita del alumno${sourceClassLine ? `. Plaza de referencia: ${sourceClassLine}` : ''}`
+          ? `Baja total programada por solicitud explícita del alumno. Último día: ${formatDateSpanish(scheduledEndDate)}${sourceClassLine ? `. Plaza de referencia: ${sourceClassLine}` : ''}`
           : hasScopedBaja && sourceClassLine
-            ? `Baja total ejecutada al ser última plaza fija. Plaza solicitada: ${sourceClassLine}`
-            : 'Ejecutado desde bandeja Admin');
-        return notify(`✅ Baja ejecutada. Profesores y alumno avisados por correo. ${displayName} borrado de ${borradas} clases. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
+            ? `Baja total programada al ser última plaza fija. Último día: ${formatDateSpanish(scheduledEndDate)}. Plaza solicitada: ${sourceClassLine}`
+            : `Baja programada desde bandeja Admin. Último día: ${formatDateSpanish(scheduledEndDate)}`,
+          scheduledExecutionUpdate);
+        return notify(`✅ Baja programada. ${displayName} conserva sus clases hasta ${formatDateSpanish(scheduledEndDate)} y dejará de aparecer desde ${formatDateSpanish(scheduledEffectiveDate)}. Tickets y trivial quedan marcados para baja total cuando sea efectiva.`);
       }
       else if (type === 'mantenimiento') {
         let maintenancePeriod = getMaintenancePeriodFromGestion(gestionData);
@@ -2130,13 +2281,21 @@ Coordinación Los Mitos.`
         const maintenanceCheckDate = type === 'recuperacion' ? (recoveryDate || todayStr) : todayStr;
         if (isStudentInMaintenance(studentId, maintenanceCheckDate)) {
           const activeMaintenance = getActiveStudentMaintenancePeriod(studentId, maintenanceCheckDate);
-          return fail(`⚠️ No se puede ejecutar este trámite.\n\n${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(activeMaintenance)}. Primero debe finalizar ese periodo o aprobarse un fin anticipado.`);
+          return fail(`⚠️ No se puede ejecutar este trámite.
+
+${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(activeMaintenance)}. Primero debe finalizar ese periodo o aprobarse un fin anticipado.`);
         }
 
         if (type === 'recuperacion') {
           const recoveryTicketStats = getTicketStatsForDate(studentId, recoveryDate, gestionId);
           if (recoveryTicketStats.free <= 0) {
-            return fail(`⚠️ No se puede aprobar esta recuperación.\n\n${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).\n\nTickets válidos ese día: ${recoveryTicketStats.active}\nRecuperaciones comprometidas: ${recoveryTicketStats.committed}\nTickets libres: ${recoveryTicketStats.free}`);
+            return fail(`⚠️ No se puede aprobar esta recuperación.
+
+${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).
+
+Tickets válidos ese día: ${recoveryTicketStats.active}
+Recuperaciones comprometidas: ${recoveryTicketStats.committed}
+Tickets libres: ${recoveryTicketStats.free}`);
           }
         }
 
@@ -2157,9 +2316,19 @@ Coordinación Los Mitos.`
           const sourceClass = getGestionSourceClass(gestionData);
           const sourceClassLine = getGestionSourceClassLine(gestionData);
           const hasScopedChange = Boolean(gestionData.sourceClassId || gestionData.sourceClassLine);
+          const scheduledEndDate = promptScheduledClassEndDate(gestionData, 'el cambio de horario', silent);
+          if (!scheduledEndDate) {
+            return { ok: false, cancelled: true, message: 'Fecha efectiva no seleccionada.' };
+          }
+          const scheduledStartDate = getScheduledClassStartAfterEndDate(scheduledEndDate);
 
           if (hasScopedChange && !sourceClass?.refPath) {
-            return fail(`⚠️ No se puede ejecutar el cambio de horario por plaza.\n\nLa solicitud indica una plaza de origen, pero esa clase ya no existe o no tiene ruta válida.\n\nPlaza indicada:\n${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
+            return fail(`⚠️ No se puede programar el cambio de horario por plaza.
+
+La solicitud indica una plaza de origen, pero esa clase ya no existe o no tiene ruta válida.
+
+Plaza indicada:
+${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           }
 
           if (hasScopedChange && sourceClass?.id === targetClass.id) {
@@ -2168,24 +2337,96 @@ Coordinación Los Mitos.`
 
           oldClasses = hasScopedChange && sourceClass
             ? [sourceClass]
-            : recurringClassesOnly.filter(c => c.id !== requestedClass && c.students && c.students.some(s => s.id === studentId) && c.subject === targetClass.subject);
+            : recurringClassesOnly.filter(c => c.id !== requestedClass && c.students && c.students.some(s => {
+                const studentForEntry = students.find(student => student.id === s.id) || {};
+                return s.id === studentId && isStudentClassCommittedOnDate(s, studentForEntry, todayStr) && c.subject === targetClass.subject;
+              }));
+
+          if (oldClasses.length === 0) {
+            return fail('⚠️ No se ha encontrado una plaza de origen activa para programar el cambio de horario.');
+          }
 
           for (let c of oldClasses) {
             const currentEntry = (c.students || []).find(s => s.id === studentId);
             if (!sourceStudentEntry && currentEntry) sourceStudentEntry = currentEntry;
-            const updatedList = (c.students || []).filter(s => s.id !== studentId);
+            const updatedList = (c.students || []).map(s =>
+              s.id === studentId ? applyScheduledEndToStudentEntry(s, scheduledEndDate, 'cambio_horario', gestionId) : s
+            );
             if (c.refPath) {
               await updateDoc(doc(db, c.refPath), { students: updatedList });
-              logMessage += `➖ Borrado de ${formatClassLine(c)}.\n`;
+              logMessage += `➖ Salida programada de ${formatClassLine(c)} el ${formatDateSpanish(scheduledEndDate)}.\n`;
             }
           }
+
+          const newStudentPayload = {
+            id: studentId,
+            name: displayName,
+            email: studentInfo?.email || '',
+            classStartDate: scheduledStartDate,
+            scheduledStartDate,
+            scheduledStartReason: 'cambio_horario',
+            scheduledGestionId: gestionId,
+            isPaused: false,
+            status: 'present',
+            isRecovery: false,
+            recoveryDate: null
+          };
+          const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
+          await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
+          logMessage += `➕ Entrada programada en ${formatClassLine(targetClass)} desde ${formatDateSpanish(scheduledStartDate)}.\n`;
+          await finalizeGestionStatus(
+            gestionId,
+            'completado',
+            gestionData,
+            `Cambio de horario programado. Sale el ${formatDateSpanish(scheduledEndDate)} y entra el ${formatDateSpanish(scheduledStartDate)}.`,
+            buildScheduledExecutionUpdate(scheduledEndDate, {
+              scheduledAction: 'cambio_horario',
+              scheduledClassStartDate: scheduledStartDate,
+              scheduledTargetClassId: targetClass.id,
+              scheduledTargetClassLine: formatClassLine(targetClass)
+            })
+          );
+          logMessage += `✅ Cambio de horario programado con éxito.\n`;
+
+          const oldGroups = groupClassesByTeacher(oldClasses);
+          const targetEmail = getTeacherEmail(targetClass.teacher);
+          const targetOldGroup = oldGroups.find(g => g.email === targetEmail);
+          const otherOldGroups = oldGroups.filter(g => g.email !== targetEmail);
+
+          await sendGroupedTeacherSummary({
+            groupedClasses: otherOldGroups,
+            subjectBuilder: (group) => `Cambio de horario programado: ${displayName} deja tu clase`,
+            bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} tiene programado un cambio de horario y dejará de asistir a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nÚltimo día en el horario actual: ${formatDateSpanish(scheduledEndDate)}.\nA partir de ${formatDateSpanish(scheduledStartDate)} ya no debe aparecer como alumno activo en esa lista.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+
+          if (targetOldGroup) {
+            await sendTeacherNotification({
+              teacherName: targetClass.teacher,
+              subject: `Cambio de horario interno programado: ${displayName}`,
+              body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} tiene programado un cambio de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nÚltimo día en el horario actual: ${formatDateSpanish(scheduledEndDate)}.\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nFecha de inicio en el nuevo horario: ${formatDateSpanish(scheduledStartDate)}.\n\nUn saludo,\nCoordinación Los Mitos.`
+            });
+          } else if (!isPunctualClass(targetClass)) {
+            await sendTeacherNotification({
+              teacherName: targetClass.teacher,
+              subject: `Nuevo alumno fijo programado: ${displayName} (${targetClass.subject})`,
+              body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nFecha de inicio en tu lista: ${formatDateSpanish(scheduledStartDate)}.\nHasta entonces no debe aparecer como alumno activo en esta clase.\n\nUn saludo,\nCoordinación Los Mitos.`
+            });
+          }
+
+          await sendStudentNotification({
+            studentEmail,
+            subject: `Confirmación de cambio de horario programado - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y programado correctamente.\n\n${sourceClassLine ? `Horario actual:\n· ${sourceClassLine}\nÚltimo día en este horario: ${formatDateSpanish(scheduledEndDate)}.\n\n` : ''}Nuevo horario:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\nFecha de inicio: ${formatDateSpanish(scheduledStartDate)}.\n\nUn saludo,\nCoordinación Los Mitos.`
+          });
+
+          return notify(logMessage);
         }
 
         const newStudentPayload = {
           id: studentId,
           name: displayName,
           email: studentInfo?.email || '',
-          classStartDate: sourceStudentEntry?.classStartDate || studentInfo?.classStartDate || '',
+          classStartDate: studentInfo?.classStartDate || '',
           isPaused: false,
           status: 'present',
           isRecovery: type === 'recuperacion',
@@ -2196,40 +2437,6 @@ Coordinación Los Mitos.`
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
         logMessage += `✅ Trámite archivado con éxito.\n`;
-
-        if (type === 'cambio_horario') {
-          const oldGroups = groupClassesByTeacher(oldClasses);
-          const targetEmail = getTeacherEmail(targetClass.teacher);
-          const targetOldGroup = oldGroups.find(g => g.email === targetEmail);
-          const otherOldGroups = oldGroups.filter(g => g.email !== targetEmail);
-
-          await sendGroupedTeacherSummary({
-            groupedClasses: otherOldGroups,
-            subjectBuilder: (group) => `Cambio de horario: ${displayName} deja tu clase`,
-            bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} se ha cambiado de horario y ya no vendrá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
-          });
-
-          if (targetOldGroup) {
-            await sendTeacherNotification({
-              teacherName: targetClass.teacher,
-              subject: `Cambio de horario interno: ${displayName}`,
-              body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas de asistencia en la App.\n\nUn saludo,\nCoordinación Los Mitos.`
-            });
-          } else if (!isPunctualClass(targetClass)) {
-            await sendTeacherNotification({
-              teacherName: targetClass.teacher,
-              subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
-              body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
-            });
-          }
-
-          const sourceClassLine = getGestionSourceClassLine(gestionData);
-          await sendStudentNotification({
-            studentEmail,
-            subject: `Confirmación de cambio de horario - Escuela Los Mitos`,
-            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y tramitado correctamente.\n\n${sourceClassLine ? `Horario anterior:\n· ${sourceClassLine}\n\n` : ''}Tu nuevo horario es:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
-          });
-        }
 
         if (type === 'ampliar_clases' && !isPunctualClass(targetClass)) {
           await sendTeacherNotification({
@@ -2797,7 +3004,7 @@ Coordinación Los Mitos.`
     sortedClasses.forEach(clase => {
       const classStudents = (clase.students || []).filter(studentEntry => {
         const studentInfo = students.find(student => student.id === studentEntry.id);
-        return studentInfo?.globalStatus !== 'baja';
+        return studentInfo?.globalStatus !== 'baja' && !hasStudentClassEndedBeforeDate(studentEntry, studentInfo || {}, todayStr);
       });
       const endTime = getClassEndTime(clase.time, clase.duration);
       const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
@@ -3079,7 +3286,10 @@ Coordinación Los Mitos.`
 
     const getProjectedClassStudentRows = (clase) => {
       return (clase.students || [])
-        .filter(isFixedClassStudent)
+        .filter(studentEntry => {
+          const studentInfo = studentById.get(studentEntry.id) || {};
+          return isFixedClassStudent(studentEntry) && !hasStudentClassEndedBeforeDate(studentEntry, studentInfo, nextMonthEndStr);
+        })
         .map(studentEntry => {
           const { displayName, email, studentInfo } = getStudentLineData(studentEntry);
           const crmStatus = studentInfo?.globalStatus || 'activo';
@@ -3937,7 +4147,11 @@ Coordinación Los Mitos.`
         .map(rel => rel.studentId)
     );
 
-    const baseStudents = (clase.students || []).filter(studentEntry => !relocatedOutIds.has(studentEntry.id));
+    const baseStudents = (clase.students || []).filter(studentEntry => {
+      if (relocatedOutIds.has(studentEntry.id)) return false;
+      const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+      return !hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
+    });
 
     const relocatedInStudents = activeRelocations
       .filter(rel => rel.targetClassId === clase.id)
@@ -3978,14 +4192,16 @@ Coordinación Los Mitos.`
           ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo')
           : (studentInfo?.globalStatus || 'activo');
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+        const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+        const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
         const isFutureStart = Boolean(startDate && startDate > referenceDate);
-        const isMaintenance = projectedStatus !== 'baja' && (
+        const isMaintenance = projectedStatus !== 'baja' && !isPastEnd && (
           studentEntry.projectedMaintenance === true ||
           (!projected && isStudentInMaintenance(studentEntry.id, referenceDate)) ||
           (projected && isStudentInMaintenanceRange(studentEntry.id, nextMonthStartStr, nextMonthEndStr))
         );
         const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
-        const isActive = projectedStatus !== 'baja' && !isMaintenance && !isFutureStart;
+        const isActive = projectedStatus !== 'baja' && !isPastEnd && !isMaintenance && !isFutureStart;
         const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
         const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
 
@@ -3999,7 +4215,9 @@ Coordinación Los Mitos.`
           isFutureStart,
           isRelocated,
           relocationLabel: studentEntry.relocationLabel || '',
-          startDate
+          startDate,
+          endDate,
+          isPastEnd
         };
       });
   };
@@ -4096,7 +4314,7 @@ Coordinación Los Mitos.`
         id: studentInfo.id,
         name: getDisplayNameForProjection(studentInfo, gestion),
         email: getEmailForProjection(studentInfo, gestion),
-        classStartDate: studentInfo?.classStartDate || '',
+        classStartDate: gestion.scheduledClassStartDate || gestion.effectiveStartDate || studentInfo?.classStartDate || '',
         isPaused: false,
         status: 'present',
         isRecovery: false,

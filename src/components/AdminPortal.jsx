@@ -420,6 +420,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [dangerViewMode, setDangerViewMode] = useState('actual');
   const [dangerSubView, setDangerSubView] = useState('ocupacion');
   const [bulkExecutingGestiones, setBulkExecutingGestiones] = useState(false);
+  const [bulkConsolidatingGestiones, setBulkConsolidatingGestiones] = useState(false);
   
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
@@ -2518,6 +2519,290 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
   };
 
+
+  const getScheduledGestionEndDate = (gestion = {}) => normalizeGestionDateString(
+    gestion.scheduledClassEndDate ||
+    gestion.bajaClassEndDate ||
+    gestion.effectiveEndDate ||
+    gestion.classEndDate ||
+    gestion.scheduledEndDate ||
+    ''
+  );
+
+  const getScheduledGestionEffectiveDate = (gestion = {}) => {
+    const explicitEffective = normalizeGestionDateString(
+      gestion.scheduledEffectiveDate ||
+      gestion.bajaEffectiveDate ||
+      gestion.effectiveStartDate ||
+      gestion.scheduledClassStartDate ||
+      ''
+    );
+    if (explicitEffective) return explicitEffective;
+    const endDate = getScheduledGestionEndDate(gestion);
+    return endDate ? getScheduledClassStartAfterEndDate(endDate) : '';
+  };
+
+  const shouldConsolidateScheduledGestion = (gestion = {}) => {
+    if (!['baja', 'cambio_horario'].includes(gestion.type)) return false;
+    if (gestion.status !== 'completado') return false;
+    if (gestion.workflowStatus === 'consolidado' || gestion.consolidatedAt) return false;
+    if (gestion.executionMode && !String(gestion.executionMode).includes('scheduled')) return false;
+
+    const endDate = getScheduledGestionEndDate(gestion);
+    const effectiveDate = getScheduledGestionEffectiveDate(gestion);
+    return Boolean(endDate && effectiveDate && effectiveDate <= todayStr);
+  };
+
+  const getScheduledEntryEndDate = (studentEntry = {}, studentInfo = {}) => getStudentClassEndDate(studentEntry, studentInfo);
+
+  const isEntryScheduledByGestion = (studentEntry = {}, gestion = {}, reasonPrefix = '') => {
+    const gestionId = String(gestion.id || '').trim();
+    const entryGestionId = String(studentEntry.scheduledGestionId || studentEntry.sourceGestionId || '').trim();
+    const reason = String(studentEntry.scheduledEndReason || studentEntry.endReason || '').toLowerCase();
+    if (gestionId && entryGestionId === gestionId) return true;
+    if (reasonPrefix && reason.includes(reasonPrefix)) return true;
+    return false;
+  };
+
+  const buildConsolidatedGestionUpdate = (gestion = {}, summary = '', extra = {}) => {
+    const endDate = getScheduledGestionEndDate(gestion);
+    const effectiveDate = getScheduledGestionEffectiveDate(gestion);
+    return {
+      workflowStatus: 'consolidado',
+      executionMode: 'scheduled_consolidated',
+      consolidatedAt: new Date().toISOString(),
+      consolidatedBy: user?.email || 'admin',
+      consolidatedClassEndDate: endDate,
+      consolidatedEffectiveDate: effectiveDate,
+      consolidatedSummary: summary,
+      ...extra
+    };
+  };
+
+  const getClassStudentsAfterLocalUpdates = (classData = {}, localUpdates = new Map()) => {
+    if (!classData?.id) return classData.students || [];
+    return localUpdates.has(classData.id) ? localUpdates.get(classData.id) : (classData.students || []);
+  };
+
+  const hasRemainingCommittedFixedSeat = (studentId, studentInfo = {}, localUpdates = new Map()) => {
+    return recurringClassesOnly.some(classData => {
+      const studentList = getClassStudentsAfterLocalUpdates(classData, localUpdates);
+      return studentList.some(studentEntry =>
+        studentEntry.id === studentId &&
+        isFixedClassStudent(studentEntry) &&
+        isStudentClassCommittedOnDate(studentEntry, studentInfo, todayStr)
+      );
+    });
+  };
+
+  const consolidateScheduledBajaGestion = async (gestion = {}) => {
+    const studentId = gestion.studentId;
+    if (!studentId) return { ok: false, message: 'Gestión de baja sin alumno asociado.' };
+
+    const studentInfo = students.find(s => s.id === studentId) || {};
+    const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
+    const isTotalBaja = isTotalBajaGestion(gestion);
+    const sourceClass = getGestionSourceClass(gestion);
+    const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+    const endDate = getScheduledGestionEndDate(gestion);
+    const effectiveDate = getScheduledGestionEffectiveDate(gestion);
+    const localClassUpdates = new Map();
+    const removedClassLines = [];
+
+    const classesWithStudent = allClasses.filter(classData =>
+      classData.refPath &&
+      (classData.students || []).some(studentEntry => studentEntry.id === studentId)
+    );
+
+    for (const classData of classesWithStudent) {
+      const currentStudents = classData.students || [];
+      const updatedStudents = currentStudents.filter(studentEntry => {
+        if (studentEntry.id !== studentId) return true;
+
+        if (isTotalBaja) return false;
+
+        const entryEndDate = getScheduledEntryEndDate(studentEntry, studentInfo);
+        const entryIsDue = Boolean(entryEndDate && entryEndDate < todayStr);
+        const entryWasScheduledForThisBaja = isEntryScheduledByGestion(studentEntry, gestion, 'baja') && entryIsDue;
+        const isSourceClass = Boolean(sourceClass?.id && classData.id === sourceClass.id);
+
+        if (entryWasScheduledForThisBaja) return false;
+        if (hasScopedBaja && isSourceClass && isFixedClassStudent(studentEntry)) return false;
+        return true;
+      });
+
+      if (updatedStudents.length !== currentStudents.length) {
+        await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+        localClassUpdates.set(classData.id, updatedStudents);
+        removedClassLines.push(formatClassLine(classData));
+      }
+    }
+
+    const hasRemainingSeat = hasRemainingCommittedFixedSeat(studentId, studentInfo, localClassUpdates);
+    const shouldFinalizeGlobalBaja = isTotalBaja || !hasRemainingSeat;
+    let ticketsVoided = 0;
+
+    if (shouldFinalizeGlobalBaja) {
+      await resetStudentTrivia(studentId);
+      ticketsVoided = await voidStudentTickets(studentId, 'baja_programada_consolidada');
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+        globalStatus: 'baja',
+        classes: [],
+        scheduledBaja: false,
+        scheduledBajaConsolidatedAt: new Date().toISOString(),
+        scheduledBajaConsolidatedBy: user?.email || 'admin',
+        bajaEffectiveDate: effectiveDate,
+        bajaClassEndDate: endDate,
+        bajaSourceGestionId: gestion.id || ''
+      });
+    } else if (studentInfo?.globalStatus === 'baja') {
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+        globalStatus: 'activo',
+        scheduledBaja: false,
+        lastPartialBajaConsolidatedAt: new Date().toISOString(),
+        lastPartialBajaConsolidatedBy: user?.email || 'admin'
+      });
+    } else if (studentInfo?.scheduledBajaSourceGestionId === gestion.id || studentInfo?.scheduledBaja === true) {
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+        scheduledBaja: false,
+        lastPartialBajaConsolidatedAt: new Date().toISOString(),
+        lastPartialBajaConsolidatedBy: user?.email || 'admin'
+      });
+    }
+
+    const summary = shouldFinalizeGlobalBaja
+      ? `Baja definitiva consolidada para ${displayName}. Clases eliminadas: ${removedClassLines.length}. Tickets anulados: ${ticketsVoided}.`
+      : `Baja parcial consolidada para ${displayName}. Plaza eliminada: ${removedClassLines.length}. Conserva otras plazas activas.`;
+
+    await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), buildConsolidatedGestionUpdate(gestion, summary, {
+      consolidatedAction: shouldFinalizeGlobalBaja ? 'baja_total_definitiva' : 'baja_parcial_definitiva',
+      consolidatedRemovedClassLines: removedClassLines,
+      consolidatedRemovedClassCount: removedClassLines.length,
+      consolidatedTicketsVoided: ticketsVoided,
+      consolidatedKeepsActiveSeats: !shouldFinalizeGlobalBaja
+    }));
+
+    return { ok: true, message: summary };
+  };
+
+  const consolidateScheduledChangeGestion = async (gestion = {}) => {
+    const studentId = gestion.studentId;
+    if (!studentId) return { ok: false, message: 'Gestión de cambio sin alumno asociado.' };
+
+    const studentInfo = students.find(s => s.id === studentId) || {};
+    const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
+    const targetClassId = String(gestion.scheduledTargetClassId || gestion.requestedClass || '').trim();
+    const targetClass = allClasses.find(classData => classData.id === targetClassId) || null;
+    const sourceClass = getGestionSourceClass(gestion);
+    const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+    const scheduledStartDate = normalizeGestionDateString(gestion.scheduledClassStartDate || gestion.effectiveStartDate || '') || getScheduledGestionEffectiveDate(gestion);
+    const removedClassLines = [];
+
+    const classesWithStudent = allClasses.filter(classData =>
+      classData.refPath &&
+      classData.id !== targetClassId &&
+      (classData.students || []).some(studentEntry => studentEntry.id === studentId)
+    );
+
+    for (const classData of classesWithStudent) {
+      const currentStudents = classData.students || [];
+      const updatedStudents = currentStudents.filter(studentEntry => {
+        if (studentEntry.id !== studentId) return true;
+        if (!isFixedClassStudent(studentEntry)) return true;
+
+        const entryEndDate = getScheduledEntryEndDate(studentEntry, studentInfo);
+        const entryIsDue = Boolean(entryEndDate && entryEndDate < todayStr);
+        const entryWasScheduledForThisChange = isEntryScheduledByGestion(studentEntry, gestion, 'cambio_horario') && entryIsDue;
+        const isSourceClass = Boolean(sourceClass?.id && classData.id === sourceClass.id);
+        const sameSubjectFallback = !hasScopedChange && targetClass?.subject && classData.subject === targetClass.subject;
+
+        if (entryWasScheduledForThisChange) return false;
+        if (hasScopedChange && isSourceClass) return false;
+        if (sameSubjectFallback && entryIsDue) return false;
+        return true;
+      });
+
+      if (updatedStudents.length !== currentStudents.length) {
+        await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+        removedClassLines.push(formatClassLine(classData));
+      }
+    }
+
+    let targetStatus = 'ok';
+    if (targetClass?.refPath) {
+      const targetHasStudent = (targetClass.students || []).some(studentEntry => studentEntry.id === studentId && isFixedClassStudent(studentEntry));
+      if (!targetHasStudent) {
+        const newStudentPayload = {
+          id: studentId,
+          name: displayName,
+          email: studentInfo?.email || gestion.studentEmail || '',
+          classStartDate: scheduledStartDate,
+          scheduledStartDate,
+          scheduledStartReason: 'cambio_horario',
+          scheduledGestionId: gestion.id,
+          isPaused: false,
+          status: 'present',
+          isRecovery: false,
+          recoveryDate: null
+        };
+        await updateDoc(doc(db, targetClass.refPath), { students: [...(targetClass.students || []), newStudentPayload] });
+        targetStatus = 'recreada_entrada_destino';
+      }
+    } else {
+      targetStatus = 'clase_destino_no_localizada';
+    }
+
+    const summary = `Cambio de horario consolidado para ${displayName}. Salidas limpiadas: ${removedClassLines.length}${targetStatus === 'clase_destino_no_localizada' ? '. Aviso: clase destino no localizada.' : ''}`;
+
+    await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), buildConsolidatedGestionUpdate(gestion, summary, {
+      consolidatedAction: 'cambio_horario_definitivo',
+      consolidatedRemovedClassLines: removedClassLines,
+      consolidatedRemovedClassCount: removedClassLines.length,
+      consolidatedTargetClassStatus: targetStatus,
+      consolidatedTargetClassId: targetClassId,
+      consolidatedTargetClassLine: targetClass ? formatClassLine(targetClass) : (gestion.requestedClassLine || '')
+    }));
+
+    return { ok: true, message: summary };
+  };
+
+  const consolidateExpiredScheduledGestiones = async () => {
+    const expiredGestiones = scheduledGestionesVencidas.filter(gestion => ['baja', 'cambio_horario'].includes(gestion.type));
+
+    if (expiredGestiones.length === 0) {
+      alert('No hay bajas ni cambios de horario programados vencidos para consolidar.');
+      return;
+    }
+
+    const bajaCount = expiredGestiones.filter(gestion => gestion.type === 'baja').length;
+    const changeCount = expiredGestiones.filter(gestion => gestion.type === 'cambio_horario').length;
+    if (!window.confirm(`¿Consolidar ${expiredGestiones.length} gestión(es) programada(s) vencida(s)?\n\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. En bajas totales también marca baja definitiva, anula tickets pendientes y pone el trivial a cero.\n\nNo procesa mantenimientos.`)) return;
+
+    setBulkConsolidatingGestiones(true);
+    const results = [];
+
+    try {
+      for (const gestion of expiredGestiones) {
+        try {
+          const result = gestion.type === 'baja'
+            ? await consolidateScheduledBajaGestion(gestion)
+            : await consolidateScheduledChangeGestion(gestion);
+          results.push({ gestion, result });
+        } catch (error) {
+          results.push({ gestion, result: { ok: false, message: error.message || String(error) } });
+        }
+      }
+
+      const okResults = results.filter(item => item.result?.ok);
+      const errorResults = results.filter(item => !item.result?.ok);
+      const errorLines = errorResults.map(item => `- ${item.gestion.studentName || 'Sin alumno'} (${item.gestion.type || 'gestión'}): ${item.result?.message || 'Error no especificado'}`);
+
+      alert(`Consolidación terminada.\n\nConsolidadas correctamente: ${okResults.length}\nCon error u omitidas: ${errorResults.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
+    } finally {
+      setBulkConsolidatingGestiones(false);
+    }
+  };
+
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';
     const newStatus = isStatusField ? (currentValue === 'congelado' ? 'activo' : 'congelado') : !currentValue;
@@ -4013,6 +4298,7 @@ Coordinación Los Mitos.`
 
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
+  const scheduledGestionesVencidas = gestiones.filter(shouldConsolidateScheduledGestion);
 
   useEffect(() => {
     const absencesToArchive = gestiones.filter(shouldAutoArchiveAbsenceGestion);
@@ -6380,6 +6666,9 @@ ${startDateWarning}
                 <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos, tareas manuales internas y peticiones de profesores.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
+                <button onClick={consolidateExpiredScheduledGestiones} disabled={bulkConsolidatingGestiones || scheduledGestionesVencidas.length === 0} className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Consolida solo bajas y cambios de horario programados cuya fecha efectiva ya ha llegado. No procesa mantenimientos.">
+                  <CheckCircle className="w-4 h-4"/> {bulkConsolidatingGestiones ? 'Consolidando...' : 'Consolidar gestiones programadas vencidas'} {scheduledGestionesVencidas.length > 0 ? `(${scheduledGestionesVencidas.length})` : ''}
+                </button>
                 <button onClick={executeAllReadyGestiones} disabled={bulkExecutingGestiones || readyPendingGestiones.length === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Ejecuta solo los trámites listos: Tadosi hecho o trámites que no requieren Tadosi">
                   <CheckCircle className="w-4 h-4"/> Ejecutar todas ({readyPendingGestiones.length})
                 </button>
@@ -6389,7 +6678,7 @@ ${startDateWarning}
               </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Pendientes totales</p>
                 <p className="text-2xl font-black text-slate-900">{totalPendingInbox}</p>
@@ -6405,6 +6694,10 @@ ${startDateWarning}
               <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">Tareas profesores</p>
                 <p className="text-2xl font-black text-blue-900">{pendingTeacherPanelTasks.length}</p>
+              </div>
+              <div className="bg-violet-50 border border-violet-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-violet-700">Programadas vencidas</p>
+                <p className="text-2xl font-black text-violet-900">{scheduledGestionesVencidas.length}</p>
               </div>
             </div>
 

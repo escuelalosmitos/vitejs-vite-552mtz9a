@@ -7587,7 +7587,20 @@ ${startDateWarning}
 
                   {/* TABLA COMPLETA DE CASILLAS EXCEL INTERACTIVAS */}
                   <div className="mt-2">
-                     <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo</h3>
+                     <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-3 mb-4">
+                       <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 flex items-center gap-2"><Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo</h3>
+                       <div className="flex flex-wrap gap-2 text-[9px] font-black uppercase tracking-widest">
+                         <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 text-white">
+                           <span className="w-2.5 h-2.5 rounded-full bg-white/80"></span> Color profesor = clase operativa
+                         </span>
+                         <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 text-slate-700 border border-dashed border-slate-400">
+                           <Snowflake className="w-3 h-3"/> Gris = hibernada / no se imparte
+                         </span>
+                         <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white text-zinc-400 border border-dashed border-zinc-200">
+                           <PlusCircle className="w-3 h-3"/> Blanco = hueco libre
+                         </span>
+                       </div>
+                     </div>
                      <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden overflow-x-auto">
                         <table className="w-full text-left border-collapse min-w-[600px]">
                            <thead>
@@ -7614,42 +7627,74 @@ ${startDateWarning}
                                                 classesInSlot.map(c => {
                                                    const realClass = recurringClassesOnly.find(real => real.id === c.id) || c;
                                                    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection, archDate || todayStr);
-                                                   const fixedActiveStudents = planningStudents
-                                                      .filter(student => student.isActive)
+                                                   const activeStudents = planningStudents.filter(student => student.isActive);
+                                                   const fixedActiveStudents = activeStudents
                                                       .map(student => student.displayName)
                                                       .filter(Boolean);
                                                    const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
                                                    const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
                                                    const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
+                                                   const relocatedOutCount = temporaryRelocations.filter(rel => rel.sourceClassId === c.id && isTemporaryRelocationActiveForDate(rel, archDate || todayStr)).length;
                                                    const committedCount = planningStudents.filter(student => student.isActive || student.isMaintenance || student.isFutureStart).length;
+                                                   const activeCount = activeStudents.length;
+                                                   const isHibernatedCard = activeCount === 0;
                                                    const capacityLabel = c.capacity ? `${committedCount}/${c.capacity}` : `${committedCount}/—`;
+                                                   const activeCapacityLabel = c.capacity ? `${activeCount}/${c.capacity}` : `${activeCount}/—`;
                                                    const visibleStudentNames = fixedActiveStudents.slice(0, 5);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
                                                    const teacherTheme = getTeacherColorTheme(c.teacher, settings);
+                                                   const hibernationReason = maintenanceCount > 0 && futureStartCount > 0
+                                                      ? 'Reservas / mantenimiento'
+                                                      : maintenanceCount > 0
+                                                        ? 'Solo mantenimiento'
+                                                        : futureStartCount > 0
+                                                          ? 'Inicio futuro'
+                                                          : relocatedOutCount > 0
+                                                            ? 'Recolocación temporal'
+                                                            : 'Sin alumnos activos';
+                                                   const cardStyle = isHibernatedCard
+                                                      ? { background: '#f8fafc', border: '2px dashed #94a3b8' }
+                                                      : { background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` };
+                                                   const cardTextClass = isHibernatedCard ? 'text-slate-700' : 'text-white';
+                                                   const mutedTextStyle = isHibernatedCard ? { color: '#64748b' } : { color: 'rgba(255,255,255,.76)' };
+                                                   const dividerStyle = isHibernatedCard ? { borderColor: 'rgba(100,116,139,.25)' } : { borderColor: 'rgba(255,255,255,.22)' };
 
                                                    return (
-                                                      <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5 cursor-pointer" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }}>
+                                                      <div key={c.id} className={`${cardTextClass} p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5 cursor-pointer ${isHibernatedCard ? 'opacity-95' : ''}`} style={cardStyle} onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }}>
                                                          <div className="flex items-start justify-between gap-2">
                                                            <div className="min-w-0">
                                                              <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
-                                                             <div className="text-[10px] font-bold truncate mt-1" style={{ color: 'rgba(255,255,255,.76)' }}>Prof: {c.teacher}</div>
+                                                             <div className="text-[10px] font-bold truncate mt-1" style={mutedTextStyle}>Prof: {c.teacher}</div>
                                                            </div>
-                                                           <span className="shrink-0 bg-white/20 text-white px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest" title="Plazas comprometidas / aforo">{capacityLabel}</span>
+                                                           <span className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${isHibernatedCard ? 'bg-slate-200 text-slate-700' : 'bg-white/20 text-white'}`} title="Plazas comprometidas / aforo">{capacityLabel}</span>
                                                          </div>
 
-                                                         {visibleStudentNames.length > 0 && (
-                                                            <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: 'rgba(255,255,255,.22)', color: 'rgba(255,255,255,.82)' }}>
+                                                         {isHibernatedCard ? (
+                                                            <div className="mt-2 pt-2 border-t" style={dividerStyle}>
+                                                              <div className="inline-flex items-center gap-1.5 bg-slate-200 text-slate-700 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">
+                                                                <Snowflake className="w-3 h-3"/> Hibernada
+                                                              </div>
+                                                              <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-slate-500">
+                                                                {hibernationReason}
+                                                              </div>
+                                                              <div className="mt-1 text-[9px] font-bold text-slate-500 leading-snug normal-case tracking-normal">
+                                                                No hay profesor operando esta clase en la fecha seleccionada.
+                                                              </div>
+                                                            </div>
+                                                         ) : visibleStudentNames.length > 0 && (
+                                                            <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ ...dividerStyle, color: 'rgba(255,255,255,.82)' }}>
                                                                {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
                                                             </div>
                                                          )}
-                                                         {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0) && (
-                                                            <div className="mt-1 text-[8px] font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,.68)' }}>
-                                                               {maintenanceCount > 0 ? `${maintenanceCount} mant.` : ''}{maintenanceCount > 0 && (futureStartCount > 0 || relocatedCount > 0) ? ' · ' : ''}{futureStartCount > 0 ? `${futureStartCount} futuro` : ''}{futureStartCount > 0 && relocatedCount > 0 ? ' · ' : ''}{relocatedCount > 0 ? `${relocatedCount} recol.` : ''}
+
+                                                         {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0 || relocatedOutCount > 0 || isHibernatedCard) && (
+                                                            <div className={`mt-1 text-[8px] font-black uppercase tracking-widest ${isHibernatedCard ? 'text-slate-500' : ''}`} style={isHibernatedCard ? undefined : { color: 'rgba(255,255,255,.68)' }}>
+                                                               Activos {activeCapacityLabel}{maintenanceCount > 0 ? ` · ${maintenanceCount} mant.` : ''}{futureStartCount > 0 ? ` · ${futureStartCount} futuro` : ''}{relocatedCount > 0 ? ` · ${relocatedCount} recol. aquí` : ''}{relocatedOutCount > 0 ? ` · ${relocatedOutCount} recol. fuera` : ''}
                                                             </div>
                                                          )}
 
-                                                         <div className="mt-3 pt-2 border-t flex flex-wrap gap-1.5" style={{ borderColor: 'rgba(255,255,255,.18)' }}>
-                                                           <button onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }} className="bg-white/90 hover:bg-white text-black p-1.5 rounded-lg transition-colors" title="Ver alumnos">
+                                                         <div className="mt-3 pt-2 border-t flex flex-wrap gap-1.5" style={isHibernatedCard ? { borderColor: 'rgba(100,116,139,.25)' } : { borderColor: 'rgba(255,255,255,.18)' }}>
+                                                           <button onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }} className={`${isHibernatedCard ? 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200' : 'bg-white/90 hover:bg-white text-black'} p-1.5 rounded-lg transition-colors`} title="Ver alumnos">
                                                              <Users className="w-3.5 h-3.5"/>
                                                            </button>
                                                            {!isArchitectProjection && (
@@ -7660,13 +7705,13 @@ ${startDateWarning}
                                                                <button onClick={(e) => { e.stopPropagation(); setEditWebModal(realClass); }} className={`p-1.5 rounded-lg transition-colors ${realClass.isWebVisible ? 'bg-blue-100 hover:bg-blue-200 text-blue-700' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600'}`} title="Configurar web / WhatsApp">
                                                                  <Globe className="w-3.5 h-3.5"/>
                                                                </button>
-                                                               <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(realClass); }} className="bg-red-500/20 hover:bg-red-500 text-red-100 hover:text-white p-1.5 rounded-lg transition-colors" title="Borrar clase">
+                                                               <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(realClass); }} className={`${isHibernatedCard ? 'bg-red-50 hover:bg-red-100 text-red-600' : 'bg-red-500/20 hover:bg-red-500 text-red-100 hover:text-white'} p-1.5 rounded-lg transition-colors`} title="Borrar clase">
                                                                  <Trash2 className="w-3.5 h-3.5"/>
                                                                </button>
                                                              </>
                                                            )}
                                                            {isArchitectProjection && (
-                                                             <span className="bg-white/20 text-white px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest">Simulada</span>
+                                                             <span className={`${isHibernatedCard ? 'bg-slate-200 text-slate-700' : 'bg-white/20 text-white'} px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest`}>Simulada</span>
                                                            )}
                                                          </div>
                                                       </div>

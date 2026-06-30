@@ -2776,7 +2776,22 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
     const bajaCount = expiredGestiones.filter(gestion => gestion.type === 'baja').length;
     const changeCount = expiredGestiones.filter(gestion => gestion.type === 'cambio_horario').length;
-    if (!window.confirm(`¿Consolidar ${expiredGestiones.length} gestión(es) programada(s) vencida(s)?\n\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. En bajas totales también marca baja definitiva, anula tickets pendientes y pone el trivial a cero.\n\nNo procesa mantenimientos.`)) return;
+    const previewLimit = 25;
+    const previewLines = expiredGestiones.slice(0, previewLimit).map((gestion, index) => {
+      const typeLabel = gestion.type === 'baja' ? getBajaScopeLabel(gestion) || 'Baja' : 'Cambio de horario';
+      const endDate = getScheduledGestionEndDate(gestion);
+      const effectiveDate = getScheduledGestionEffectiveDate(gestion);
+      const sourceLine = getGestionSourceClassLine(gestion);
+      const targetLine = getGestionTargetClassLine(gestion);
+      const classLine = targetLine && sourceLine && targetLine !== sourceLine
+        ? `Origen: ${sourceLine} / Destino: ${targetLine}`
+        : (sourceLine || targetLine || 'Clase no indicada');
+      return `${index + 1}. ${gestion.studentName || 'Sin alumno'} · ${typeLabel}\n   Fin: ${formatDateSpanish(endDate)} · Efectiva: ${formatDateSpanish(effectiveDate)}\n   ${classLine}`;
+    });
+    const hiddenPreviewCount = Math.max(expiredGestiones.length - previewLimit, 0);
+    const previewText = `${previewLines.join('\n\n')}${hiddenPreviewCount > 0 ? `\n\n...y ${hiddenPreviewCount} gestión(es) más.` : ''}`;
+
+    if (!window.confirm(`Vas a consolidar estas gestiones programadas vencidas:\n\n${previewText}\n\nResumen:\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. En bajas totales también marca baja definitiva, anula tickets pendientes y pone el trivial a cero.\n\nNo procesa mantenimientos.\n\n¿Confirmas la consolidación?`)) return;
 
     setBulkConsolidatingGestiones(true);
     const results = [];
@@ -4299,6 +4314,25 @@ Coordinación Los Mitos.`
   const pendingGestiones = gestiones.filter(g => g.status === 'pendiente');
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
   const scheduledGestionesVencidas = gestiones.filter(shouldConsolidateScheduledGestion);
+  const isScheduledGestionPendingConsolidation = (gestion = {}) => {
+    if (!['baja', 'cambio_horario'].includes(gestion.type)) return false;
+    if (gestion.status !== 'completado') return false;
+    if (gestion.workflowStatus === 'consolidado' || gestion.consolidatedAt) return false;
+
+    const workflowStatus = String(gestion.workflowStatus || '').toLowerCase();
+    const executionMode = String(gestion.executionMode || '').toLowerCase();
+    const hasScheduledDates = Boolean(getScheduledGestionEndDate(gestion) && getScheduledGestionEffectiveDate(gestion));
+
+    return Boolean(
+      workflowStatus === 'programado' ||
+      executionMode.includes('scheduled') ||
+      hasScheduledDates
+    );
+  };
+  const scheduledGestionesProgramadas = gestiones
+    .filter(isScheduledGestionPendingConsolidation)
+    .sort((a, b) => String(getScheduledGestionEffectiveDate(a) || '9999-12-31').localeCompare(String(getScheduledGestionEffectiveDate(b) || '9999-12-31')) || new Date(a.date || 0) - new Date(b.date || 0));
+  const scheduledGestionesPendientesConsolidacion = scheduledGestionesProgramadas.filter(g => !shouldConsolidateScheduledGestion(g));
 
   useEffect(() => {
     const absencesToArchive = gestiones.filter(shouldAutoArchiveAbsenceGestion);
@@ -4331,7 +4365,7 @@ Coordinación Los Mitos.`
   const visibleResolvedGestiones = resolvedGestiones.slice(0, resolvedGestionesVisible);
   const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
-  const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length;
+  const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length + scheduledGestionesProgramadas.length;
 
   const gestionPendingFilters = [
     { id: 'todas', label: 'Todas gestiones', matcher: () => true },
@@ -4380,6 +4414,7 @@ Coordinación Los Mitos.`
   const activeGestionPendingFilter = gestionPendingFilters.find(f => f.id === gestionPendingFilter) || gestionPendingFilters[0];
   const activeTeacherTaskInboxFilter = teacherTaskInboxFilters.find(f => f.id === teacherTaskInboxFilter) || teacherTaskInboxFilters[0];
   const filteredPendingGestiones = pendingGestiones.filter(activeGestionPendingFilter.matcher).filter(matchesGestionSearch);
+  const filteredScheduledGestionesProgramadas = scheduledGestionesProgramadas.filter(matchesGestionSearch);
   const filteredTeacherRequests = pendingTeacherPanelTasks
     .filter(activeTeacherTaskInboxFilter.matcher)
     .filter(matchesTeacherRequestSearch);
@@ -6678,7 +6713,7 @@ ${startDateWarning}
               </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Pendientes totales</p>
                 <p className="text-2xl font-black text-slate-900">{totalPendingInbox}</p>
@@ -6696,8 +6731,12 @@ ${startDateWarning}
                 <p className="text-2xl font-black text-blue-900">{pendingTeacherPanelTasks.length}</p>
               </div>
               <div className="bg-violet-50 border border-violet-200 rounded-2xl p-4 shadow-sm">
-                <p className="text-[10px] font-black uppercase tracking-widest text-violet-700">Programadas vencidas</p>
-                <p className="text-2xl font-black text-violet-900">{scheduledGestionesVencidas.length}</p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-violet-700">Programadas pendientes</p>
+                <p className="text-2xl font-black text-violet-900">{scheduledGestionesPendientesConsolidacion.length}</p>
+              </div>
+              <div className="bg-fuchsia-50 border border-fuchsia-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-700">Programadas vencidas</p>
+                <p className="text-2xl font-black text-fuchsia-900">{scheduledGestionesVencidas.length}</p>
               </div>
             </div>
 
@@ -6719,7 +6758,7 @@ ${startDateWarning}
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <button
                     onClick={() => setInboxSection('gestiones')}
                     className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'gestiones' ? 'bg-black text-white border-black shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-black'}`}
@@ -6742,6 +6781,18 @@ ${startDateWarning}
                         <p className="text-sm font-black uppercase tracking-tight mt-1">Peticiones recibidas y encargos enviados</p>
                       </div>
                       <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'profesores' ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700'}`}>{pendingTeacherPanelTasks.length}</span>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => setInboxSection('programadas')}
+                    className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'programadas' ? 'bg-violet-700 text-white border-violet-700 shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-violet-500'}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Programadas</p>
+                        <p className="text-sm font-black uppercase tracking-tight mt-1">Bajas y cambios pendientes de consolidar</p>
+                      </div>
+                      <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'programadas' ? 'bg-white/20 text-white' : 'bg-violet-50 text-violet-700'}`}>{scheduledGestionesProgramadas.length}</span>
                     </div>
                   </button>
                 </div>
@@ -6873,6 +6924,78 @@ ${startDateWarning}
                           </div>
                         );
                       })}
+                    </div>
+                  )
+                ) : inboxSection === 'programadas' ? (
+                  filteredScheduledGestionesProgramadas.length === 0 ? (
+                    <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
+                      <Clock className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
+                      <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay gestiones programadas en esta vista</h3>
+                      <p className="text-xs text-zinc-400 font-medium mt-2">Aquí aparecerán las bajas y cambios de horario ya ejecutados como programados, hasta que se consoliden.</p>
+                    </div>
+                  ) : (
+                    <div className="bg-white rounded-2xl shadow-sm border border-violet-200 overflow-hidden">
+                      <div className="p-4 bg-violet-50 border-b border-violet-100 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                        <div>
+                          <h3 className="text-sm font-black uppercase tracking-tight text-violet-950 flex items-center gap-2"><Clock className="w-4 h-4"/> Gestiones programadas pendientes de consolidar</h3>
+                          <p className="text-xs font-bold text-violet-800/70 mt-1">Son trámites ya ejecutados en modo programado. Student/Teacher los respetan por fecha; este bloque sirve para no perderlos de vista hasta su consolidación final.</p>
+                        </div>
+                        <span className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-white text-violet-700 border border-violet-100">
+                          {scheduledGestionesVencidas.length} vencida(s)
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse min-w-[900px]">
+                          <thead>
+                            <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
+                              <th className="p-4 font-black">Alumno</th>
+                              <th className="p-4 font-black">Tipo</th>
+                              <th className="p-4 font-black">Fechas</th>
+                              <th className="p-4 font-black">Clase / movimiento</th>
+                              <th className="p-4 font-black text-right">Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody className="text-sm font-medium text-slate-700">
+                            {filteredScheduledGestionesProgramadas.map(g => {
+                              const endDate = getScheduledGestionEndDate(g);
+                              const effectiveDate = getScheduledGestionEffectiveDate(g);
+                              const isDue = shouldConsolidateScheduledGestion(g);
+                              const sourceClassLine = getGestionSourceClassLine(g);
+                              const targetClassLine = getGestionTargetClassLine(g);
+                              const bajaScopeLabel = getBajaScopeLabel(g);
+
+                              return (
+                                <tr key={g.id} className="border-b border-zinc-100 hover:bg-violet-50/40 transition-colors align-top">
+                                  <td className="p-4 min-w-[220px]">
+                                    <div className="font-black text-black">{g.studentName || 'Sin alumno'}</div>
+                                    <div className="text-[10px] text-zinc-400">{g.studentEmail || ''}</div>
+                                    <div className="text-[10px] text-zinc-400 mt-1">Programada el {formatDateSpanish(g.scheduledAt || g.date)}</div>
+                                  </td>
+                                  <td className="p-4">
+                                    <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${g.type === 'baja' ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'}`}>
+                                      {g.type === 'baja' ? (bajaScopeLabel || 'Baja') : 'Cambio horario'}
+                                    </span>
+                                  </td>
+                                  <td className="p-4 min-w-[180px]">
+                                    <div className="text-xs font-black text-slate-800">Fin: {formatDateSpanish(endDate)}</div>
+                                    <div className="text-xs font-black text-violet-700 mt-1">Efectiva: {formatDateSpanish(effectiveDate)}</div>
+                                  </td>
+                                  <td className="p-4 min-w-[320px]">
+                                    {sourceClassLine && <div className="text-xs font-bold text-slate-700 whitespace-pre-wrap"><span className="font-black uppercase text-[9px] text-zinc-400 tracking-widest block">Origen</span>{sourceClassLine}</div>}
+                                    {targetClassLine && targetClassLine !== sourceClassLine && <div className="text-xs font-bold text-slate-700 whitespace-pre-wrap mt-2"><span className="font-black uppercase text-[9px] text-zinc-400 tracking-widest block">Destino</span>{targetClassLine}</div>}
+                                    {!sourceClassLine && !targetClassLine && <div className="text-xs italic text-zinc-400">Sin clase indicada</div>}
+                                  </td>
+                                  <td className="p-4 text-right whitespace-nowrap">
+                                    <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest ${isDue ? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-violet-100 text-violet-700'}`}>
+                                      {isDue ? 'Vencida · lista' : 'Programada'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )
                 ) : filteredPendingGestiones.length === 0 ? (

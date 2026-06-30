@@ -3284,6 +3284,7 @@ Coordinación Los Mitos.`
   };
 
   const handleDownloadSchoolSnapshot = () => {
+    const snapshotDate = todayStr;
     const sortedClasses = [...recurringClassesOnly].sort((a, b) => {
       const sedeCompare = String(a.sede || '').localeCompare(String(b.sede || ''), 'es');
       if (sedeCompare !== 0) return sedeCompare;
@@ -3294,51 +3295,72 @@ Coordinación Los Mitos.`
       return String(a.time || '').localeCompare(String(b.time || ''));
     });
 
+    const getSnapshotStatus = ({ activeCount, maintenanceCount, futureStartCount, relocatedCount }) => {
+      if (activeCount > 0) return 'OPERATIVA';
+      if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA · reservas / mantenimiento';
+      if (maintenanceCount > 0) return 'HIBERNADA · solo mantenimiento';
+      if (futureStartCount > 0) return 'HIBERNADA · inicio futuro';
+      if (relocatedCount > 0) return 'OPERATIVA · recolocación temporal';
+      return 'HIBERNADA · sin alumnos activos';
+    };
+
     const lines = [
-      'FOTO ESCUELA LOS MITOS',
+      'FOTO ACTUAL ESCUELA LOS MITOS',
       `Generada: ${new Date().toLocaleString('es-ES')}`,
+      `Fecha operativa aplicada: ${formatDateSpanish(snapshotDate)}`,
       '',
-      'Formato: turno de clase, profesor/a, alumnos dados de alta y email.',
+      'Criterio: foto operativa real. Usa la misma lógica de la Vista Arquitecto en modo Real.',
+      'Excluye recuperaciones y alumnos no fijos; aplica fechas de inicio/fin, mantenimiento y recolocaciones temporales.',
+      'No es un informe comercial de plazas web.',
       '==============================================================='
     ];
 
     sortedClasses.forEach(clase => {
-      const classStudents = (clase.students || []).filter(studentEntry => {
-        const studentInfo = students.find(student => student.id === studentEntry.id);
-        return studentInfo?.globalStatus !== 'baja' && !hasStudentClassEndedBeforeDate(studentEntry, studentInfo || {}, todayStr);
-      });
+      const planningStudents = getClassStudentPlanningData(clase, false, snapshotDate)
+        .filter(student => student.status !== 'baja' && !student.isPastEnd)
+        .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
+
+      const activeStudents = planningStudents.filter(student => student.isActive);
+      const maintenanceStudents = planningStudents.filter(student => student.isMaintenance);
+      const futureStartStudents = planningStudents.filter(student => student.isFutureStart);
+      const relocatedStudents = planningStudents.filter(student => student.isRelocated);
+      const activeCount = activeStudents.length;
+      const maintenanceCount = maintenanceStudents.length;
+      const futureStartCount = futureStartStudents.length;
+      const relocatedCount = relocatedStudents.length;
+      const cap = parseInt(clase.capacity, 10) || 0;
+      const statusLabel = getSnapshotStatus({ activeCount, maintenanceCount, futureStartCount, relocatedCount });
+
       const endTime = getClassEndTime(clase.time, clase.duration);
       const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
 
-      lines.push('', turno, `${clase.subject || 'Clase'} · Profesor/a: ${clase.teacher || 'Sin asignar'}`, 'Alumnos:');
+      lines.push(
+        '',
+        turno,
+        `${clase.subject || 'Clase'} · Profesor/a: ${clase.teacher || 'Sin asignar'}`,
+        `Estado operativo: ${statusLabel}`,
+        `Cupo operativo: ${planningStudents.length}/${cap || 'sin aforo'} · Activos: ${activeCount} · Mantenimiento: ${maintenanceCount} · Inicio futuro: ${futureStartCount} · Recolocados aquí: ${relocatedCount}`,
+        'Alumnos:'
+      );
 
-      if (classStudents.length === 0) {
-        lines.push('- Sin alumnos dados de alta');
+      if (planningStudents.length === 0) {
+        lines.push('- Sin alumnos operativos ni plazas comprometidas para la fecha actual');
       } else {
-        classStudents
-          .map(studentEntry => {
-            const studentInfo = students.find(student => student.id === studentEntry.id);
-            const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
-            const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
-            const crmStatus = studentInfo?.globalStatus || 'activo';
-            const startDate = getStudentClassStartDate(studentEntry, studentInfo);
-            const futureStartLabel = startDate && startDate > todayStr ? ` · ${formatStudentClassStartLabel(startDate)}` : '';
-            const isMaintenance = isStudentInMaintenance(studentEntry.id, todayStr);
-            const maintenancePeriod = getActiveStudentMaintenancePeriod(studentEntry.id, todayStr);
-            const maintenanceLabel = isMaintenance ? ` · mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : '';
-            const statusLabel = crmStatus === 'impago'
-              ? ` · incidencia administrativa${futureStartLabel}`
-              : `${maintenanceLabel}${futureStartLabel}`;
-            return { displayName, email, statusLabel };
-          })
-          .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'))
-          .forEach(student => {
-            lines.push(`- ${student.displayName} — ${student.email}${student.statusLabel}`);
-          });
+        planningStudents.forEach(student => {
+          const labels = [];
+          if (student.status === 'impago') labels.push('incidencia administrativa');
+          if (student.isActive) labels.push('activo');
+          if (student.isMaintenance) labels.push('mantenimiento / plaza reservada');
+          if (student.isFutureStart) labels.push(formatStudentClassStartLabel(student.startDate));
+          if (student.endDate) labels.push(formatStudentClassEndLabel(student.endDate));
+          if (student.isRelocated) labels.push(student.relocationLabel || 'recolocado temporalmente aquí');
+
+          lines.push(`- ${student.displayName} — ${student.email}${labels.length ? ` · ${labels.join(' · ')}` : ''}`);
+        });
       }
     });
 
-    const filename = `Foto_Escuela_Los_Mitos_${getTodayLocalString()}.txt`;
+    const filename = `Foto_Actual_Escuela_Los_Mitos_${getTodayLocalString()}.txt`;
     downloadTextFile(filename, lines.join('\n'), 'text/plain;charset=utf-8');
   };
 

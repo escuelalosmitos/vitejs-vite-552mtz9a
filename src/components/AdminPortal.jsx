@@ -425,7 +425,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // VISTA ARQUITECTO E INFORMES
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
   const [archProjectionMode, setArchProjectionMode] = useState('actual'); // 'actual' o 'proyeccion'
-  const [archDay, setArchDay] = useState('1'); // Lunes por defecto
+  const [archDate, setArchDate] = useState(getTodayLocalString());
+  const [archDay, setArchDay] = useState('1'); // Compatibilidad interna para creación de clases
   const [archTime, setArchTime] = useState('17:00');
   const [archSede, setArchSede] = useState('Tarragona');
   const [informeSubTab, setInformeSubTab] = useState('resumen'); // 'resumen', 'sedes', 'instrumentos', 'profesores', 'semaforo'
@@ -4444,7 +4445,22 @@ Coordinación Los Mitos.`
     return grouped;
   }, [operationalClasses]);
 
-  const getArchitectReferenceDate = (projected = false) => projected ? nextMonthEndStr : todayStr;
+  const architectSelectedDay = useMemo(() => {
+    const dayIndex = getDateDayIndex(archDate);
+    return String(dayIndex === null ? 1 : dayIndex);
+  }, [archDate]);
+
+  const architectReferenceLabel = formatDateWithWeekday(archDate || todayStr);
+
+  const getArchitectReferenceDate = (projected = false, referenceDateOverride = '') => referenceDateOverride || (projected ? nextMonthEndStr : todayStr);
+
+  const isProjectedMaintenanceActiveForArchitectDate = (studentEntry = {}, referenceDate = archDate || todayStr) => {
+    if (studentEntry.projectedMaintenance !== true) return false;
+    const from = String(studentEntry.projectedMaintenanceFrom || '').trim();
+    const until = String(studentEntry.projectedMaintenanceUntil || '').trim();
+    if (!from || !until) return true;
+    return from <= referenceDate && until >= referenceDate;
+  };
 
   const isArchitectPlanningStudent = (studentEntry = {}) => {
     return !(
@@ -4455,13 +4471,9 @@ Coordinación Los Mitos.`
     );
   };
 
-  const getPlanningStudentsForClass = (clase = {}, projected = false) => {
-    const referenceDate = getArchitectReferenceDate(projected);
-    const activeRelocations = temporaryRelocations.filter(rel => {
-      if (!projected) return isTemporaryRelocationActiveForDate(rel, referenceDate);
-      if (!rel || rel.status === 'cancelled') return false;
-      return Boolean(rel.from && rel.until && rel.from <= nextMonthEndStr && rel.until >= nextMonthStartStr);
-    });
+  const getPlanningStudentsForClass = (clase = {}, projected = false, referenceDateOverride = '') => {
+    const referenceDate = getArchitectReferenceDate(projected, referenceDateOverride);
+    const activeRelocations = temporaryRelocations.filter(rel => isTemporaryRelocationActiveForDate(rel, referenceDate));
     const relocatedOutIds = new Set(
       activeRelocations
         .filter(rel => rel.sourceClassId === clase.id)
@@ -4502,10 +4514,10 @@ Coordinación Los Mitos.`
     return [...baseStudents, ...relocatedInStudents];
   };
 
-  const getClassStudentPlanningData = (clase, projected = false) => {
-    const referenceDate = getArchitectReferenceDate(projected);
+  const getClassStudentPlanningData = (clase, projected = false, referenceDateOverride = '') => {
+    const referenceDate = getArchitectReferenceDate(projected, referenceDateOverride);
 
-    return getPlanningStudentsForClass(clase, projected)
+    return getPlanningStudentsForClass(clase, projected, referenceDateOverride)
       .filter(isArchitectPlanningStudent)
       .map(studentEntry => {
         const studentInfo = students.find(student => student.id === studentEntry.id) || {};
@@ -4516,10 +4528,10 @@ Coordinación Los Mitos.`
         const endDate = getStudentClassEndDate(studentEntry, studentInfo);
         const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
         const isFutureStart = Boolean(startDate && startDate > referenceDate);
+        const projectedMaintenanceActive = projected && isProjectedMaintenanceActiveForArchitectDate(studentEntry, referenceDate);
         const isMaintenance = projectedStatus !== 'baja' && !isPastEnd && (
-          studentEntry.projectedMaintenance === true ||
-          (!projected && isStudentInMaintenance(studentEntry.id, referenceDate)) ||
-          (projected && isStudentInMaintenanceRange(studentEntry.id, nextMonthStartStr, nextMonthEndStr))
+          projectedMaintenanceActive ||
+          isStudentInMaintenance(studentEntry.id, referenceDate)
         );
         const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
         const isActive = projectedStatus !== 'baja' && !isPastEnd && !isMaintenance && !isFutureStart;
@@ -4698,10 +4710,11 @@ Coordinación Los Mitos.`
         }
 
         if (gestion.type === 'mantenimiento') {
+          const { from, until } = getMaintenancePeriodFromGestion(gestion);
           projectedClasses.forEach(clase => {
             clase.students = (clase.students || []).map(studentEntry =>
               studentEntry.id === gestion.studentId
-                ? { ...studentEntry, isPaused: false, projectedMaintenance: true }
+                ? { ...studentEntry, isPaused: false, projectedMaintenance: true, projectedMaintenanceFrom: from, projectedMaintenanceUntil: until }
                 : studentEntry
             );
           });
@@ -6137,7 +6150,7 @@ ${startDateWarning}
     const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(c) ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
     const [saving, setSaving] = useState(false);
     const maxCap = parseInt(c.capacity, 10) || 0;
-    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection);
+    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection, archDate || todayStr);
     const currentCount = planningStudents.length;
     const activeCount = planningStudents.filter(student => student.isActive).length;
     const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
@@ -7541,96 +7554,39 @@ ${startDateWarning}
             {/* VISTA ARQUITECTO (POR SALAS EN BLANCO/OCUPADO + CUADRANTE) */}
             {classesViewMode === 'salas' && (
                <div className="space-y-6 animate-in fade-in">
-                  <div className="bg-white p-4 rounded-2xl flex flex-col sm:flex-row gap-4 shadow-sm border border-zinc-200 items-center justify-center">
-                     <select value={archSede} onChange={e=>setArchSede(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest">
-                       {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
-                     </select>
-                     <select value={archDay} onChange={e=>setArchDay(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest">
-                       {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
-                     </select>
-                     <input type="time" value={archTime} onChange={e=>setArchTime(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest"/>
-                     <button type="button" onClick={() => setArchProjectionMode(archProjectionMode === 'actual' ? 'proyeccion' : 'actual')} className={`w-full sm:w-auto px-4 py-3 rounded-xl border-2 font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${isArchitectProjection ? 'bg-black text-white border-black shadow-md' : 'bg-white text-zinc-600 border-zinc-200 hover:border-black'}`}>
-                       <Activity className="w-4 h-4"/> {isArchitectProjection ? 'Viendo mes que viene' : 'Ver mes que viene'}
-                     </button>
+                  <div className="bg-white p-4 rounded-2xl flex flex-col lg:flex-row gap-4 shadow-sm border border-zinc-200 items-stretch lg:items-center justify-between">
+                     <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
+                       <select value={archSede} onChange={e=>setArchSede(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest rounded-xl">
+                         {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+                       </select>
+                       <input type="date" value={archDate} onChange={e=>setArchDate(e.target.value || todayStr)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest rounded-xl"/>
+                       <div className="w-full sm:w-auto px-4 py-3 bg-zinc-50 border-2 border-zinc-100 rounded-xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                         <Calendar className="w-4 h-4"/> {architectReferenceLabel}
+                       </div>
+                     </div>
+
+                     <div className="grid grid-cols-2 gap-2 w-full lg:w-auto bg-zinc-100 border border-zinc-200 p-1.5 rounded-2xl">
+                       <button type="button" onClick={() => setArchProjectionMode('actual')} className={`px-4 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${!isArchitectProjection ? 'bg-white text-black shadow-sm' : 'text-zinc-400 hover:text-black'}`}>
+                         <CheckCircle className="w-4 h-4"/> Real
+                       </button>
+                       <button type="button" onClick={() => setArchProjectionMode('proyeccion')} className={`px-4 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${isArchitectProjection ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black'}`}>
+                         <Activity className="w-4 h-4"/> Proyectado
+                       </button>
+                     </div>
                   </div>
 
                   {isArchitectProjection && (
                     <div className="bg-black text-white p-4 rounded-2xl border border-zinc-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-black uppercase tracking-widest">Simulación de mes que viene</p>
-                        <p className="text-xs font-bold text-zinc-400 mt-1">Cuadrante actual + bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes de la bandeja. No modifica Firebase.</p>
+                        <p className="text-sm font-black uppercase tracking-widest">Simulación proyectada por fecha</p>
+                        <p className="text-xs font-bold text-zinc-400 mt-1">Cuadrante del {architectReferenceLabel} + bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes de la bandeja. No modifica Firebase.</p>
                       </div>
                       <span className="bg-white text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest w-max">{pendingGestiones.filter(g => PROJECTABLE_GESTION_TYPES.has(g.type)).length} trámite(s) aplicados</span>
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                     {SALAS.map(sala => {
-                        const maxCapFisica = settings.roomCapacities?.[archSede]?.[sala] || 0;
-                        const claseAsignada = architectClasses.find(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.time === archTime && c.sala === sala);
-                        const realClassForSlot = claseAsignada ? recurringClassesOnly.find(real => real.id === claseAsignada.id) : null;
-
-                        if (claseAsignada) {
-                           const planningStudents = getClassStudentPlanningData(claseAsignada, isArchitectProjection);
-                           const activeC = planningStudents.filter(student => student.isActive).length;
-                           const maintenanceC = planningStudents.filter(student => student.isMaintenance).length;
-                           const futureStartC = planningStudents.filter(student => student.isFutureStart).length;
-                           const relocatedC = planningStudents.filter(student => student.isRelocated).length;
-                           const teacherTheme = getTeacherColorTheme(claseAsignada.teacher, settings);
-                           return (
-                              <div key={sala} className="text-white p-6 rounded-3xl shadow-xl relative overflow-hidden flex flex-col min-h-[220px] border group transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, borderColor: teacherTheme.solidBorder }}>
-                                 <h3 className="font-black text-3xl uppercase tracking-tighter mb-1 opacity-20 absolute top-4 right-4">{sala.replace('Sala ', 'S')}</h3>
-                                 <h3 className="font-black text-xl uppercase tracking-widest mb-1" style={{ color: teacherTheme.muted }}>{sala}</h3>
-                                 <div className="flex-1 mt-2 z-10">
-                                    <span className="text-white px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-widest shadow-sm" style={{ background: 'rgba(255,255,255,.18)' }}>Ocupada</span>
-                                    <h4 className="font-black text-2xl mt-3 tracking-tight">{claseAsignada.subject}</h4>
-                                    <p className="text-xs font-bold uppercase mt-1 tracking-widest flex items-center gap-1" style={{ color: 'rgba(255,255,255,.78)' }}><User className="w-3 h-3"/> Prof: {claseAsignada.teacher}</p>
-                                 </div>
-                                 <div className="mt-4 pt-4 border-t flex justify-between items-center z-10" style={{ borderColor: 'rgba(255,255,255,.22)' }}>
-                                    <div className="flex flex-col gap-1">
-                                      <span className="text-xs font-black" style={{ color: 'rgba(255,255,255,.86)' }}>Activos: <span className={activeC >= claseAsignada.capacity ? 'text-red-200' : 'text-emerald-200'}>{activeC}/{claseAsignada.capacity}</span></span>
-                                      {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
-                                        <span className="text-[9px] font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,.72)' }}>
-                                          {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {isArchitectProjection && <span className="bg-white/20 text-white px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Proyección</span>}
-                                    <div className="flex gap-2">
-                                      {!isArchitectProjection && <button onClick={() => handleDeleteClassGlobal(claseAsignada)} className="bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white p-2 rounded-xl transition-colors" title="Borrar Clase"><Trash2 className="w-4 h-4"/></button>}
-                                      {!isArchitectProjection && <button onClick={() => openEditClassModal(claseAsignada)} className="bg-amber-100 hover:bg-amber-200 text-amber-800 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Editar</button>}
-                                      <button onClick={() => setViewClassModal(realClassForSlot || claseAsignada)} className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">Ver Clase</button>
-                                    </div>
-                                 </div>
-                              </div>
-                           );
-                        } else {
-                           return (
-                              <div key={sala} className="bg-emerald-50 border-2 border-emerald-200 p-6 rounded-3xl shadow-sm relative flex flex-col min-h-[220px] hover:border-emerald-400 transition-colors">
-                                 <h3 className="font-black text-xl uppercase tracking-widest text-emerald-900 mb-1">{sala}</h3>
-                                 <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600/70 mb-4 bg-emerald-100 px-2 py-1 rounded w-max">Capacidad real: {maxCapFisica} pax</p>
-                                 <div className="flex-1 flex flex-col items-center justify-center gap-2">
-                                    <DoorOpen className="w-8 h-8 text-emerald-300"/>
-                                    <span className="text-emerald-600 font-black uppercase tracking-widest text-lg">SALA LIBRE</span>
-                                 </div>
-                                 {!isArchitectProjection ? (
-                                   <button onClick={() => {
-                                      setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: archTime, sede: archSede, sala: sala});
-                                      setCreateClassModal(true);
-                                   }} className="w-full mt-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-all shadow-md flex items-center justify-center gap-2">
-                                      <PlusCircle className="w-4 h-4"/> Crear Clase Aquí
-                                   </button>
-                                 ) : (
-                                   <div className="w-full mt-4 bg-zinc-100 text-zinc-400 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest border-2 border-dashed border-zinc-200 text-center">Hueco libre proyectado</div>
-                                 )}
-                              </div>
-                           );
-                        }
-                     })}
-                  </div>
-
                   {/* TABLA COMPLETA DE CASILLAS EXCEL INTERACTIVAS */}
-                  <div className="mt-12">
+                  <div className="mt-2">
                      <h3 className="text-lg font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-zinc-400"/> Cuadrante Completo</h3>
                      <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden overflow-x-auto">
                         <table className="w-full text-left border-collapse min-w-[600px]">
@@ -7645,12 +7601,19 @@ ${startDateWarning}
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
                                     {SALAS.map(sala => {
-                                       const classesInSlot = architectClasses.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(archDay) && c.sala === sala && (c.time || '').startsWith(time.split(':')[0]));
+                                       const slotHour = time.split(':')[0];
+                                       const classesInSlot = architectClasses.filter(c => c.sede === archSede && c.dayOfWeek === parseInt(architectSelectedDay) && c.sala === sala && (c.time || '').startsWith(slotHour));
+                                       const openCreateFromSlot = () => {
+                                         if (isArchitectProjection) return;
+                                         setNewClassData({...newClassData, isRecurring: true, dayOfWeek: architectSelectedDay, time: time, sede: archSede, sala: sala});
+                                         setCreateClassModal(true);
+                                       };
                                        return (
-                                          <td key={sala} className="p-2 border-r border-zinc-100 align-top h-24 relative hover:bg-zinc-50 transition-colors group cursor-pointer" onClick={(e) => { if(isArchitectProjection || e.target.closest('button') || classesInSlot.length > 0) return; setNewClassData({...newClassData, isRecurring: true, dayOfWeek: archDay, time: time, sede: archSede, sala: sala}); setCreateClassModal(true); }}>
+                                          <td key={sala} className="p-2 border-r border-zinc-100 align-top h-28 relative hover:bg-zinc-50 transition-colors group" onClick={(e) => { if(isArchitectProjection || e.target.closest('button') || classesInSlot.length > 0) return; openCreateFromSlot(); }}>
                                              {classesInSlot.length > 0 ? (
                                                 classesInSlot.map(c => {
-                                                   const planningStudents = getClassStudentPlanningData(c, isArchitectProjection);
+                                                   const realClass = recurringClassesOnly.find(real => real.id === c.id) || c;
+                                                   const planningStudents = getClassStudentPlanningData(c, isArchitectProjection, archDate || todayStr);
                                                    const fixedActiveStudents = planningStudents
                                                       .filter(student => student.isActive)
                                                       .map(student => student.displayName)
@@ -7658,14 +7621,22 @@ ${startDateWarning}
                                                    const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
                                                    const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
                                                    const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
-                                                   const visibleStudentNames = fixedActiveStudents.slice(0, 6);
+                                                   const committedCount = planningStudents.filter(student => student.isActive || student.isMaintenance || student.isFutureStart).length;
+                                                   const capacityLabel = c.capacity ? `${committedCount}/${c.capacity}` : `${committedCount}/—`;
+                                                   const visibleStudentNames = fixedActiveStudents.slice(0, 5);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
                                                    const teacherTheme = getTeacherColorTheme(c.teacher, settings);
 
                                                    return (
-                                                      <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(recurringClassesOnly.find(real => real.id === c.id) || c); }}>
-                                                         <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
-                                                         <div className="text-[10px] font-bold truncate mt-1" style={{ color: 'rgba(255,255,255,.76)' }}>Prof: {c.teacher}</div>
+                                                      <div key={c.id} className="text-white p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5 cursor-pointer" style={{ background: teacherTheme.solid, border: `1px solid ${teacherTheme.solidBorder}` }} onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }}>
+                                                         <div className="flex items-start justify-between gap-2">
+                                                           <div className="min-w-0">
+                                                             <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
+                                                             <div className="text-[10px] font-bold truncate mt-1" style={{ color: 'rgba(255,255,255,.76)' }}>Prof: {c.teacher}</div>
+                                                           </div>
+                                                           <span className="shrink-0 bg-white/20 text-white px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest" title="Plazas comprometidas / aforo">{capacityLabel}</span>
+                                                         </div>
+
                                                          {visibleStudentNames.length > 0 && (
                                                             <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: 'rgba(255,255,255,.22)', color: 'rgba(255,255,255,.82)' }}>
                                                                {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
@@ -7676,13 +7647,42 @@ ${startDateWarning}
                                                                {maintenanceCount > 0 ? `${maintenanceCount} mant.` : ''}{maintenanceCount > 0 && (futureStartCount > 0 || relocatedCount > 0) ? ' · ' : ''}{futureStartCount > 0 ? `${futureStartCount} futuro` : ''}{futureStartCount > 0 && relocatedCount > 0 ? ' · ' : ''}{relocatedCount > 0 ? `${relocatedCount} recol.` : ''}
                                                             </div>
                                                          )}
+
+                                                         <div className="mt-3 pt-2 border-t flex flex-wrap gap-1.5" style={{ borderColor: 'rgba(255,255,255,.18)' }}>
+                                                           <button onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }} className="bg-white/90 hover:bg-white text-black p-1.5 rounded-lg transition-colors" title="Ver alumnos">
+                                                             <Users className="w-3.5 h-3.5"/>
+                                                           </button>
+                                                           {!isArchitectProjection && (
+                                                             <>
+                                                               <button onClick={(e) => { e.stopPropagation(); openEditClassModal(realClass); }} className="bg-amber-100 hover:bg-amber-200 text-amber-800 p-1.5 rounded-lg transition-colors" title="Editar clase">
+                                                                 <Pencil className="w-3.5 h-3.5"/>
+                                                               </button>
+                                                               <button onClick={(e) => { e.stopPropagation(); setEditWebModal(realClass); }} className={`p-1.5 rounded-lg transition-colors ${realClass.isWebVisible ? 'bg-blue-100 hover:bg-blue-200 text-blue-700' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600'}`} title="Configurar web / WhatsApp">
+                                                                 <Globe className="w-3.5 h-3.5"/>
+                                                               </button>
+                                                               <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(realClass); }} className="bg-red-500/20 hover:bg-red-500 text-red-100 hover:text-white p-1.5 rounded-lg transition-colors" title="Borrar clase">
+                                                                 <Trash2 className="w-3.5 h-3.5"/>
+                                                               </button>
+                                                             </>
+                                                           )}
+                                                           {isArchitectProjection && (
+                                                             <span className="bg-white/20 text-white px-2 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest">Simulada</span>
+                                                           )}
+                                                         </div>
                                                       </div>
                                                    );
                                                 })
                                              ) : (
-                                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                                   <PlusCircle className="w-8 h-8 text-zinc-200" />
-                                                </div>
+                                                !isArchitectProjection ? (
+                                                  <button onClick={(e) => { e.stopPropagation(); openCreateFromSlot(); }} className="absolute inset-2 border-2 border-dashed border-zinc-200 rounded-xl text-zinc-300 hover:text-emerald-600 hover:border-emerald-300 hover:bg-emerald-50/60 transition-all flex flex-col items-center justify-center gap-1 font-black uppercase tracking-widest text-[9px]">
+                                                    <PlusCircle className="w-6 h-6" />
+                                                    Crear clase
+                                                  </button>
+                                                ) : (
+                                                  <div className="absolute inset-2 border-2 border-dashed border-zinc-100 rounded-xl text-zinc-300 flex items-center justify-center font-black uppercase tracking-widest text-[9px]">
+                                                    Hueco libre proyectado
+                                                  </div>
+                                                )
                                              )}
                                           </td>
                                        )

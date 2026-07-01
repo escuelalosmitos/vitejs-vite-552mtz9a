@@ -938,73 +938,190 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     let totalAlumnosInicioFuturo = 0;
     let totalPlazasComprometidas = 0;
     let totalImpagos = 0;
+    let totalClasesOperativas = 0;
+    let totalClasesHibernadas = 0;
+    let totalHorasSemanalesOperativas = 0;
+    let totalHorasSemanalesHibernadas = 0;
+
+    const createSedeStats = () => ({
+      ingresos: 0,
+      ingresosClases: 0,
+      mantenimiento: 0,
+      alumnosMantenimiento: 0,
+      alumnosActivos: 0,
+      alumnosInicioFuturo: 0,
+      plazasComprometidas: 0,
+      impagos: 0,
+      costesProf: 0,
+      clasesOperativas: 0,
+      clasesHibernadas: 0,
+      horasSemanalesOperativas: 0,
+      horasSemanalesHibernadas: 0
+    });
+
+    const createTeacherStats = () => ({
+      ingresos: 0,
+      costes: 0,
+      horasSemanales: 0,
+      horasHibernadas: 0,
+      clasesOperativas: 0,
+      clasesHibernadas: 0,
+      alumnosActivos: 0,
+      alumnosInicioFuturo: 0,
+      plazasComprometidas: 0,
+      impagos: 0
+    });
+
+    const createInstrumentStats = () => ({
+      ingresos: 0,
+      costes: 0,
+      numGrupos: 0,
+      numGruposHibernados: 0,
+      alumnosActivos: 0,
+      alumnosInicioFuturo: 0,
+      plazasComprometidas: 0,
+      impagos: 0
+    });
 
     const clasesRentabilidad = [];
     const porSede = {
-      Tarragona: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 },
-      Reus: { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 }
+      Tarragona: createSedeStats(),
+      Reus: createSedeStats()
     };
     const porProfe = {};
     const porInstrumento = {};
     const studentById = new Map(students.map(student => [student.id, student]));
     const frozenStudents = new Map();
 
+    const getStudentInfoForBI = (studentId) => studentById.get(studentId) || {};
+
+    const isRelocationActiveForBI = (relocation = {}) => {
+      if (!relocation || relocation.status === 'cancelled') return false;
+      return Boolean(relocation.from && relocation.until && relocation.from <= todayStr && relocation.until >= todayStr);
+    };
+
+    const activeRelocations = temporaryRelocations.filter(isRelocationActiveForBI);
+
+    const getBIStudentRowsForClass = (clase = {}) => {
+      const relocatedOutIds = new Set(
+        activeRelocations
+          .filter(relocation => relocation.sourceClassId === clase.id)
+          .map(relocation => relocation.studentId)
+      );
+
+      const baseStudentEntries = (clase.students || [])
+        .filter(isFixedClassStudent)
+        .filter(studentEntry => !relocatedOutIds.has(studentEntry.id));
+
+      const relocatedInEntries = activeRelocations
+        .filter(relocation => relocation.targetClassId === clase.id)
+        .filter(relocation => !baseStudentEntries.some(studentEntry => studentEntry.id === relocation.studentId))
+        .map(relocation => {
+          const studentInfo = getStudentInfoForBI(relocation.studentId);
+          const displayName = studentInfo?.useAlias && studentInfo?.alias
+            ? studentInfo.alias
+            : (studentInfo?.name || relocation.studentName || 'Alumno');
+
+          return {
+            id: relocation.studentId,
+            name: displayName,
+            email: studentInfo?.email || relocation.studentEmail || '',
+            classStartDate: studentInfo?.classStartDate || '',
+            isTemporaryRelocation: true,
+            temporaryRelocationId: relocation.id,
+            sourceClassId: relocation.sourceClassId,
+            sourceClassLine: relocation.sourceClassLine || ''
+          };
+        });
+
+      return [...baseStudentEntries, ...relocatedInEntries]
+        .map((studentEntry, index) => {
+          const studentInfo = getStudentInfoForBI(studentEntry.id);
+          const crmStatus = studentInfo?.globalStatus || 'activo';
+          const isDropped = crmStatus === 'baja';
+          const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, todayStr);
+          const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+          const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+          const isFutureStart = !isDropped && !isPastEnd && Boolean(startDate && startDate > todayStr);
+          const isMaintenance = !isDropped && !isPastEnd && isStudentInMaintenance(studentEntry.id, todayStr);
+          const isActive = !isDropped && !isPastEnd && !isMaintenance && !isFutureStart;
+          const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
+          const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
+          const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
+
+          return {
+            id: studentEntry.id || `${clase.id}-${index}`,
+            name: displayName,
+            email,
+            sede: clase.sede || 'Tarragona',
+            status: crmStatus,
+            startDate,
+            endDate,
+            isDropped,
+            isPastEnd,
+            isFutureStart,
+            isMaintenance,
+            isActive,
+            isRelocated,
+            isCommitted: !isDropped && !isPastEnd
+          };
+        })
+        .filter(student => student.isCommitted);
+    };
+
+    const getBIClassStatusLabel = ({ activeCount, maintenanceCount, futureStartCount, relocatedCount }) => {
+      if (activeCount > 0) return relocatedCount > 0 ? 'OPERATIVA · incluye recolocación temporal' : 'OPERATIVA';
+      if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA · reservas / mantenimiento';
+      if (maintenanceCount > 0) return 'HIBERNADA · solo mantenimiento';
+      if (futureStartCount > 0) return 'HIBERNADA · inicio futuro';
+      return 'HIBERNADA · sin alumnos activos';
+    };
+
     recurringClassesOnly.forEach(c => {
-      const classStudents = (c.students || []).filter(isFixedClassStudent);
-      let numAlumnos = 0;
-      let numCongelados = 0;
-      let numInicioFuturo = 0;
-      let numPlazasComprometidas = 0;
-      let numImpagos = 0;
+      const studentRows = getBIStudentRowsForClass(c);
+      const activeStudents = studentRows.filter(student => student.isActive);
+      const maintenanceStudents = studentRows.filter(student => student.isMaintenance);
+      const futureStartStudents = studentRows.filter(student => student.isFutureStart);
+      const relocatedStudents = studentRows.filter(student => student.isRelocated);
 
-      classStudents.forEach((studentEntry, index) => {
-        const studentInfo = studentById.get(studentEntry.id);
-        const crmStatus = studentInfo?.globalStatus || 'activo';
-        const isDropped = crmStatus === 'baja';
-        const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, todayStr);
-        if (isDropped || isPastEnd) return;
+      const numAlumnos = activeStudents.length;
+      const numCongelados = maintenanceStudents.length;
+      const numInicioFuturo = futureStartStudents.length;
+      const numPlazasComprometidas = studentRows.length;
+      const numImpagos = activeStudents.filter(student => student.status === 'impago').length;
+      const numRecolocados = relocatedStudents.length;
+      const isClassOperative = numAlumnos > 0;
+      const isHibernated = !isClassOperative;
 
-        numPlazasComprometidas += 1;
-        const startDate = getStudentClassStartDate(studentEntry, studentInfo);
-        const isFutureStart = Boolean(startDate && startDate > todayStr);
-        const isFrozen = isStudentInMaintenance(studentEntry.id, todayStr);
-
-        // BI mide ingresos reales/previsibles de este momento, no reservas comerciales futuras.
-        // Un alumno con inicio futuro ocupa plaza, pero todavía no suma cuota mensual.
-        if (isFutureStart) {
-          numInicioFuturo += 1;
-          return;
+      maintenanceStudents.forEach((student, index) => {
+        const emailKey = String(student.email || '').trim().toLowerCase();
+        const frozenKey = student.id || emailKey || `${c.id}-${index}-${student.name || 'alumno'}`;
+        if (!frozenStudents.has(frozenKey)) {
+          frozenStudents.set(frozenKey, {
+            id: student.id || '',
+            name: student.name || 'Alumno',
+            email: student.email || '',
+            sede: c.sede || 'Tarragona'
+          });
         }
-
-        if (isFrozen) {
-          numCongelados += 1;
-          const emailKey = String(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '').trim().toLowerCase();
-          const frozenKey = studentEntry.id || emailKey || `${c.id}-${index}-${studentEntry.name || 'alumno'}`;
-          if (!frozenStudents.has(frozenKey)) {
-            frozenStudents.set(frozenKey, {
-              id: studentEntry.id || '',
-              name: studentInfo?.alias || studentInfo?.name || studentEntry.name || studentEntry.studentName || 'Alumno',
-              email: studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '',
-              sede: c.sede || 'Tarragona'
-            });
-          }
-          return;
-        }
-
-        // Los impagos se mantienen como plaza activa en BI, pero quedan señalizados como riesgo.
-        if (crmStatus === 'impago') numImpagos += 1;
-        numAlumnos += 1;
       });
 
       const cuota = Number(c.cuotaBase) || 0;
       const ingresos = numAlumnos * cuota;
 
       const duracionHoras = (Number(c.duration) || 60) / 60;
-      // EXCEPCIÓN PACO: Si el profesor es Paco, el coste es 0€ (ya está en gastos fijos).
-      const coste = (c.teacher?.toLowerCase() === 'paco')
-        ? 0
-        : (duracionHoras * BI_WEEKS_PER_MONTH * (settings.costeEmpresa || 22));
+      const horasComputables = isClassOperative ? duracionHoras : 0;
+      const horasHibernadas = isClassOperative ? 0 : duracionHoras;
+      const coste = (isClassOperative && c.teacher?.toLowerCase() !== 'paco')
+        ? (horasComputables * BI_WEEKS_PER_MONTH * (settings.costeEmpresa || 22))
+        : 0;
       const beneficio = ingresos - coste;
+      const estadoOperativo = getBIClassStatusLabel({
+        activeCount: numAlumnos,
+        maintenanceCount: numCongelados,
+        futureStartCount: numInicioFuturo,
+        relocatedCount: numRecolocados
+      });
 
       totalIngresosClases += ingresos;
       costeTotalProfesores += coste;
@@ -1012,14 +1129,36 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       totalAlumnosInicioFuturo += numInicioFuturo;
       totalPlazasComprometidas += numPlazasComprometidas;
       totalImpagos += numImpagos;
+      totalClasesOperativas += isClassOperative ? 1 : 0;
+      totalClasesHibernadas += isHibernated ? 1 : 0;
+      totalHorasSemanalesOperativas += horasComputables;
+      totalHorasSemanalesHibernadas += horasHibernadas;
 
       clasesRentabilidad.push({
-        id: c.id, subject: c.subject, teacher: c.teacher, sede: c.sede, time: c.time, dayOfWeek: c.dayOfWeek,
-        numAlumnos, numCongelados, numInicioFuturo, numPlazasComprometidas, numImpagos, ingresos, coste, beneficio
+        id: c.id,
+        subject: c.subject,
+        teacher: c.teacher,
+        sede: c.sede,
+        time: c.time,
+        dayOfWeek: c.dayOfWeek,
+        numAlumnos,
+        numCongelados,
+        numInicioFuturo,
+        numPlazasComprometidas,
+        numImpagos,
+        numRecolocados,
+        ingresos,
+        coste,
+        beneficio,
+        horasComputables,
+        horasHibernadas,
+        isClassOperative,
+        isHibernated,
+        estadoOperativo
       });
 
       const sedeKey = c.sede || 'Tarragona';
-      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 };
+      if (!porSede[sedeKey]) porSede[sedeKey] = createSedeStats();
       porSede[sedeKey].ingresos += ingresos;
       porSede[sedeKey].ingresosClases += ingresos;
       porSede[sedeKey].alumnosActivos += numAlumnos;
@@ -1027,22 +1166,30 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porSede[sedeKey].plazasComprometidas += numPlazasComprometidas;
       porSede[sedeKey].impagos += numImpagos;
       porSede[sedeKey].costesProf += coste;
+      porSede[sedeKey].clasesOperativas += isClassOperative ? 1 : 0;
+      porSede[sedeKey].clasesHibernadas += isHibernated ? 1 : 0;
+      porSede[sedeKey].horasSemanalesOperativas += horasComputables;
+      porSede[sedeKey].horasSemanalesHibernadas += horasHibernadas;
 
       const profKey = c.teacher || 'Sin Asignar';
-      if (!porProfe[profKey]) porProfe[profKey] = { ingresos: 0, costes: 0, horasSemanales: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0 };
+      if (!porProfe[profKey]) porProfe[profKey] = createTeacherStats();
       porProfe[profKey].ingresos += ingresos;
       porProfe[profKey].costes += coste;
-      porProfe[profKey].horasSemanales += duracionHoras;
+      porProfe[profKey].horasSemanales += horasComputables;
+      porProfe[profKey].horasHibernadas += horasHibernadas;
+      porProfe[profKey].clasesOperativas += isClassOperative ? 1 : 0;
+      porProfe[profKey].clasesHibernadas += isHibernated ? 1 : 0;
       porProfe[profKey].alumnosActivos += numAlumnos;
       porProfe[profKey].alumnosInicioFuturo += numInicioFuturo;
       porProfe[profKey].plazasComprometidas += numPlazasComprometidas;
       porProfe[profKey].impagos += numImpagos;
 
       const instKey = c.subject || 'Otros';
-      if (!porInstrumento[instKey]) porInstrumento[instKey] = { ingresos: 0, costes: 0, numGrupos: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0 };
+      if (!porInstrumento[instKey]) porInstrumento[instKey] = createInstrumentStats();
       porInstrumento[instKey].ingresos += ingresos;
       porInstrumento[instKey].costes += coste;
-      porInstrumento[instKey].numGrupos += 1;
+      porInstrumento[instKey].numGrupos += isClassOperative ? 1 : 0;
+      porInstrumento[instKey].numGruposHibernados += isHibernated ? 1 : 0;
       porInstrumento[instKey].alumnosActivos += numAlumnos;
       porInstrumento[instKey].alumnosInicioFuturo += numInicioFuturo;
       porInstrumento[instKey].plazasComprometidas += numPlazasComprometidas;
@@ -1054,15 +1201,23 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     frozenStudents.forEach(student => {
       const sedeKey = student.sede || 'Tarragona';
-      if (!porSede[sedeKey]) porSede[sedeKey] = { ingresos: 0, ingresosClases: 0, mantenimiento: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0, costesProf: 0 };
+      if (!porSede[sedeKey]) porSede[sedeKey] = createSedeStats();
       porSede[sedeKey].ingresos += MAINTENANCE_MONTHLY_FEE;
       porSede[sedeKey].mantenimiento += MAINTENANCE_MONTHLY_FEE;
       porSede[sedeKey].alumnosMantenimiento += 1;
     });
 
     if (ingresosMantenimiento > 0) {
-      porProfe['Mantenimiento (sin atribuir)'] = { ingresos: ingresosMantenimiento, costes: 0, horasSemanales: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: alumnosMantenimiento, impagos: 0 };
-      porInstrumento['Mantenimiento'] = { ingresos: ingresosMantenimiento, costes: 0, numGrupos: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: alumnosMantenimiento, impagos: 0 };
+      porProfe['Mantenimiento (sin atribuir)'] = {
+        ...createTeacherStats(),
+        ingresos: ingresosMantenimiento,
+        plazasComprometidas: alumnosMantenimiento
+      };
+      porInstrumento['Mantenimiento'] = {
+        ...createInstrumentStats(),
+        ingresos: ingresosMantenimiento,
+        plazasComprometidas: alumnosMantenimiento
+      };
     }
 
     clasesRentabilidad.sort((a,b) => b.beneficio - a.beneficio);
@@ -1080,6 +1235,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       totalAlumnosInicioFuturo,
       totalPlazasComprometidas,
       totalImpagos,
+      totalClasesOperativas,
+      totalClasesHibernadas,
+      totalHorasSemanalesOperativas,
+      totalHorasSemanalesHibernadas,
       mantenimientoMensualPorAlumno: MAINTENANCE_MONTHLY_FEE,
       semanasPrevision: BI_WEEKS_PER_MONTH,
       costeTotalProfesores,
@@ -1090,7 +1249,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       porProfe: Object.entries(porProfe).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio),
       porInstrumento: Object.entries(porInstrumento).map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes })).sort((a,b) => b.beneficio - a.beneficio)
     };
-  }, [recurringClassesOnly, settings, students, maintenancePeriods, todayStr]);
+  }, [recurringClassesOnly, settings, students, maintenancePeriods, temporaryRelocations, todayStr]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -3246,7 +3405,9 @@ Coordinación Los Mitos.`
       `Plazas fijas comprometidas: ${businessIntelligence.totalPlazasComprometidas || 0}`,
       `Impagos incluidos como plaza activa/riesgo: ${businessIntelligence.totalImpagos || 0}`,
       `Ingresos totales estimados: ${money(businessIntelligence.totalIngresos)}`,
-      `Coste profesores previsto: ${money(businessIntelligence.costeTotalProfesores)}`,
+      `Coste profesores previsto: ${money(businessIntelligence.costeTotalProfesores)} (solo clases operativas)`,
+      `Clases operativas: ${businessIntelligence.totalClasesOperativas || 0} · Hibernadas/no computables: ${businessIntelligence.totalClasesHibernadas || 0}`,
+      `Horas semanales computables: ${(businessIntelligence.totalHorasSemanalesOperativas || 0).toFixed(1)} · Hibernadas no computadas: ${(businessIntelligence.totalHorasSemanalesHibernadas || 0).toFixed(1)}`,
       `Gastos fijos: ${money(businessIntelligence.totalFijos)}`,
       `Resultado estimado: ${money(businessIntelligence.beneficioNeto)}`,
       `Criterio de previsión docente: ${BI_WEEKS_PER_MONTH} semanas/mes`,
@@ -3261,6 +3422,8 @@ Coordinación Los Mitos.`
           `  Mantenimiento: ${money(data.mantenimiento)} (${data.alumnosMantenimiento || 0} alumno/s)`,
           `  Inicio futuro sin ingreso: ${data.alumnosInicioFuturo || 0} alumno/s`,
           `  Plazas fijas comprometidas: ${data.plazasComprometidas || 0}`,
+          `  Clases operativas / hibernadas: ${data.clasesOperativas || 0} / ${data.clasesHibernadas || 0}`,
+          `  Horas semanales computables: ${(data.horasSemanalesOperativas || 0).toFixed(1)} h`,
           `  Coste profesores: ${money(data.costesProf)}`,
           `  Gasto fijo local: ${money(gastoFijo)}`,
           `  Margen local estimado: ${money(data.ingresos - data.costesProf - gastoFijo)}`
@@ -3268,13 +3431,13 @@ Coordinación Los Mitos.`
       }),
       '',
       'POR PROFESOR',
-      ...businessIntelligence.porProfe.map(p => `${p.name}: ingresos ${money(p.ingresos)} · coste ${money(p.costes)} · margen ${money(p.beneficio)} · ${p.horasSemanales.toFixed(1)} h/sem`),
+      ...businessIntelligence.porProfe.map(p => `${p.name}: ingresos ${money(p.ingresos)} · coste ${money(p.costes)} · margen ${money(p.beneficio)} · ${(p.horasSemanales || 0).toFixed(1)} h/sem computables · ${p.clasesOperativas || 0} clase(s) operativas · ${p.clasesHibernadas || 0} hibernada(s)`),
       '',
       'POR INSTRUMENTO',
-      ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} · coste ${money(i.costes)} · margen ${money(i.beneficio)} · ${i.numGrupos} grupo/s`),
+      ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} · coste ${money(i.costes)} · margen ${money(i.beneficio)} · ${i.numGrupos || 0} grupo/s operativos · ${i.numGruposHibernados || 0} hibernado/s`),
       '',
       'DETALLE POR CLASE',
-      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · activos con ingreso ${c.numAlumnos} · mantenimiento ${c.numCongelados} · inicio futuro ${c.numInicioFuturo || 0} · plazas comprometidas ${c.numPlazasComprometidas || 0} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}`),
+      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · ${c.estadoOperativo || (c.isHibernated ? 'HIBERNADA' : 'OPERATIVA')} · activos con ingreso ${c.numAlumnos} · mantenimiento ${c.numCongelados} · inicio futuro ${c.numInicioFuturo || 0} · recolocados ${c.numRecolocados || 0} · plazas comprometidas ${c.numPlazasComprometidas || 0} · horas computables ${(c.horasComputables || 0).toFixed(1)} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}`),
       '',
       'Nota: este informe es una previsión operativa, no sustituye la contabilidad real de Tadosi.'
     ];
@@ -6544,7 +6707,7 @@ ${startDateWarning}
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
                   <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
-                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Previsión con {BI_WEEKS_PER_MONTH} semanas/mes · Paco = 0€</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Solo clases operativas · {businessIntelligence.totalHorasSemanalesOperativas.toFixed(1)} h/sem · {businessIntelligence.totalClasesHibernadas} hibernadas no computan · Paco = 0€</p>
                 </div>
 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
@@ -6582,6 +6745,8 @@ ${startDateWarning}
                              <div className="flex justify-between text-slate-600"><span>Plazas comprometidas:</span><span>{dataSede.plazasComprometidas || 0}</span></div>
                              <div className="flex justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Clases operativas / hibernadas:</span><span>{dataSede.clasesOperativas || 0} / {dataSede.clasesHibernadas || 0}</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Horas prof. computables:</span><span>{(dataSede.horasSemanalesOperativas || 0).toFixed(1)} h/sem</span></div>
                              <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}€</span></div>
                           </div>
@@ -6603,7 +6768,7 @@ ${startDateWarning}
                        <thead>
                           <tr className="bg-zinc-50 text-[10px] uppercase font-black tracking-widest text-zinc-400 border-b">
                              <th className="p-4">Instrumento</th>
-                             <th className="p-4 text-center">Nº Grupos</th>
+                             <th className="p-4 text-center">Grupos operativos</th>
                              <th className="p-4 text-right text-emerald-600">Ingresos Mensuales</th>
                              <th className="p-4 text-right text-rose-600">Costes Empresa</th>
                              <th className="p-4 text-right">Margen Limpio</th>
@@ -6613,7 +6778,7 @@ ${startDateWarning}
                           {businessIntelligence.porInstrumento.map(inst => (
                              <tr key={inst.name} className="border-b hover:bg-zinc-50">
                                 <td className="p-4 uppercase font-black text-slate-900">{inst.name}</td>
-                                <td className="p-4 text-center">{inst.numGrupos} clases</td>
+                                <td className="p-4 text-center">{inst.numGrupos || 0} clases{inst.numGruposHibernados ? ` · ${inst.numGruposHibernados} hib.` : ''}</td>
                                 <td className="p-4 text-right text-emerald-600">+{inst.ingresos}€</td>
                                 <td className="p-4 text-right text-rose-500">-{inst.costes.toFixed(0)}€</td>
                                 <td className="p-4 text-right">
@@ -6637,7 +6802,7 @@ ${startDateWarning}
                        <thead>
                           <tr className="bg-zinc-50 text-[10px] uppercase font-black tracking-widest text-zinc-400 border-b">
                              <th className="p-4">Profesor</th>
-                             <th className="p-4 text-center">Horas/Semana</th>
+                             <th className="p-4 text-center">Horas computables</th>
                              <th className="p-4 text-right text-emerald-600">Ingresos Generados</th>
                              <th className="p-4 text-right text-rose-600">Coste Empresa Real</th>
                              <th className="p-4 text-right">Beneficio Neto</th>
@@ -6650,7 +6815,7 @@ ${startDateWarning}
                                   {p.name}
                                   {p.name.toLowerCase() === 'paco' && <span className="ml-2 bg-zinc-200 text-zinc-500 text-[9px] px-2 py-0.5 rounded">Socio</span>}
                                 </td>
-                                <td className="p-4 text-center">{p.horasSemanales.toFixed(1)} h/sem</td>
+                                <td className="p-4 text-center">{(p.horasSemanales || 0).toFixed(1)} h/sem{p.clasesHibernadas ? ` · ${p.clasesHibernadas} hib.` : ''}</td>
                                 <td className="p-4 text-right text-emerald-600">+{p.ingresos}€</td>
                                 <td className="p-4 text-right text-rose-500">-{p.costes.toFixed(0)}€</td>
                                 <td className="p-4 text-right">

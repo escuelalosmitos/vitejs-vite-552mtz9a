@@ -8070,6 +8070,11 @@ ${startDateWarning}
                               const futureStartC = futureStartStudents.length;
                               const relocatedC = relocatedStudents.length;
                               const isHibernated = activeC === 0;
+                              const visibleStudentNames = activeStudents
+                                .map(student => student.displayName)
+                                .filter(Boolean)
+                                .slice(0, 5);
+                              const hiddenStudentCount = Math.max(activeStudents.length - visibleStudentNames.length, 0);
                               const teacherTheme = getTeacherColorTheme(c.teacher, settings);
                               return (
                                 <div key={c.id} className={`p-4 rounded-xl border-l-8 border relative group ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
@@ -8090,52 +8095,15 @@ ${startDateWarning}
                                     </div>
                                   )}
 
-                                  <div className="mt-3 rounded-xl border bg-white/80 overflow-hidden" style={{ borderColor: isHibernated ? 'rgba(148,163,184,.35)' : teacherTheme.border }}>
-                                    <div className="px-3 py-2 bg-white/70 border-b border-zinc-100 flex items-center justify-between gap-2">
-                                      <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500 flex items-center gap-1"><Users className="w-3 h-3"/> Alumnos</span>
-                                      <span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{planningStudents.length}/{c.capacity || '—'}</span>
+                                  {isHibernated ? (
+                                    <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal text-slate-500" style={{ borderColor: 'rgba(100,116,139,.25)' }}>
+                                      No hay alumnos activos operando esta clase hoy.
                                     </div>
-
-                                    {planningStudents.length === 0 ? (
-                                      <div className="px-3 py-3 text-[10px] font-bold text-zinc-400 italic">
-                                        Sin alumnos operativos ni plazas comprometidas para esta fecha.
-                                      </div>
-                                    ) : (
-                                      <div className="divide-y divide-zinc-100">
-                                        {planningStudents.map(student => {
-                                          const labels = [];
-                                          if (student.status === 'impago') labels.push({ text: 'Impago', className: 'bg-orange-50 text-orange-700 border-orange-100' });
-                                          if (student.isActive) labels.push({ text: 'Activo', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' });
-                                          if (student.isMaintenance) labels.push({ text: 'Mantenimiento', className: 'bg-blue-50 text-blue-700 border-blue-100' });
-                                          if (student.isFutureStart) labels.push({ text: `Inicio ${formatDateSpanish(student.startDate)}`, className: 'bg-violet-50 text-violet-700 border-violet-100' });
-                                          if (student.endDate) labels.push({ text: `Fin ${formatDateSpanish(student.endDate)}`, className: 'bg-zinc-50 text-zinc-600 border-zinc-100' });
-                                          if (student.isRelocated) labels.push({ text: 'Recolocado aquí', className: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-100' });
-
-                                          return (
-                                            <div key={`${student.id}-${student.relocationLabel || student.startDate || student.endDate || 'fijo'}`} className="px-3 py-2">
-                                              <div className="flex items-start justify-between gap-2">
-                                                <div className="min-w-0">
-                                                  <p className="text-xs font-black text-slate-800 truncate" title={student.displayName}>{student.displayName}</p>
-                                                  {student.email && student.email !== 'sin email' && (
-                                                    <p className="text-[9px] font-bold text-zinc-400 truncate" title={student.email}>{student.email}</p>
-                                                  )}
-                                                </div>
-                                              </div>
-                                              {labels.length > 0 && (
-                                                <div className="mt-1.5 flex flex-wrap gap-1">
-                                                  {labels.map(label => (
-                                                    <span key={label.text} className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[8px] font-black uppercase tracking-widest ${label.className}`}>
-                                                      {label.text}
-                                                    </span>
-                                                  ))}
-                                                </div>
-                                              )}
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
+                                  ) : visibleStudentNames.length > 0 && (
+                                    <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: teacherTheme.border, color: teacherTheme.text }}>
+                                      {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
+                                    </div>
+                                  )}
 
                                   <div className="flex gap-2 mt-3">
                                     <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>

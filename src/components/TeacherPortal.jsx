@@ -7,7 +7,7 @@ import {
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
   Megaphone, Send, Link as LinkIcon
 } from 'lucide-react';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const SEDES = ["Tarragona", "Reus"];
@@ -1356,6 +1356,34 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return (session?.students || []).filter(s => !s.isTemporaryRelocation).length;
   };
 
+  const getSubstitutionStatus = (sub = {}) => {
+    if (sub.status) return sub.status;
+    if (sub.assumedAt || sub.assumedByUid || sub.assumedTeacherName) return 'assigned';
+    return 'open';
+  };
+
+  const isOwnSubstitution = (sub = {}) => {
+    const teacherName = getTeacherName().toLowerCase();
+    return Boolean(
+      (sub.originalTeacherUid && sub.originalTeacherUid === user?.uid) ||
+      (sub.originalTeacherEmail && String(sub.originalTeacherEmail).toLowerCase() === String(user?.email || '').toLowerCase()) ||
+      (sub.originalTeacherName && String(sub.originalTeacherName).toLowerCase() === teacherName)
+    );
+  };
+
+  const getSubstitutionStudentStats = (sub = {}) => {
+    const studentsList = Array.isArray(sub.students) ? sub.students : [];
+    const total = Number.isFinite(Number(sub.studentCount)) ? Number(sub.studentCount) : studentsList.length;
+    const active = Number.isFinite(Number(sub.activeStudentCount))
+      ? Number(sub.activeStudentCount)
+      : studentsList.filter(student => !isAttendanceBlockedStudent(student) && (!student.isRecovery || student.recoveryDate === sub.date)).length;
+    const maintenance = Number.isFinite(Number(sub.maintenanceStudentCount))
+      ? Number(sub.maintenanceStudentCount)
+      : studentsList.filter(student => student.isMaintenance || student.isPaused).length;
+
+    return { total, active, maintenance };
+  };
+
   const formatAttendanceStudentName = (student = {}) => {
     const tags = [];
     if (student.isRecovery) tags.push('Recuperación');
@@ -1724,40 +1752,102 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const assumeSubstitution = async (sub) => {
-    if (!window.confirm(`¿Asumir la sustitución de ${sub.subject} el ${formatDateSpanish(sub.date)} a las ${sub.time}h?\n\nEsta clase pasará a tu agenda y serás el profesor responsable.`)) return;
+    if (!user || !sub?.id) return;
+
+    if (isOwnSubstitution(sub)) {
+      showNotification({ type: 'error', text: 'No puedes asumir una sustitución que has abierto tú mismo.' });
+      return;
+    }
+
+    const stats = getSubstitutionStudentStats(sub);
+    if (stats.active <= 0) {
+      showNotification({ type: 'error', text: 'Esta sustitución no tiene alumnos activos reales para cubrir.' });
+      return;
+    }
+
+    if (!window.confirm(`¿Asumir la sustitución de ${sub.subject} el ${formatDateSpanish(sub.date)} a las ${sub.time}h?
+
+Esta clase pasará a tu agenda y serás el profesor responsable.
+
+Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${stats.total} en lista` : ''}.`)) return;
 
     try {
       const newClassId = `assumed-${sub.id}`;
       const targetUid = user.uid;
+      const substitutionRef = doc(db, 'artifacts', appId, 'substitutions', sub.id);
+      const assumedClassRef = doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', newClassId);
+      const assumedClassRefPath = `artifacts/${appId}/users/${targetUid}/recurringClasses/${newClassId}`;
+      const now = new Date().toISOString();
 
-      await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', newClassId), {
-        id: newClassId,
-        isRecurring: false,
-        date: sub.date,
-        dayOfWeek: getDayOfWeek(sub.date),
-        time: sub.time,
-        sede: sub.sede || 'Tarragona',
-        sala: sub.sala || 'Sala 1',
-        teacher: getTeacherName(), // The new teacher
-        subject: sub.subject,
-        capacity: sub.capacity || '',
-        duration: sub.duration || 60,
-        notes: sub.notes || '',
-        originalNotes: sub.notes || '',
-        notesUpdatedAt: sub.notesUpdatedAt || null,
-        notesUpdatedBy: sub.notesUpdatedBy || '',
-        notesUpdatedByName: sub.notesUpdatedByName || '',
-        students: sub.students || [],
-        exceptions: {},
-        cancelledDates: [],
-        isWebVisible: false
+      await runTransaction(db, async (transaction) => {
+        const subSnap = await transaction.get(substitutionRef);
+        if (!subSnap.exists()) {
+          throw new Error('Esta sustitución ya no está disponible.');
+        }
+
+        const latestSub = { id: subSnap.id, ...subSnap.data() };
+        const latestStatus = getSubstitutionStatus(latestSub);
+        const latestStats = getSubstitutionStudentStats(latestSub);
+
+        if (latestStatus !== 'open') {
+          throw new Error('Esta sustitución ya ha sido asumida o cerrada.');
+        }
+
+        if (isOwnSubstitution(latestSub)) {
+          throw new Error('No puedes asumir una sustitución que has abierto tú mismo.');
+        }
+
+        if (latestStats.active <= 0) {
+          throw new Error('Esta sustitución no tiene alumnos activos reales para cubrir.');
+        }
+
+        const exceptionsForDate = latestSub.exceptionsForDate || {};
+        const hasExceptionsForDate = Object.keys(exceptionsForDate).length > 0;
+        const autoCancelledForDate = Boolean(latestSub.autoCancelledForDate);
+
+        transaction.set(assumedClassRef, {
+          id: newClassId,
+          isRecurring: false,
+          date: latestSub.date,
+          dayOfWeek: getDayOfWeek(latestSub.date),
+          time: latestSub.time,
+          sede: latestSub.sede || 'Tarragona',
+          sala: latestSub.sala || 'Sala 1',
+          teacher: getTeacherName(),
+          subject: latestSub.subject,
+          capacity: latestSub.capacity || '',
+          duration: latestSub.duration || 60,
+          notes: latestSub.notes || '',
+          originalNotes: latestSub.originalNotes || latestSub.notes || '',
+          notesUpdatedAt: latestSub.notesUpdatedAt || null,
+          notesUpdatedBy: latestSub.notesUpdatedBy || '',
+          notesUpdatedByName: latestSub.notesUpdatedByName || '',
+          students: latestSub.students || [],
+          exceptions: hasExceptionsForDate ? { [latestSub.date]: exceptionsForDate } : {},
+          autoCancelled: autoCancelledForDate ? { [latestSub.date]: true } : {},
+          cancelledDates: [],
+          isWebVisible: false,
+          sourceSubstitutionId: latestSub.id,
+          originalClassId: latestSub.originalClassId || '',
+          originalTeacherUid: latestSub.originalTeacherUid || '',
+          originalTeacherName: latestSub.originalTeacherName || ''
+        });
+
+        transaction.update(substitutionRef, {
+          status: 'assigned',
+          assumedAt: now,
+          assumedByUid: user.uid,
+          assumedByEmail: user.email || '',
+          assumedTeacherName: getTeacherName(),
+          assumedClassId: newClassId,
+          assumedClassRefPath
+        });
       });
-
-      await deleteDoc(doc(db, 'artifacts', appId, 'substitutions', sub.id));
 
       showNotification({ type: 'success', text: 'Clase añadida a tu agenda. Puedes seleccionarla el día que corresponda.' });
     } catch (e) {
-      showNotification({ type: 'error', text: 'Error al asumir la clase.' });
+      console.error('Error al asumir sustitución', e);
+      showNotification({ type: 'error', text: e.message || 'Error al asumir la clase.' });
     }
   };
 
@@ -2090,15 +2180,38 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
   const cancelClassForToday = async (classData) => {
     if (!user) return;
-    const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)`);
+    const subId = `${classData.id}-${date}`;
+    const existingSubstitution = substitutions.find(sub => sub.id === subId && !['cancelled', 'expired'].includes(getSubstitutionStatus(sub)));
+
+    if (existingSubstitution) {
+      const existingStatus = getSubstitutionStatus(existingSubstitution);
+      showNotification({
+        type: 'error',
+        text: existingStatus === 'open'
+          ? 'Esta clase ya está abierta en la Bolsa de Sustituciones.'
+          : 'Esta clase ya fue asumida por otro profesor.'
+      });
+      return;
+    }
+
+    const effectiveStudents = getEffectiveStudentsForClass(classData, date);
+    const activeStudents = getEffectiveActiveStudentsForClass(classData, date);
+    const maintenanceStudentCount = effectiveStudents.filter(student => student.isMaintenance || student.isPaused).length;
+    const exceptionsForDate = classData.exceptions?.[date] || {};
+    const autoCancelledForDate = Boolean(classData.autoCancelled?.[date]);
+
+    const isConfirmed = window.confirm(`¿Seguro que quieres cancelar la clase de ${classData.subject} solo por hoy? (Estará libre para sustituciones)
+
+Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== activeStudents.length ? ` / ${effectiveStudents.length} en lista` : ''}.`);
     if (!isConfirmed) return;
 
     try {
-      const subId = `${classData.id}-${date}`;
-      
       await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
+        status: 'open',
         originalClassId: classData.id,
+        originalClassRefPath: classData.refPath || '',
         originalTeacherUid: user.uid,
+        originalTeacherEmail: user.email || '',
         originalTeacherName: classData.teacher || getTeacherName(),
         date: date,
         time: classData.time,
@@ -2108,13 +2221,26 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         capacity: classData.capacity || '',
         duration: classData.duration || 60,
         notes: classData.notes || '',
-        students: getEffectiveStudentsForClass(classData, date)
+        originalNotes: classData.originalNotes || classData.notes || '',
+        notesUpdatedAt: classData.notesUpdatedAt || null,
+        notesUpdatedBy: classData.notesUpdatedBy || '',
+        notesUpdatedByName: classData.notesUpdatedByName || '',
+        students: effectiveStudents,
+        studentCount: effectiveStudents.length,
+        activeStudentCount: activeStudents.length,
+        maintenanceStudentCount,
+        exceptionsForDate,
+        autoCancelledForDate,
+        createdAt: new Date().toISOString(),
+        createdByUid: user.uid,
+        createdByEmail: user.email || '',
+        createdByName: getTeacherName()
       });
 
       if (classData.date) {
         await deleteDoc(doc(db, classData.refPath));
       } else {
-        const updatedCancelledDates = [...(classData.cancelledDates || []), date];
+        const updatedCancelledDates = [...new Set([...(classData.cancelledDates || []), date])];
         await setDoc(doc(db, classData.refPath), {
           ...classData,
           cancelledDates: updatedCancelledDates
@@ -2459,7 +2585,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   const isVacacion = settings.vacaciones?.includes(date);
   const isSpecialDay = isGlobalFestivo || isVacacion;
 
-  const upcomingSubs = substitutions.filter(s => s.date >= todayISO).sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  const upcomingSubs = substitutions
+    .filter(s => s.date >= todayISO && getSubstitutionStatus(s) === 'open')
+    .sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
   return (
     <div className="min-h-screen bg-zinc-50 font-sans text-slate-800 pb-24 md:pb-0">
@@ -2561,22 +2689,37 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
                         <AlertCircle className="w-5 h-5 text-amber-400"/> Tablón de Sustituciones
                       </h4>
                       <div className="space-y-3">
-                        {upcomingSubs.map(sub => (
+                        {upcomingSubs.map(sub => {
+                          const subStats = getSubstitutionStudentStats(sub);
+                          const ownSubstitution = isOwnSubstitution(sub);
+                          const canAssumeSubstitution = !ownSubstitution && subStats.active > 0;
+
+                          return (
                           <div key={sub.id} className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 bg-zinc-800/80 backdrop-blur rounded-2xl border border-zinc-700 hover:border-amber-400 transition-colors">
                             <div>
                               <p className="font-black uppercase text-sm text-white">{sub.subject} <span className="text-zinc-400 font-bold ml-2">{formatDateSpanish(sub.date)} a las {sub.time}</span></p>
                               <p className="text-xs font-bold text-zinc-400 mt-1 uppercase tracking-widest">
-                                Falta: {sub.originalTeacherName} • {sub.students.length} alumnos
+                                Falta: {sub.originalTeacherName} • {subStats.active} activos{subStats.total !== subStats.active ? ` / ${subStats.total} en lista` : ''}{subStats.maintenance > 0 ? ` • ${subStats.maintenance} mantenimiento` : ''}
                               </p>
+                              {ownSubstitution && (
+                                <p className="text-[10px] font-black uppercase tracking-widest text-amber-300 mt-2">Cancelada por ti</p>
+                              )}
                             </div>
-                            <button 
-                              onClick={() => assumeSubstitution(sub)} 
-                              className="mt-3 sm:mt-0 w-full sm:w-auto bg-amber-400 text-amber-950 font-black py-3 px-6 rounded-xl text-[10px] uppercase tracking-widest hover:bg-amber-300 transition-all shadow-md active:scale-95"
-                            >
-                              Asumir Clase
-                            </button>
+                            {canAssumeSubstitution ? (
+                              <button 
+                                onClick={() => assumeSubstitution(sub)} 
+                                className="mt-3 sm:mt-0 w-full sm:w-auto bg-amber-400 text-amber-950 font-black py-3 px-6 rounded-xl text-[10px] uppercase tracking-widest hover:bg-amber-300 transition-all shadow-md active:scale-95"
+                              >
+                                Asumir Clase
+                              </button>
+                            ) : (
+                              <span className="mt-3 sm:mt-0 w-full sm:w-auto text-center bg-zinc-700 text-zinc-300 font-black py-3 px-6 rounded-xl text-[10px] uppercase tracking-widest border border-zinc-600">
+                                {ownSubstitution ? 'No asumible por ti' : 'Sin alumnos activos'}
+                              </span>
+                            )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                     <Music className="absolute -bottom-10 -right-10 w-48 h-48 text-zinc-800/50 rotate-12 pointer-events-none" />

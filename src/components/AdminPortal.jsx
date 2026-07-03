@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Inbox, ClipboardList, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
@@ -373,6 +373,438 @@ const generateLast12Months = () => {
     d.setMonth(d.getMonth() - 1);
   }
   return months;
+};
+
+
+const StableModalRenderer = ({ render }) => {
+  const renderRef = useRef(render);
+  renderRef.current = render;
+  return renderRef.current();
+};
+
+
+
+const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly, getTeacherEmail, db, appId, user }) => {
+  const teacherOptions = useMemo(() => [...new Set([
+    ...(settings?.teachersList || []),
+    ...(recurringClassesOnly || []).map(c => c.teacher).filter(Boolean)
+  ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')), [settings?.teachersList, recurringClassesOnly]);
+
+  const buildInitialForm = () => ({
+    title: '',
+    details: '',
+    person: '',
+    type: 'tarea_manual',
+    teacherName: teacherOptions[0] || '',
+    priority: 'normal',
+    dueDate: ''
+  });
+
+  const [form, setForm] = useState(buildInitialForm);
+  const [saving, setSaving] = useState(false);
+  const wasOpenRef = useRef(false);
+
+  useEffect(() => {
+    if (open && !wasOpenRef.current) {
+      setForm(buildInitialForm());
+      setSaving(false);
+    }
+    wasOpenRef.current = Boolean(open);
+  }, [open]);
+
+  const isTeacherAssignment = form.type === 'encargo_profesor';
+
+  const handleClose = () => {
+    if (saving) return;
+    onClose?.();
+  };
+
+  const handleCreate = async () => {
+    const title = form.title.trim();
+    const details = form.details.trim();
+
+    if (!title) {
+      alert('Rellena al menos el título de la tarea.');
+      return;
+    }
+
+    if (isTeacherAssignment && !String(form.teacherName || '').trim()) {
+      alert('Selecciona el profesor destinatario del encargo.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+
+      if (isTeacherAssignment) {
+        const teacherName = String(form.teacherName || '').trim();
+        const taskId = `admin-assignment-${Date.now()}`;
+        await setDoc(doc(db, 'artifacts', appId, 'teacherTasks', taskId), {
+          type: 'admin_assignment',
+          direction: 'admin_to_teacher',
+          title,
+          description: details,
+          teacherName,
+          teacherEmail: getTeacherEmail(teacherName),
+          priority: form.priority || 'normal',
+          dueDate: form.dueDate || '',
+          status: 'pendiente',
+          createdAt: now,
+          updatedAt: now,
+          createdBy: user?.email || 'admin',
+          createdFrom: 'admin_portal'
+        });
+
+        alert(`✅ Encargo enviado a ${teacherName}. Aparecerá en su TeacherPortal, pestaña Tareas > Encargos.`);
+        onClose?.();
+        return;
+      }
+
+      const taskId = `manual-${Date.now()}`;
+      const taskPayload = {
+        type: form.type || 'tarea_manual',
+        title,
+        details,
+        studentId: null,
+        studentName: form.person.trim() || 'Tarea manual',
+        studentEmail: '',
+        source: 'manual_admin',
+        status: 'pendiente',
+        date: now
+      };
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
+
+      alert('✅ Tarea manual añadida a la bandeja.');
+      onClose?.();
+    } catch (error) {
+      alert('❌ Error al crear la tarea manual: ' + error.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+        <button onClick={handleClose} disabled={saving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
+
+        <div className="flex items-center gap-3 text-slate-900 mb-6">
+          <Inbox className="w-8 h-8 text-red-600" />
+          <div>
+            <h2 className="text-xl font-black uppercase tracking-tight">Nueva Tarea Manual</h2>
+            <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Bandeja interna o encargo directo a un profesor.</p>
+          </div>
+        </div>
+
+        <div className="space-y-4 mb-6">
+          <div>
+            <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Tipo</label>
+            <select
+              value={form.type}
+              onChange={e => setForm(prev => ({
+                ...prev,
+                type: e.target.value,
+                teacherName: e.target.value === 'encargo_profesor' ? (prev.teacherName || teacherOptions[0] || '') : prev.teacherName
+              }))}
+              className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black"
+            >
+              <option value="tarea_manual">Tarea manual</option>
+              <option value="llamada">Llamada pendiente</option>
+              <option value="seguimiento">Seguimiento</option>
+              <option value="incidencia_manual">Incidencia</option>
+              <option value="encargo_profesor">Encargo a profesor</option>
+            </select>
+          </div>
+
+          {isTeacherAssignment ? (
+            <>
+              <div className="bg-violet-50 border border-violet-100 text-violet-900 p-4 rounded-2xl text-xs font-bold leading-relaxed">
+                Este encargo no entra en la bandeja de alumnos. Se enviará a la pestaña <b>Tareas</b> del profesor elegido, donde podrá marcarlo en curso, completarlo o rechazarlo con motivo.
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Profesor destinatario *</label>
+                <select value={form.teacherName} onChange={e => setForm(prev => ({ ...prev, teacherName: e.target.value }))} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-600">
+                  <option value="">Selecciona profesor...</option>
+                  {teacherOptions.map(teacherName => <option key={teacherName} value={teacherName}>{teacherName} · {getTeacherEmail(teacherName)}</option>)}
+                </select>
+                {teacherOptions.length === 0 && <p className="text-[10px] text-red-500 font-bold mt-1">No hay profesores configurados. Añádelos en ajustes o crea antes una clase con profesor.</p>}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Prioridad</label>
+                  <select value={form.priority} onChange={e => setForm(prev => ({ ...prev, priority: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
+                    <option value="normal">Normal</option>
+                    <option value="alta">Alta</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Fecha límite</label>
+                  <input type="date" value={form.dueDate} onChange={e => setForm(prev => ({ ...prev, dueDate: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+                </div>
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
+              <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+            </div>
+          )}
+
+          <div>
+            <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Título *</label>
+            <input type="text" value={form.title} onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder={isTeacherAssignment ? 'Ej: Revisar cables de Sala 2' : 'Ej: Cambiar a Hugo de grupo'} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles <span className="text-zinc-300">(opcional)</span></label>
+            <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder={isTeacherAssignment ? 'Explica claramente qué necesitas que haga el profesor...' : 'Opcional. Añade contexto si el título no basta...'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
+          </div>
+        </div>
+
+        <button onClick={handleCreate} disabled={saving || !form.title.trim() || (isTeacherAssignment && !form.teacherName)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
+          {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> {isTeacherAssignment ? 'Enviar encargo al profesor' : 'Añadir a Bandeja'}</>}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const TemporaryRelocationModalOverlay = ({
+  student,
+  onClose,
+  recurringClassesOnly,
+  temporaryRelocations,
+  getStudentAssignedClasses,
+  getStudentTemporaryRelocations,
+  getCommercialCommittedSeatCount,
+  isTemporaryRelocationActiveForDate,
+  doDateRangesOverlap,
+  formatClassLine,
+  sendTeacherNotification,
+  sendStudentNotification,
+  db,
+  appId,
+  user,
+  todayStr
+}) => {
+  const assignedClasses = useMemo(() => {
+    if (!student?.id) return [];
+    return getStudentAssignedClasses(student.id).filter(c => !isPunctualClass(c));
+  }, [student?.id, getStudentAssignedClasses]);
+
+  const defaultSourceClassId = assignedClasses[0]?.id || '';
+  const [sourceClassId, setSourceClassId] = useState('');
+  const [targetClassId, setTargetClassId] = useState('');
+  const [fromDate, setFromDate] = useState(todayStr);
+  const [untilDate, setUntilDate] = useState(todayStr);
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const lastStudentIdRef = useRef('');
+
+  useEffect(() => {
+    if (!student?.id) {
+      lastStudentIdRef.current = '';
+      return;
+    }
+    if (lastStudentIdRef.current === student.id) return;
+
+    lastStudentIdRef.current = student.id;
+    setSourceClassId(defaultSourceClassId);
+    setTargetClassId('');
+    setFromDate(todayStr);
+    setUntilDate(todayStr);
+    setNotes('');
+    setSaving(false);
+  }, [student?.id, defaultSourceClassId, todayStr]);
+
+  const sourceClass = (recurringClassesOnly || []).find(c => c.id === sourceClassId) || assignedClasses[0] || null;
+  const possibleTargets = (recurringClassesOnly || [])
+    .filter(c => c.id !== sourceClassId)
+    .sort((a, b) => {
+      const subjectA = a.subject === sourceClass?.subject ? 0 : 1;
+      const subjectB = b.subject === sourceClass?.subject ? 0 : 1;
+      if (subjectA !== subjectB) return subjectA - subjectB;
+      return `${a.sede || ''}${a.dayOfWeek}${a.time}`.localeCompare(`${b.sede || ''}${b.dayOfWeek}${b.time}`);
+    });
+  const targetClass = (recurringClassesOnly || []).find(c => c.id === targetClassId) || null;
+  const currentRelocations = student?.id ? getStudentTemporaryRelocations(student.id) : [];
+
+  const cancelRelocation = async (relocation) => {
+    if (!window.confirm(`¿Cancelar esta recolocación temporal de ${student?.name || 'alumno'}?\n\n${relocation.sourceClassLine || relocation.sourceClassId}\n→ ${relocation.targetClassLine || relocation.targetClassId}`)) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocation.id), {
+        status: 'cancelled',
+        cancelledAt: new Date().toISOString(),
+        cancelledBy: user?.email || 'admin'
+      });
+      alert('✅ Recolocación temporal cancelada.');
+    } catch (e) {
+      alert('Error al cancelar: ' + e.message);
+    }
+  };
+
+  const createRelocation = async () => {
+    if (!student?.id) return;
+    if (!sourceClass?.id) return alert('El alumno no tiene clase de origen seleccionada.');
+    if (!targetClass?.id) return alert('Selecciona una clase de destino.');
+    if (!fromDate || !untilDate) return alert('Indica fecha desde y hasta.');
+    if (fromDate > untilDate) return alert('La fecha DESDE no puede ser posterior a la fecha HASTA.');
+    if (sourceClass.id === targetClass.id) return alert('La clase de origen y destino no pueden ser la misma.');
+
+    const overlapping = (temporaryRelocations || []).find(rel =>
+      rel.studentId === student.id &&
+      rel.status !== 'cancelled' &&
+      doDateRangesOverlap(fromDate, untilDate, rel.from, rel.until)
+    );
+
+    if (overlapping) {
+      return alert(`Este alumno ya tiene una recolocación temporal que se solapa con esas fechas:\n\n${overlapping.sourceClassLine || overlapping.sourceClassId}\n→ ${overlapping.targetClassLine || overlapping.targetClassId}\n${formatDateSpanish(overlapping.from)} - ${formatDateSpanish(overlapping.until)}`);
+    }
+
+    const formalTargetCount = getCommercialCommittedSeatCount(targetClass);
+    const targetCapacity = parseInt(targetClass.capacity || 0, 10);
+    if (targetCapacity > 0 && formalTargetCount >= targetCapacity) {
+      const ok = window.confirm(`⚠️ La clase destino ya está completa formalmente (${formalTargetCount}/${targetCapacity}).\n\nLa recolocación NO ocupará plaza formal, pero sí añadirá una persona real a la sala durante ese periodo.\n\n¿Continuar igualmente?`);
+      if (!ok) return;
+    }
+
+    const displayName = student.useAlias && student.alias ? student.alias : student.name;
+    const relocationId = `reloc-${Date.now()}`;
+    const payload = {
+      studentId: student.id,
+      studentName: displayName,
+      studentEmail: student.email || '',
+      sourceClassId: sourceClass.id,
+      sourceClassRefPath: sourceClass.refPath || '',
+      sourceClassLine: formatClassLine(sourceClass),
+      sourceTeacher: sourceClass.teacher || '',
+      targetClassId: targetClass.id,
+      targetClassRefPath: targetClass.refPath || '',
+      targetClassLine: formatClassLine(targetClass),
+      targetTeacher: targetClass.teacher || '',
+      from: fromDate,
+      until: untilDate,
+      status: 'active',
+      notes: notes.trim(),
+      createdAt: new Date().toISOString(),
+      createdBy: user?.email || 'admin'
+    };
+
+    setSaving(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocationId), payload);
+
+      const periodLine = `${formatDateSpanish(fromDate)} al ${formatDateSpanish(untilDate)}`;
+      if (sourceClass.teacher) {
+        await sendTeacherNotification({
+          teacherName: sourceClass.teacher,
+          subject: `Recolocación temporal: ${displayName} deja tu clase temporalmente`,
+          body: `Hola ${sourceClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} será recolocado temporalmente fuera de tu clase durante este periodo:\n\n${periodLine}\n\nClase de origen:\n· ${formatClassLine(sourceClass)}\n\nClase temporal de destino:\n· ${formatClassLine(targetClass)}\n\nDurante ese periodo no aparecerá en tu lista de asistencia. Su plaza formal sigue reservada en tu clase.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+      }
+
+      if (targetClass.teacher && targetClass.teacher !== sourceClass.teacher) {
+        await sendTeacherNotification({
+          teacherName: targetClass.teacher,
+          subject: `Alumno recolocado temporalmente: ${displayName}`,
+          body: `Hola ${targetClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} aparecerá temporalmente en tu lista de asistencia durante este periodo:\n\n${periodLine}\n\nClase temporal:\n· ${formatClassLine(targetClass)}\n\nAparecerá marcado como alumno recolocado temporalmente. No ocupa plaza formal en tu grupo, pero debes pasarle lista con normalidad.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+      }
+
+      await sendStudentNotification({
+        studentEmail: student.email || '',
+        subject: `Recolocación temporal de clase - Escuela Los Mitos`,
+        body: `Hola ${student.name},\n\nTe confirmamos tu recolocación temporal de clase para el periodo ${periodLine}.\n\nDurante este periodo tu clase será:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher || 'Profesor/a'}\n\nFuera de ese periodo volverás a figurar en tu clase habitual:\n· ${formatClassLine(sourceClass)}\n\nTu plaza habitual sigue reservada.\n\nUn saludo,\nCoordinación Los Mitos.`
+      });
+
+      alert('✅ Recolocación temporal creada. TeacherPortal y StudentPortal la aplicarán durante el periodo indicado.');
+      onClose?.();
+    } catch (e) {
+      alert('Error al crear la recolocación temporal: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!student) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-4 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl relative my-4">
+        <button onClick={onClose} disabled={saving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
+        <div className="flex items-center gap-3 text-slate-800 mb-2">
+          <ArrowRightLeft className="w-8 h-8 text-violet-600" />
+          <h2 className="text-xl font-black uppercase tracking-tight">Recolocación temporal</h2>
+        </div>
+        <p className="text-sm font-bold text-zinc-500 mb-6">{student.name}{student.alias ? ` · ${student.alias}` : ''}</p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase origen formal</label>
+            <select value={sourceClassId} onChange={e => { setSourceClassId(e.target.value); setTargetClassId(''); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
+              {assignedClasses.length === 0 && <option value="">Sin clase formal</option>}
+              {assignedClasses.map(c => <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher}</option>)}
+            </select>
+            <p className="text-[10px] text-zinc-400 font-bold mt-1">Esta plaza no se libera.</p>
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase destino temporal</label>
+            <select value={targetClassId} onChange={e => setTargetClassId(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
+              <option value="">Selecciona destino...</option>
+              {possibleTargets.map(c => {
+                const formalCount = getCommercialCommittedSeatCount(c);
+                return <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher} · {formalCount}/{c.capacity || '?'}</option>;
+              })}
+            </select>
+            <p className="text-[10px] text-zinc-400 font-bold mt-1">No ocupará plaza formal en el destino.</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Desde</label>
+            <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Hasta</label>
+            <input type="date" value={untilDate} onChange={e => setUntilDate(e.target.value)} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+          </div>
+        </div>
+
+        <div className="mb-6">
+          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Notas internas opcionales</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej: cambio temporal por obras, conciliación, prueba de horario..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500 min-h-[90px]" />
+        </div>
+
+        {currentRelocations.length > 0 && (
+          <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl">
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Recolocaciones existentes</h3>
+            <div className="space-y-2">
+              {currentRelocations.map(rel => (
+                <div key={rel.id} className="flex items-start justify-between gap-3 bg-white border border-zinc-200 rounded-xl p-3">
+                  <div>
+                    <p className="text-xs font-black text-slate-800">{formatDateSpanish(rel.from)} - {formatDateSpanish(rel.until)}</p>
+                    <p className="text-[10px] font-bold text-zinc-500 leading-relaxed">{rel.sourceClassLine || rel.sourceClassId} → {rel.targetClassLine || rel.targetClassId}</p>
+                    <p className={`mt-1 text-[9px] font-black uppercase tracking-widest ${isTemporaryRelocationActiveForDate(rel) ? 'text-emerald-600' : 'text-zinc-400'}`}>{isTemporaryRelocationActiveForDate(rel) ? 'Activa hoy' : 'No activa hoy'}</p>
+                  </div>
+                  <button onClick={() => cancelRelocation(rel)} disabled={saving} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest disabled:opacity-50">Cancelar</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={createRelocation} disabled={saving || assignedClasses.length === 0} className="w-full bg-violet-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-violet-700 transition-all shadow-md disabled:opacity-50">
+          {saving ? 'Creando recolocación...' : 'Crear recolocación temporal'}
+        </button>
+      </div>
+    </div>
+  );
 };
 
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
@@ -5188,184 +5620,6 @@ Coordinación Los Mitos.`
     );
   };
 
-  const ManualTaskModalOverlay = () => {
-    if (!manualTaskModal) return null;
-
-    const teacherOptions = useMemo(() => [...new Set([
-      ...(settings.teachersList || []),
-      ...recurringClassesOnly.map(c => c.teacher).filter(Boolean)
-    ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')), [settings.teachersList, recurringClassesOnly]);
-
-    const [form, setForm] = useState({
-      title: '',
-      details: '',
-      person: '',
-      type: 'tarea_manual',
-      teacherName: teacherOptions[0] || '',
-      priority: 'normal',
-      dueDate: ''
-    });
-    const [saving, setSaving] = useState(false);
-    const isTeacherAssignment = form.type === 'encargo_profesor';
-
-    const handleClose = () => {
-      if (saving) return;
-      setManualTaskModal(false);
-    };
-
-    const handleCreate = async () => {
-      const title = form.title.trim();
-      const details = form.details.trim();
-
-      if (!title) {
-        alert('Rellena al menos el título de la tarea.');
-        return;
-      }
-
-      if (isTeacherAssignment && !String(form.teacherName || '').trim()) {
-        alert('Selecciona el profesor destinatario del encargo.');
-        return;
-      }
-
-      setSaving(true);
-      try {
-        const now = new Date().toISOString();
-
-        if (isTeacherAssignment) {
-          const teacherName = String(form.teacherName || '').trim();
-          const taskId = `admin-assignment-${Date.now()}`;
-          await setDoc(doc(db, 'artifacts', appId, 'teacherTasks', taskId), {
-            type: 'admin_assignment',
-            direction: 'admin_to_teacher',
-            title,
-            description: details,
-            teacherName,
-            teacherEmail: getTeacherEmail(teacherName),
-            priority: form.priority || 'normal',
-            dueDate: form.dueDate || '',
-            status: 'pendiente',
-            createdAt: now,
-            updatedAt: now,
-            createdBy: user?.email || 'admin',
-            createdFrom: 'admin_portal'
-          });
-
-          alert(`✅ Encargo enviado a ${teacherName}. Aparecerá en su TeacherPortal, pestaña Tareas > Encargos.`);
-          setManualTaskModal(false);
-          return;
-        }
-
-        const taskId = `manual-${Date.now()}`;
-        const taskPayload = {
-          type: form.type || 'tarea_manual',
-          title,
-          details,
-          studentId: null,
-          studentName: form.person.trim() || 'Tarea manual',
-          studentEmail: '',
-          source: 'manual_admin',
-          status: 'pendiente',
-          date: now
-        };
-        await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
-
-        alert('✅ Tarea manual añadida a la bandeja.');
-        setManualTaskModal(false);
-      } catch (error) {
-        alert('❌ Error al crear la tarea manual: ' + error.message);
-      } finally {
-        setSaving(false);
-      }
-    };
-
-    return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-lg w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-          <button onClick={handleClose} disabled={saving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
-
-          <div className="flex items-center gap-3 text-slate-900 mb-6">
-            <Inbox className="w-8 h-8 text-red-600" />
-            <div>
-              <h2 className="text-xl font-black uppercase tracking-tight">Nueva Tarea Manual</h2>
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Bandeja interna o encargo directo a un profesor.</p>
-            </div>
-          </div>
-
-          <div className="space-y-4 mb-6">
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Tipo</label>
-              <select
-                value={form.type}
-                onChange={e => setForm(prev => ({
-                  ...prev,
-                  type: e.target.value,
-                  teacherName: e.target.value === 'encargo_profesor' ? (prev.teacherName || teacherOptions[0] || '') : prev.teacherName
-                }))}
-                className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black"
-              >
-                <option value="tarea_manual">Tarea manual</option>
-                <option value="llamada">Llamada pendiente</option>
-                <option value="seguimiento">Seguimiento</option>
-                <option value="incidencia_manual">Incidencia</option>
-                <option value="encargo_profesor">Encargo a profesor</option>
-              </select>
-            </div>
-
-            {isTeacherAssignment ? (
-              <>
-                <div className="bg-violet-50 border border-violet-100 text-violet-900 p-4 rounded-2xl text-xs font-bold leading-relaxed">
-                  Este encargo no entra en la bandeja de alumnos. Se enviará a la pestaña <b>Tareas</b> del profesor elegido, donde podrá marcarlo en curso, completarlo o rechazarlo con motivo.
-                </div>
-
-                <div>
-                  <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Profesor destinatario *</label>
-                  <select value={form.teacherName} onChange={e => setForm(prev => ({ ...prev, teacherName: e.target.value }))} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-600">
-                    <option value="">Selecciona profesor...</option>
-                    {teacherOptions.map(teacherName => <option key={teacherName} value={teacherName}>{teacherName} · {getTeacherEmail(teacherName)}</option>)}
-                  </select>
-                  {teacherOptions.length === 0 && <p className="text-[10px] text-red-500 font-bold mt-1">No hay profesores configurados. Añádelos en ajustes o crea antes una clase con profesor.</p>}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Prioridad</label>
-                    <select value={form.priority} onChange={e => setForm(prev => ({ ...prev, priority: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
-                      <option value="normal">Normal</option>
-                      <option value="alta">Alta</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Fecha límite</label>
-                    <input type="date" value={form.dueDate} onChange={e => setForm(prev => ({ ...prev, dueDate: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div>
-                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
-                <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
-              </div>
-            )}
-
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Título *</label>
-              <input type="text" value={form.title} onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder={isTeacherAssignment ? 'Ej: Revisar cables de Sala 2' : 'Ej: Cambiar a Hugo de grupo'} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
-            </div>
-
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles <span className="text-zinc-300">(opcional)</span></label>
-              <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder={isTeacherAssignment ? 'Explica claramente qué necesitas que haga el profesor...' : 'Opcional. Añade contexto si el título no basta...'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
-            </div>
-          </div>
-
-          <button onClick={handleCreate} disabled={saving || !form.title.trim() || (isTeacherAssignment && !form.teacherName)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
-            {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> {isTeacherAssignment ? 'Enviar encargo al profesor' : 'Añadir a Bandeja'}</>}
-          </button>
-        </div>
-      </div>
-    );
-  };
-
   const NotesModalOverlay = () => {
     if (!notesModal) return null;
     const globalStudentInfo = students.find(s => s.id === notesModal.id);
@@ -5498,201 +5752,6 @@ Coordinación Los Mitos.`
           </div>
           <button onClick={handleSave} disabled={saving} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando cambios...' : 'Guardar Datos'}
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  const TemporaryRelocationModalOverlay = () => {
-    if (!temporaryRelocationModal) return null;
-
-    const student = temporaryRelocationModal;
-    const assignedClasses = getStudentAssignedClasses(student.id).filter(c => !isPunctualClass(c));
-    const defaultSourceClassId = assignedClasses[0]?.id || '';
-    const [sourceClassId, setSourceClassId] = useState(defaultSourceClassId);
-    const [targetClassId, setTargetClassId] = useState('');
-    const [fromDate, setFromDate] = useState(todayStr);
-    const [untilDate, setUntilDate] = useState(todayStr);
-    const [notes, setNotes] = useState('');
-    const [saving, setSaving] = useState(false);
-
-    const sourceClass = recurringClassesOnly.find(c => c.id === sourceClassId) || assignedClasses[0] || null;
-    const possibleTargets = recurringClassesOnly
-      .filter(c => c.id !== sourceClassId)
-      .sort((a, b) => {
-        const subjectA = a.subject === sourceClass?.subject ? 0 : 1;
-        const subjectB = b.subject === sourceClass?.subject ? 0 : 1;
-        if (subjectA !== subjectB) return subjectA - subjectB;
-        return `${a.sede || ''}${a.dayOfWeek}${a.time}`.localeCompare(`${b.sede || ''}${b.dayOfWeek}${b.time}`);
-      });
-    const targetClass = recurringClassesOnly.find(c => c.id === targetClassId) || null;
-    const currentRelocations = getStudentTemporaryRelocations(student.id);
-
-    const cancelRelocation = async (relocation) => {
-      if (!window.confirm(`¿Cancelar esta recolocación temporal de ${student.name}?\n\n${relocation.sourceClassLine || relocation.sourceClassId}\n→ ${relocation.targetClassLine || relocation.targetClassId}`)) return;
-      try {
-        await updateDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocation.id), {
-          status: 'cancelled',
-          cancelledAt: new Date().toISOString(),
-          cancelledBy: user?.email || 'admin'
-        });
-        alert('✅ Recolocación temporal cancelada.');
-      } catch (e) {
-        alert('Error al cancelar: ' + e.message);
-      }
-    };
-
-    const createRelocation = async () => {
-      if (!sourceClass?.id) return alert('El alumno no tiene clase de origen seleccionada.');
-      if (!targetClass?.id) return alert('Selecciona una clase de destino.');
-      if (!fromDate || !untilDate) return alert('Indica fecha desde y hasta.');
-      if (fromDate > untilDate) return alert('La fecha DESDE no puede ser posterior a la fecha HASTA.');
-      if (sourceClass.id === targetClass.id) return alert('La clase de origen y destino no pueden ser la misma.');
-
-      const overlapping = temporaryRelocations.find(rel =>
-        rel.studentId === student.id &&
-        rel.status !== 'cancelled' &&
-        doDateRangesOverlap(fromDate, untilDate, rel.from, rel.until)
-      );
-
-      if (overlapping) {
-        return alert(`Este alumno ya tiene una recolocación temporal que se solapa con esas fechas:\n\n${overlapping.sourceClassLine || overlapping.sourceClassId}\n→ ${overlapping.targetClassLine || overlapping.targetClassId}\n${formatDateSpanish(overlapping.from)} - ${formatDateSpanish(overlapping.until)}`);
-      }
-
-      const formalTargetCount = getCommercialCommittedSeatCount(targetClass);
-      const targetCapacity = parseInt(targetClass.capacity || 0, 10);
-      if (targetCapacity > 0 && formalTargetCount >= targetCapacity) {
-        const ok = window.confirm(`⚠️ La clase destino ya está completa formalmente (${formalTargetCount}/${targetCapacity}).\n\nLa recolocación NO ocupará plaza formal, pero sí añadirá una persona real a la sala durante ese periodo.\n\n¿Continuar igualmente?`);
-        if (!ok) return;
-      }
-
-      const displayName = student.useAlias && student.alias ? student.alias : student.name;
-      const relocationId = `reloc-${Date.now()}`;
-      const payload = {
-        studentId: student.id,
-        studentName: displayName,
-        studentEmail: student.email || '',
-        sourceClassId: sourceClass.id,
-        sourceClassRefPath: sourceClass.refPath || '',
-        sourceClassLine: formatClassLine(sourceClass),
-        sourceTeacher: sourceClass.teacher || '',
-        targetClassId: targetClass.id,
-        targetClassRefPath: targetClass.refPath || '',
-        targetClassLine: formatClassLine(targetClass),
-        targetTeacher: targetClass.teacher || '',
-        from: fromDate,
-        until: untilDate,
-        status: 'active',
-        notes: notes.trim(),
-        createdAt: new Date().toISOString(),
-        createdBy: user?.email || 'admin'
-      };
-
-      setSaving(true);
-      try {
-        await setDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocationId), payload);
-
-        const periodLine = `${formatDateSpanish(fromDate)} al ${formatDateSpanish(untilDate)}`;
-        if (sourceClass.teacher) {
-          await sendTeacherNotification({
-            teacherName: sourceClass.teacher,
-            subject: `Recolocación temporal: ${displayName} deja tu clase temporalmente`,
-            body: `Hola ${sourceClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} será recolocado temporalmente fuera de tu clase durante este periodo:\n\n${periodLine}\n\nClase de origen:\n· ${formatClassLine(sourceClass)}\n\nClase temporal de destino:\n· ${formatClassLine(targetClass)}\n\nDurante ese periodo no aparecerá en tu lista de asistencia. Su plaza formal sigue reservada en tu clase.\n\nUn saludo,\nCoordinación Los Mitos.`
-          });
-        }
-
-        if (targetClass.teacher && targetClass.teacher !== sourceClass.teacher) {
-          await sendTeacherNotification({
-            teacherName: targetClass.teacher,
-            subject: `Alumno recolocado temporalmente: ${displayName}`,
-            body: `Hola ${targetClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} aparecerá temporalmente en tu lista de asistencia durante este periodo:\n\n${periodLine}\n\nClase temporal:\n· ${formatClassLine(targetClass)}\n\nAparecerá marcado como alumno recolocado temporalmente. No ocupa plaza formal en tu grupo, pero debes pasarle lista con normalidad.\n\nUn saludo,\nCoordinación Los Mitos.`
-          });
-        }
-
-        await sendStudentNotification({
-          studentEmail: student.email || '',
-          subject: `Recolocación temporal de clase - Escuela Los Mitos`,
-          body: `Hola ${student.name},\n\nTe confirmamos tu recolocación temporal de clase para el periodo ${periodLine}.\n\nDurante este periodo tu clase será:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher || 'Profesor/a'}\n\nFuera de ese periodo volverás a figurar en tu clase habitual:\n· ${formatClassLine(sourceClass)}\n\nTu plaza habitual sigue reservada.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
-
-        alert('✅ Recolocación temporal creada. TeacherPortal y StudentPortal la aplicarán durante el periodo indicado.');
-        setTemporaryRelocationModal(null);
-      } catch (e) {
-        alert('Error al crear la recolocación temporal: ' + e.message);
-      } finally {
-        setSaving(false);
-      }
-    };
-
-    return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-4 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl relative my-4">
-          <button onClick={() => setTemporaryRelocationModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          <div className="flex items-center gap-3 text-slate-800 mb-2">
-            <ArrowRightLeft className="w-8 h-8 text-violet-600" />
-            <h2 className="text-xl font-black uppercase tracking-tight">Recolocación temporal</h2>
-          </div>
-          <p className="text-sm font-bold text-zinc-500 mb-6">{student.name}{student.alias ? ` · ${student.alias}` : ''}</p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-            <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase origen formal</label>
-              <select value={sourceClassId} onChange={e => { setSourceClassId(e.target.value); setTargetClassId(''); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
-                {assignedClasses.length === 0 && <option value="">Sin clase formal</option>}
-                {assignedClasses.map(c => <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher}</option>)}
-              </select>
-              <p className="text-[10px] text-zinc-400 font-bold mt-1">Esta plaza no se libera.</p>
-            </div>
-            <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase destino temporal</label>
-              <select value={targetClassId} onChange={e => setTargetClassId(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
-                <option value="">Selecciona destino...</option>
-                {possibleTargets.map(c => {
-                  const formalCount = getCommercialCommittedSeatCount(c);
-                  return <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher} · {formalCount}/{c.capacity || '?'}</option>;
-                })}
-              </select>
-              <p className="text-[10px] text-zinc-400 font-bold mt-1">No ocupará plaza formal en el destino.</p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-            <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Desde</label>
-              <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
-            </div>
-            <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Hasta</label>
-              <input type="date" value={untilDate} onChange={e => setUntilDate(e.target.value)} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
-            </div>
-          </div>
-
-          <div className="mb-6">
-            <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Notas internas opcionales</label>
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej: cambio temporal por obras, conciliación, prueba de horario..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500 min-h-[90px]" />
-          </div>
-
-          {currentRelocations.length > 0 && (
-            <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl">
-              <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Recolocaciones existentes</h3>
-              <div className="space-y-2">
-                {currentRelocations.map(rel => (
-                  <div key={rel.id} className="flex items-start justify-between gap-3 bg-white border border-zinc-200 rounded-xl p-3">
-                    <div>
-                      <p className="text-xs font-black text-slate-800">{formatDateSpanish(rel.from)} - {formatDateSpanish(rel.until)}</p>
-                      <p className="text-[10px] font-bold text-zinc-500 leading-relaxed">{rel.sourceClassLine || rel.sourceClassId} → {rel.targetClassLine || rel.targetClassId}</p>
-                      <p className={`mt-1 text-[9px] font-black uppercase tracking-widest ${isTemporaryRelocationActiveForDate(rel) ? 'text-emerald-600' : 'text-zinc-400'}`}>{isTemporaryRelocationActiveForDate(rel) ? 'Activa hoy' : 'No activa hoy'}</p>
-                    </div>
-                    <button onClick={() => cancelRelocation(rel)} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Cancelar</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <button onClick={createRelocation} disabled={saving || assignedClasses.length === 0} className="w-full bg-violet-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-violet-700 transition-all shadow-md disabled:opacity-50">
-            {saving ? 'Creando recolocación...' : 'Crear recolocación temporal'}
           </button>
         </div>
       </div>
@@ -6598,19 +6657,45 @@ ${startDateWarning}
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
-      <EditWebModalOverlay />
-      <EditClassModalOverlay />
-      <CreateClassModalOverlay />
-      <ManualTaskModalOverlay />
-      <PayrollAdjustmentModalOverlay />
-      {notesModal && <NotesModalOverlay />}
-      {changeClassModal && <ChangeClassModalOverlay />}
-      {editStudentModal && <EditStudentModalOverlay />} 
-      {temporaryRelocationModal && <TemporaryRelocationModalOverlay />}
-      {resurrectClassModal && <ResurrectClassModalOverlay />}
-      {viewClassModal && <ViewClassModalOverlay />}
-      {photosModalOpen && <PhotosModalOverlay />}
-      {socialModalText && <SocialModalOverlay />}
+      {editWebModal && <StableModalRenderer key={`edit-web-${editWebModal.id || editWebModal.refPath || 'open'}`} render={EditWebModalOverlay} />}
+      {editClassModal && <StableModalRenderer key={`edit-class-${editClassModal.id || 'open'}`} render={EditClassModalOverlay} />}
+      {createClassModal && <StableModalRenderer key="create-class" render={CreateClassModalOverlay} />}
+      <ManualTaskModalOverlay
+        open={manualTaskModal}
+        onClose={() => setManualTaskModal(false)}
+        settings={settings}
+        recurringClassesOnly={recurringClassesOnly}
+        getTeacherEmail={getTeacherEmail}
+        db={db}
+        appId={appId}
+        user={user}
+      />
+      {payrollAdjustModal && <StableModalRenderer key={`payroll-${payrollAdjustModal.teacher || 'teacher'}-${payrollAdjustModal.mode || 'mode'}`} render={PayrollAdjustmentModalOverlay} />}
+      {notesModal && <StableModalRenderer key={`notes-${notesModal.id || 'open'}`} render={NotesModalOverlay} />}
+      {changeClassModal && <StableModalRenderer key={`change-class-${changeClassModal.id || 'open'}`} render={ChangeClassModalOverlay} />}
+      {editStudentModal && <StableModalRenderer key={`edit-student-${editStudentModal.id || 'open'}`} render={EditStudentModalOverlay} />} 
+      <TemporaryRelocationModalOverlay
+        student={temporaryRelocationModal}
+        onClose={() => setTemporaryRelocationModal(null)}
+        recurringClassesOnly={recurringClassesOnly}
+        temporaryRelocations={temporaryRelocations}
+        getStudentAssignedClasses={getStudentAssignedClasses}
+        getStudentTemporaryRelocations={getStudentTemporaryRelocations}
+        getCommercialCommittedSeatCount={getCommercialCommittedSeatCount}
+        isTemporaryRelocationActiveForDate={isTemporaryRelocationActiveForDate}
+        doDateRangesOverlap={doDateRangesOverlap}
+        formatClassLine={formatClassLine}
+        sendTeacherNotification={sendTeacherNotification}
+        sendStudentNotification={sendStudentNotification}
+        db={db}
+        appId={appId}
+        user={user}
+        todayStr={todayStr}
+      />
+      {resurrectClassModal && <StableModalRenderer key={`resurrect-${resurrectClassModal.id || 'open'}`} render={ResurrectClassModalOverlay} />}
+      {viewClassModal && <StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay} />}
+      {photosModalOpen && <StableModalRenderer key="photos" render={PhotosModalOverlay} />}
+      {socialModalText && <StableModalRenderer key="social-text" render={SocialModalOverlay} />}
       
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">

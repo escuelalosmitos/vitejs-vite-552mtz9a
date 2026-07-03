@@ -130,16 +130,30 @@ const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normal
   ''
 );
 
-const getStudentClassEndDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassDate(
-  studentEntry.classEndDate ||
-  studentEntry.scheduledEndDate ||
-  studentEntry.endDate ||
-  studentEntry.until ||
-  studentInfo.scheduledBajaClassEndDate ||
-  studentInfo.classEndDate ||
-  studentInfo.endDate ||
-  ''
-);
+const getStudentClassEndDate = (studentEntry = {}, studentInfo = {}) => {
+  const classSpecificEndDate = normalizeStudentClassDate(
+    studentEntry.classEndDate ||
+    studentEntry.scheduledEndDate ||
+    studentEntry.endDate ||
+    studentEntry.until ||
+    ''
+  );
+
+  if (classSpecificEndDate) return classSpecificEndDate;
+
+  const globalEndDate = normalizeStudentClassDate(
+    studentInfo.classEndDate ||
+    studentInfo.endDate ||
+    ''
+  );
+
+  if (globalEndDate) return globalEndDate;
+
+  const scheduledBajaEndDate = normalizeStudentClassDate(studentInfo.scheduledBajaClassEndDate || '');
+  const scheduledBajaStillApplies = studentInfo.scheduledBaja === true || studentInfo.globalStatus === 'baja';
+
+  return scheduledBajaStillApplies ? scheduledBajaEndDate : '';
+};
 
 const hasClassStartedForDate = (studentEntry = {}, studentInfo = {}, targetDate = '') => {
   const startDate = getStudentClassStartDate(studentEntry, studentInfo);
@@ -1234,7 +1248,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return `mantenimiento temporal · ${formatDateSpanish(period.from)} - ${formatDateSpanish(period.until)}`;
   };
 
-  const isAttendanceBlockedStudent = (student = {}) => Boolean(student.isPaused || student.isMaintenance);
+  const isLegacyPausedStillValid = (student = {}) => {
+    if (student.isPaused !== true) return false;
+    const studentInfo = globalStudents.find(g => g.id === student.id) || {};
+    return studentInfo?.globalStatus === 'congelado';
+  };
+
+  const isAttendanceBlockedStudent = (student = {}, targetDate = date) => Boolean(
+    student.isMaintenance ||
+    isStudentInMaintenance(student.id, targetDate) ||
+    isLegacyPausedStillValid(student)
+  );
 
   const enrichStudentMaintenanceState = (studentEntry = {}, targetDate = date) => {
     const maintenancePeriod = getActiveStudentMaintenancePeriod(studentEntry.id, targetDate);
@@ -1300,18 +1324,21 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const getEffectiveActiveStudentsForClass = (classData = {}, targetDate = date) => {
     return getEffectiveStudentsForClass(classData, targetDate).filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
-      return !isAttendanceBlockedStudent(s) &&
+      return !isAttendanceBlockedStudent(s, targetDate) &&
         isStudentClassActiveForDate(s, studentInfo, targetDate) &&
         (!s.isRecovery || s.recoveryDate === targetDate);
     });
   };
 
   const sanitizeTemplateStudentForSave = (student = {}) => {
+    const studentInfo = globalStudents.find(g => g.id === student.id) || {};
+    const keepLegacyPaused = student.isPaused === true && studentInfo?.globalStatus === 'congelado';
+
     const cleanStudent = {
       id: student.id,
       name: student.name,
       email: student.email || '',
-      isPaused: Boolean(student.isPaused && !student.isMaintenance)
+      isPaused: Boolean(keepLegacyPaused && !student.isMaintenance)
     };
 
     if (student.classStartDate) cleanStudent.classStartDate = student.classStartDate;
@@ -1376,10 +1403,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const total = Number.isFinite(Number(sub.studentCount)) ? Number(sub.studentCount) : studentsList.length;
     const active = Number.isFinite(Number(sub.activeStudentCount))
       ? Number(sub.activeStudentCount)
-      : studentsList.filter(student => !isAttendanceBlockedStudent(student) && (!student.isRecovery || student.recoveryDate === sub.date)).length;
+      : studentsList.filter(student => !isAttendanceBlockedStudent(student, sub.date) && (!student.isRecovery || student.recoveryDate === sub.date)).length;
     const maintenance = Number.isFinite(Number(sub.maintenanceStudentCount))
       ? Number(sub.maintenanceStudentCount)
-      : studentsList.filter(student => student.isMaintenance || student.isPaused).length;
+      : studentsList.filter(student => isAttendanceBlockedStudent(student, sub.date)).length;
 
     return { total, active, maintenance };
   };
@@ -1424,7 +1451,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     const visibleStudents = studentsForDate.filter(s => {
       const studentInfo = globalStudents.find(g => g.id === s.id);
-      return !isAttendanceBlockedStudent(s) &&
+      return !isAttendanceBlockedStudent(s, targetDate) &&
         isStudentClassActiveForDate(s, studentInfo, targetDate) &&
         (!s.isRecovery || s.recoveryDate === targetDate);
     });
@@ -1708,9 +1735,9 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       } else if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
         hiddenStudents.push(s); 
       } else {
-        let currentStatus = isAttendanceBlockedStudent(s) ? 'paused' : 'present';
+        let currentStatus = isAttendanceBlockedStudent(s, date) ? 'paused' : 'present';
         // 👇 FIX: Si el status es 'notified_no_ticket', lo mapeamos visualmente a 'notified' para la UI
-        if (!isAttendanceBlockedStudent(s) && exceptionsToday[s.id]) {
+        if (!isAttendanceBlockedStudent(s, date) && exceptionsToday[s.id]) {
           currentStatus = exceptionsToday[s.id] === 'notified_no_ticket' ? 'notified' : exceptionsToday[s.id];
         }
         visibleStudents.push({ ...s, status: currentStatus, originalException: exceptionsToday[s.id] || null });
@@ -2016,7 +2043,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
     const confirmacion = window.confirm("⚠️ ATENCIÓN: ESTA ACCIÓN NO SE PUEDE DESHACER.\n\nRevisa bien quién está presente, quién avisó y quién ha faltado sin avisar.\n\n¿Estás seguro de que quieres guardar la lista definitivamente?");
     if (!confirmacion) return;
 
-    const activeStudents = currentSession.students.filter(s => !isAttendanceBlockedStudent(s));
+    const activeStudents = currentSession.students.filter(s => !isAttendanceBlockedStudent(s, date));
     const allAbsent = activeStudents.length > 0 && activeStudents.every(s => s.status === 'absent' || s.status === 'notified');
     
     if (allAbsent) {
@@ -2082,7 +2109,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
 
       const ticketPromises = currentSession.students.map(async (s) => {
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
-        if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !isAttendanceBlockedStudent(s)) {
+        if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !isAttendanceBlockedStudent(s, date)) {
           const isSummerTicket = isSummerRecoveryDate(date);
           const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
           if (isSummerTicket || monthTickets.length < 2) {
@@ -2764,7 +2791,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       const studentsForDate = getEffectiveStudentsForClass(item.data, date);
                       const visibleCount = studentsForDate.filter(s => {
                         const studentInfo = globalStudents.find(g => g.id === s.id);
-                        return !isAttendanceBlockedStudent(s) && isStudentClassActiveForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
+                        return !isAttendanceBlockedStudent(s, date) && isStudentClassActiveForDate(s, studentInfo, date) && (!s.isRecovery || s.recoveryDate === date);
                       }).length;
                       const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
                       const planningGestionesForClass = getPlanningGestionesForClass(item.data);
@@ -3115,7 +3142,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
                       const pendingPlanningForStudent = getPlanningGestionesForStudent(student.id, currentSession);
                       const hasPendingPlanning = pendingPlanningForStudent.length > 0;
-                      const isBlockedStudent = isAttendanceBlockedStudent(student);
+                      const isBlockedStudent = isAttendanceBlockedStudent(student, date);
 
                       return (
                       <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${isBlockedStudent ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>

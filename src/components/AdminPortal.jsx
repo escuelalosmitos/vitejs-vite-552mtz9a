@@ -5131,45 +5131,166 @@ Coordinación Los Mitos.`
     return [...baseStudents, ...relocatedInStudents];
   };
 
+  const buildArchitectStudentPlanningRow = (studentEntry = {}, clase = {}, projected = false, referenceDate = todayStr, extra = {}) => {
+    const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+    const projectedStatus = projected
+      ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo')
+      : (studentInfo?.globalStatus || 'activo');
+    const startDate = getStudentClassStartDate(studentEntry, studentInfo);
+    const endDate = getStudentClassEndDate(studentEntry, studentInfo);
+    const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
+    const isFutureStart = Boolean(startDate && startDate > referenceDate);
+    const projectedMaintenanceActive = projected && isProjectedMaintenanceActiveForArchitectDate(studentEntry, referenceDate);
+    const isMaintenance = projectedStatus !== 'baja' && !isPastEnd && (
+      projectedMaintenanceActive ||
+      isStudentInMaintenance(studentEntry.id, referenceDate)
+    );
+    const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
+    const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
+    const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
+
+    return {
+      id: studentEntry.id,
+      displayName,
+      email,
+      status: projectedStatus,
+      isMaintenance,
+      isFutureStart,
+      isRelocated,
+      relocationLabel: studentEntry.relocationLabel || '',
+      startDate,
+      endDate,
+      isPastEnd,
+      ...extra,
+      isActive: projectedStatus !== 'baja' && !isPastEnd && !isMaintenance && !isFutureStart && !extra.isRelocatedOut
+    };
+  };
+
   const getClassStudentPlanningData = (clase, projected = false, referenceDateOverride = '') => {
     const referenceDate = getArchitectReferenceDate(projected, referenceDateOverride);
 
     return getPlanningStudentsForClass(clase, projected, referenceDateOverride)
       .filter(isArchitectPlanningStudent)
-      .map(studentEntry => {
-        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
-        const projectedStatus = projected
-          ? (studentEntry.projectedGlobalStatus || studentInfo?.globalStatus || 'activo')
-          : (studentInfo?.globalStatus || 'activo');
-        const startDate = getStudentClassStartDate(studentEntry, studentInfo);
-        const endDate = getStudentClassEndDate(studentEntry, studentInfo);
-        const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
-        const isFutureStart = Boolean(startDate && startDate > referenceDate);
-        const projectedMaintenanceActive = projected && isProjectedMaintenanceActiveForArchitectDate(studentEntry, referenceDate);
-        const isMaintenance = projectedStatus !== 'baja' && !isPastEnd && (
-          projectedMaintenanceActive ||
-          isStudentInMaintenance(studentEntry.id, referenceDate)
-        );
-        const isRelocated = Boolean(studentEntry.isTemporaryRelocation || studentEntry.temporaryRelocationId);
-        const isActive = projectedStatus !== 'baja' && !isPastEnd && !isMaintenance && !isFutureStart;
-        const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
-        const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || 'sin email';
+      .map(studentEntry => buildArchitectStudentPlanningRow(studentEntry, clase, projected, referenceDate));
+  };
 
-        return {
-          id: studentEntry.id,
-          displayName,
-          email,
-          status: projectedStatus,
-          isMaintenance,
-          isActive,
-          isFutureStart,
-          isRelocated,
-          relocationLabel: studentEntry.relocationLabel || '',
-          startDate,
-          endDate,
-          isPastEnd
-        };
+  const getGestionClassReferenceIds = (gestion = {}) => [
+    gestion.classId,
+    gestion.sourceClassId,
+    gestion.originClassId,
+    gestion.requestedClass,
+    gestion.targetClassId,
+    gestion.recurringClassId,
+    gestion.classDocId
+  ].map(value => String(value || '').trim()).filter(Boolean);
+
+  const doesAbsenceGestionMatchClass = (gestion = {}, clase = {}) => {
+    const classIds = getGestionClassReferenceIds(gestion);
+    if (classIds.length > 0) return classIds.includes(String(clase.id || ''));
+
+    const classLineText = String([
+      gestion.classLine,
+      gestion.sourceClassLine,
+      gestion.requestedClassLine,
+      gestion.targetClassLine,
+      gestion.details,
+      gestion.title
+    ].filter(Boolean).join(' ')).toLowerCase();
+
+    if (!classLineText.trim()) return true;
+    const classHints = [
+      clase.subject,
+      clase.teacher,
+      clase.sede,
+      clase.sala,
+      clase.time,
+      getDayName(clase.dayOfWeek)
+    ].filter(Boolean).map(value => String(value).toLowerCase());
+
+    return classHints.some(hint => hint && classLineText.includes(hint));
+  };
+
+  const getStudentAbsenceGestionForClassDate = (studentId, clase = {}, referenceDate = todayStr) => {
+    if (!studentId || !referenceDate) return null;
+
+    return gestiones.find(gestion => {
+      if (!isAbsenceGestion(gestion)) return false;
+      if (!['pendiente', 'completado', 'archivado'].includes(gestion.status || 'pendiente')) return false;
+
+      const gestionStudentId = String(gestion.studentId || '').trim();
+      if (!gestionStudentId || gestionStudentId !== String(studentId)) return false;
+
+      const absenceDate = getAbsenceGestionDate(gestion);
+      if (absenceDate !== referenceDate) return false;
+
+      return doesAbsenceGestionMatchClass(gestion, clase);
+    }) || null;
+  };
+
+  const getClassStudentModalData = (clase, projected = false, referenceDateOverride = '') => {
+    const referenceDate = getArchitectReferenceDate(projected, referenceDateOverride);
+    const activeRelocations = temporaryRelocations.filter(rel => isTemporaryRelocationActiveForDate(rel, referenceDate));
+    const relocatedOutByStudentId = new Map(
+      activeRelocations
+        .filter(rel => rel.sourceClassId === clase.id)
+        .map(rel => [rel.studentId, rel])
+    );
+
+    const baseStudents = (clase.students || [])
+      .filter(isArchitectPlanningStudent)
+      .filter(studentEntry => {
+        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+        return !hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
+      })
+      .map(studentEntry => {
+        const relocationOut = relocatedOutByStudentId.get(studentEntry.id) || null;
+        const absenceGestion = getStudentAbsenceGestionForClassDate(studentEntry.id, clase, referenceDate);
+        return buildArchitectStudentPlanningRow(studentEntry, clase, projected, referenceDate, {
+          isRelocatedOut: Boolean(relocationOut),
+          relocationOutLabel: relocationOut
+            ? `Fuera temporalmente · ${formatDateSpanish(relocationOut.from)} - ${formatDateSpanish(relocationOut.until)}`
+            : '',
+          relocationOutTargetLine: relocationOut?.targetClassLine || '',
+          absenceAnnounced: Boolean(absenceGestion),
+          absenceGestionId: absenceGestion?.id || ''
+        });
       });
+
+    const relocatedInStudents = activeRelocations
+      .filter(rel => rel.targetClassId === clase.id)
+      .filter(rel => !baseStudents.some(student => student.id === rel.studentId && !student.isRelocatedOut))
+      .map(rel => {
+        const studentInfo = students.find(student => student.id === rel.studentId) || {};
+        const displayName = studentInfo?.useAlias && studentInfo?.alias
+          ? studentInfo.alias
+          : (studentInfo?.name || rel.studentName || 'Alumno');
+        const studentEntry = {
+          id: rel.studentId,
+          name: displayName,
+          email: studentInfo?.email || rel.studentEmail || '',
+          classStartDate: studentInfo?.classStartDate || '',
+          isPaused: false,
+          status: 'present',
+          isRecovery: false,
+          isTemporaryRelocation: true,
+          temporaryRelocationId: rel.id,
+          relocationLabel: `Recolocado temporalmente aquí · ${formatDateSpanish(rel.from)} - ${formatDateSpanish(rel.until)}`,
+          sourceClassId: rel.sourceClassId,
+          sourceClassLine: rel.sourceClassLine || ''
+        };
+        const absenceGestion = getStudentAbsenceGestionForClassDate(rel.studentId, clase, referenceDate);
+        return buildArchitectStudentPlanningRow(studentEntry, clase, projected, referenceDate, {
+          isRelocatedOut: false,
+          relocationOutLabel: '',
+          relocationOutTargetLine: '',
+          absenceAnnounced: Boolean(absenceGestion),
+          absenceGestionId: absenceGestion?.id || ''
+        });
+      });
+
+    return [...baseStudents, ...relocatedInStudents]
+      .filter(student => student.status !== 'baja' || !student.isPastEnd)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
   };
 
   const getActiveClassStudentCount = (clase, projected = false) => {
@@ -6409,12 +6530,14 @@ ${startDateWarning}
     const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(c) ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
     const [saving, setSaving] = useState(false);
     const maxCap = parseInt(c.capacity, 10) || 0;
-    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection, archDate || todayStr);
+    const planningStudents = getClassStudentModalData(c, isArchitectProjection, archDate || todayStr);
     const currentCount = planningStudents.length;
     const activeCount = planningStudents.filter(student => student.isActive).length;
     const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
     const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
-    const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
+    const relocatedInCount = planningStudents.filter(student => student.isRelocated).length;
+    const relocatedOutCount = planningStudents.filter(student => student.isRelocatedOut).length;
+    const absenceCount = planningStudents.filter(student => student.absenceAnnounced).length;
     const isFull = maxCap > 0 && currentCount >= maxCap;
     const isPunctual = isPunctualClass(c);
     const matchedStudentForAdd = students.find(s =>
@@ -6626,9 +6749,17 @@ ${startDateWarning}
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
               Alumnos Matriculados ({currentCount}/{c.capacity}) · Activos: {activeCount}
-              {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0) && (
+              {(maintenanceCount > 0 || futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) && (
                 <span className="block mt-1 text-[10px] text-zinc-500">
-                  {maintenanceCount > 0 ? `${maintenanceCount} en mantenimiento` : ''}{maintenanceCount > 0 && (futureStartCount > 0 || relocatedCount > 0) ? ' · ' : ''}{futureStartCount > 0 ? `${futureStartCount} con inicio futuro` : ''}{futureStartCount > 0 && relocatedCount > 0 ? ' · ' : ''}{relocatedCount > 0 ? `${relocatedCount} recolocado(s)` : ''}
+                  {maintenanceCount > 0 ? `${maintenanceCount} en mantenimiento` : ''}
+                  {maintenanceCount > 0 && (futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
+                  {futureStartCount > 0 ? `${futureStartCount} con inicio futuro` : ''}
+                  {futureStartCount > 0 && (relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
+                  {relocatedInCount > 0 ? `${relocatedInCount} recolocado(s) aquí` : ''}
+                  {relocatedInCount > 0 && (relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
+                  {relocatedOutCount > 0 ? `${relocatedOutCount} fuera temporalmente` : ''}
+                  {relocatedOutCount > 0 && absenceCount > 0 ? ' · ' : ''}
+                  {absenceCount > 0 ? `${absenceCount} ausencia(s) anunciada(s)` : ''}
                 </span>
               )}
             </h3>
@@ -6639,22 +6770,44 @@ ${startDateWarning}
             ) : (
               planningStudents.map(s => {
                 const statusTags = [
-                  s.isMaintenance ? 'Mantenimiento' : '',
-                  s.isFutureStart ? `Inicio: ${formatDateSpanish(s.startDate)}` : '',
-                  s.isRelocated ? 'Recolocado temporal' : '',
-                  s.status === 'baja' ? 'Baja' : ''
+                  s.status === 'impago' ? { label: 'Impago', className: 'bg-red-50 text-red-700 border-red-100' } : null,
+                  s.status === 'baja' ? { label: 'Baja', className: 'bg-zinc-100 text-zinc-500 border-zinc-200' } : null,
+                  s.isMaintenance ? { label: 'Mantenimiento', className: 'bg-sky-50 text-sky-700 border-sky-100' } : null,
+                  s.isFutureStart ? { label: `Inicio: ${formatDateSpanish(s.startDate)}`, className: 'bg-emerald-50 text-emerald-700 border-emerald-100' } : null,
+                  s.endDate ? { label: `Fin: ${formatDateSpanish(s.endDate)}`, className: 'bg-orange-50 text-orange-700 border-orange-100' } : null,
+                  s.isRelocatedOut ? { label: 'Fuera temporalmente', className: 'bg-violet-50 text-violet-700 border-violet-100' } : null,
+                  s.isRelocated ? { label: 'Recolocado temporalmente aquí', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' } : null,
+                  s.absenceAnnounced ? { label: 'Ausencia anunciada', className: 'bg-amber-50 text-amber-700 border-amber-100' } : null
+                ].filter(Boolean);
+                const mutedStudent = !s.isActive || s.absenceAnnounced;
+                const detailLines = [
+                  s.isRelocatedOut && s.relocationOutTargetLine ? `Destino temporal: ${s.relocationOutTargetLine}` : '',
+                  s.isRelocated && s.sourceClassLine ? `Origen formal: ${s.sourceClassLine}` : '',
+                  s.relocationLabel && s.isRelocated ? s.relocationLabel : '',
+                  s.relocationOutLabel || ''
                 ].filter(Boolean);
                 return (
-                  <div key={`${s.id}-${s.isRelocated ? 'reloc' : 'base'}`} className={`flex items-center justify-between p-3 bg-white border shadow-sm rounded-xl hover:border-indigo-200 transition-colors ${s.isActive ? 'border-zinc-200' : 'border-dashed border-zinc-300 opacity-80'}`}>
-                    <div>
-                      <p className={`font-bold text-sm ${s.isActive ? 'text-slate-800' : 'text-zinc-400 line-through'}`}>{s.displayName}</p>
+                  <div key={`${s.id}-${s.isRelocated ? 'reloc-in' : s.isRelocatedOut ? 'reloc-out' : 'base'}`} className={`flex items-center justify-between p-3 bg-white border shadow-sm rounded-xl hover:border-indigo-200 transition-colors ${s.isActive && !s.absenceAnnounced ? 'border-zinc-200' : 'border-dashed border-zinc-300 opacity-85'}`}>
+                    <div className="min-w-0 pr-3">
+                      <p className={`font-bold text-sm ${mutedStudent ? 'text-zinc-500' : 'text-slate-800'}`}>{s.displayName}</p>
                       <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">{s.email || 'Sin email'}</p>
                       {statusTags.length > 0 && (
-                        <p className="text-[9px] text-indigo-500 font-black uppercase tracking-widest mt-1">{statusTags.join(' · ')}</p>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {statusTags.map(tag => (
+                            <span key={tag.label} className={`px-2 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest ${tag.className}`}>{tag.label}</span>
+                          ))}
+                        </div>
+                      )}
+                      {detailLines.length > 0 && (
+                        <div className="mt-2 space-y-0.5">
+                          {detailLines.map(line => (
+                            <p key={line} className="text-[10px] text-zinc-500 font-bold leading-snug">{line}</p>
+                          ))}
+                        </div>
                       )}
                     </div>
                     {!s.isRelocated && (
-                      <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.displayName)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
+                      <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.displayName)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors shrink-0" title="Expulsar SOLO de esta clase">
                         <UserMinus className="w-4 h-4"/>
                       </button>
                     )}

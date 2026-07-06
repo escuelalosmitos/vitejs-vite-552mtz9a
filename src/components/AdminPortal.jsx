@@ -656,14 +656,28 @@ const TemporaryRelocationModalOverlay = ({
     if (fromDate > untilDate) return alert('La fecha DESDE no puede ser posterior a la fecha HASTA.');
     if (sourceClass.id === targetClass.id) return alert('La clase de origen y destino no pueden ser la misma.');
 
-    const overlapping = (temporaryRelocations || []).find(rel =>
+    const isClosedRelocationStatus = (status = 'active') => ['cancelled', 'cancelada', 'expired', 'finalizada'].includes(String(status || 'active').toLowerCase());
+
+    const overlappingSameSource = (temporaryRelocations || []).find(rel =>
       rel.studentId === student.id &&
-      rel.status !== 'cancelled' &&
+      !isClosedRelocationStatus(rel.status) &&
+      rel.sourceClassId === sourceClass.id &&
       doDateRangesOverlap(fromDate, untilDate, rel.from, rel.until)
     );
 
-    if (overlapping) {
-      return alert(`Este alumno ya tiene una recolocación temporal que se solapa con esas fechas:\n\n${overlapping.sourceClassLine || overlapping.sourceClassId}\n→ ${overlapping.targetClassLine || overlapping.targetClassId}\n${formatDateSpanish(overlapping.from)} - ${formatDateSpanish(overlapping.until)}`);
+    if (overlappingSameSource) {
+      return alert(`Este alumno ya tiene una recolocación temporal de esta misma plaza que se solapa con esas fechas:\n\n${overlappingSameSource.sourceClassLine || overlappingSameSource.sourceClassId}\n→ ${overlappingSameSource.targetClassLine || overlappingSameSource.targetClassId}\n${formatDateSpanish(overlappingSameSource.from)} - ${formatDateSpanish(overlappingSameSource.until)}`);
+    }
+
+    const overlappingSameTarget = (temporaryRelocations || []).find(rel =>
+      rel.studentId === student.id &&
+      !isClosedRelocationStatus(rel.status) &&
+      rel.targetClassId === targetClass.id &&
+      doDateRangesOverlap(fromDate, untilDate, rel.from, rel.until)
+    );
+
+    if (overlappingSameTarget) {
+      return alert(`Este alumno ya está recolocado temporalmente en esta misma clase de destino durante fechas que se solapan:\n\n${overlappingSameTarget.sourceClassLine || overlappingSameTarget.sourceClassId}\n→ ${overlappingSameTarget.targetClassLine || overlappingSameTarget.targetClassId}\n${formatDateSpanish(overlappingSameTarget.from)} - ${formatDateSpanish(overlappingSameTarget.until)}`);
     }
 
     const formalTargetCount = getCommercialCommittedSeatCount(targetClass);

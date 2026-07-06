@@ -1291,9 +1291,46 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       temporaryFrom: relocation.from,
       temporaryUntil: relocation.until,
       sourceClassId: relocation.sourceClassId,
+      targetClassId: relocation.targetClassId,
       sourceClassLine: relocation.sourceClassLine || '',
-      relocationLabel: `Recolocado temporalmente · ${formatDateSpanish(relocation.from)} - ${formatDateSpanish(relocation.until)}`
+      targetClassLine: relocation.targetClassLine || '',
+      relocationLabel: `Recolocado temporalmente aquí · ${formatDateSpanish(relocation.from)} - ${formatDateSpanish(relocation.until)}`
     };
+  };
+
+  const buildTemporaryRelocatedOutStudent = (studentEntry = {}, relocation = {}) => {
+    const studentInfo = globalStudents.find(s => s.id === studentEntry.id || s.id === relocation.studentId) || {};
+    const displayName = studentInfo?.useAlias && studentInfo?.alias
+      ? studentInfo.alias
+      : (studentInfo?.name || studentEntry.name || relocation.studentName || 'Alumno');
+
+    return {
+      ...studentEntry,
+      id: studentEntry.id || relocation.studentId,
+      name: displayName,
+      email: studentInfo?.email || studentEntry.email || relocation.studentEmail || '',
+      status: 'relocated_out',
+      isTemporarilyRelocatedOut: true,
+      temporaryRelocationId: relocation.id,
+      temporaryFrom: relocation.from,
+      temporaryUntil: relocation.until,
+      sourceClassId: relocation.sourceClassId,
+      targetClassId: relocation.targetClassId,
+      sourceClassLine: relocation.sourceClassLine || '',
+      targetClassLine: relocation.targetClassLine || '',
+      nonComputableReason: 'relocated_out',
+      nonComputableLabel: `Fuera temporalmente · ${formatDateSpanish(relocation.from)} - ${formatDateSpanish(relocation.until)}`
+    };
+  };
+
+  const getStudentStartInfoLine = (student = {}) => {
+    const startDate = student.classStartDate || student.startDate || '';
+    return startDate ? `Inicio previsto: ${formatDateSpanish(startDate)}` : 'Inicio futuro';
+  };
+
+  const getStudentEndInfoLine = (student = {}) => {
+    const endDate = student.classEndDate || student.scheduledEndDate || student.endDate || '';
+    return endDate ? `Finalizó: ${formatDateSpanish(endDate)}` : 'Fin programado';
   };
 
   const getEffectiveStudentsForClass = (classData = {}, targetDate = date) => {
@@ -1372,6 +1409,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       addStudentToTemplate(student);
     });
 
+    (session?.nonComputableStudents || []).forEach(student => {
+      if (student?.isRecovery && student.recoveryDate === date) return;
+      addStudentToTemplate(student);
+    });
+
     (session?.students || [])
       .filter(student => !student.isRecovery && !student.isTemporaryRelocation)
       .forEach(addStudentToTemplate);
@@ -1380,7 +1422,22 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const getCapacityCountForSession = (session = currentSession) => {
-    return (session?.students || []).filter(s => !s.isTemporaryRelocation).length;
+    if (!session) return 0;
+
+    const byId = new Map();
+    const addCapacityStudent = (student = {}) => {
+      if (!student?.id || student.isRecovery || student.isTemporaryRelocation) return;
+      const studentInfo = globalStudents.find(g => g.id === student.id) || {};
+      if (hasClassEndedBeforeDate(student, studentInfo, date)) return;
+      byId.set(student.id, student);
+    };
+
+    (session.formalTemplateStudents || []).forEach(addCapacityStudent);
+    (session.hiddenStudents || []).forEach(addCapacityStudent);
+    (session.nonComputableStudents || []).forEach(addCapacityStudent);
+    (session.students || []).forEach(addCapacityStudent);
+
+    return byId.size;
   };
 
   const getSubstitutionStatus = (sub = {}) => {
@@ -1717,38 +1774,123 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
   };
 
   const startSession = (scheduledClass = null) => {
-    if (!scheduledClass) return; 
-    
+    if (!scheduledClass) return;
+
     const exceptionsToday = scheduledClass.exceptions?.[date] || {};
+    const activeRelocations = getTemporaryRelocationsForDate(date);
+    const relocatedOutByStudentId = new Map(
+      activeRelocations
+        .filter(rel => rel.sourceClassId === scheduledClass.id)
+        .map(rel => [rel.studentId, rel])
+    );
 
     const visibleStudents = [];
+    const nonComputableStudents = [];
     const hiddenStudents = [];
 
-    getEffectiveStudentsForClass(scheduledClass, date).forEach(s => {
-      const globalStudentInfo = globalStudents.find(g => g.id === s.id);
-      if (!isStudentClassActiveForDate(s, globalStudentInfo, date)) {
-        hiddenStudents.push({
-          ...s,
-          isFutureStartHidden: !hasClassStartedForDate(s, globalStudentInfo, date),
-          isEndedHidden: hasClassEndedBeforeDate(s, globalStudentInfo, date)
+    const pushNonComputableStudent = (student = {}) => {
+      nonComputableStudents.push(student);
+      hiddenStudents.push(student);
+    };
+
+    (scheduledClass.students || []).forEach(studentEntry => {
+      const globalStudentInfo = globalStudents.find(g => g.id === studentEntry.id) || {};
+      const enrichedStudent = enrichStudentMaintenanceState(studentEntry, date);
+      const relocationOut = relocatedOutByStudentId.get(studentEntry.id);
+
+      if (studentEntry.isRecovery && studentEntry.recoveryDate && studentEntry.recoveryDate !== date) {
+        pushNonComputableStudent({
+          ...enrichedStudent,
+          status: 'recovery_other_day',
+          nonComputableReason: 'recovery_other_day',
+          nonComputableLabel: `Recuperación prevista para ${formatDateSpanish(studentEntry.recoveryDate)}`
         });
-      } else if (s.isRecovery && s.recoveryDate && s.recoveryDate !== date) {
-        hiddenStudents.push(s); 
-      } else {
-        let currentStatus = isAttendanceBlockedStudent(s, date) ? 'paused' : 'present';
-        // 👇 FIX: Si el status es 'notified_no_ticket', lo mapeamos visualmente a 'notified' para la UI
-        if (!isAttendanceBlockedStudent(s, date) && exceptionsToday[s.id]) {
-          currentStatus = exceptionsToday[s.id] === 'notified_no_ticket' ? 'notified' : exceptionsToday[s.id];
-        }
-        visibleStudents.push({ ...s, status: currentStatus, originalException: exceptionsToday[s.id] || null });
+        return;
       }
+
+      if (!hasClassStartedForDate(studentEntry, globalStudentInfo, date)) {
+        pushNonComputableStudent({
+          ...enrichedStudent,
+          status: 'future_start',
+          isFutureStartHidden: true,
+          nonComputableReason: 'future_start',
+          nonComputableLabel: getStudentStartInfoLine(studentEntry)
+        });
+        return;
+      }
+
+      if (hasClassEndedBeforeDate(studentEntry, globalStudentInfo, date)) {
+        pushNonComputableStudent({
+          ...enrichedStudent,
+          status: 'ended',
+          isEndedHidden: true,
+          nonComputableReason: 'ended',
+          nonComputableLabel: getStudentEndInfoLine(studentEntry)
+        });
+        return;
+      }
+
+      if (relocationOut) {
+        pushNonComputableStudent(buildTemporaryRelocatedOutStudent(enrichedStudent, relocationOut));
+        return;
+      }
+
+      if (isAttendanceBlockedStudent(enrichedStudent, date)) {
+        pushNonComputableStudent({
+          ...enrichedStudent,
+          status: 'paused',
+          nonComputableReason: enrichedStudent.isMaintenance ? 'maintenance' : 'blocked',
+          nonComputableLabel: enrichedStudent.maintenanceLabel || 'En mantenimiento'
+        });
+        return;
+      }
+
+      let currentStatus = 'present';
+      if (exceptionsToday[studentEntry.id]) {
+        currentStatus = exceptionsToday[studentEntry.id] === 'notified_no_ticket' ? 'notified' : exceptionsToday[studentEntry.id];
+      }
+      visibleStudents.push({
+        ...enrichedStudent,
+        status: currentStatus,
+        originalException: exceptionsToday[studentEntry.id] || null
+      });
     });
+
+    activeRelocations
+      .filter(rel => rel.targetClassId === scheduledClass.id)
+      .filter(rel => !visibleStudents.some(studentEntry => studentEntry.id === rel.studentId))
+      .filter(rel => !nonComputableStudents.some(studentEntry => studentEntry.id === rel.studentId && studentEntry.temporaryRelocationId === rel.id))
+      .forEach(rel => {
+        const relocatedStudent = enrichStudentMaintenanceState(buildTemporaryRelocatedStudent(rel), date);
+        const globalStudentInfo = globalStudents.find(g => g.id === relocatedStudent.id) || {};
+
+        if (isAttendanceBlockedStudent(relocatedStudent, date) || !isStudentClassActiveForDate(relocatedStudent, globalStudentInfo, date)) {
+          pushNonComputableStudent({
+            ...relocatedStudent,
+            status: 'paused',
+            nonComputableReason: relocatedStudent.isMaintenance ? 'maintenance' : 'blocked',
+            nonComputableLabel: relocatedStudent.maintenanceLabel || 'Recolocado temporalmente aquí, pero no computa hoy'
+          });
+          return;
+        }
+
+        let currentStatus = 'present';
+        if (exceptionsToday[rel.studentId]) {
+          currentStatus = exceptionsToday[rel.studentId] === 'notified_no_ticket' ? 'notified' : exceptionsToday[rel.studentId];
+        }
+
+        visibleStudents.push({
+          ...relocatedStudent,
+          status: currentStatus,
+          originalException: exceptionsToday[rel.studentId] || null
+        });
+      });
 
     setCurrentSession({
       isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
-      isNew: false, 
+      isNew: false,
       classId: scheduledClass.id,
-      refPath: scheduledClass.refPath, 
+      refPath: scheduledClass.refPath,
       time: scheduledClass.time,
       sede: scheduledClass.sede || 'Tarragona',
       sala: scheduledClass.sala || 'Sala 1',
@@ -1762,14 +1904,15 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       notesUpdatedBy: scheduledClass.notesUpdatedBy || '',
       notesUpdatedByName: scheduledClass.notesUpdatedByName || '',
       dayOfWeek: scheduledClass.dayOfWeek,
-      date: scheduledClass.date || null, 
-      isRecurring: !scheduledClass.date, 
-      exceptions: scheduledClass.exceptions || {}, 
-      students: visibleStudents, 
-      hiddenStudents: hiddenStudents, 
+      date: scheduledClass.date || null,
+      isRecurring: !scheduledClass.date,
+      exceptions: scheduledClass.exceptions || {},
+      students: visibleStudents,
+      nonComputableStudents,
+      hiddenStudents,
       formalTemplateStudents: scheduledClass.students || [],
-      hasTemporaryRelocations: getTemporaryRelocationsForDate(date).some(rel => rel.sourceClassId === scheduledClass.id || rel.targetClassId === scheduledClass.id),
-      hasMaintenancePeriods: visibleStudents.some(student => student.isMaintenance),
+      hasTemporaryRelocations: activeRelocations.some(rel => rel.sourceClassId === scheduledClass.id || rel.targetClassId === scheduledClass.id),
+      hasMaintenancePeriods: [...visibleStudents, ...nonComputableStudents].some(student => student.isMaintenance),
       pendingPlanningGestiones: getPlanningGestionesForClass(scheduledClass),
       newStudentName: '',
       newStudentEmail: '',
@@ -2567,6 +2710,185 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
     );
   };
 
+  const renderAttendanceStudentCard = (student) => {
+    const globalSt = globalStudents.find(g => g.id === student.id);
+    const displayEmail = globalSt?.email || student.email;
+    const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
+    const pendingPlanningForStudent = getPlanningGestionesForStudent(student.id, currentSession);
+    const hasPendingPlanning = pendingPlanningForStudent.length > 0;
+    const isBlockedStudent = isAttendanceBlockedStudent(student, date);
+    const hasAnnouncedAbsence = student.status === 'notified' || student.originalException === 'notified' || student.originalException === 'notified_no_ticket';
+
+    return (
+      <div key={`${student.id}-${student.isRecovery ? student.recoveryDate || 'recovery' : 'fixed'}-${student.temporaryRelocationId || 'base'}`} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${isBlockedStudent ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : hasAnnouncedAbsence ? 'bg-amber-50/40 border-amber-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
+        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
+          <div className="flex flex-col">
+            <span className={`font-bold text-lg ${isBlockedStudent ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
+              {student.name}
+            </span>
+            <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
+              {displayEmail || 'Sin email'}
+            </span>
+
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {student.isRecovery && !isBlockedStudent && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 text-[9px] font-black uppercase tracking-widest">
+                  <CornerDownRight className="w-3 h-3" /> Recuperación
+                </span>
+              )}
+              {student.isTemporaryRelocation && !isBlockedStudent && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-[9px] font-black uppercase tracking-widest">
+                  <Clock className="w-3 h-3" /> Recolocado temporalmente aquí
+                </span>
+              )}
+              {hasAnnouncedAbsence && !isBlockedStudent && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-[9px] font-black uppercase tracking-widest">
+                  <AlertCircle className="w-3 h-3" /> Ausencia anunciada
+                </span>
+              )}
+              {hasOpenAdminIncident && !isBlockedStudent && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[9px] font-black uppercase tracking-widest" title="Incidencia administrativa abierta">
+                  <AlertCircle className="w-3 h-3" /> Incidencia administrativa
+                </span>
+              )}
+              {pendingPlanningForStudent.map(g => renderPlanningBadge(g, currentSession))}
+            </div>
+
+            {student.isTemporaryRelocation && student.sourceClassLine && (
+              <p className="text-[10px] font-bold text-violet-700 mt-2 uppercase tracking-widest">
+                Origen formal: {student.sourceClassLine}
+              </p>
+            )}
+          </div>
+
+          <div className="flex gap-2 sm:hidden">
+            <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
+              <FileText className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          {isBlockedStudent ? (
+            <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
+              <Snowflake className="w-4 h-4"/> {student.isMaintenance ? 'Mantenimiento temporal' : 'En mantenimiento'}
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:flex w-full bg-white p-1.5 rounded-xl border border-zinc-200">
+              <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
+                <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
+              </button>
+              <button onClick={() => handleStatusChange(student.id, 'notified')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'notified' ? 'bg-amber-400 text-amber-900 shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
+                <AlertCircle className="w-4 h-4" /> <span className="hidden md:inline">Avisó</span>
+              </button>
+              <button onClick={() => handleStatusChange(student.id, 'absent')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'absent' ? 'bg-rose-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
+                <X className="w-4 h-4" /> <span className="hidden md:inline">Faltó</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="hidden sm:flex items-center gap-2">
+          <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
+            <FileText className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderNonComputableStudentCard = (student) => {
+    const globalSt = globalStudents.find(g => g.id === student.id);
+    const displayEmail = globalSt?.email || student.email;
+    const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
+    const pendingPlanningForStudent = getPlanningGestionesForStudent(student.id, currentSession);
+    const destinationLine = student.targetClassLine || student.relocationTargetLine || '';
+    const sourceLine = student.sourceClassLine || '';
+
+    return (
+      <div key={`no-computa-${student.id}-${student.temporaryRelocationId || student.nonComputableReason || 'base'}`} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 bg-zinc-50/80 border-zinc-200 opacity-90">
+        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
+          <div className="flex flex-col">
+            <span className="font-bold text-lg text-zinc-500">
+              {student.name}
+            </span>
+            <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
+              {displayEmail || 'Sin email'}
+            </span>
+
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {student.isTemporarilyRelocatedOut && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-[9px] font-black uppercase tracking-widest">
+                  <Clock className="w-3 h-3" /> Fuera temporalmente
+                </span>
+              )}
+              {student.isTemporaryRelocation && !student.isTemporarilyRelocatedOut && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-[9px] font-black uppercase tracking-widest">
+                  <Clock className="w-3 h-3" /> Recolocado temporalmente aquí
+                </span>
+              )}
+              {student.isMaintenance && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 text-[9px] font-black uppercase tracking-widest">
+                  <Snowflake className="w-3 h-3" /> {student.maintenanceLabel || 'Mantenimiento temporal'}
+                </span>
+              )}
+              {student.isFutureStartHidden && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-sky-200 bg-sky-50 text-sky-700 text-[9px] font-black uppercase tracking-widest">
+                  <Calendar className="w-3 h-3" /> {student.nonComputableLabel || 'Inicio futuro'}
+                </span>
+              )}
+              {student.isEndedHidden && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-zinc-200 bg-white text-zinc-600 text-[9px] font-black uppercase tracking-widest">
+                  <CalendarOff className="w-3 h-3" /> {student.nonComputableLabel || 'Fin programado'}
+                </span>
+              )}
+              {student.nonComputableReason === 'recovery_other_day' && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-700 text-[9px] font-black uppercase tracking-widest">
+                  <CornerDownRight className="w-3 h-3" /> {student.nonComputableLabel || 'Recuperación otro día'}
+                </span>
+              )}
+              {hasOpenAdminIncident && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[9px] font-black uppercase tracking-widest" title="Incidencia administrativa abierta">
+                  <AlertCircle className="w-3 h-3" /> Incidencia administrativa
+                </span>
+              )}
+              {pendingPlanningForStudent.map(g => renderPlanningBadge(g, currentSession))}
+            </div>
+
+            {student.isTemporarilyRelocatedOut && destinationLine && (
+              <p className="text-[10px] font-bold text-violet-700 mt-2 uppercase tracking-widest">
+                Destino temporal: {destinationLine}
+              </p>
+            )}
+            {student.isTemporaryRelocation && !student.isTemporarilyRelocatedOut && sourceLine && (
+              <p className="text-[10px] font-bold text-violet-700 mt-2 uppercase tracking-widest">
+                Origen formal: {sourceLine}
+              </p>
+            )}
+          </div>
+
+          <div className="flex gap-2 sm:hidden">
+            <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
+              <FileText className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-zinc-100 text-zinc-500 border border-zinc-200 text-center flex items-center justify-center gap-2">
+            <Ghost className="w-4 h-4"/> No computa hoy
+          </div>
+        </div>
+
+        <div className="hidden sm:flex items-center gap-2">
+          <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
+            <FileText className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderRulesModal = () => {
     if (!showRulesModal) return null;
     return (
@@ -3135,86 +3457,48 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                     </div>
                   )}
 
-                  <div className="space-y-4">
-                    {currentSession.students.map((student) => {
-                      const globalSt = globalStudents.find(g => g.id === student.id);
-                      const displayEmail = globalSt?.email || student.email;
-                      const hasOpenAdminIncident = globalSt?.globalStatus === 'impago';
-                      const pendingPlanningForStudent = getPlanningGestionesForStudent(student.id, currentSession);
-                      const hasPendingPlanning = pendingPlanningForStudent.length > 0;
-                      const isBlockedStudent = isAttendanceBlockedStudent(student, date);
-
-                      return (
-                      <div key={student.id} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${isBlockedStudent ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
-                        <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto">
-                          <div className="flex flex-col">
-                            <span className={`font-bold text-lg ${isBlockedStudent ? 'text-zinc-400 line-through' : 'text-slate-800'}`}>
-                              {student.name}
-                            </span>
-                            <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
-                                {displayEmail || 'Sin email'}
-                            </span>
-                            {student.isRecovery && !isBlockedStudent && (
-                              <span className="text-[10px] uppercase font-black text-amber-600 tracking-widest flex items-center gap-1 mt-1">
-                                <CornerDownRight className="w-3 h-3" /> Recuperación
-                              </span>
-                            )}
-                            {student.isTemporaryRelocation && !isBlockedStudent && (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-violet-200 bg-violet-50 text-violet-700 text-[9px] font-black uppercase tracking-widest mt-1">
-                                <Clock className="w-3 h-3" /> Recolocado temporalmente
-                              </span>
-                            )}
-                            {student.isMaintenance && (
-                              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 text-[9px] font-black uppercase tracking-widest mt-1">
-                                <Snowflake className="w-3 h-3" /> {student.maintenanceLabel || 'Mantenimiento temporal'}
-                              </span>
-                            )}
-                            {hasOpenAdminIncident && !isBlockedStudent && (
-                              <span className="text-[10px] uppercase font-black text-red-600 tracking-widest flex items-center gap-1 mt-1" title="Incidencia administrativa abierta">
-                                <AlertCircle className="w-3 h-3" /> Incidencia abierta
-                              </span>
-                            )}
-                            {pendingPlanningForStudent.length > 0 && (
-                              <div className="flex flex-wrap gap-1.5 mt-2">
-                                {pendingPlanningForStudent.map(g => renderPlanningBadge(g, currentSession))}
-                              </div>
-                            )}
-                          </div>
-                          
-                          <div className="flex gap-2 sm:hidden">
-                            <button onClick={() => setNotesModal(student)} className="p-2 rounded-lg text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna">
-                              <FileText className="w-5 h-5" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 w-full sm:w-auto">
-                          {isBlockedStudent ? (
-                            <div className="w-full sm:w-auto px-4 py-3 rounded-xl text-xs font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 text-center flex items-center justify-center gap-2">
-                              <Snowflake className="w-4 h-4"/> {student.isMaintenance ? 'Mantenimiento temporal' : 'En Mantenimiento'}
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-3 sm:flex w-full bg-white p-1.5 rounded-xl border border-zinc-200">
-                              <button onClick={() => handleStatusChange(student.id, 'present')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'present' ? 'bg-emerald-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                                <Check className="w-4 h-4" /> <span className="hidden md:inline">Presente</span>
-                              </button>
-                              <button onClick={() => handleStatusChange(student.id, 'notified')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'notified' ? 'bg-amber-400 text-amber-900 shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                                <AlertCircle className="w-4 h-4" /> <span className="hidden md:inline">Avisó</span>
-                              </button>
-                              <button onClick={() => handleStatusChange(student.id, 'absent')} className={`flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all ${student.status === 'absent' ? 'bg-rose-500 text-white shadow-md' : 'bg-white text-zinc-500 hover:bg-zinc-100'}`}>
-                                <X className="w-4 h-4" /> <span className="hidden md:inline">Faltó</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="hidden sm:flex items-center gap-2">
-                          <button onClick={() => setNotesModal(student)} className="p-3 rounded-xl text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors" title="Ficha Interna del Alumno">
-                            <FileText className="w-5 h-5" />
-                          </button>
+                  <div className="space-y-6">
+                    <div>
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+                        <div>
+                          <h3 className="text-sm uppercase tracking-widest font-black text-slate-800 flex items-center gap-2">
+                            <ClipboardList className="w-5 h-5 text-black" /> Alumnos para pasar lista
+                          </h3>
+                          <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+                            {currentSession.students.length} alumnos computables hoy
+                          </p>
                         </div>
                       </div>
-                    )})}
+
+                      {currentSession.students.length === 0 ? (
+                        <div className="text-center py-10 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
+                          <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay alumnos para pasar lista hoy.</p>
+                          <p className="text-xs font-medium text-zinc-400 mt-2">Revisa el bloque “No computan hoy” para ver si hay mantenimientos, inicios futuros o recolocaciones fuera.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {currentSession.students.map(renderAttendanceStudentCard)}
+                        </div>
+                      )}
+                    </div>
+
+                    {(currentSession.nonComputableStudents || []).length > 0 && (
+                      <div className="pt-6 border-t border-zinc-100">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+                          <div>
+                            <h3 className="text-sm uppercase tracking-widest font-black text-zinc-500 flex items-center gap-2">
+                              <Ghost className="w-5 h-5 text-zinc-400" /> No computan hoy
+                            </h3>
+                            <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+                              {(currentSession.nonComputableStudents || []).length} alumnos informativos, sin botones de asistencia
+                            </p>
+                          </div>
+                        </div>
+                        <div className="space-y-4">
+                          {(currentSession.nonComputableStudents || []).map(renderNonComputableStudentCard)}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {isOverCapacity && (

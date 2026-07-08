@@ -115,6 +115,18 @@ const getTeacherEvaluationPeriod = (dateStr = '') => {
   return `${year}-T${quarter}`;
 };
 
+const sanitizeTeacherEvaluationDocPart = (value = '') => String(value || '')
+  .trim()
+  .replace(/[\/#?\[\]]/g, '_')
+  .replace(/\s+/g, '_') || 'sin-dato';
+
+const buildTeacherEvaluationId = ({ studentId = '', classId = '', period = '' } = {}) => [
+  'eval',
+  sanitizeTeacherEvaluationDocPart(studentId),
+  sanitizeTeacherEvaluationDocPart(classId || 'clase'),
+  sanitizeTeacherEvaluationDocPart(period)
+].join('_');
+
 const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
 
 const isFixedClassStudent = (studentEntry = {}) => !(
@@ -275,6 +287,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [teacherEvaluationClass, setTeacherEvaluationClass] = useState(null);
   const [teacherEvaluationRatings, setTeacherEvaluationRatings] = useState(getEmptyTeacherEvaluationRatings());
   const [teacherEvaluationComments, setTeacherEvaluationComments] = useState({ positive: '', improvement: '' });
+  const [teacherEvaluationExistingEvaluation, setTeacherEvaluationExistingEvaluation] = useState(null);
   const [isSendingTeacherEvaluation, setIsSendingTeacherEvaluation] = useState(false);
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
@@ -634,6 +647,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setTeacherEvaluationClass(null);
     setTeacherEvaluationRatings(getEmptyTeacherEvaluationRatings());
     setTeacherEvaluationComments({ positive: '', improvement: '' });
+    setTeacherEvaluationExistingEvaluation(null);
     setIsSendingTeacherEvaluation(false);
   };
 
@@ -657,11 +671,63 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setReviewModalView('school');
   };
 
-  const startTeacherEvaluation = (clase) => {
+  const findExistingTeacherEvaluationForClass = async (clase = {}) => {
+    if (!profile?.id || !clase) return null;
+
+    const period = getTeacherEvaluationPeriod(todayStr);
+    const classId = String(clase.id || '').trim();
+    const deterministicEvaluationId = buildTeacherEvaluationId({
+      studentId: profile.id,
+      classId: classId || 'clase',
+      period
+    });
+
+    const deterministicRef = doc(db, 'artifacts', appId, 'teacherEvaluations', deterministicEvaluationId);
+    const deterministicSnap = await getDoc(deterministicRef);
+    if (deterministicSnap.exists()) {
+      return { id: deterministicSnap.id, ...deterministicSnap.data() };
+    }
+
+    // Compatibilidad con evaluaciones guardadas antes de imponer el límite trimestral.
+    // Así una evaluación antigua con ID temporal también bloquea repetir en el mismo trimestre.
+    if (classId) {
+      const existingQuery = query(
+        collection(db, 'artifacts', appId, 'teacherEvaluations'),
+        where('studentId', '==', profile.id),
+        where('classId', '==', classId),
+        where('period', '==', period)
+      );
+      const existingSnap = await getDocs(existingQuery);
+      if (!existingSnap.empty) {
+        const firstDoc = existingSnap.docs[0];
+        return { id: firstDoc.id, ...firstDoc.data() };
+      }
+    }
+
+    return null;
+  };
+
+  const startTeacherEvaluation = async (clase) => {
     setTeacherEvaluationClass(clase);
     setTeacherEvaluationRatings(getEmptyTeacherEvaluationRatings());
     setTeacherEvaluationComments({ positive: '', improvement: '' });
-    setReviewModalView('teacher_form');
+    setTeacherEvaluationExistingEvaluation(null);
+    setReviewModalView('teacher_checking');
+
+    try {
+      const existingEvaluation = await findExistingTeacherEvaluationForClass(clase);
+      if (existingEvaluation) {
+        setTeacherEvaluationExistingEvaluation(existingEvaluation);
+        setReviewModalView('teacher_already_sent');
+        return;
+      }
+
+      setReviewModalView('teacher_form');
+    } catch (error) {
+      console.error('Error al comprobar evaluación docente existente', error);
+      showToast('No se pudo comprobar si ya habías evaluado esta clase.', 'error');
+      setReviewModalView(evaluableTeacherClasses.length > 1 ? 'teacher_select' : 'choice');
+    }
   };
 
   const openTeacherEvaluationFlow = () => {
@@ -701,11 +767,24 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const ratingsAverage = ratingValues.length
       ? Number((ratingValues.reduce((sum, value) => sum + value, 0) / ratingValues.length).toFixed(2))
       : 0;
-    const evaluationId = `eval-${profile.id}-${teacherEvaluationClass.id || 'clase'}-${Date.now()}`;
+    const period = getTeacherEvaluationPeriod(todayStr);
+    const evaluationId = buildTeacherEvaluationId({
+      studentId: profile.id,
+      classId: teacherEvaluationClass.id || 'clase',
+      period
+    });
     const nowIso = new Date().toISOString();
 
     setIsSendingTeacherEvaluation(true);
     try {
+      const existingEvaluation = await findExistingTeacherEvaluationForClass(teacherEvaluationClass);
+      if (existingEvaluation) {
+        setTeacherEvaluationExistingEvaluation(existingEvaluation);
+        setReviewModalView('teacher_already_sent');
+        showToast('Ya habías enviado la evaluación de esta clase este trimestre.', 'error');
+        return;
+      }
+
       await setDoc(doc(db, 'artifacts', appId, 'teacherEvaluations', evaluationId), {
         studentId: profile.id,
         studentName: profile.name || '',
@@ -719,7 +798,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         sala: teacherEvaluationClass.sala || '',
         dayOfWeek: teacherEvaluationClass.dayOfWeek ?? null,
         time: teacherEvaluationClass.time || '',
-        period: getTeacherEvaluationPeriod(todayStr),
+        period,
         month: todayStr.slice(0, 7),
         date: todayStr,
         createdAt: nowIso,
@@ -799,6 +878,43 @@ export default function StudentPortal({ user, logout, db, appId }) {
                   <MapPin className="w-4 h-4"/> Sede Reus
                 </a>
               </div>
+            </>
+          )}
+
+          {reviewModalView === 'teacher_checking' && (
+            <>
+              <button onClick={() => evaluableTeacherClasses.length > 1 ? setReviewModalView('teacher_select') : setReviewModalView('choice')} className="mb-5 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:text-black flex items-center gap-1">
+                <ArrowRight className="w-3 h-3 rotate-180" /> Volver
+              </button>
+              <div className="flex flex-col items-center text-center py-8">
+                <Clock className="w-12 h-12 text-zinc-300 mb-4 animate-pulse" />
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Comprobando evaluación</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Estamos revisando si ya enviaste tu valoración de esta clase durante este trimestre.</p>
+              </div>
+            </>
+          )}
+
+          {reviewModalView === 'teacher_already_sent' && teacherEvaluationClass && (
+            <>
+              <button onClick={() => evaluableTeacherClasses.length > 1 ? setReviewModalView('teacher_select') : setReviewModalView('choice')} className="mb-5 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:text-black flex items-center gap-1">
+                <ArrowRight className="w-3 h-3 rotate-180" /> Volver
+              </button>
+              <div className="flex flex-col items-center text-center mb-6">
+                <CheckCircle className="w-12 h-12 text-emerald-500 mb-3" />
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Evaluación ya enviada</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Ya hemos recibido tu evaluación de esta clase durante el trimestre actual. Podrás volver a valorarla en el próximo trimestre.</p>
+              </div>
+              <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5">
+                <p className="text-sm font-black uppercase tracking-tight text-slate-800">{teacherEvaluationClass.teacher || 'Profesor'}</p>
+                <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{selectedClassLine}</p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 mt-3">Periodo: {teacherEvaluationExistingEvaluation?.period || getTeacherEvaluationPeriod(todayStr)}</p>
+                {teacherEvaluationExistingEvaluation?.date && (
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Enviada el {formatDateSpanish(teacherEvaluationExistingEvaluation.date)}</p>
+                )}
+              </div>
+              <button onClick={closeReviewModal} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg">
+                Entendido
+              </button>
             </>
           )}
 

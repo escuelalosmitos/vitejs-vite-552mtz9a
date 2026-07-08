@@ -76,6 +76,18 @@ const SOCIAL_LINKS = [
   { id: 'youtube', label: 'YouTube', url: 'https://www.youtube.com/@escuelalosmitos', Icon: Video, hover: 'hover:border-red-500', iconHover: 'group-hover:text-red-500' }
 ];
 
+const CLASS_RESOURCE_TYPES = [
+  { value: 'pdf', label: 'PDF' },
+  { value: 'drive_folder', label: 'Carpeta Drive' },
+  { value: 'video', label: 'Vídeo' },
+  { value: 'audio', label: 'Audio' },
+  { value: 'document', label: 'Documento' },
+  { value: 'link', label: 'Enlace' },
+  { value: 'other', label: 'Otro' }
+];
+
+const getClassResourceTypeLabel = (type = 'link') => CLASS_RESOURCE_TYPES.find(t => t.value === type)?.label || 'Recurso';
+
 const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
 
 const isFixedClassStudent = (studentEntry = {}) => !(
@@ -235,6 +247,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
   const [whatsappConfirmModal, setWhatsappConfirmModal] = useState(null);
+  const [expandedClassTasks, setExpandedClassTasks] = useState({});
 
   const timeRules = getMonthNames();
   const dToday = new Date();
@@ -417,6 +430,157 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     return [...byUrl.values()];
   }, [effectiveMyClasses, profile?.id]);
+
+  const getVisibleClassResourcesForStudent = (clase = {}) => {
+    const resources = Array.isArray(clase.resources) ? clase.resources : [];
+    const studentId = String(profile?.id || '');
+
+    return resources.filter(resource => {
+      if (!getSafeAnnouncementUrl(resource.url)) return false;
+      if (resource.visibleToStudents === false) return false;
+      if (resource.targetScope === 'teachers') return false;
+
+      if (resource.targetScope === 'students') {
+        const targetIds = Array.isArray(resource.targetStudentIds)
+          ? resource.targetStudentIds.map(id => String(id))
+          : [];
+        return Boolean(studentId && targetIds.includes(studentId));
+      }
+
+      return true;
+    });
+  };
+
+  const getClassTasksPanelKey = (clase = {}, idx = '') => [
+    clase.id || `clase-${idx}`,
+    clase.temporaryRelocation?.id || clase.temporaryRelocationId || '',
+    clase.date || 'recurring'
+  ].filter(Boolean).join('-');
+
+  const toggleClassTasksPanel = (panelKey) => {
+    setExpandedClassTasks(prev => ({ ...prev, [panelKey]: !prev[panelKey] }));
+  };
+
+  const renderClassTasksResources = ({ clase = {}, resources = [], hasNotes = false, panelKey = '', expanded = false, variant = 'dark' }) => {
+    if (!hasNotes && resources.length === 0) return null;
+
+    const styles = {
+      dark: {
+        wrapper: 'mb-8',
+        button: 'bg-zinc-900/80 border-zinc-800 text-zinc-100 hover:bg-zinc-800',
+        count: 'text-zinc-400',
+        panel: 'bg-zinc-900/80 border-zinc-800 text-zinc-300',
+        title: 'text-amber-400',
+        resourceCard: 'bg-black/30 border-zinc-800 text-zinc-200 hover:border-zinc-700',
+        resourceMeta: 'text-zinc-500',
+        divider: 'border-zinc-800',
+        cta: 'bg-white text-black hover:bg-zinc-100'
+      },
+      frozen: {
+        wrapper: 'mb-8',
+        button: 'bg-zinc-300/40 border-zinc-300 text-zinc-600 hover:bg-zinc-300/60',
+        count: 'text-zinc-500',
+        panel: 'bg-zinc-300/30 border-zinc-300/50 text-zinc-600',
+        title: 'text-zinc-500',
+        resourceCard: 'bg-white/40 border-zinc-300 text-zinc-700 hover:border-zinc-400',
+        resourceMeta: 'text-zinc-500',
+        divider: 'border-zinc-300/60',
+        cta: 'bg-zinc-700 text-white hover:bg-zinc-800'
+      },
+      holidayRed: {
+        wrapper: 'mt-5',
+        button: 'bg-white/70 border-red-100 text-red-900 hover:bg-white',
+        count: 'text-red-600',
+        panel: 'bg-white/70 border-red-100 text-red-900',
+        title: 'text-red-600',
+        resourceCard: 'bg-white/80 border-red-100 text-red-950 hover:border-red-200',
+        resourceMeta: 'text-red-500',
+        divider: 'border-red-100',
+        cta: 'bg-red-600 text-white hover:bg-red-700'
+      },
+      holidayPurple: {
+        wrapper: 'mt-5',
+        button: 'bg-white/70 border-purple-100 text-purple-900 hover:bg-white',
+        count: 'text-purple-600',
+        panel: 'bg-white/70 border-purple-100 text-purple-900',
+        title: 'text-purple-600',
+        resourceCard: 'bg-white/80 border-purple-100 text-purple-950 hover:border-purple-200',
+        resourceMeta: 'text-purple-500',
+        divider: 'border-purple-100',
+        cta: 'bg-purple-600 text-white hover:bg-purple-700'
+      }
+    }[variant] || {};
+
+    const resourceCountLabel = resources.length === 1 ? '1 recurso' : `${resources.length} recursos`;
+    const summaryParts = [];
+    if (hasNotes) summaryParts.push('tareas');
+    if (resources.length > 0) summaryParts.push(resourceCountLabel);
+
+    return (
+      <div className={styles.wrapper || 'mb-8'}>
+        <button
+          type="button"
+          onClick={() => toggleClassTasksPanel(panelKey)}
+          className={`w-full px-4 py-3 rounded-2xl border font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-between gap-3 ${styles.button || ''}`}
+        >
+          <span className="flex items-center gap-2">
+            <BookOpen className="w-4 h-4" />
+            {expanded ? 'Ocultar tareas y recursos' : 'Desplegar tareas y recursos'}
+          </span>
+          <span className={`flex items-center gap-2 ${styles.count || ''}`}>
+            {summaryParts.join(' · ')}
+            <ArrowRight className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          </span>
+        </button>
+
+        {expanded && (
+          <div className={`mt-3 p-5 rounded-2xl border animate-in fade-in slide-in-from-top-1 duration-200 ${styles.panel || ''}`}>
+            {hasNotes && (
+              <div>
+                <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${styles.title || ''}`}>
+                  <BookOpen className="w-4 h-4"/> Tareas de la semana
+                </h4>
+                <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">{clase.notes}</p>
+              </div>
+            )}
+
+            {resources.length > 0 && (
+              <div className={hasNotes ? `mt-5 pt-5 border-t ${styles.divider || ''}` : ''}>
+                <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-3 ${styles.title || ''}`}>
+                  <LinkIcon className="w-4 h-4"/> Recursos de la clase
+                </h4>
+                <div className="space-y-3">
+                  {resources.map((resource, resourceIndex) => {
+                    const safeUrl = getSafeAnnouncementUrl(resource.url);
+                    return (
+                      <a
+                        key={resource.id || `${resource.title || 'recurso'}-${resourceIndex}`}
+                        href={safeUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`flex items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${styles.resourceCard || ''}`}
+                      >
+                        <div className="min-w-0">
+                          <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest mb-1 ${styles.resourceMeta || ''}`}>
+                            {getClassResourceTypeLabel(resource.type)}
+                          </span>
+                          <p className="font-black uppercase tracking-tight text-sm truncate">{resource.title || 'Recurso sin título'}</p>
+                          {resource.notes && <p className={`text-[11px] font-medium mt-1 leading-relaxed whitespace-pre-wrap ${styles.resourceMeta || ''}`}>{resource.notes}</p>}
+                        </div>
+                        <span className={`shrink-0 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${styles.cta || ''}`}>
+                          Abrir
+                        </span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const handleReviewClick = () => {
     if (studentSedes.length === 1 && REVIEW_URLS[studentSedes[0]]) {
@@ -2175,6 +2339,10 @@ END:VCALENDAR`;
                 const myStudentEntry = clase.students?.find(s => s.id === profile.id);
                 const isRecoveryClassForMe = myStudentEntry?.isRecovery === true;
                 const isTemporaryRelocationClassForMe = myStudentEntry?.isTemporaryRelocation === true || clase.isTemporaryRelocationClass === true;
+                const visibleClassResources = getVisibleClassResourcesForStudent(clase);
+                const hasVisibleClassNotes = Boolean(String(clase.notes || '').trim()) && !isRecoveryClassForMe;
+                const tasksPanelKey = getClassTasksPanelKey(clase, idx);
+                const isTasksPanelExpanded = expandedClassTasks[tasksPanelKey] === true;
 
                 if (holidayMatch) {
                   const isFestivo = holidayMatch.type === 'festivo';
@@ -2187,14 +2355,14 @@ END:VCALENDAR`;
                       <p className={`font-bold uppercase text-[10px] tracking-widest mb-4 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>{holidayMatch.title || 'Escuela Cerrada'} • {classInfo.dateStr}</p>
                       <p className={`text-sm font-medium mb-4 ${isFestivo ? 'text-red-800' : 'text-purple-800'}`}>Tu próxima clase de {clase.subject} coincide con un día no lectivo oficial. La escuela permanecerá cerrada.</p>
 
-                      {clase.notes && !isRecoveryClassForMe && (
-                        <div className={`mt-5 p-5 rounded-2xl border ${isFestivo ? 'bg-white/70 border-red-100 text-red-900' : 'bg-white/70 border-purple-100 text-purple-900'}`}>
-                          <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>
-                            <BookOpen className="w-4 h-4"/> Tareas de la semana
-                          </h4>
-                          <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">{clase.notes}</p>
-                        </div>
-                      )}
+                      {renderClassTasksResources({
+                        clase,
+                        resources: visibleClassResources,
+                        hasNotes: hasVisibleClassNotes,
+                        panelKey: tasksPanelKey,
+                        expanded: isTasksPanelExpanded,
+                        variant: isFestivo ? 'holidayRed' : 'holidayPurple'
+                      })}
                     </div>
                   );
                 }
@@ -2217,14 +2385,14 @@ END:VCALENDAR`;
                         <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
 
-                      {clase.notes && !isRecoveryClassForMe && (
-                        <div className={`mb-8 p-5 rounded-2xl border ${isCongelado ? 'bg-zinc-300/30 border-zinc-300/50 text-zinc-600' : 'bg-zinc-900/80 border-zinc-800 text-zinc-300'}`}>
-                          <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${isCongelado ? 'text-zinc-500' : 'text-amber-400'}`}>
-                            <BookOpen className="w-4 h-4"/> Tareas de la semana
-                          </h4>
-                          <p className="text-sm font-medium leading-relaxed whitespace-pre-wrap">{clase.notes}</p>
-                        </div>
-                      )}
+                      {renderClassTasksResources({
+                        clase,
+                        resources: visibleClassResources,
+                        hasNotes: hasVisibleClassNotes,
+                        panelKey: tasksPanelKey,
+                        expanded: isTasksPanelExpanded,
+                        variant: isCongelado ? 'frozen' : 'dark'
+                      })}
                       
                       {isCongelado ? (
                         <div className="w-full bg-blue-100 text-blue-800 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-3 uppercase text-[10px] sm:text-xs tracking-widest border border-blue-200 text-center leading-tight">

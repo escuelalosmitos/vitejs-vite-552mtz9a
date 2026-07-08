@@ -930,6 +930,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [teacherPanelTab, setTeacherPanelTab] = useState('evaluations');
   const [teacherEvaluationPeriod, setTeacherEvaluationPeriod] = useState('all');
   const [expandedEvaluationTeacher, setExpandedEvaluationTeacher] = useState(null);
+  const [expandedEvaluationIndividualsTeacher, setExpandedEvaluationIndividualsTeacher] = useState(null);
+  const [visibleEvaluationItemsByTeacher, setVisibleEvaluationItemsByTeacher] = useState({});
   const availableMonths = useMemo(() => generateLast12Months(), []);
 
   const [importText, setImportText] = useState('');
@@ -1022,6 +1024,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
     }
   }, [allClasses, viewClassModal?.id]);
+
+  useEffect(() => {
+    setResolvedGestionesVisible(HISTORIAL_TRAMITES_BLOCK_SIZE);
+  }, [gestionSearchTerm]);
 
   const isLastDayOfMonth = useMemo(() => {
     const tomorrow = new Date();
@@ -5030,7 +5036,6 @@ Coordinación Los Mitos.`
   const resolvedTeacherRequests = teacherTasks.filter(task =>
     (task.type === 'admin_request' || isTeacherAdminAssignment(task)) && !isOpenTeacherTaskStatus(task.status || 'pendiente')
   );
-  const visibleResolvedGestiones = resolvedGestiones.slice(0, resolvedGestionesVisible);
   const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
   const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length + scheduledGestionesProgramadas.length;
@@ -5086,6 +5091,8 @@ Coordinación Los Mitos.`
   const filteredTeacherRequests = pendingTeacherPanelTasks
     .filter(activeTeacherTaskInboxFilter.matcher)
     .filter(matchesTeacherRequestSearch);
+  const filteredResolvedGestiones = resolvedGestiones.filter(matchesGestionSearch);
+  const visibleResolvedGestiones = filteredResolvedGestiones.slice(0, resolvedGestionesVisible);
   const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
     acc[filter.id] = pendingGestiones.filter(filter.matcher).length;
     return acc;
@@ -7466,7 +7473,7 @@ ${startDateWarning}
               </div>
             </div>
 
-            {totalPendingInbox === 0 ? (
+            {totalPendingInbox === 0 && resolvedGestiones.length === 0 && resolvedTeacherRequests.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <Check className="w-12 h-12 text-emerald-400 mx-auto mb-4 bg-emerald-50 rounded-full p-2" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Todo al día</h3>
@@ -7479,7 +7486,7 @@ ${startDateWarning}
                     type="text"
                     value={gestionSearchTerm}
                     onChange={e => setGestionSearchTerm(e.target.value)}
-                    placeholder="Buscar por nombre de alumno, email, profesor, encargo o texto de la solicitud..."
+                    placeholder="Buscar por alumno, email, profesor, encargo, texto de solicitud o trámites cerrados..."
                     className="w-full pl-11 pr-4 py-3 rounded-2xl outline-none font-bold text-sm text-slate-700"
                   />
                 </div>
@@ -7883,11 +7890,14 @@ ${startDateWarning}
               </div>
             )}
 
-            {resolvedGestiones.length > 0 && (
+            {filteredResolvedGestiones.length > 0 && (
               <div className="mt-12 pt-8 border-t border-zinc-200">
-                <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-4 flex items-center gap-2">
+                <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-2 flex items-center gap-2">
                   <History className="w-5 h-5 text-zinc-400"/> Historial de Trámites (Cerrados)
                 </h3>
+                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-4">
+                  {gestionSearchNeedle ? `${filteredResolvedGestiones.length} trámite(s) cerrado(s) encontrados con la búsqueda actual.` : `${resolvedGestiones.length} trámite(s) cerrado(s) archivados.`}
+                </p>
                 <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden opacity-80 hover:opacity-100 transition-opacity">
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse min-w-[800px]">
@@ -7915,7 +7925,7 @@ ${startDateWarning}
                             </td>
                             <td className="p-4 text-right whitespace-nowrap">
                               <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
-                                {g.status}
+                                Cerrado · {g.status}
                               </span>
                             </td>
                           </tr>
@@ -7924,13 +7934,13 @@ ${startDateWarning}
                     </table>
                   </div>
                 </div>
-                {resolvedGestionesVisible < resolvedGestiones.length && (
+                {resolvedGestionesVisible < filteredResolvedGestiones.length && (
                   <div className="p-4 bg-zinc-50 border-t border-zinc-100 text-center">
                     <button
                       onClick={() => setResolvedGestionesVisible(prev => prev + HISTORIAL_TRAMITES_BLOCK_SIZE)}
                       className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-6 py-3 rounded-xl transition-colors"
                     >
-                      Cargar más trámites ({Math.min(HISTORIAL_TRAMITES_BLOCK_SIZE, resolvedGestiones.length - resolvedGestionesVisible)} más)
+                      Cargar más trámites ({Math.min(HISTORIAL_TRAMITES_BLOCK_SIZE, filteredResolvedGestiones.length - resolvedGestionesVisible)} más)
                     </button>
                   </div>
                 )}
@@ -8929,6 +8939,12 @@ ${startDateWarning}
                       .map(question => ({ ...question, average: stat.questionAverages[question.key] }))
                       .filter(question => Number.isFinite(question.average))
                       .sort((a, b) => a.average - b.average)[0];
+                    const individualOpen = expandedEvaluationIndividualsTeacher === stat.name;
+                    const visibleIndividualCount = visibleEvaluationItemsByTeacher[stat.name] || 10;
+                    const visibleIndividualEvaluations = stat.evaluations.slice(0, visibleIndividualCount);
+                    const positiveComments = stat.comments.filter(comment => comment.type === 'Valorado');
+                    const improvementComments = stat.comments.filter(comment => comment.type === 'Mejora');
+                    const privateComments = stat.comments.filter(comment => comment.type === 'Privado');
 
                     return (
                       <div key={stat.name} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
@@ -8993,7 +9009,10 @@ ${startDateWarning}
                             </div>
 
                             <button
-                              onClick={() => setExpandedEvaluationTeacher(expanded ? null : stat.name)}
+                              onClick={() => {
+                                setExpandedEvaluationTeacher(expanded ? null : stat.name);
+                                if (expanded) setExpandedEvaluationIndividualsTeacher(null);
+                              }}
                               className="w-full bg-zinc-50 hover:bg-zinc-100 text-slate-700 border border-zinc-100 rounded-xl py-3 text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
                             >
                               {expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}
@@ -9001,38 +9020,100 @@ ${startDateWarning}
                             </button>
 
                             {expanded && (
-                              <div className="space-y-3 pt-2 animate-in fade-in slide-in-from-top-1 duration-200">
-                                {stat.evaluations.slice(0, 12).map(evaluation => {
-                                  const average = getEvaluationOverallAverage(evaluation);
-                                  const ratings = getEvaluationRatings(evaluation);
-                                  const comments = getEvaluationComments(evaluation);
-                                  return (
-                                    <div key={evaluation.id} className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4">
-                                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 mb-3">
-                                        <div>
-                                          <p className="text-sm font-black text-slate-900 uppercase tracking-tight">{evaluation.studentName || 'Alumno'}</p>
-                                          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-relaxed">{getEvaluationCreatedDate(evaluation)}{getEvaluationClassLine(evaluation) ? ` · ${getEvaluationClassLine(evaluation)}` : ''}</p>
+                              <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
+                                  <div className="flex items-center justify-between gap-3 mb-3">
+                                    <div>
+                                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Resumen de comentarios</p>
+                                      <p className="text-xs font-bold text-slate-400 mt-0.5">Se agrupan por utilidad para dirección. Las fichas individuales quedan plegadas debajo.</p>
+                                    </div>
+                                    <span className="bg-white border border-slate-200 text-slate-700 rounded-xl px-3 py-1 text-[10px] font-black uppercase tracking-widest">{stat.comments.length} comentario(s)</span>
+                                  </div>
+
+                                  {stat.comments.length === 0 ? (
+                                    <p className="text-xs font-bold text-zinc-400 italic">No hay comentarios escritos en este filtro. Solo hay puntuaciones numéricas.</p>
+                                  ) : (
+                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                                      {[
+                                        { title: 'Lo que más valoran', items: positiveComments, color: 'emerald' },
+                                        { title: 'Aspectos a mejorar', items: improvementComments, color: 'amber' },
+                                        { title: 'Notas privadas', items: privateComments, color: 'rose' }
+                                      ].map(group => (
+                                        <div key={group.title} className={`bg-white border rounded-2xl p-3 ${group.color === 'emerald' ? 'border-emerald-100' : group.color === 'amber' ? 'border-amber-100' : 'border-rose-100'}`}>
+                                          <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${group.color === 'emerald' ? 'text-emerald-700' : group.color === 'amber' ? 'text-amber-700' : 'text-rose-700'}`}>{group.title}</p>
+                                          {group.items.length === 0 ? (
+                                            <p className="text-[11px] font-bold text-zinc-300 italic">Sin comentarios.</p>
+                                          ) : (
+                                            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                                              {group.items.map((comment, index) => (
+                                                <div key={`${comment.id}-${comment.type}-${index}`} className="border-b border-zinc-50 last:border-0 pb-2 last:pb-0">
+                                                  <p className="text-xs font-medium text-slate-700 leading-relaxed">{comment.text}</p>
+                                                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-300 mt-1">{comment.studentName || 'Alumno'} · {comment.date || 'Sin fecha'}{comment.classLine ? ` · ${comment.classLine}` : ''}</p>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
                                         </div>
-                                        <span className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border ${Number.isFinite(average) && average < 3.5 ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-white text-slate-800 border-zinc-200'}`}>{formatAverageScore(average)}/5</span>
-                                      </div>
-                                      <div className="flex flex-wrap gap-1.5 mb-3">
-                                        {TEACHER_EVALUATION_QUESTIONS.map(question => (
-                                          <span key={question.key} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[9px] font-black text-zinc-500 uppercase tracking-widest" title={question.label}>
-                                            {question.shortLabel}: {ratings?.[question.key] || '—'}
-                                          </span>
-                                        ))}
-                                      </div>
-                                      {(comments.positive || comments.improvement || comments.privateNote) && (
-                                        <div className="space-y-2 text-xs font-medium text-slate-700 leading-relaxed">
-                                          {comments.positive && <p><span className="font-black text-emerald-700 uppercase tracking-widest text-[9px] block mb-0.5">Valora</span>{comments.positive}</p>}
-                                          {comments.improvement && <p><span className="font-black text-amber-700 uppercase tracking-widest text-[9px] block mb-0.5">Mejoraría</span>{comments.improvement}</p>}
-                                          {comments.privateNote && <p><span className="font-black text-rose-700 uppercase tracking-widest text-[9px] block mb-0.5">Nota privada</span>{comments.privateNote}</p>}
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="border border-zinc-100 rounded-2xl overflow-hidden">
+                                  <button
+                                    onClick={() => setExpandedEvaluationIndividualsTeacher(individualOpen ? null : stat.name)}
+                                    className="w-full bg-white hover:bg-zinc-50 text-slate-700 px-4 py-3 text-[10px] font-black uppercase tracking-widest flex items-center justify-between gap-3"
+                                  >
+                                    <span className="flex items-center gap-2"><ClipboardList className="w-4 h-4"/> Evaluaciones individuales</span>
+                                    <span className="flex items-center gap-2 text-zinc-400">{stat.evaluations.length} registro(s) {individualOpen ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</span>
+                                  </button>
+
+                                  {individualOpen && (
+                                    <div className="bg-zinc-50 border-t border-zinc-100 p-3 space-y-3">
+                                      {visibleIndividualEvaluations.map(evaluation => {
+                                        const average = getEvaluationOverallAverage(evaluation);
+                                        const ratings = getEvaluationRatings(evaluation);
+                                        const comments = getEvaluationComments(evaluation);
+                                        return (
+                                          <div key={evaluation.id} className="bg-white border border-zinc-100 rounded-2xl p-4">
+                                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 mb-3">
+                                              <div>
+                                                <p className="text-sm font-black text-slate-900 uppercase tracking-tight">{evaluation.studentName || 'Alumno'}</p>
+                                                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-relaxed">{getEvaluationCreatedDate(evaluation)}{getEvaluationClassLine(evaluation) ? ` · ${getEvaluationClassLine(evaluation)}` : ''}</p>
+                                              </div>
+                                              <span className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border ${Number.isFinite(average) && average < 3.5 ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-white text-slate-800 border-zinc-200'}`}>{formatAverageScore(average)}/5</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-1.5 mb-3">
+                                              {TEACHER_EVALUATION_QUESTIONS.map(question => (
+                                                <span key={question.key} className="bg-zinc-50 border border-zinc-200 rounded-lg px-2 py-1 text-[9px] font-black text-zinc-500 uppercase tracking-widest" title={question.label}>
+                                                  {question.shortLabel}: {ratings?.[question.key] || '—'}
+                                                </span>
+                                              ))}
+                                            </div>
+                                            {(comments.positive || comments.improvement || comments.privateNote) && (
+                                              <div className="space-y-2 text-xs font-medium text-slate-700 leading-relaxed">
+                                                {comments.positive && <p><span className="font-black text-emerald-700 uppercase tracking-widest text-[9px] block mb-0.5">Valora</span>{comments.positive}</p>}
+                                                {comments.improvement && <p><span className="font-black text-amber-700 uppercase tracking-widest text-[9px] block mb-0.5">Mejoraría</span>{comments.improvement}</p>}
+                                                {comments.privateNote && <p><span className="font-black text-rose-700 uppercase tracking-widest text-[9px] block mb-0.5">Nota privada</span>{comments.privateNote}</p>}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+
+                                      {visibleIndividualCount < stat.evaluations.length && (
+                                        <div className="text-center pt-1">
+                                          <button
+                                            onClick={() => setVisibleEvaluationItemsByTeacher(prev => ({ ...prev, [stat.name]: (prev[stat.name] || 10) + 10 }))}
+                                            className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-5 py-2.5 rounded-xl transition-colors"
+                                          >
+                                            Cargar 10 más ({Math.min(10, stat.evaluations.length - visibleIndividualCount)} más)
+                                          </button>
                                         </div>
                                       )}
                                     </div>
-                                  );
-                                })}
-                                {stat.evaluations.length > 12 && <p className="text-center text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Se muestran las 12 evaluaciones más recientes. Exporta CSV para revisar todo el histórico.</p>}
+                                  )}
+                                </div>
                               </div>
                             )}
                           </div>

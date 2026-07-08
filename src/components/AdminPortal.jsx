@@ -5897,34 +5897,70 @@ Coordinación Los Mitos.`
       return;
     }
 
-    const header = [
-      'fecha', 'periodo', 'profesor', 'alumno', 'email_alumno', 'clase', 'sede', 'instrumento', 'media',
-      ...TEACHER_EVALUATION_QUESTIONS.map(question => question.shortLabel),
-      'comentario_positivo', 'comentario_mejora', 'nota_privada'
+    const valueOrDash = (value) => {
+      const clean = String(value ?? '').trim();
+      return clean || '—';
+    };
+
+    const sortedEvaluations = [...filteredTeacherEvaluations].sort((a, b) => {
+      const teacherCompare = getEvaluationTeacherName(a).localeCompare(getEvaluationTeacherName(b), 'es');
+      if (teacherCompare !== 0) return teacherCompare;
+      return new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0);
+    });
+
+    const generatedAt = new Date().toLocaleString('es-ES');
+    const selectedPeriodLabel = teacherEvaluationPeriod === 'all' ? 'Todos los periodos' : teacherEvaluationPeriod;
+    const lines = [
+      'EVALUACIONES DOCENTES · ESCUELA LOS MITOS',
+      `Generado: ${generatedAt}`,
+      `Filtro aplicado: ${selectedPeriodLabel}`,
+      `Total evaluaciones exportadas: ${sortedEvaluations.length}`,
+      '',
+      'Este archivo es una copia legible de cada evaluación recibida con el filtro actual.',
+      'Incluye puntuaciones, datos de contexto y comentarios escritos.',
+      ''
     ];
 
-    const rows = filteredTeacherEvaluations.map(evaluation => {
+    sortedEvaluations.forEach((evaluation, index) => {
       const ratings = getEvaluationRatings(evaluation);
       const comments = getEvaluationComments(evaluation);
-      return [
-        getEvaluationCreatedDate(evaluation),
-        getEvaluationPeriodValue(evaluation),
-        getEvaluationTeacherName(evaluation),
-        evaluation.studentName || '',
-        evaluation.studentEmail || '',
-        getEvaluationClassLine(evaluation),
-        evaluation.sede || '',
-        evaluation.subject || '',
-        formatAverageScore(getEvaluationOverallAverage(evaluation)),
-        ...TEACHER_EVALUATION_QUESTIONS.map(question => ratings?.[question.key] || ''),
-        comments.positive,
-        comments.improvement,
-        comments.privateNote
-      ].map(escapeCsvCell).join(';');
+      const average = getEvaluationOverallAverage(evaluation);
+      const rawDate = evaluation.createdAt || evaluation.date || evaluation.submittedAt || '';
+
+      lines.push(
+        '============================================================',
+        `EVALUACIÓN ${index + 1}`,
+        '------------------------------------------------------------',
+        `ID: ${valueOrDash(evaluation.id)}`,
+        `Fecha visible: ${valueOrDash(getEvaluationCreatedDate(evaluation))}`,
+        `Fecha original: ${valueOrDash(rawDate)}`,
+        `Periodo: ${valueOrDash(getEvaluationPeriodValue(evaluation))}`,
+        `Profesor: ${valueOrDash(getEvaluationTeacherName(evaluation))}`,
+        `Alumno: ${valueOrDash(evaluation.studentName || evaluation.student || '')}`,
+        `Email alumno: ${valueOrDash(evaluation.studentEmail || evaluation.email || '')}`,
+        `Clase: ${valueOrDash(getEvaluationClassLine(evaluation))}`,
+        `Sede: ${valueOrDash(evaluation.sede || '')}`,
+        `Instrumento: ${valueOrDash(evaluation.subject || '')}`,
+        `Media: ${formatAverageScore(average)} / 5`,
+        '',
+        'PUNTUACIONES',
+        ...TEACHER_EVALUATION_QUESTIONS.map(question => `- ${question.label} ${valueOrDash(ratings?.[question.key])} / 5`),
+        '',
+        'COMENTARIOS',
+        `Lo que más valora de sus clases:
+${valueOrDash(comments.positive)}`,
+        '',
+        `Qué cree que podría mejorar / sugerencias para coordinación:
+${valueOrDash(comments.improvement)}`,
+        '',
+        `Nota privada para coordinación:
+${valueOrDash(comments.privateNote)}`,
+        ''
+      );
     });
 
     const periodLabel = teacherEvaluationPeriod === 'all' ? 'todas' : teacherEvaluationPeriod.replace(/[^a-zA-Z0-9_-]/g, '-');
-    downloadTextFile(`Evaluaciones_Docentes_${periodLabel}_${getTodayLocalString()}.csv`, [header.map(escapeCsvCell).join(';'), ...rows].join('\n'), 'text/csv;charset=utf-8');
+    downloadTextFile(`Evaluaciones_Docentes_${periodLabel}_${getTodayLocalString()}.txt`, lines.join('\n'), 'text/plain;charset=utf-8');
   };
 
   const availableMboxSlotsAdmin = useMemo(() => {
@@ -8883,7 +8919,7 @@ ${startDateWarning}
                   <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" />
                   <div>
                     <p className="font-black uppercase tracking-widest text-[10px] mb-1">Evaluación confidencial para coordinación</p>
-                    <p>Las respuestas se guardan una a una. Aquí ves medias, señales de alerta y comentarios para detectar puntos fuertes y mejoras. No está pensado como ranking público de profesores.</p>
+                    <p>Las respuestas se guardan una a una. Aquí ves solo medias y señales de alerta para mantener el panel limpio. El detalle completo, incluidos comentarios, se descarga en TXT.</p>
                   </div>
                 </div>
 
@@ -8891,7 +8927,7 @@ ${startDateWarning}
                   <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-5">
                     <div>
                       <h3 className="text-lg font-black uppercase tracking-tight text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5 text-indigo-600"/> Panel de calidad docente</h3>
-                      <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mt-1">Filtra por trimestre o exporta el detalle completo.</p>
+                      <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mt-1">Filtra por trimestre o exporta una copia completa en TXT.</p>
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2">
                       <select
@@ -8903,7 +8939,7 @@ ${startDateWarning}
                         {teacherEvaluationPeriods.map(period => <option key={period} value={period}>{period}</option>)}
                       </select>
                       <button onClick={handleDownloadTeacherEvaluationReport} className="bg-black text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 flex items-center justify-center gap-2 shadow-md">
-                        <FileText className="w-4 h-4"/> Exportar CSV
+                        <FileText className="w-4 h-4"/> Exportar TXT
                       </button>
                     </div>
                   </div>
@@ -8986,7 +9022,7 @@ ${startDateWarning}
                             {stat.lowSignalCount > 0 && (
                               <div className="bg-rose-50 border border-rose-100 text-rose-800 rounded-2xl p-3 text-xs font-bold flex items-start gap-2">
                                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                                {stat.lowSignalCount} evaluación(es) con media baja o alguna puntuación de 1-2. Conviene revisarlas individualmente.
+                                {stat.lowSignalCount} evaluación(es) con media baja o alguna puntuación de 1-2. Conviene revisarlas en el TXT exportado.
                               </div>
                             )}
 
@@ -9008,114 +9044,10 @@ ${startDateWarning}
                               })}
                             </div>
 
-                            <button
-                              onClick={() => {
-                                setExpandedEvaluationTeacher(expanded ? null : stat.name);
-                                if (expanded) setExpandedEvaluationIndividualsTeacher(null);
-                              }}
-                              className="w-full bg-zinc-50 hover:bg-zinc-100 text-slate-700 border border-zinc-100 rounded-xl py-3 text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
-                            >
-                              {expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}
-                              {expanded ? 'Ocultar detalle' : `Ver detalle y comentarios (${stat.comments.length})`}
-                            </button>
+                            <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-3 text-xs font-bold text-zinc-500 leading-relaxed">
+                              El detalle completo de cada evaluación, incluidos comentarios, se consulta desde <strong className="text-slate-800">Exportar TXT</strong>. Así la tarjeta del profesor queda limpia aunque haya muchas respuestas.
+                            </div>
 
-                            {expanded && (
-                              <div className="space-y-4 pt-2 animate-in fade-in slide-in-from-top-1 duration-200">
-                                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
-                                  <div className="flex items-center justify-between gap-3 mb-3">
-                                    <div>
-                                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Resumen de comentarios</p>
-                                      <p className="text-xs font-bold text-slate-400 mt-0.5">Se agrupan por utilidad para dirección. Las fichas individuales quedan plegadas debajo.</p>
-                                    </div>
-                                    <span className="bg-white border border-slate-200 text-slate-700 rounded-xl px-3 py-1 text-[10px] font-black uppercase tracking-widest">{stat.comments.length} comentario(s)</span>
-                                  </div>
-
-                                  {stat.comments.length === 0 ? (
-                                    <p className="text-xs font-bold text-zinc-400 italic">No hay comentarios escritos en este filtro. Solo hay puntuaciones numéricas.</p>
-                                  ) : (
-                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                                      {[
-                                        { title: 'Lo que más valoran', items: positiveComments, color: 'emerald' },
-                                        { title: 'Aspectos a mejorar', items: improvementComments, color: 'amber' },
-                                        { title: 'Notas privadas', items: privateComments, color: 'rose' }
-                                      ].map(group => (
-                                        <div key={group.title} className={`bg-white border rounded-2xl p-3 ${group.color === 'emerald' ? 'border-emerald-100' : group.color === 'amber' ? 'border-amber-100' : 'border-rose-100'}`}>
-                                          <p className={`text-[9px] font-black uppercase tracking-widest mb-2 ${group.color === 'emerald' ? 'text-emerald-700' : group.color === 'amber' ? 'text-amber-700' : 'text-rose-700'}`}>{group.title}</p>
-                                          {group.items.length === 0 ? (
-                                            <p className="text-[11px] font-bold text-zinc-300 italic">Sin comentarios.</p>
-                                          ) : (
-                                            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                                              {group.items.map((comment, index) => (
-                                                <div key={`${comment.id}-${comment.type}-${index}`} className="border-b border-zinc-50 last:border-0 pb-2 last:pb-0">
-                                                  <p className="text-xs font-medium text-slate-700 leading-relaxed">{comment.text}</p>
-                                                  <p className="text-[9px] font-black uppercase tracking-widest text-zinc-300 mt-1">{comment.studentName || 'Alumno'} · {comment.date || 'Sin fecha'}{comment.classLine ? ` · ${comment.classLine}` : ''}</p>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          )}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-
-                                <div className="border border-zinc-100 rounded-2xl overflow-hidden">
-                                  <button
-                                    onClick={() => setExpandedEvaluationIndividualsTeacher(individualOpen ? null : stat.name)}
-                                    className="w-full bg-white hover:bg-zinc-50 text-slate-700 px-4 py-3 text-[10px] font-black uppercase tracking-widest flex items-center justify-between gap-3"
-                                  >
-                                    <span className="flex items-center gap-2"><ClipboardList className="w-4 h-4"/> Evaluaciones individuales</span>
-                                    <span className="flex items-center gap-2 text-zinc-400">{stat.evaluations.length} registro(s) {individualOpen ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</span>
-                                  </button>
-
-                                  {individualOpen && (
-                                    <div className="bg-zinc-50 border-t border-zinc-100 p-3 space-y-3">
-                                      {visibleIndividualEvaluations.map(evaluation => {
-                                        const average = getEvaluationOverallAverage(evaluation);
-                                        const ratings = getEvaluationRatings(evaluation);
-                                        const comments = getEvaluationComments(evaluation);
-                                        return (
-                                          <div key={evaluation.id} className="bg-white border border-zinc-100 rounded-2xl p-4">
-                                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 mb-3">
-                                              <div>
-                                                <p className="text-sm font-black text-slate-900 uppercase tracking-tight">{evaluation.studentName || 'Alumno'}</p>
-                                                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-relaxed">{getEvaluationCreatedDate(evaluation)}{getEvaluationClassLine(evaluation) ? ` · ${getEvaluationClassLine(evaluation)}` : ''}</p>
-                                              </div>
-                                              <span className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border ${Number.isFinite(average) && average < 3.5 ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-white text-slate-800 border-zinc-200'}`}>{formatAverageScore(average)}/5</span>
-                                            </div>
-                                            <div className="flex flex-wrap gap-1.5 mb-3">
-                                              {TEACHER_EVALUATION_QUESTIONS.map(question => (
-                                                <span key={question.key} className="bg-zinc-50 border border-zinc-200 rounded-lg px-2 py-1 text-[9px] font-black text-zinc-500 uppercase tracking-widest" title={question.label}>
-                                                  {question.shortLabel}: {ratings?.[question.key] || '—'}
-                                                </span>
-                                              ))}
-                                            </div>
-                                            {(comments.positive || comments.improvement || comments.privateNote) && (
-                                              <div className="space-y-2 text-xs font-medium text-slate-700 leading-relaxed">
-                                                {comments.positive && <p><span className="font-black text-emerald-700 uppercase tracking-widest text-[9px] block mb-0.5">Valora</span>{comments.positive}</p>}
-                                                {comments.improvement && <p><span className="font-black text-amber-700 uppercase tracking-widest text-[9px] block mb-0.5">Mejoraría</span>{comments.improvement}</p>}
-                                                {comments.privateNote && <p><span className="font-black text-rose-700 uppercase tracking-widest text-[9px] block mb-0.5">Nota privada</span>{comments.privateNote}</p>}
-                                              </div>
-                                            )}
-                                          </div>
-                                        );
-                                      })}
-
-                                      {visibleIndividualCount < stat.evaluations.length && (
-                                        <div className="text-center pt-1">
-                                          <button
-                                            onClick={() => setVisibleEvaluationItemsByTeacher(prev => ({ ...prev, [stat.name]: (prev[stat.name] || 10) + 10 }))}
-                                            className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-5 py-2.5 rounded-xl transition-colors"
-                                          >
-                                            Cargar 10 más ({Math.min(10, stat.evaluations.length - visibleIndividualCount)} más)
-                                          </button>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
                           </div>
                         )}
                       </div>

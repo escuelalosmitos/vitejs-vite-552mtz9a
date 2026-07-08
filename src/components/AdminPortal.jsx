@@ -65,6 +65,33 @@ const getTeacherTaskRequestLabel = (value = 'otro') => TEACHER_TASK_REQUEST_TYPE
 const getTeacherTaskStatusLabel = (status = 'pendiente') => TEACHER_TASK_STATUS_LABELS[status] || status || 'Pendiente';
 const getTeacherTaskStatusStyle = (status = 'pendiente') => TEACHER_TASK_STATUS_STYLE[status] || 'bg-zinc-50 text-zinc-600 border-zinc-200';
 
+const TEACHER_EVALUATION_QUESTIONS = [
+  { key: 'clarity', label: 'El profesor explica de forma clara y comprensible.', shortLabel: 'Claridad' },
+  { key: 'knowledge', label: 'Percibo que el profesor domina su instrumento y el contenido que imparte.', shortLabel: 'Dominio' },
+  { key: 'adaptation', label: 'El profesor adapta la clase a mi nivel y necesidades.', shortLabel: 'Adaptación' },
+  { key: 'organization', label: 'La clase está bien organizada y se aprovecha el tiempo.', shortLabel: 'Organización' },
+  { key: 'motivation', label: 'El profesor me motiva y me anima a mejorar.', shortLabel: 'Motivación' },
+  { key: 'progress', label: 'Siento que he mejorado durante el último trimestre.', shortLabel: 'Progreso' },
+  { key: 'homeworkClarity', label: 'Sé qué tengo que practicar en casa.', shortLabel: 'Tareas claras' },
+  { key: 'resourcesUseful', label: 'Los materiales o recursos me resultan útiles para practicar.', shortLabel: 'Recursos' },
+  { key: 'recommendation', label: 'Recomendaría este profesor a otro alumno.', shortLabel: 'Recomendación' }
+];
+
+const normalizeEvaluationRating = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 1 && number <= 5 ? number : null;
+};
+
+const averageNumbers = (values = []) => {
+  const cleanValues = values.filter(value => Number.isFinite(value));
+  if (cleanValues.length === 0) return null;
+  return cleanValues.reduce((sum, value) => sum + value, 0) / cleanValues.length;
+};
+
+const formatAverageScore = (value) => Number.isFinite(value)
+  ? value.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+  : '—';
+
 
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
@@ -837,6 +864,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
+  const [teacherEvaluations, setTeacherEvaluations] = useState([]);
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -899,6 +927,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
 
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [teacherPanelTab, setTeacherPanelTab] = useState('evaluations');
+  const [teacherEvaluationPeriod, setTeacherEvaluationPeriod] = useState('all');
+  const [expandedEvaluationTeacher, setExpandedEvaluationTeacher] = useState(null);
   const availableMonths = useMemo(() => generateLast12Months(), []);
 
   const [importText, setImportText] = useState('');
@@ -906,7 +937,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 12) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 13) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -975,7 +1006,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubMaintenancePeriods(); unsubTeacherTasks(); };
+    const unsubTeacherEvaluations = onSnapshot(collection(db, 'artifacts', appId, 'teacherEvaluations'), (snap) => {
+      setTeacherEvaluations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)));
+      checkLoad();
+    });
+
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubMaintenancePeriods(); unsubTeacherTasks(); unsubTeacherEvaluations(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -5661,6 +5697,229 @@ Coordinación Los Mitos.`
       .sort((a, b) => b.totalHours - a.totalHours);
   }, [allRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, selectedPayrollMonth]);
 
+  const getEvaluationTeacherName = (evaluation = {}) => String(
+    evaluation.teacherName || evaluation.teacher || evaluation.teacherDisplayName || evaluation.profesor || 'Sin profesor'
+  ).trim() || 'Sin profesor';
+
+  const getEvaluationRatings = (evaluation = {}) => evaluation.ratings || evaluation.scores || {};
+
+  const getEvaluationOverallAverage = (evaluation = {}) => {
+    const storedAverage = Number(evaluation.averageRating ?? evaluation.averageScore ?? evaluation.average ?? evaluation.globalAverage ?? evaluation.avg);
+    if (Number.isFinite(storedAverage) && storedAverage >= 1 && storedAverage <= 5) return storedAverage;
+
+    const ratings = getEvaluationRatings(evaluation);
+    const valuesFromKnownQuestions = TEACHER_EVALUATION_QUESTIONS
+      .map(question => normalizeEvaluationRating(ratings?.[question.key]))
+      .filter(value => value !== null);
+
+    if (valuesFromKnownQuestions.length > 0) return averageNumbers(valuesFromKnownQuestions);
+
+    return averageNumbers(Object.values(ratings || {})
+      .map(normalizeEvaluationRating)
+      .filter(value => value !== null));
+  };
+
+  const getEvaluationPeriodValue = (evaluation = {}) => String(
+    evaluation.period || evaluation.quarter || evaluation.trimester || evaluation.month || ''
+  ).trim();
+
+  const getEvaluationCreatedDate = (evaluation = {}) => {
+    const rawDate = evaluation.createdAt || evaluation.date || evaluation.submittedAt || '';
+    if (!rawDate) return '';
+    const parsedDate = new Date(rawDate);
+    if (Number.isNaN(parsedDate.getTime())) return String(rawDate).slice(0, 10);
+    return parsedDate.toLocaleDateString('es-ES');
+  };
+
+  const getEvaluationClassLine = (evaluation = {}) => {
+    if (evaluation.classLine) return evaluation.classLine;
+    const parts = [];
+    if (evaluation.subject) parts.push(evaluation.subject);
+    if (evaluation.dayOfWeek !== undefined && evaluation.dayOfWeek !== null && evaluation.dayOfWeek !== '') parts.push(getDayName(Number(evaluation.dayOfWeek)));
+    if (evaluation.time) parts.push(`${evaluation.time}h`);
+    if (evaluation.sede) parts.push(evaluation.sede);
+    return parts.join(' · ');
+  };
+
+  const getEvaluationComments = (evaluation = {}) => {
+    const comments = evaluation.comments || {};
+    return {
+      positive: String(comments.positive || comments.best || evaluation.positiveComment || evaluation.bestComment || '').trim(),
+      improvement: String(comments.improvement || comments.suggestions || evaluation.improvementComment || evaluation.suggestions || '').trim(),
+      privateNote: String(comments.privateNote || comments.private || evaluation.privateNote || '').trim()
+    };
+  };
+
+  const hasLowEvaluationSignal = (evaluation = {}) => {
+    const average = getEvaluationOverallAverage(evaluation);
+    if (Number.isFinite(average) && average < 3.5) return true;
+    const ratings = getEvaluationRatings(evaluation);
+    return TEACHER_EVALUATION_QUESTIONS.some(question => {
+      const value = normalizeEvaluationRating(ratings?.[question.key]);
+      return value !== null && value <= 2;
+    });
+  };
+
+  const teacherEvaluationPeriods = useMemo(() => {
+    const byPeriod = new Map();
+    teacherEvaluations.forEach(evaluation => {
+      const value = getEvaluationPeriodValue(evaluation);
+      if (!value) return;
+      byPeriod.set(value, value);
+    });
+    return [...byPeriod.keys()].sort((a, b) => b.localeCompare(a));
+  }, [teacherEvaluations]);
+
+  const allTeacherNamesForPanel = useMemo(() => [...new Set([
+    ...(settings.teachersList || []),
+    ...recurringClassesOnly.map(c => c.teacher).filter(Boolean),
+    ...teacherEvaluations.map(getEvaluationTeacherName).filter(Boolean)
+  ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')), [settings.teachersList, recurringClassesOnly, teacherEvaluations]);
+
+  const filteredTeacherEvaluations = useMemo(() => {
+    return teacherEvaluations.filter(evaluation => (
+      teacherEvaluationPeriod === 'all' || getEvaluationPeriodValue(evaluation) === teacherEvaluationPeriod
+    ));
+  }, [teacherEvaluations, teacherEvaluationPeriod]);
+
+  const teacherEvaluationStats = useMemo(() => {
+    const grouped = new Map();
+
+    const ensureTeacherGroup = (teacherName) => {
+      const cleanName = teacherName || 'Sin profesor';
+      if (!grouped.has(cleanName)) {
+        grouped.set(cleanName, {
+          name: cleanName,
+          evaluations: []
+        });
+      }
+      return grouped.get(cleanName);
+    };
+
+    allTeacherNamesForPanel.forEach(ensureTeacherGroup);
+
+    filteredTeacherEvaluations.forEach(evaluation => {
+      ensureTeacherGroup(getEvaluationTeacherName(evaluation)).evaluations.push(evaluation);
+    });
+
+    return [...grouped.values()].map(group => {
+      const overallValues = group.evaluations
+        .map(getEvaluationOverallAverage)
+        .filter(value => Number.isFinite(value));
+
+      const questionAverages = TEACHER_EVALUATION_QUESTIONS.reduce((acc, question) => {
+        const values = group.evaluations
+          .map(evaluation => normalizeEvaluationRating(getEvaluationRatings(evaluation)?.[question.key]))
+          .filter(value => value !== null);
+        acc[question.key] = averageNumbers(values);
+        return acc;
+      }, {});
+
+      const comments = group.evaluations.flatMap(evaluation => {
+        const commentData = getEvaluationComments(evaluation);
+        const classLine = getEvaluationClassLine(evaluation);
+        const base = {
+          id: evaluation.id,
+          studentName: evaluation.studentName || evaluation.student || 'Alumno',
+          classLine,
+          date: getEvaluationCreatedDate(evaluation),
+          average: getEvaluationOverallAverage(evaluation)
+        };
+        const items = [];
+        if (commentData.positive) items.push({ ...base, type: 'Valorado', text: commentData.positive });
+        if (commentData.improvement) items.push({ ...base, type: 'Mejora', text: commentData.improvement });
+        if (commentData.privateNote) items.push({ ...base, type: 'Privado', text: commentData.privateNote });
+        return items;
+      });
+
+      const lowSignalCount = group.evaluations.filter(hasLowEvaluationSignal).length;
+      const teacherClasses = recurringClassesOnly.filter(c => (c.teacher || '') === group.name);
+      const activeClassCount = teacherClasses.length;
+      const activeStudentIds = new Set();
+      teacherClasses.forEach(clase => {
+        (clase.students || []).forEach(studentEntry => {
+          const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+          if (studentInfo?.globalStatus === 'baja') return;
+          if (!isFixedClassStudent(studentEntry)) return;
+          if (!isStudentClassCommittedOnDate(studentEntry, studentInfo, todayStr)) return;
+          activeStudentIds.add(studentEntry.id);
+        });
+      });
+
+      return {
+        ...group,
+        responseCount: group.evaluations.length,
+        average: averageNumbers(overallValues),
+        questionAverages,
+        comments,
+        lowSignalCount,
+        activeClassCount,
+        activeStudentCount: activeStudentIds.size
+      };
+    }).sort((a, b) => {
+      if (b.responseCount !== a.responseCount) return b.responseCount - a.responseCount;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'es');
+    });
+  }, [filteredTeacherEvaluations, allTeacherNamesForPanel, recurringClassesOnly, students, todayStr]);
+
+  const teacherEvaluationGlobalStats = useMemo(() => {
+    const overallValues = filteredTeacherEvaluations
+      .map(getEvaluationOverallAverage)
+      .filter(value => Number.isFinite(value));
+
+    const questionAverages = TEACHER_EVALUATION_QUESTIONS.reduce((acc, question) => {
+      const values = filteredTeacherEvaluations
+        .map(evaluation => normalizeEvaluationRating(getEvaluationRatings(evaluation)?.[question.key]))
+        .filter(value => value !== null);
+      acc[question.key] = averageNumbers(values);
+      return acc;
+    }, {});
+
+    return {
+      responses: filteredTeacherEvaluations.length,
+      average: averageNumbers(overallValues),
+      teachersWithResponses: teacherEvaluationStats.filter(stat => stat.responseCount > 0).length,
+      lowSignalCount: filteredTeacherEvaluations.filter(hasLowEvaluationSignal).length,
+      questionAverages
+    };
+  }, [filteredTeacherEvaluations, teacherEvaluationStats]);
+
+  const handleDownloadTeacherEvaluationReport = () => {
+    if (filteredTeacherEvaluations.length === 0) {
+      alert('No hay evaluaciones docentes para exportar con el filtro actual.');
+      return;
+    }
+
+    const header = [
+      'fecha', 'periodo', 'profesor', 'alumno', 'email_alumno', 'clase', 'sede', 'instrumento', 'media',
+      ...TEACHER_EVALUATION_QUESTIONS.map(question => question.shortLabel),
+      'comentario_positivo', 'comentario_mejora', 'nota_privada'
+    ];
+
+    const rows = filteredTeacherEvaluations.map(evaluation => {
+      const ratings = getEvaluationRatings(evaluation);
+      const comments = getEvaluationComments(evaluation);
+      return [
+        getEvaluationCreatedDate(evaluation),
+        getEvaluationPeriodValue(evaluation),
+        getEvaluationTeacherName(evaluation),
+        evaluation.studentName || '',
+        evaluation.studentEmail || '',
+        getEvaluationClassLine(evaluation),
+        evaluation.sede || '',
+        evaluation.subject || '',
+        formatAverageScore(getEvaluationOverallAverage(evaluation)),
+        ...TEACHER_EVALUATION_QUESTIONS.map(question => ratings?.[question.key] || ''),
+        comments.positive,
+        comments.improvement,
+        comments.privateNote
+      ].map(escapeCsvCell).join(';');
+    });
+
+    const periodLabel = teacherEvaluationPeriod === 'all' ? 'todas' : teacherEvaluationPeriod.replace(/[^a-zA-Z0-9_-]/g, '-');
+    downloadTextFile(`Evaluaciones_Docentes_${periodLabel}_${getTodayLocalString()}.csv`, [header.map(escapeCsvCell).join(';'), ...rows].join('\n'), 'text/csv;charset=utf-8');
+  };
+
   const availableMboxSlotsAdmin = useMemo(() => {
     let slots = [];
     if (mboxAdminDate && mboxAdminSede) {
@@ -8572,82 +8831,279 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 6. PROFESORES (NÓMINAS) CON SELECTOR --- */}
+        {/* --- 6. PROFESORES --- */}
         {activeTab === 'teachers' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
               <div>
-                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Estado de Profesores</h2>
-                <p className="text-zinc-500 font-medium text-sm">Horas reales, ajustes administrativos y nómina orientativa.</p>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Profesores</h2>
+                <p className="text-zinc-500 font-medium text-sm">Seguimiento docente, horas reales, ajustes administrativos y nómina orientativa.</p>
               </div>
-              <select 
-                value={selectedPayrollMonth} 
-                onChange={(e) => setSelectedPayrollMonth(e.target.value)}
-                className="bg-white border border-zinc-200 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest text-slate-800 shadow-sm outline-none cursor-pointer hover:border-black transition-colors"
-              >
-                {availableMonths.map(m => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
-                ))}
-              </select>
+              {teacherPanelTab === 'payroll' && (
+                <select 
+                  value={selectedPayrollMonth} 
+                  onChange={(e) => setSelectedPayrollMonth(e.target.value)}
+                  className="bg-white border border-zinc-200 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest text-slate-800 shadow-sm outline-none cursor-pointer hover:border-black transition-colors"
+                >
+                  {availableMonths.map(m => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+              )}
             </header>
 
-            <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
-              Los ajustes manuales no alteran los registros de asistencia. Sirven para cotejar con las hojas firmadas físicamente o corregir errores del sistema.
+            <div className="bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                onClick={() => setTeacherPanelTab('evaluations')}
+                className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'evaluations' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
+              >
+                <Star className="w-4 h-4"/> Evaluaciones docentes
+              </button>
+              <button
+                onClick={() => setTeacherPanelTab('payroll')}
+                className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'payroll' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
+              >
+                <Calculator className="w-4 h-4"/> Horas y nóminas
+              </button>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[850px]">
-                  <thead>
-                    <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                      <th className="p-4 font-black">Profesor</th>
-                      <th className="p-4 font-black text-right">Horas Reales</th>
-                      <th className="p-4 font-black text-right">Ajustes</th>
-                      <th className="p-4 font-black text-right">Total Liquidable</th>
-                      <th className="p-4 font-black text-right">Acumulado (€)</th>
-                      <th className="p-4 font-black text-center">Corregir</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-sm font-medium text-slate-700">
-                    {teachersPayroll.length === 0 ? (
-                      <tr><td colSpan="6" className="p-8 text-center text-zinc-400 italic">No hay profesores, registros ni ajustes para este mes.</td></tr>
-                    ) : (
-                      teachersPayroll.map((t, idx) => (
-                        <tr key={idx} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
-                          <td className="p-4">
-                            <div className="font-black uppercase text-slate-900">{t.name}</div>
-                            {t.adjustments.length > 0 && (
-                              <div className="mt-2 space-y-1">
-                                {t.adjustments.map(adj => (
-                                  <div key={adj.id} className="flex items-center gap-2 text-[10px] text-zinc-500 bg-zinc-50 border border-zinc-100 rounded-lg px-2 py-1 max-w-md">
-                                    <span className={`font-black ${adj.hours > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{adj.hours > 0 ? '+' : ''}{Number(adj.hours).toFixed(2)}h</span>
-                                    <span className="truncate flex-1" title={adj.reason}>{adj.reason}</span>
-                                    <button onClick={() => deletePayrollAdjustment(adj)} className="text-red-400 hover:text-red-600" title="Borrar ajuste"><Trash2 className="w-3 h-3"/></button>
-                                  </div>
-                                ))}
+            {teacherPanelTab === 'evaluations' && (
+              <div className="space-y-6">
+                <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 text-xs font-bold text-indigo-900 leading-relaxed flex items-start gap-3">
+                  <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-black uppercase tracking-widest text-[10px] mb-1">Evaluación confidencial para coordinación</p>
+                    <p>Las respuestas se guardan una a una. Aquí ves medias, señales de alerta y comentarios para detectar puntos fuertes y mejoras. No está pensado como ranking público de profesores.</p>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-5">
+                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-5">
+                    <div>
+                      <h3 className="text-lg font-black uppercase tracking-tight text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5 text-indigo-600"/> Panel de calidad docente</h3>
+                      <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mt-1">Filtra por trimestre o exporta el detalle completo.</p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <select
+                        value={teacherEvaluationPeriod}
+                        onChange={e => setTeacherEvaluationPeriod(e.target.value)}
+                        className="bg-zinc-50 border border-zinc-200 px-4 py-3 rounded-xl text-xs font-black uppercase tracking-widest text-slate-800 outline-none"
+                      >
+                        <option value="all">Todos los periodos</option>
+                        {teacherEvaluationPeriods.map(period => <option key={period} value={period}>{period}</option>)}
+                      </select>
+                      <button onClick={handleDownloadTeacherEvaluationReport} className="bg-black text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 flex items-center justify-center gap-2 shadow-md">
+                        <FileText className="w-4 h-4"/> Exportar CSV
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1">Evaluaciones</p>
+                      <p className="text-3xl font-black text-slate-900">{teacherEvaluationGlobalStats.responses}</p>
+                    </div>
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700 mb-1">Media global</p>
+                      <p className="text-3xl font-black text-emerald-900">{formatAverageScore(teacherEvaluationGlobalStats.average)}<span className="text-sm text-emerald-500">/5</span></p>
+                    </div>
+                    <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-blue-700 mb-1">Profesores valorados</p>
+                      <p className="text-3xl font-black text-blue-900">{teacherEvaluationGlobalStats.teachersWithResponses}</p>
+                    </div>
+                    <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-rose-700 mb-1">Alertas</p>
+                      <p className="text-3xl font-black text-rose-900">{teacherEvaluationGlobalStats.lowSignalCount}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                  {teacherEvaluationStats.map(stat => {
+                    const expanded = expandedEvaluationTeacher === stat.name;
+                    const bestQuestion = TEACHER_EVALUATION_QUESTIONS
+                      .map(question => ({ ...question, average: stat.questionAverages[question.key] }))
+                      .filter(question => Number.isFinite(question.average))
+                      .sort((a, b) => b.average - a.average)[0];
+                    const worstQuestion = TEACHER_EVALUATION_QUESTIONS
+                      .map(question => ({ ...question, average: stat.questionAverages[question.key] }))
+                      .filter(question => Number.isFinite(question.average))
+                      .sort((a, b) => a.average - b.average)[0];
+
+                    return (
+                      <div key={stat.name} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
+                        <div className="p-5 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                          <div>
+                            <h3 className="font-black uppercase tracking-tight text-slate-900 text-lg flex items-center gap-2"><User className="w-5 h-5 text-black"/> {stat.name}</h3>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mt-1">{stat.activeClassCount} clase(s) · {stat.activeStudentCount} alumno(s) con plaza</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className={`px-4 py-2 rounded-2xl border text-center ${stat.responseCount === 0 ? 'bg-zinc-50 border-zinc-100 text-zinc-400' : stat.average < 3.5 ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
+                              <p className="text-[9px] font-black uppercase tracking-widest">Media</p>
+                              <p className="text-2xl font-black leading-none">{formatAverageScore(stat.average)}<span className="text-xs">/5</span></p>
+                            </div>
+                            <div className="px-4 py-2 rounded-2xl border bg-zinc-50 border-zinc-100 text-zinc-700 text-center">
+                              <p className="text-[9px] font-black uppercase tracking-widest">Respuestas</p>
+                              <p className="text-2xl font-black leading-none">{stat.responseCount}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {stat.responseCount === 0 ? (
+                          <div className="p-6 text-center text-zinc-400">
+                            <Star className="w-8 h-8 mx-auto mb-2 text-zinc-200" />
+                            <p className="text-xs font-black uppercase tracking-widest">Sin evaluaciones todavía en este filtro.</p>
+                          </div>
+                        ) : (
+                          <div className="p-5 space-y-5">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3">
+                                <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700 mb-1">Punto fuerte</p>
+                                <p className="text-sm font-black text-emerald-950">{bestQuestion ? `${bestQuestion.shortLabel} · ${formatAverageScore(bestQuestion.average)}/5` : 'Sin datos'}</p>
+                              </div>
+                              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3">
+                                <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 mb-1">A revisar</p>
+                                <p className="text-sm font-black text-amber-950">{worstQuestion ? `${worstQuestion.shortLabel} · ${formatAverageScore(worstQuestion.average)}/5` : 'Sin datos'}</p>
+                              </div>
+                            </div>
+
+                            {stat.lowSignalCount > 0 && (
+                              <div className="bg-rose-50 border border-rose-100 text-rose-800 rounded-2xl p-3 text-xs font-bold flex items-start gap-2">
+                                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                                {stat.lowSignalCount} evaluación(es) con media baja o alguna puntuación de 1-2. Conviene revisarlas individualmente.
                               </div>
                             )}
-                          </td>
-                          <td className="p-4 text-right font-black">{t.realHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
-                          <td className={`p-4 text-right font-black ${t.adjustmentHours > 0 ? 'text-emerald-600' : t.adjustmentHours < 0 ? 'text-rose-600' : 'text-zinc-400'}`}>{t.adjustmentHours > 0 ? '+' : ''}{t.adjustmentHours.toFixed(2)} <span className="text-[10px] uppercase">h</span></td>
-                          <td className="p-4 text-right font-black text-slate-900">{t.totalHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
-                          <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">€</span></td>
-                          <td className="p-4 text-center">
-                            <div className="flex items-center justify-center gap-2">
-                              <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'add' })} className="p-2 bg-emerald-100 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-colors" title="Sumar horas"><Plus className="w-4 h-4"/></button>
-                              <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'subtract' })} className="p-2 bg-rose-100 text-rose-700 hover:bg-rose-600 hover:text-white rounded-lg transition-colors" title="Restar horas"><Minus className="w-4 h-4"/></button>
+
+                            <div className="space-y-2">
+                              {TEACHER_EVALUATION_QUESTIONS.map(question => {
+                                const average = stat.questionAverages[question.key];
+                                const pct = Number.isFinite(average) ? Math.max(Math.min((average / 5) * 100, 100), 0) : 0;
+                                return (
+                                  <div key={question.key}>
+                                    <div className="flex items-center justify-between gap-3 mb-1">
+                                      <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 truncate" title={question.label}>{question.shortLabel}</p>
+                                      <p className="text-xs font-black text-slate-800">{formatAverageScore(average)}</p>
+                                    </div>
+                                    <div className="h-2 bg-zinc-100 rounded-full overflow-hidden">
+                                      <div className={`h-full rounded-full ${Number.isFinite(average) && average < 3.5 ? 'bg-amber-400' : 'bg-slate-900'}`} style={{ width: `${pct}%` }}></div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+
+                            <button
+                              onClick={() => setExpandedEvaluationTeacher(expanded ? null : stat.name)}
+                              className="w-full bg-zinc-50 hover:bg-zinc-100 text-slate-700 border border-zinc-100 rounded-xl py-3 text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
+                            >
+                              {expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}
+                              {expanded ? 'Ocultar detalle' : `Ver detalle y comentarios (${stat.comments.length})`}
+                            </button>
+
+                            {expanded && (
+                              <div className="space-y-3 pt-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                                {stat.evaluations.slice(0, 12).map(evaluation => {
+                                  const average = getEvaluationOverallAverage(evaluation);
+                                  const ratings = getEvaluationRatings(evaluation);
+                                  const comments = getEvaluationComments(evaluation);
+                                  return (
+                                    <div key={evaluation.id} className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4">
+                                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 mb-3">
+                                        <div>
+                                          <p className="text-sm font-black text-slate-900 uppercase tracking-tight">{evaluation.studentName || 'Alumno'}</p>
+                                          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-relaxed">{getEvaluationCreatedDate(evaluation)}{getEvaluationClassLine(evaluation) ? ` · ${getEvaluationClassLine(evaluation)}` : ''}</p>
+                                        </div>
+                                        <span className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest border ${Number.isFinite(average) && average < 3.5 ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-white text-slate-800 border-zinc-200'}`}>{formatAverageScore(average)}/5</span>
+                                      </div>
+                                      <div className="flex flex-wrap gap-1.5 mb-3">
+                                        {TEACHER_EVALUATION_QUESTIONS.map(question => (
+                                          <span key={question.key} className="bg-white border border-zinc-200 rounded-lg px-2 py-1 text-[9px] font-black text-zinc-500 uppercase tracking-widest" title={question.label}>
+                                            {question.shortLabel}: {ratings?.[question.key] || '—'}
+                                          </span>
+                                        ))}
+                                      </div>
+                                      {(comments.positive || comments.improvement || comments.privateNote) && (
+                                        <div className="space-y-2 text-xs font-medium text-slate-700 leading-relaxed">
+                                          {comments.positive && <p><span className="font-black text-emerald-700 uppercase tracking-widest text-[9px] block mb-0.5">Valora</span>{comments.positive}</p>}
+                                          {comments.improvement && <p><span className="font-black text-amber-700 uppercase tracking-widest text-[9px] block mb-0.5">Mejoraría</span>{comments.improvement}</p>}
+                                          {comments.privateNote && <p><span className="font-black text-rose-700 uppercase tracking-widest text-[9px] block mb-0.5">Nota privada</span>{comments.privateNote}</p>}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {stat.evaluations.length > 12 && <p className="text-center text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Se muestran las 12 evaluaciones más recientes. Exporta CSV para revisar todo el histórico.</p>}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
+
+            {teacherPanelTab === 'payroll' && (
+              <div className="space-y-6">
+                <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
+                  Los ajustes manuales no alteran los registros de asistencia. Sirven para cotejar con las hojas firmadas físicamente o corregir errores del sistema.
+                </div>
+
+                <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse min-w-[850px]">
+                      <thead>
+                        <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
+                          <th className="p-4 font-black">Profesor</th>
+                          <th className="p-4 font-black text-right">Horas Reales</th>
+                          <th className="p-4 font-black text-right">Ajustes</th>
+                          <th className="p-4 font-black text-right">Total Liquidable</th>
+                          <th className="p-4 font-black text-right">Acumulado (€)</th>
+                          <th className="p-4 font-black text-center">Corregir</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-sm font-medium text-slate-700">
+                        {teachersPayroll.length === 0 ? (
+                          <tr><td colSpan="6" className="p-8 text-center text-zinc-400 italic">No hay profesores, registros ni ajustes para este mes.</td></tr>
+                        ) : (
+                          teachersPayroll.map((t, idx) => (
+                            <tr key={idx} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
+                              <td className="p-4">
+                                <div className="font-black uppercase text-slate-900">{t.name}</div>
+                                {t.adjustments.length > 0 && (
+                                  <div className="mt-2 space-y-1">
+                                    {t.adjustments.map(adj => (
+                                      <div key={adj.id} className="flex items-center gap-2 text-[10px] text-zinc-500 bg-zinc-50 border border-zinc-100 rounded-lg px-2 py-1 max-w-md">
+                                        <span className={`font-black ${adj.hours > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{adj.hours > 0 ? '+' : ''}{Number(adj.hours).toFixed(2)}h</span>
+                                        <span className="truncate flex-1" title={adj.reason}>{adj.reason}</span>
+                                        <button onClick={() => deletePayrollAdjustment(adj)} className="text-red-400 hover:text-red-600" title="Borrar ajuste"><Trash2 className="w-3 h-3"/></button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-4 text-right font-black">{t.realHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
+                              <td className={`p-4 text-right font-black ${t.adjustmentHours > 0 ? 'text-emerald-600' : t.adjustmentHours < 0 ? 'text-rose-600' : 'text-zinc-400'}`}>{t.adjustmentHours > 0 ? '+' : ''}{t.adjustmentHours.toFixed(2)} <span className="text-[10px] uppercase">h</span></td>
+                              <td className="p-4 text-right font-black text-slate-900">{t.totalHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
+                              <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">€</span></td>
+                              <td className="p-4 text-center">
+                                <div className="flex items-center justify-center gap-2">
+                                  <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'add' })} className="p-2 bg-emerald-100 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-colors" title="Sumar horas"><Plus className="w-4 h-4"/></button>
+                                  <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'subtract' })} className="p-2 bg-rose-100 text-rose-700 hover:bg-rose-600 hover:text-white rounded-lg transition-colors" title="Restar horas"><Minus className="w-4 h-4"/></button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-        
+        )}        
         
 {/* --- 7. TABLÓN --- */}
         {activeTab === 'announcements' && (

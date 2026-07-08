@@ -88,6 +88,33 @@ const CLASS_RESOURCE_TYPES = [
 
 const getClassResourceTypeLabel = (type = 'link') => CLASS_RESOURCE_TYPES.find(t => t.value === type)?.label || 'Recurso';
 
+const TEACHER_EVALUATION_QUESTIONS = [
+  { key: 'clarity', label: 'El profesor explica de forma clara y comprensible.' },
+  { key: 'knowledge', label: 'Percibo que el profesor domina su instrumento y el contenido que imparte.' },
+  { key: 'adaptation', label: 'El profesor adapta la clase a mi nivel y necesidades.' },
+  { key: 'organization', label: 'La clase está bien organizada y se aprovecha el tiempo.' },
+  { key: 'motivation', label: 'El profesor me motiva y me anima a mejorar.' },
+  { key: 'progress', label: 'Siento que he mejorado durante el último trimestre.' },
+  { key: 'homeworkClarity', label: 'Sé qué tengo que practicar en casa.' },
+  { key: 'resourcesUseful', label: 'Los materiales o recursos me resultan útiles para practicar.' },
+  { key: 'recommendation', label: 'Recomendaría este profesor a otro alumno.' }
+];
+
+const TEACHER_EVALUATION_SCALE = [1, 2, 3, 4, 5];
+
+const getEmptyTeacherEvaluationRatings = () => TEACHER_EVALUATION_QUESTIONS.reduce((acc, question) => ({
+  ...acc,
+  [question.key]: 0
+}), {});
+
+const getTeacherEvaluationPeriod = (dateStr = '') => {
+  const [yearRaw, monthRaw] = String(dateStr || '').split('-').map(Number);
+  const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+  const month = Number.isFinite(monthRaw) ? monthRaw : new Date().getMonth() + 1;
+  const quarter = Math.max(1, Math.min(4, Math.ceil(month / 3)));
+  return `${year}-T${quarter}`;
+};
+
 const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
 
 const isFixedClassStudent = (studentEntry = {}) => !(
@@ -244,6 +271,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [triviaResult, setTriviaResult] = useState(null); 
 
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewModalView, setReviewModalView] = useState('choice');
+  const [teacherEvaluationClass, setTeacherEvaluationClass] = useState(null);
+  const [teacherEvaluationRatings, setTeacherEvaluationRatings] = useState(getEmptyTeacherEvaluationRatings());
+  const [teacherEvaluationComments, setTeacherEvaluationComments] = useState({ positive: '', improvement: '' });
+  const [isSendingTeacherEvaluation, setIsSendingTeacherEvaluation] = useState(false);
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
   const [whatsappConfirmModal, setWhatsappConfirmModal] = useState(null);
@@ -582,12 +614,290 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
   };
 
+  const evaluableTeacherClasses = useMemo(() => {
+    const sourceClasses = fixedSeatClasses.length > 0 ? fixedSeatClasses : fixedMyClasses;
+    const byKey = new Map();
+
+    sourceClasses.forEach(clase => {
+      if (!clase?.teacher) return;
+      const studentEntry = getStudentEntryInClass(clase);
+      if (studentEntry?.isRecovery) return;
+
+      const key = clase.id || `${clase.teacher}-${clase.subject}-${clase.dayOfWeek}-${clase.time}-${clase.sede}`;
+      if (!byKey.has(key)) byKey.set(key, clase);
+    });
+
+    return [...byKey.values()];
+  }, [fixedSeatClasses, fixedMyClasses, profile?.id]);
+
+  const resetTeacherEvaluationForm = () => {
+    setTeacherEvaluationClass(null);
+    setTeacherEvaluationRatings(getEmptyTeacherEvaluationRatings());
+    setTeacherEvaluationComments({ positive: '', improvement: '' });
+    setIsSendingTeacherEvaluation(false);
+  };
+
+  const closeReviewModal = () => {
+    setShowReviewModal(false);
+    setReviewModalView('choice');
+    resetTeacherEvaluationForm();
+  };
+
   const handleReviewClick = () => {
+    setReviewModalView('choice');
+    setShowReviewModal(true);
+  };
+
+  const openSchoolReviewFlow = () => {
     if (studentSedes.length === 1 && REVIEW_URLS[studentSedes[0]]) {
       window.open(REVIEW_URLS[studentSedes[0]], '_blank', 'noopener,noreferrer');
+      closeReviewModal();
       return;
     }
-    setShowReviewModal(true);
+    setReviewModalView('school');
+  };
+
+  const startTeacherEvaluation = (clase) => {
+    setTeacherEvaluationClass(clase);
+    setTeacherEvaluationRatings(getEmptyTeacherEvaluationRatings());
+    setTeacherEvaluationComments({ positive: '', improvement: '' });
+    setReviewModalView('teacher_form');
+  };
+
+  const openTeacherEvaluationFlow = () => {
+    if (evaluableTeacherClasses.length === 0) {
+      showToast('No encontramos ninguna clase evaluable en tu perfil.', 'error');
+      return;
+    }
+
+    if (evaluableTeacherClasses.length === 1) {
+      startTeacherEvaluation(evaluableTeacherClasses[0]);
+      return;
+    }
+
+    setTeacherEvaluationClass(null);
+    setReviewModalView('teacher_select');
+  };
+
+  const setTeacherEvaluationRating = (questionKey, value) => {
+    setTeacherEvaluationRatings(prev => ({ ...prev, [questionKey]: value }));
+  };
+
+  const updateTeacherEvaluationComment = (field, value) => {
+    setTeacherEvaluationComments(prev => ({ ...prev, [field]: value }));
+  };
+
+  const areTeacherEvaluationRatingsComplete = TEACHER_EVALUATION_QUESTIONS.every(question => Number(teacherEvaluationRatings[question.key]) > 0);
+
+  const submitTeacherEvaluation = async () => {
+    if (!teacherEvaluationClass || isSendingTeacherEvaluation) return;
+
+    if (!areTeacherEvaluationRatingsComplete) {
+      showToast('Puntúa todas las preguntas antes de enviar la evaluación.', 'error');
+      return;
+    }
+
+    const ratingValues = TEACHER_EVALUATION_QUESTIONS.map(question => Number(teacherEvaluationRatings[question.key]) || 0);
+    const ratingsAverage = ratingValues.length
+      ? Number((ratingValues.reduce((sum, value) => sum + value, 0) / ratingValues.length).toFixed(2))
+      : 0;
+    const evaluationId = `eval-${profile.id}-${teacherEvaluationClass.id || 'clase'}-${Date.now()}`;
+    const nowIso = new Date().toISOString();
+
+    setIsSendingTeacherEvaluation(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'teacherEvaluations', evaluationId), {
+        studentId: profile.id,
+        studentName: profile.name || '',
+        studentEmail: profile.email || user.email || '',
+        teacherName: teacherEvaluationClass.teacher || '',
+        classId: teacherEvaluationClass.id || '',
+        classRefPath: teacherEvaluationClass.refPath || '',
+        classLine: formatClassLineForAdminCopy(teacherEvaluationClass),
+        subject: teacherEvaluationClass.subject || '',
+        sede: teacherEvaluationClass.sede || 'Tarragona',
+        sala: teacherEvaluationClass.sala || '',
+        dayOfWeek: teacherEvaluationClass.dayOfWeek ?? null,
+        time: teacherEvaluationClass.time || '',
+        period: getTeacherEvaluationPeriod(todayStr),
+        month: todayStr.slice(0, 7),
+        date: todayStr,
+        createdAt: nowIso,
+        source: 'student_portal',
+        questionsVersion: 'teacher-evaluation-v1',
+        maxRating: 5,
+        ratings: { ...teacherEvaluationRatings },
+        ratingsAverage,
+        ratingCount: ratingValues.length,
+        questionLabels: TEACHER_EVALUATION_QUESTIONS.reduce((acc, question) => ({
+          ...acc,
+          [question.key]: question.label
+        }), {}),
+        comments: {
+          positive: String(teacherEvaluationComments.positive || '').trim(),
+          improvement: String(teacherEvaluationComments.improvement || '').trim()
+        },
+        visibleToTeacher: false,
+        confidentialForAdmin: true
+      });
+
+      showToast('Gracias. Evaluación enviada a coordinación.');
+      closeReviewModal();
+    } catch (error) {
+      console.error('Error al enviar evaluación docente', error);
+      showToast('Error al enviar la evaluación.', 'error');
+    } finally {
+      setIsSendingTeacherEvaluation(false);
+    }
+  };
+
+  const renderReviewModal = () => {
+    if (!showReviewModal) return null;
+
+    const selectedClassLine = teacherEvaluationClass ? formatClassLineForAdminCopy(teacherEvaluationClass) : '';
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
+          <button onClick={closeReviewModal} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+
+          {reviewModalView === 'choice' && (
+            <>
+              <div className="flex flex-col items-center text-center mb-6">
+                <Star className="w-12 h-12 text-amber-400 fill-amber-400 mb-3" />
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Valóranos</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Tu opinión nos ayuda a mejorar la escuela y el seguimiento de las clases.</p>
+              </div>
+              <div className="space-y-3">
+                <button onClick={openSchoolReviewFlow} className="w-full bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-black py-4 px-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> Evaluar la escuela</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+                <button onClick={openTeacherEvaluationFlow} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 px-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-2"><User className="w-4 h-4"/> Evaluar a mi profesor</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            </>
+          )}
+
+          {reviewModalView === 'school' && (
+            <>
+              <button onClick={() => setReviewModalView('choice')} className="mb-5 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:text-black flex items-center gap-1">
+                <ArrowRight className="w-3 h-3 rotate-180" /> Volver
+              </button>
+              <div className="flex flex-col items-center text-center mb-6">
+                <MapPin className="w-12 h-12 text-amber-500 mb-3" />
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Evalúa la escuela</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2">Elige sede para dejar una reseña pública en Google Maps.</p>
+              </div>
+              <div className="space-y-3">
+                <a href={REVIEW_URLS.Tarragona} target="_blank" rel="noopener noreferrer" onClick={closeReviewModal} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+                  <MapPin className="w-4 h-4"/> Sede Tarragona
+                </a>
+                <a href={REVIEW_URLS.Reus} target="_blank" rel="noopener noreferrer" onClick={closeReviewModal} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+                  <MapPin className="w-4 h-4"/> Sede Reus
+                </a>
+              </div>
+            </>
+          )}
+
+          {reviewModalView === 'teacher_select' && (
+            <>
+              <button onClick={() => setReviewModalView('choice')} className="mb-5 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:text-black flex items-center gap-1">
+                <ArrowRight className="w-3 h-3 rotate-180" /> Volver
+              </button>
+              <div className="flex flex-col items-center text-center mb-6">
+                <User className="w-12 h-12 text-black mb-3" />
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Evalúa a tu profesor</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Elige la clase sobre la que quieres enviar tu valoración.</p>
+              </div>
+              <div className="space-y-3">
+                {evaluableTeacherClasses.map(clase => (
+                  <button
+                    key={clase.id || `${clase.teacher}-${clase.subject}-${clase.dayOfWeek}-${clase.time}`}
+                    type="button"
+                    onClick={() => startTeacherEvaluation(clase)}
+                    className="w-full p-4 rounded-2xl border-2 border-zinc-100 hover:border-black text-left transition-all bg-white"
+                  >
+                    <p className="text-sm font-black uppercase tracking-tight text-slate-800">{clase.subject || 'Clase'} · {clase.teacher || 'Profesor'}</p>
+                    <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{getDayName(clase.dayOfWeek)} {clase.time || ''}h · {clase.sede || 'Sede'}{clase.sala ? ` · ${clase.sala}` : ''}</p>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {reviewModalView === 'teacher_form' && teacherEvaluationClass && (
+            <>
+              <button onClick={() => evaluableTeacherClasses.length > 1 ? setReviewModalView('teacher_select') : setReviewModalView('choice')} className="mb-5 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:text-black flex items-center gap-1">
+                <ArrowRight className="w-3 h-3 rotate-180" /> Volver
+              </button>
+              <div className="mb-5">
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">Evalúa a tu profesor</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Esta evaluación es confidencial para coordinación. El profesor no verá tu nombre.</p>
+                <div className="mt-4 bg-zinc-50 border border-zinc-100 rounded-2xl p-3">
+                  <p className="text-sm font-black uppercase tracking-tight text-slate-800">{teacherEvaluationClass.teacher || 'Profesor'}</p>
+                  <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{selectedClassLine}</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {TEACHER_EVALUATION_QUESTIONS.map((question, index) => (
+                  <div key={question.key} className="border border-zinc-100 rounded-2xl p-4 bg-white">
+                    <p className="text-sm font-bold text-slate-800 leading-snug mb-3"><span className="text-zinc-400 font-black mr-1">{index + 1}.</span>{question.label}</p>
+                    <div className="grid grid-cols-5 gap-2">
+                      {TEACHER_EVALUATION_SCALE.map(value => {
+                        const selected = Number(teacherEvaluationRatings[question.key]) === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setTeacherEvaluationRating(question.key, value)}
+                            className={`py-3 rounded-xl border-2 font-black text-sm transition-all ${selected ? 'bg-black text-white border-black shadow-sm' : 'bg-zinc-50 text-zinc-500 border-zinc-100 hover:border-zinc-300'}`}
+                            aria-label={`${value} sobre 5`}
+                          >
+                            {value}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex justify-between text-[9px] font-black uppercase tracking-widest text-zinc-400 mt-2 px-1">
+                      <span>Muy bajo</span>
+                      <span>Muy alto</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-5 space-y-3">
+                <textarea
+                  value={teacherEvaluationComments.positive}
+                  onChange={e => updateTeacherEvaluationComment('positive', e.target.value)}
+                  placeholder="¿Qué es lo que más valoras de tus clases? (Opcional)"
+                  className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[90px] resize-y text-sm font-medium"
+                />
+                <textarea
+                  value={teacherEvaluationComments.improvement}
+                  onChange={e => updateTeacherEvaluationComment('improvement', e.target.value)}
+                  placeholder="¿Qué crees que podría mejorar? Sugerencias para coordinación. (Opcional)"
+                  className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[90px] resize-y text-sm font-medium"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={submitTeacherEvaluation}
+                disabled={!areTeacherEvaluationRatingsComplete || isSendingTeacherEvaluation}
+                className="w-full mt-5 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSendingTeacherEvaluation ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar evaluación</>}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const handleWhatsappClick = () => {
@@ -2148,26 +2458,7 @@ END:VCALENDAR`;
       {renderContract()}
       {renderTriviaModal()}
 
-      {showReviewModal && (
-        <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-sm w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
-            <button onClick={() => setShowReviewModal(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-            <div className="flex flex-col items-center text-center mb-6">
-              <Star className="w-12 h-12 text-amber-400 fill-amber-400 mb-3" />
-              <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Déjanos tu reseña</h2>
-              <p className="text-xs font-bold text-zinc-500 mt-2">¡Nos ayuda muchísimo a seguir creciendo! Elige sede si tienes clases en más de un centro.</p>
-            </div>
-            <div className="space-y-3">
-              <a href={REVIEW_URLS.Tarragona} target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
-                <MapPin className="w-4 h-4"/> Sede Tarragona
-              </a>
-              <a href={REVIEW_URLS.Reus} target="_blank" rel="noopener noreferrer" className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
-                <MapPin className="w-4 h-4"/> Sede Reus
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
+      {renderReviewModal()}
 
       {showSocialModal && (
         <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">

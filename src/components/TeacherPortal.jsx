@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { 
   ClipboardList, History, BarChart3, Check, X, AlertCircle, Save, Mail, 
-  UserPlus, Trash2, Calendar, Clock, User, Music, RefreshCw, Play, 
+  Trash2, Calendar, Clock, User, Music, RefreshCw, Play, 
   MessageSquare, LogOut, CornerDownRight, BookOpen, CalendarOff, Ticket, 
   Snowflake, Timer, Palmtree, PartyPopper, Coffee, MapPin, Bell, UserMinus, 
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
@@ -766,28 +766,19 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     try {
       await setDoc(doc(db, 'artifacts', appId, 'availability', getTeacherName().toLowerCase()), { slots: updatedSlots }, { merge: true });
       setNewSlot({ day: null, start: '', end: '' });
-      showNotification({type:'success', text: 'Franja añadida a tu disponibilidad.'});
+      showNotification({type:'success', text: 'Franja añadida a tu horario disponible para el centro.'});
     } catch(e) {
       showNotification({type:'error', text: 'Error al guardar la franja.'});
     }
   };
 
   const handleDeleteSlot = async (day, index) => {
-    const updatedDaySlots = availability[day].filter((_, i) => i !== index);
-    
-    const classesThisDay = recurringClasses.filter(c => !isPunctualClass(c) && c.dayOfWeek === parseInt(day));
-    for(let c of classesThisDay) {
-       const isCovered = updatedDaySlots.some(slot => isClassFullyCoveredBySlot(c, slot));
-       if(!isCovered) {
-          const classEndTime = getClassEndTime(c.time, c.duration);
-          return window.alert(`⚠️ ACCIÓN BLOQUEADA:\n\nTienes una clase oficial de ${c.subject} de ${c.time}h a ${classEndTime || 'la hora de fin'}h que se quedaría fuera de tu horario.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\nPara eliminar esta franja, primero debes hablar con Coordinación para que muevan esa clase.`);
-       }
-    }
-
+    const updatedDaySlots = (availability[day] || []).filter((_, i) => i !== index);
     const updatedSlots = { ...availability, [day]: updatedDaySlots };
+
     try {
       await setDoc(doc(db, 'artifacts', appId, 'availability', getTeacherName().toLowerCase()), { slots: updatedSlots }, { merge: true });
-      showNotification({type:'success', text: 'Franja eliminada.'});
+      showNotification({type:'success', text: 'Franja eliminada de tu disponibilidad declarada. Las clases ya asignadas no se modifican.'});
     } catch(e) {
       showNotification({type:'error', text: 'Error al eliminar.'});
     }
@@ -1345,13 +1336,18 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const baseStudents = (classData.students || [])
       .filter(studentEntry => !relocatedOutIds.has(studentEntry.id))
       .filter(studentEntry => {
-        const studentInfo = globalStudents.find(g => g.id === studentEntry.id);
+        const studentInfo = globalStudents.find(g => g.id === studentEntry.id) || {};
+        if (studentInfo?.globalStatus === 'baja') return false;
         return isStudentClassActiveForDate(studentEntry, studentInfo, targetDate);
       })
       .map(studentEntry => enrichStudentMaintenanceState(studentEntry, targetDate));
 
     const relocatedIn = activeRelocations
       .filter(rel => rel.targetClassId === classData.id)
+      .filter(rel => {
+        const studentInfo = globalStudents.find(g => g.id === rel.studentId) || {};
+        return studentInfo?.globalStatus !== 'baja';
+      })
       .filter(rel => !baseStudents.some(studentEntry => studentEntry.id === rel.studentId))
       .map(rel => enrichStudentMaintenanceState(buildTemporaryRelocatedStudent(rel), targetDate));
 
@@ -1395,6 +1391,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const byKey = new Map();
     const addStudentToTemplate = (student = {}) => {
       if (!student?.id || student.isTemporaryRelocation) return;
+      const studentInfo = globalStudents.find(g => g.id === student.id) || {};
+      if (studentInfo?.globalStatus === 'baja') return;
       const key = student.isRecovery ? `${student.id}-recovery-${student.recoveryDate || ''}` : `${student.id}-fixed`;
       byKey.set(key, sanitizeTemplateStudentForSave(student));
     };
@@ -1428,6 +1426,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const addCapacityStudent = (student = {}) => {
       if (!student?.id || student.isRecovery || student.isTemporaryRelocation) return;
       const studentInfo = globalStudents.find(g => g.id === student.id) || {};
+      if (studentInfo?.globalStatus === 'baja') return;
       if (hasClassEndedBeforeDate(student, studentInfo, date)) return;
       byId.set(student.id, student);
     };
@@ -1795,6 +1794,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
 
     (scheduledClass.students || []).forEach(studentEntry => {
       const globalStudentInfo = globalStudents.find(g => g.id === studentEntry.id) || {};
+      if (globalStudentInfo?.globalStatus === 'baja') return;
       const enrichedStudent = enrichStudentMaintenanceState(studentEntry, date);
       const relocationOut = relocatedOutByStudentId.get(studentEntry.id);
 
@@ -1863,6 +1863,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       .forEach(rel => {
         const relocatedStudent = enrichStudentMaintenanceState(buildTemporaryRelocatedStudent(rel), date);
         const globalStudentInfo = globalStudents.find(g => g.id === relocatedStudent.id) || {};
+        if (globalStudentInfo?.globalStatus === 'baja') return;
 
         if (isAttendanceBlockedStudent(relocatedStudent, date) || !isStudentClassActiveForDate(relocatedStudent, globalStudentInfo, date)) {
           pushNonComputableStudent({
@@ -1910,7 +1911,10 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       students: visibleStudents,
       nonComputableStudents,
       hiddenStudents,
-      formalTemplateStudents: scheduledClass.students || [],
+      formalTemplateStudents: (scheduledClass.students || []).filter(studentEntry => {
+        const studentInfo = globalStudents.find(g => g.id === studentEntry.id) || {};
+        return studentInfo?.globalStatus !== 'baja';
+      }),
       hasTemporaryRelocations: activeRelocations.some(rel => rel.sourceClassId === scheduledClass.id || rel.targetClassId === scheduledClass.id),
       hasMaintenancePeriods: [...visibleStudents, ...nonComputableStudents].some(student => student.isMaintenance),
       pendingPlanningGestiones: getPlanningGestionesForClass(scheduledClass),
@@ -2747,8 +2751,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                 </span>
               )}
               {hasOpenAdminIncident && !isBlockedStudent && (
-                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[9px] font-black uppercase tracking-widest" title="Incidencia administrativa abierta">
-                  <AlertCircle className="w-3 h-3" /> Incidencia administrativa
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[9px] font-black uppercase tracking-widest" title="Incidencia de pago abierta. Recordatorio privado y discreto.">
+                  <AlertCircle className="w-3 h-3" /> Pago pendiente
                 </span>
               )}
               {pendingPlanningForStudent.map(g => renderPlanningBadge(g, currentSession))}
@@ -2848,8 +2852,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                 </span>
               )}
               {hasOpenAdminIncident && (
-                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[9px] font-black uppercase tracking-widest" title="Incidencia administrativa abierta">
-                  <AlertCircle className="w-3 h-3" /> Incidencia administrativa
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-red-200 bg-red-50 text-red-700 text-[9px] font-black uppercase tracking-widest" title="Incidencia de pago abierta. Recordatorio privado y discreto.">
+                  <AlertCircle className="w-3 h-3" /> Pago pendiente
                 </span>
               )}
               {pendingPlanningForStudent.map(g => renderPlanningBadge(g, currentSession))}
@@ -3357,105 +3361,14 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
 
                 {/* ZONA DE ALUMNOS */}
                 <div className="p-6 md:p-8">
-                  {isAdmin ? (
-                    <div className={`flex flex-col mb-8 p-6 rounded-2xl border-2 transition-colors ${isCapacityMissing ? 'bg-amber-50/50 border-amber-200' : isCapacityReached ? 'bg-red-50 border-red-200' : 'bg-zinc-50 border-zinc-200'}`}>
-                      <h3 className="text-sm uppercase tracking-widest font-black text-slate-800 mb-4 flex items-center gap-2">
-                        <UserPlus className="w-5 h-5 text-black" />
-                        Añadir Alumno
-                        <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-widest">Solo Admin</span>
-                        {currentSession.capacity && (
-                          <span className={`ml-2 px-3 py-1 rounded-lg text-[10px] ${isOverCapacity ? 'bg-red-600 text-white shadow-sm' : isCapacityReached ? 'bg-red-200 text-red-900' : 'bg-zinc-200 text-zinc-600'}`}>
-                            ({currentCount} / {currentSession.capacity})
-                          </span>
-                        )}
-                      </h3>
-                      
-                      <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl mb-4 text-[11px] font-bold leading-relaxed">
-                        Esta puerta queda reservada a coordinación. Los profesores gestionan recuperaciones desde la bandeja de avisos, aceptando o rechazando solicitudes ya creadas por el alumno.
-                      </div>
-
-                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full">
-                        <div className="w-full sm:flex-1 relative">
-                          <input
-                            type="text"
-                            name="custom_search_field_no_chrome"
-                            autoComplete="new-password"
-                            placeholder={isCapacityMissing ? "Escribe la capacidad arriba primero..." : isCapacityReached ? "Aforo completo. No puedes añadir más." : "Escribe 2 letras para buscar..."}
-                            value={currentSession.newStudentName}
-                            onChange={(e) => handleSessionFieldChange('newStudentName', e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && addStudent()}
-                            disabled={isDisabledAdd}
-                            className={`w-full p-4 text-sm font-bold rounded-xl outline-none relative z-10 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                          />
-                          {!isDisabledAdd && currentSession.newStudentName.length >= 2 && (
-                            <div className="absolute left-0 right-0 top-full mt-2 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-56 overflow-y-auto overflow-x-hidden">
-                              {globalStudents.filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase())).length === 0 ? (
-                                <div className="p-4 text-sm font-bold text-zinc-500 bg-zinc-50">
-                                  No hay coincidencias. Se guardará como alumno nuevo.
-                                </div>
-                              ) : (
-                                globalStudents
-                                  .filter(s => s.name.toLowerCase().includes(currentSession.newStudentName.trim().toLowerCase()))
-                                  .map(student => (
-                                    <div
-                                      key={student.id}
-                                      onClick={() => handleSessionFieldChange('newStudentName', student.name)}
-                                      className="p-4 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 last:border-0 transition-colors flex items-center gap-3"
-                                    >
-                                      <User className="w-4 h-4 opacity-50" />
-                                      {student.name}
-                                    </div>
-                                  ))
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="w-full sm:flex-1 relative">
-                          <input
-                            type="email"
-                            placeholder="Email del alumno (Opcional)"
-                            value={currentSession.newStudentEmail}
-                            onChange={(e) => handleSessionFieldChange('newStudentEmail', e.target.value)}
-                            disabled={isDisabledAdd}
-                            className={`w-full p-4 text-sm font-bold rounded-xl outline-none transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-2 border-zinc-200 cursor-not-allowed text-zinc-400' : 'bg-white border-2 border-zinc-200 focus:border-black text-slate-800'}`}
-                          />
-                        </div>
-
-                        <div className={`flex items-center gap-3 w-full sm:w-auto px-4 py-4 rounded-xl border-2 transition-colors ${isDisabledAdd ? 'bg-zinc-100 border-zinc-200 opacity-50' : 'bg-amber-50 border-amber-200'}`}>
-                          <input
-                            type="checkbox"
-                            id="isRecovery"
-                            checked={currentSession.isAddingRecovery || false}
-                            onChange={(e) => handleSessionFieldChange('isAddingRecovery', e.target.checked)}
-                            disabled={isDisabledAdd}
-                            className="w-5 h-5 accent-amber-600 rounded cursor-pointer disabled:cursor-not-allowed"
-                          />
-                          <label htmlFor="isRecovery" className="text-xs font-black text-amber-900 uppercase tracking-widest cursor-pointer whitespace-nowrap">
-                            Recuperar
-                          </label>
-                        </div>
-
-                        <button
-                          onClick={addStudent}
-                          disabled={isDisabledAdd}
-                          className={`w-full sm:w-auto px-8 py-4 font-black text-xs tracking-widest uppercase rounded-xl transition-all shadow-sm flex justify-center ${isDisabledAdd ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800 active:scale-95'}`}
-                        >
-                          Añadir
-                        </button>
-                      </div>
-                      {currentSession.newStudentEmail && <p className="text-[10px] font-bold text-blue-600 mt-3">💡 Al poner email, el alumno podrá activar su portal automáticamente la primera vez que entre.</p>}
-                    </div>
-                  ) : (
-                    <div className="mb-8 p-5 rounded-2xl border-2 border-blue-100 bg-blue-50 text-blue-900">
-                      <h3 className="text-sm uppercase tracking-widest font-black mb-2 flex items-center gap-2">
-                        <Ticket className="w-5 h-5" /> Recuperaciones centralizadas
-                      </h3>
-                      <p className="text-xs font-bold leading-relaxed">
-                        Los alumnos de recuperación aparecerán aquí automáticamente cuando aceptes su solicitud desde la pestaña Avisos. El profesor ya no añade alumnos manualmente a la clase.
-                      </p>
-                    </div>
-                  )}
+                  <div className="mb-8 p-5 rounded-2xl border-2 border-blue-100 bg-blue-50 text-blue-900">
+                    <h3 className="text-sm uppercase tracking-widest font-black mb-2 flex items-center gap-2">
+                      <Ticket className="w-5 h-5" /> Recuperaciones y altas centralizadas
+                    </h3>
+                    <p className="text-xs font-bold leading-relaxed">
+                      Los profesores no añaden alumnos manualmente desde TeacherPortal. Las altas, ampliaciones y cambios de plaza se gestionan desde AdminPortal. Las recuperaciones aparecerán aquí automáticamente cuando aceptes su solicitud desde la pestaña Avisos.
+                    </p>
+                  </div>
 
                   <div className="space-y-6">
                     <div>
@@ -3534,9 +3447,19 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
             <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mi Disponibilidad</h2>
-                <p className="text-zinc-500 font-medium text-sm">Configura tus horas libres para que Coordinación te asigne alumnos.</p>
+                <p className="text-zinc-500 font-medium text-sm">Indica el horario total que pones a disposición del centro, incluyendo las franjas en las que ya tienes clases asignadas.</p>
               </div>
             </header>
+
+            <div className="bg-blue-50 border-2 border-blue-100 text-blue-900 rounded-3xl p-5 md:p-6 shadow-sm">
+              <h3 className="text-sm font-black uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-5 h-5" /> Cómo usar esta sección</h3>
+              <p className="text-xs md:text-sm font-bold leading-relaxed">
+                Este no es el listado de huecos que te quedan libres. Es tu disponibilidad total para trabajar en la escuela. Si ya tienes una clase dentro de una franja, esa franja también debe figurar aquí. Coordinación cruzará esta disponibilidad con tu agenda real antes de asignarte nuevas clases.
+              </p>
+              <p className="text-[11px] font-black uppercase tracking-widest text-blue-700 mt-3">
+                Puedes borrar o reorganizar franjas sin que se eliminen ni se muevan tus clases ya asignadas.
+              </p>
+            </div>
 
             <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
               <div className="p-6 md:p-8 space-y-8">
@@ -3573,7 +3496,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                           </div>
                         ) : (
                           <button onClick={() => setNewSlot({day, start:'', end:''})} className="w-full p-4 border-2 border-dashed border-zinc-200 rounded-2xl text-zinc-400 hover:text-black hover:border-black hover:bg-zinc-50 font-bold text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2">
-                            <PlusCircle className="w-4 h-4" /> Añadir Franja Libre
+                            <PlusCircle className="w-4 h-4" /> Añadir Franja Disponible
                           </button>
                         )}
                       </div>

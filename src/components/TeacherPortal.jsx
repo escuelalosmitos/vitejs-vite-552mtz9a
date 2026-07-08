@@ -13,6 +13,28 @@ const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukele
 const SEDES = ["Tarragona", "Reus"];
 const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
 
+const CLASS_RESOURCE_TYPES = [
+  { value: 'pdf', label: 'PDF' },
+  { value: 'drive_folder', label: 'Carpeta Drive' },
+  { value: 'video', label: 'Vídeo' },
+  { value: 'audio', label: 'Audio' },
+  { value: 'document', label: 'Documento' },
+  { value: 'link', label: 'Enlace' },
+  { value: 'other', label: 'Otro' }
+];
+
+const EMPTY_RESOURCE_FORM = {
+  id: null,
+  title: '',
+  url: '',
+  type: 'pdf',
+  targetScope: 'class',
+  targetStudentIds: [],
+  notes: ''
+};
+
+const getClassResourceTypeLabel = (type = 'link') => CLASS_RESOURCE_TYPES.find(t => t.value === type)?.label || 'Recurso';
+
 
 const PLANNING_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
 
@@ -542,6 +564,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [deadHourModal, setDeadHourModal] = useState(null);
   const [notesModal, setNotesModal] = useState(null);
   const [showRulesModal, setShowRulesModal] = useState(false);
+  const [showResourceForm, setShowResourceForm] = useState(false);
+  const [resourceForm, setResourceForm] = useState(EMPTY_RESOURCE_FORM);
+  const [isSavingResource, setIsSavingResource] = useState(false);
 
   const [dailyForm, setDailyForm] = useState({
     generalFeedback: '',
@@ -1901,6 +1926,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       duration: scheduledClass.duration || 60,
       notes: scheduledClass.notes || '',
       originalNotes: scheduledClass.notes || '',
+      resources: Array.isArray(scheduledClass.resources) ? scheduledClass.resources : [],
       notesUpdatedAt: scheduledClass.notesUpdatedAt || null,
       notesUpdatedBy: scheduledClass.notesUpdatedBy || '',
       notesUpdatedByName: scheduledClass.notesUpdatedByName || '',
@@ -1993,6 +2019,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           duration: latestSub.duration || 60,
           notes: latestSub.notes || '',
           originalNotes: latestSub.originalNotes || latestSub.notes || '',
+          resources: Array.isArray(latestSub.resources) ? latestSub.resources : [],
           notesUpdatedAt: latestSub.notesUpdatedAt || null,
           notesUpdatedBy: latestSub.notesUpdatedBy || '',
           notesUpdatedByName: latestSub.notesUpdatedByName || '',
@@ -2396,6 +2423,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
         duration: classData.duration || 60,
         notes: classData.notes || '',
         originalNotes: classData.originalNotes || classData.notes || '',
+        resources: Array.isArray(classData.resources) ? classData.resources : [],
         notesUpdatedAt: classData.notesUpdatedAt || null,
         notesUpdatedBy: classData.notesUpdatedBy || '',
         notesUpdatedByName: classData.notesUpdatedByName || '',
@@ -2454,6 +2482,305 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
     const saved = await saveDailyReport(true);
     if (!saved) return;
     await sendReportByEmail(dailyForm);
+  };
+
+  const getResourceAssignableStudents = (session = currentSession) => {
+    const byId = new Map();
+    const addStudent = (student = {}) => {
+      if (!student?.id) return;
+      const studentInfo = globalStudents.find(g => g.id === student.id) || {};
+      if (studentInfo?.globalStatus === 'baja') return;
+      const displayName = studentInfo?.useAlias && studentInfo?.alias
+        ? studentInfo.alias
+        : (studentInfo?.name || student.name || 'Alumno');
+      byId.set(student.id, { id: student.id, name: displayName });
+    };
+
+    (session?.formalTemplateStudents || []).forEach(addStudent);
+    (session?.students || []).forEach(addStudent);
+    (session?.nonComputableStudents || []).forEach(addStudent);
+
+    return Array.from(byId.values()).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  };
+
+  const getSafeClassResourceUrl = (url = '') => {
+    const cleanUrl = String(url || '').trim();
+    if (!/^https?:\/\//i.test(cleanUrl)) return '';
+    return cleanUrl;
+  };
+
+  const getClassResourceAudienceLabel = (resource = {}) => {
+    if (resource.targetScope === 'teachers') return 'Solo profesores';
+    if (resource.targetScope === 'students') {
+      const names = Array.isArray(resource.targetStudentNames) && resource.targetStudentNames.length > 0
+        ? resource.targetStudentNames
+        : (resource.targetStudentIds || []).map(id => globalStudents.find(s => s.id === id)?.name).filter(Boolean);
+      return names.length > 0 ? `Alumnos concretos: ${names.join(', ')}` : 'Alumnos concretos';
+    }
+    return 'Toda la clase';
+  };
+
+  const resetResourceForm = () => {
+    setResourceForm(EMPTY_RESOURCE_FORM);
+    setShowResourceForm(false);
+  };
+
+  const openNewResourceForm = () => {
+    setResourceForm(EMPTY_RESOURCE_FORM);
+    setShowResourceForm(true);
+  };
+
+  const openEditResourceForm = (resource = {}) => {
+    setResourceForm({
+      id: resource.id || null,
+      title: resource.title || '',
+      url: resource.url || '',
+      type: resource.type || 'pdf',
+      targetScope: resource.targetScope || (resource.visibleToStudents === false ? 'teachers' : 'class'),
+      targetStudentIds: Array.isArray(resource.targetStudentIds) ? resource.targetStudentIds : [],
+      notes: resource.notes || ''
+    });
+    setShowResourceForm(true);
+  };
+
+  const toggleResourceTargetStudent = (studentId) => {
+    setResourceForm(prev => {
+      const currentIds = new Set(prev.targetStudentIds || []);
+      if (currentIds.has(studentId)) currentIds.delete(studentId);
+      else currentIds.add(studentId);
+      return { ...prev, targetStudentIds: Array.from(currentIds) };
+    });
+  };
+
+  const saveClassResource = async () => {
+    if (!currentSession?.refPath || isSavingResource) return;
+
+    const title = resourceForm.title.trim();
+    const url = resourceForm.url.trim();
+    const safeUrl = getSafeClassResourceUrl(url);
+
+    if (!title) {
+      showNotification({ type: 'error', text: 'Escribe un título para el recurso.' });
+      return;
+    }
+    if (!safeUrl) {
+      showNotification({ type: 'error', text: 'Pega un enlace válido que empiece por http:// o https://.' });
+      return;
+    }
+    if (resourceForm.targetScope === 'students' && (resourceForm.targetStudentIds || []).length === 0) {
+      showNotification({ type: 'error', text: 'Selecciona al menos un alumno destinatario.' });
+      return;
+    }
+
+    setIsSavingResource(true);
+    const now = new Date().toISOString();
+    const assignableStudents = getResourceAssignableStudents(currentSession);
+    const targetStudentIds = resourceForm.targetScope === 'students' ? (resourceForm.targetStudentIds || []) : [];
+    const targetStudentNames = targetStudentIds
+      .map(id => assignableStudents.find(s => s.id === id)?.name || globalStudents.find(s => s.id === id)?.name || '')
+      .filter(Boolean);
+    const resources = Array.isArray(currentSession.resources) ? currentSession.resources : [];
+    const previousResource = resources.find(r => r.id === resourceForm.id) || {};
+
+    const nextResource = {
+      ...previousResource,
+      id: resourceForm.id || `resource-${Date.now()}`,
+      title,
+      url: safeUrl,
+      type: resourceForm.type || 'link',
+      targetScope: resourceForm.targetScope || 'class',
+      targetStudentIds,
+      targetStudentNames,
+      visibleToStudents: resourceForm.targetScope !== 'teachers',
+      notes: resourceForm.notes.trim(),
+      createdAt: previousResource.createdAt || now,
+      createdBy: previousResource.createdBy || user?.email || '',
+      createdByName: previousResource.createdByName || getTeacherName(),
+      updatedAt: now,
+      updatedBy: user?.email || '',
+      updatedByName: getTeacherName()
+    };
+
+    const nextResources = resourceForm.id
+      ? resources.map(resource => resource.id === resourceForm.id ? nextResource : resource)
+      : [...resources, nextResource];
+
+    try {
+      await updateDoc(doc(db, currentSession.refPath), { resources: nextResources });
+      setCurrentSession(prev => prev ? { ...prev, resources: nextResources } : prev);
+      resetResourceForm();
+      showNotification({ type: 'success', text: resourceForm.id ? 'Recurso actualizado.' : 'Recurso añadido a la clase.' });
+    } catch (e) {
+      console.error('Error al guardar recurso de clase', e);
+      showNotification({ type: 'error', text: 'No se pudo guardar el recurso.' });
+    } finally {
+      setIsSavingResource(false);
+    }
+  };
+
+  const deleteClassResource = async (resource = {}) => {
+    if (!currentSession?.refPath || !resource?.id || isSavingResource) return;
+    const ok = window.confirm(`¿Eliminar el recurso "${resource.title || 'sin título'}" de esta clase?`);
+    if (!ok) return;
+
+    setIsSavingResource(true);
+    const nextResources = (currentSession.resources || []).filter(r => r.id !== resource.id);
+
+    try {
+      await updateDoc(doc(db, currentSession.refPath), { resources: nextResources });
+      setCurrentSession(prev => prev ? { ...prev, resources: nextResources } : prev);
+      if (resourceForm.id === resource.id) resetResourceForm();
+      showNotification({ type: 'success', text: 'Recurso eliminado.' });
+    } catch (e) {
+      console.error('Error al eliminar recurso de clase', e);
+      showNotification({ type: 'error', text: 'No se pudo eliminar el recurso.' });
+    } finally {
+      setIsSavingResource(false);
+    }
+  };
+
+  const renderClassResourcesSection = () => {
+    if (!currentSession) return null;
+
+    const resources = Array.isArray(currentSession.resources) ? currentSession.resources : [];
+    const assignableStudents = getResourceAssignableStudents(currentSession);
+
+    return (
+      <div className="mt-8 pt-6 border-t border-zinc-100 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 flex items-center gap-2">
+              <LinkIcon className="w-4 h-4 text-black" /> Recursos de la clase
+            </h3>
+            <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
+              Enlaces de Drive, PDFs, vídeos o audios asociados a esta clase.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={openNewResourceForm}
+            className="w-full sm:w-auto bg-black text-white font-black px-4 py-3 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
+          >
+            <PlusCircle className="w-4 h-4" /> Añadir recurso
+          </button>
+        </div>
+
+        {resources.length === 0 ? (
+          <div className="p-5 rounded-2xl border-2 border-dashed border-zinc-200 bg-zinc-50 text-center">
+            <p className="text-xs font-black text-zinc-400 uppercase tracking-widest">Esta clase aún no tiene recursos añadidos.</p>
+            <p className="text-[11px] font-medium text-zinc-400 mt-1">Puedes enlazar carpetas o archivos de Google Drive sin subir nada a la plataforma.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {resources.map(resource => {
+              const safeUrl = getSafeClassResourceUrl(resource.url);
+              return (
+                <div key={resource.id} className="p-4 rounded-2xl border-2 border-zinc-100 bg-zinc-50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <span className="inline-flex items-center px-2 py-1 rounded-lg border border-zinc-200 bg-white text-zinc-600 text-[9px] font-black uppercase tracking-widest">
+                        {getClassResourceTypeLabel(resource.type)}
+                      </span>
+                      <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${resource.targetScope === 'teachers' ? 'border-zinc-200 bg-white text-zinc-500' : resource.targetScope === 'students' ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>
+                        {getClassResourceAudienceLabel(resource)}
+                      </span>
+                    </div>
+                    <p className="font-black text-slate-800 uppercase tracking-tight truncate">{resource.title}</p>
+                    {resource.notes && <p className="text-xs font-medium text-zinc-500 mt-1 whitespace-pre-wrap">{resource.notes}</p>}
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto shrink-0">
+                    {safeUrl && (
+                      <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="w-full sm:w-auto text-center bg-white border-2 border-zinc-200 text-black font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:border-black transition-colors">
+                        Abrir
+                      </a>
+                    )}
+                    <button type="button" onClick={() => openEditResourceForm(resource)} className="w-full sm:w-auto bg-zinc-100 text-zinc-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors">
+                      Editar
+                    </button>
+                    <button type="button" onClick={() => deleteClassResource(resource)} className="w-full sm:w-auto bg-red-50 text-red-600 font-black py-3 px-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-red-100 transition-colors">
+                      Eliminar
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {showResourceForm && (
+          <div className="p-5 md:p-6 bg-white border-2 border-black rounded-2xl shadow-sm space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h4 className="font-black uppercase tracking-widest text-sm text-slate-800">{resourceForm.id ? 'Editar recurso' : 'Nuevo recurso'}</h4>
+                <p className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest mt-1">Pega aquí enlaces de Drive o de cualquier recurso online.</p>
+              </div>
+              <button type="button" onClick={resetResourceForm} disabled={isSavingResource} className="p-2 rounded-xl text-zinc-400 hover:text-black hover:bg-zinc-100 disabled:opacity-50">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Título</label>
+                <input value={resourceForm.title} onChange={e => setResourceForm({ ...resourceForm, title: e.target.value })} placeholder="Ej: Acordes abiertos nivel 1" className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Tipo</label>
+                <select value={resourceForm.type} onChange={e => setResourceForm({ ...resourceForm, type: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black">
+                  {CLASS_RESOURCE_TYPES.map(type => <option key={type.value} value={type.value}>{type.label}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Enlace</label>
+              <input value={resourceForm.url} onChange={e => setResourceForm({ ...resourceForm, url: e.target.value })} placeholder="https://drive.google.com/..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black" />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Destinatario</label>
+              <select value={resourceForm.targetScope} onChange={e => setResourceForm({ ...resourceForm, targetScope: e.target.value, targetStudentIds: e.target.value === 'students' ? resourceForm.targetStudentIds : [] })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 focus:border-black">
+                <option value="class">Toda la clase · visible para alumnos</option>
+                <option value="students">Alumnos concretos · visible solo para ellos</option>
+                <option value="teachers">Solo profesores · no visible para alumnos</option>
+              </select>
+            </div>
+
+            {resourceForm.targetScope === 'students' && (
+              <div className="bg-violet-50 border-2 border-violet-100 rounded-2xl p-4">
+                <p className="text-[10px] font-black text-violet-700 uppercase tracking-widest mb-3">Selecciona destinatarios</p>
+                {assignableStudents.length === 0 ? (
+                  <p className="text-xs font-bold text-violet-800">No hay alumnos disponibles para asignar este recurso.</p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {assignableStudents.map(student => (
+                      <label key={student.id} className="flex items-center gap-3 bg-white/80 border border-violet-100 rounded-xl p-3 text-xs font-bold text-slate-700 cursor-pointer hover:border-violet-300 transition-colors">
+                        <input type="checkbox" checked={(resourceForm.targetStudentIds || []).includes(student.id)} onChange={() => toggleResourceTargetStudent(student.id)} className="w-4 h-4 accent-violet-600" />
+                        {student.name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div>
+              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest block mb-1">Notas internas opcionales</label>
+              <textarea value={resourceForm.notes} onChange={e => setResourceForm({ ...resourceForm, notes: e.target.value })} placeholder="Ej: Usar como tarea de esta semana..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-medium text-sm text-slate-800 min-h-[80px] resize-y focus:border-black" />
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-3 pt-2">
+              <button type="button" onClick={resetResourceForm} disabled={isSavingResource} className="w-full sm:w-1/2 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors disabled:opacity-50">
+                Cancelar
+              </button>
+              <button type="button" onClick={saveClassResource} disabled={isSavingResource} className="w-full sm:w-1/2 bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-colors disabled:opacity-50">
+                {isSavingResource ? 'Guardando...' : (resourceForm.id ? 'Guardar cambios' : 'Añadir recurso')}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
 
@@ -3357,19 +3684,12 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       className="w-full p-4 bg-amber-50/40 border-2 border-amber-100 rounded-xl focus:border-amber-400 outline-none text-slate-800 font-medium text-sm min-h-[100px] resize-y transition-colors" 
                     />
                   </div>
+
+                  {renderClassResourcesSection()}
                 </div>
 
                 {/* ZONA DE ALUMNOS */}
                 <div className="p-6 md:p-8">
-                  <div className="mb-8 p-5 rounded-2xl border-2 border-blue-100 bg-blue-50 text-blue-900">
-                    <h3 className="text-sm uppercase tracking-widest font-black mb-2 flex items-center gap-2">
-                      <Ticket className="w-5 h-5" /> Recuperaciones y altas centralizadas
-                    </h3>
-                    <p className="text-xs font-bold leading-relaxed">
-                      Los profesores no añaden alumnos manualmente desde TeacherPortal. Las altas, ampliaciones y cambios de plaza se gestionan desde AdminPortal. Las recuperaciones aparecerán aquí automáticamente cuando aceptes su solicitud desde la pestaña Avisos.
-                    </p>
-                  </div>
-
                   <div className="space-y-6">
                     <div>
                       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">

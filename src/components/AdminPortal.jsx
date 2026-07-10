@@ -26,7 +26,7 @@ const defaultRoomCapacities = {
   Reus: { 'Sala 1': 8, 'Sala 2': 5, 'Sala 3': 4 }
 };
 
-const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "BaterÃ­a", "Bajo", "Ukelele", "ArmÃ³nica", "SensibilizaciÃ³n", "ViolÃ­n"];
+const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 
 const PROJECTABLE_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
 const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox"]);
@@ -60,7 +60,7 @@ const isExtraServiceGestionType = (type = '') => EXTRA_SERVICE_GESTION_TYPES.has
 const WORKSHOP_STATUS_OPTIONS = [
   { value: 'draft', label: 'Borrador' },
   { value: 'published', label: 'Publicado' },
-  { value: 'registration_closed', label: 'InscripciÃ³n cerrada' },
+  { value: 'registration_closed', label: 'Inscripción cerrada' },
   { value: 'completed', label: 'Finalizado' },
   { value: 'cancelled', label: 'Cancelado' }
 ];
@@ -136,12 +136,12 @@ const TEACHER_TASK_REQUEST_TYPES = [
   { value: 'alumno', label: 'Alumno o familia' },
   { value: 'horario', label: 'Horario o agenda' },
   { value: 'incidencia', label: 'Incidencia' },
-  { value: 'otro', label: 'Otra peticiÃ³n' }
+  { value: 'otro', label: 'Otra petición' }
 ];
 
 const TEACHER_TASK_STATUS_LABELS = {
   pendiente: 'Pendiente',
-  en_revision: 'En revisiÃ³n',
+  en_revision: 'En revisión',
   en_curso: 'En curso',
   completada: 'Completada',
   resuelta: 'Resuelta',
@@ -159,20 +159,20 @@ const TEACHER_TASK_STATUS_STYLE = {
   cancelada: 'bg-zinc-50 text-zinc-500 border-zinc-200'
 };
 
-const getTeacherTaskRequestLabel = (value = 'otro') => TEACHER_TASK_REQUEST_TYPES.find(type => type.value === value)?.label || 'Otra peticiÃ³n';
+const getTeacherTaskRequestLabel = (value = 'otro') => TEACHER_TASK_REQUEST_TYPES.find(type => type.value === value)?.label || 'Otra petición';
 const getTeacherTaskStatusLabel = (status = 'pendiente') => TEACHER_TASK_STATUS_LABELS[status] || status || 'Pendiente';
 const getTeacherTaskStatusStyle = (status = 'pendiente') => TEACHER_TASK_STATUS_STYLE[status] || 'bg-zinc-50 text-zinc-600 border-zinc-200';
 
 const TEACHER_EVALUATION_QUESTIONS = [
   { key: 'clarity', label: 'El profesor explica de forma clara y comprensible.', shortLabel: 'Claridad' },
   { key: 'knowledge', label: 'Percibo que el profesor domina su instrumento y el contenido que imparte.', shortLabel: 'Dominio' },
-  { key: 'adaptation', label: 'El profesor adapta la clase a mi nivel y necesidades.', shortLabel: 'AdaptaciÃ³n' },
-  { key: 'organization', label: 'La clase estÃ¡ bien organizada y se aprovecha el tiempo.', shortLabel: 'OrganizaciÃ³n' },
-  { key: 'motivation', label: 'El profesor me motiva y me anima a mejorar.', shortLabel: 'MotivaciÃ³n' },
-  { key: 'progress', label: 'Siento que he mejorado durante el Ãºltimo trimestre.', shortLabel: 'Progreso' },
-  { key: 'homeworkClarity', label: 'SÃ© quÃ© tengo que practicar en casa.', shortLabel: 'Tareas claras' },
-  { key: 'resourcesUseful', label: 'Los materiales o recursos me resultan Ãºtiles para practicar.', shortLabel: 'Recursos' },
-  { key: 'recommendation', label: 'RecomendarÃ­a este profesor a otro alumno.', shortLabel: 'RecomendaciÃ³n' }
+  { key: 'adaptation', label: 'El profesor adapta la clase a mi nivel y necesidades.', shortLabel: 'Adaptación' },
+  { key: 'organization', label: 'La clase está bien organizada y se aprovecha el tiempo.', shortLabel: 'Organización' },
+  { key: 'motivation', label: 'El profesor me motiva y me anima a mejorar.', shortLabel: 'Motivación' },
+  { key: 'progress', label: 'Siento que he mejorado durante el último trimestre.', shortLabel: 'Progreso' },
+  { key: 'homeworkClarity', label: 'Sé qué tengo que practicar en casa.', shortLabel: 'Tareas claras' },
+  { key: 'resourcesUseful', label: 'Los materiales o recursos me resultan útiles para practicar.', shortLabel: 'Recursos' },
+  { key: 'recommendation', label: 'Recomendaría este profesor a otro alumno.', shortLabel: 'Recomendación' }
 ];
 
 const normalizeEvaluationRating = (value) => {
@@ -188,7 +188,7 @@ const averageNumbers = (values = []) => {
 
 const formatAverageScore = (value) => Number.isFinite(value)
   ? value.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-  : 'â€”';
+  : '—';
 
 
 const formatDateSpanish = (dateString) => {
@@ -320,7 +320,7 @@ const getClassEndTime = (time, duration = 60) => {
   return range ? formatMinutesToTime(range.end) : '';
 };
 
-const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'MiÃ©rcoles', 'Jueves', 'Viernes', 'SÃ¡bado'][dayIndex];
+const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
 const parseLocalDateString = (dateString) => {
   const [yearRaw, monthRaw, dayRaw] = String(dateString || '').split('-').map(Number);
@@ -549,7 +549,7 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
     const details = form.details.trim();
 
     if (!title) {
-      alert('Rellena al menos el tÃ­tulo de la tarea.');
+      alert('Rellena al menos el título de la tarea.');
       return;
     }
 
@@ -581,7 +581,7 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
           createdFrom: 'admin_portal'
         });
 
-        alert(`âœ… Encargo enviado a ${teacherName}. AparecerÃ¡ en su TeacherPortal, pestaÃ±a Tareas > Encargos.`);
+        alert(`✅ Encargo enviado a ${teacherName}. Aparecerá en su TeacherPortal, pestaña Tareas > Encargos.`);
         onClose?.();
         return;
       }
@@ -600,10 +600,10 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
       };
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
 
-      alert('âœ… Tarea manual aÃ±adida a la bandeja.');
+      alert('✅ Tarea manual añadida a la bandeja.');
       onClose?.();
     } catch (error) {
-      alert('âŒ Error al crear la tarea manual: ' + error.message);
+      alert('❌ Error al crear la tarea manual: ' + error.message);
     } finally {
       setSaving(false);
     }
@@ -647,16 +647,16 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
           {isTeacherAssignment ? (
             <>
               <div className="bg-violet-50 border border-violet-100 text-violet-900 p-4 rounded-2xl text-xs font-bold leading-relaxed">
-                Este encargo no entra en la bandeja de alumnos. Se enviarÃ¡ a la pestaÃ±a <b>Tareas</b> del profesor elegido, donde podrÃ¡ marcarlo en curso, completarlo o rechazarlo con motivo.
+                Este encargo no entra en la bandeja de alumnos. Se enviará a la pestaña <b>Tareas</b> del profesor elegido, donde podrá marcarlo en curso, completarlo o rechazarlo con motivo.
               </div>
 
               <div>
                 <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Profesor destinatario *</label>
                 <select value={form.teacherName} onChange={e => setForm(prev => ({ ...prev, teacherName: e.target.value }))} className="w-full p-3 bg-violet-50 border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-600">
                   <option value="">Selecciona profesor...</option>
-                  {teacherOptions.map(teacherName => <option key={teacherName} value={teacherName}>{teacherName} Â· {getTeacherEmail(teacherName)}</option>)}
+                  {teacherOptions.map(teacherName => <option key={teacherName} value={teacherName}>{teacherName} · {getTeacherEmail(teacherName)}</option>)}
                 </select>
-                {teacherOptions.length === 0 && <p className="text-[10px] text-red-500 font-bold mt-1">No hay profesores configurados. AÃ±Ã¡delos en ajustes o crea antes una clase con profesor.</p>}
+                {teacherOptions.length === 0 && <p className="text-[10px] text-red-500 font-bold mt-1">No hay profesores configurados. Añádelos en ajustes o crea antes una clase con profesor.</p>}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -668,7 +668,7 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
                   </select>
                 </div>
                 <div>
-                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Fecha lÃ­mite</label>
+                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Fecha límite</label>
                   <input type="date" value={form.dueDate} onChange={e => setForm(prev => ({ ...prev, dueDate: e.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
                 </div>
               </div>
@@ -681,18 +681,18 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
           )}
 
           <div>
-            <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">TÃ­tulo *</label>
+            <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Título *</label>
             <input type="text" value={form.title} onChange={e => setForm(prev => ({ ...prev, title: e.target.value }))} placeholder={isTeacherAssignment ? 'Ej: Revisar cables de Sala 2' : 'Ej: Cambiar a Hugo de grupo'} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
           </div>
 
           <div>
             <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalles <span className="text-zinc-300">(opcional)</span></label>
-            <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder={isTeacherAssignment ? 'Explica claramente quÃ© necesitas que haga el profesor...' : 'Opcional. AÃ±ade contexto si el tÃ­tulo no basta...'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
+            <textarea value={form.details} onChange={e => setForm(prev => ({ ...prev, details: e.target.value }))} placeholder={isTeacherAssignment ? 'Explica claramente qué necesitas que haga el profesor...' : 'Opcional. Añade contexto si el título no basta...'} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[130px] resize-y text-sm font-medium text-slate-700" />
           </div>
         </div>
 
         <button onClick={handleCreate} disabled={saving || !form.title.trim() || (isTeacherAssignment && !form.teacherName)} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2">
-          {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> {isTeacherAssignment ? 'Enviar encargo al profesor' : 'AÃ±adir a Bandeja'}</>}
+          {saving ? 'Guardando...' : <><Plus className="w-4 h-4"/> {isTeacherAssignment ? 'Enviar encargo al profesor' : 'Añadir a Bandeja'}</>}
         </button>
       </div>
     </div>
@@ -760,14 +760,14 @@ const TemporaryRelocationModalOverlay = ({
   const currentRelocations = student?.id ? getStudentTemporaryRelocations(student.id) : [];
 
   const cancelRelocation = async (relocation) => {
-    if (!window.confirm(`Â¿Cancelar esta recolocaciÃ³n temporal de ${student?.name || 'alumno'}?\n\n${relocation.sourceClassLine || relocation.sourceClassId}\nâ†’ ${relocation.targetClassLine || relocation.targetClassId}`)) return;
+    if (!window.confirm(`¿Cancelar esta recolocación temporal de ${student?.name || 'alumno'}?\n\n${relocation.sourceClassLine || relocation.sourceClassId}\n→ ${relocation.targetClassLine || relocation.targetClassId}`)) return;
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocation.id), {
         status: 'cancelled',
         cancelledAt: new Date().toISOString(),
         cancelledBy: user?.email || 'admin'
       });
-      alert('âœ… RecolocaciÃ³n temporal cancelada.');
+      alert('✅ Recolocación temporal cancelada.');
     } catch (e) {
       alert('Error al cancelar: ' + e.message);
     }
@@ -791,7 +791,7 @@ const TemporaryRelocationModalOverlay = ({
     );
 
     if (overlappingSameSource) {
-      return alert(`Este alumno ya tiene una recolocaciÃ³n temporal de esta misma plaza que se solapa con esas fechas:\n\n${overlappingSameSource.sourceClassLine || overlappingSameSource.sourceClassId}\nâ†’ ${overlappingSameSource.targetClassLine || overlappingSameSource.targetClassId}\n${formatDateSpanish(overlappingSameSource.from)} - ${formatDateSpanish(overlappingSameSource.until)}`);
+      return alert(`Este alumno ya tiene una recolocación temporal de esta misma plaza que se solapa con esas fechas:\n\n${overlappingSameSource.sourceClassLine || overlappingSameSource.sourceClassId}\n→ ${overlappingSameSource.targetClassLine || overlappingSameSource.targetClassId}\n${formatDateSpanish(overlappingSameSource.from)} - ${formatDateSpanish(overlappingSameSource.until)}`);
     }
 
     const overlappingSameTarget = (temporaryRelocations || []).find(rel =>
@@ -802,13 +802,13 @@ const TemporaryRelocationModalOverlay = ({
     );
 
     if (overlappingSameTarget) {
-      return alert(`Este alumno ya estÃ¡ recolocado temporalmente en esta misma clase de destino durante fechas que se solapan:\n\n${overlappingSameTarget.sourceClassLine || overlappingSameTarget.sourceClassId}\nâ†’ ${overlappingSameTarget.targetClassLine || overlappingSameTarget.targetClassId}\n${formatDateSpanish(overlappingSameTarget.from)} - ${formatDateSpanish(overlappingSameTarget.until)}`);
+      return alert(`Este alumno ya está recolocado temporalmente en esta misma clase de destino durante fechas que se solapan:\n\n${overlappingSameTarget.sourceClassLine || overlappingSameTarget.sourceClassId}\n→ ${overlappingSameTarget.targetClassLine || overlappingSameTarget.targetClassId}\n${formatDateSpanish(overlappingSameTarget.from)} - ${formatDateSpanish(overlappingSameTarget.until)}`);
     }
 
     const formalTargetCount = getCommercialCommittedSeatCount(targetClass);
     const targetCapacity = parseInt(targetClass.capacity || 0, 10);
     if (targetCapacity > 0 && formalTargetCount >= targetCapacity) {
-      const ok = window.confirm(`âš ï¸ La clase destino ya estÃ¡ completa formalmente (${formalTargetCount}/${targetCapacity}).\n\nLa recolocaciÃ³n NO ocuparÃ¡ plaza formal, pero sÃ­ aÃ±adirÃ¡ una persona real a la sala durante ese periodo.\n\nÂ¿Continuar igualmente?`);
+      const ok = window.confirm(`⚠️ La clase destino ya está completa formalmente (${formalTargetCount}/${targetCapacity}).\n\nLa recolocación NO ocupará plaza formal, pero sí añadirá una persona real a la sala durante ese periodo.\n\n¿Continuar igualmente?`);
       if (!ok) return;
     }
 
@@ -842,8 +842,8 @@ const TemporaryRelocationModalOverlay = ({
       if (sourceClass.teacher) {
         await sendTeacherNotification({
           teacherName: sourceClass.teacher,
-          subject: `RecolocaciÃ³n temporal: ${displayName} deja tu clase temporalmente`,
-          body: `Hola ${sourceClass.teacher},\n\nDesde coordinaciÃ³n te informamos de que ${displayName} serÃ¡ recolocado temporalmente fuera de tu clase durante este periodo:\n\n${periodLine}\n\nClase de origen:\nÂ· ${formatClassLine(sourceClass)}\n\nClase temporal de destino:\nÂ· ${formatClassLine(targetClass)}\n\nDurante ese periodo no aparecerÃ¡ en tu lista de asistencia. Su plaza formal sigue reservada en tu clase.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+          subject: `Recolocación temporal: ${displayName} deja tu clase temporalmente`,
+          body: `Hola ${sourceClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} será recolocado temporalmente fuera de tu clase durante este periodo:\n\n${periodLine}\n\nClase de origen:\n· ${formatClassLine(sourceClass)}\n\nClase temporal de destino:\n· ${formatClassLine(targetClass)}\n\nDurante ese periodo no aparecerá en tu lista de asistencia. Su plaza formal sigue reservada en tu clase.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
       }
 
@@ -851,20 +851,20 @@ const TemporaryRelocationModalOverlay = ({
         await sendTeacherNotification({
           teacherName: targetClass.teacher,
           subject: `Alumno recolocado temporalmente: ${displayName}`,
-          body: `Hola ${targetClass.teacher},\n\nDesde coordinaciÃ³n te informamos de que ${displayName} aparecerÃ¡ temporalmente en tu lista de asistencia durante este periodo:\n\n${periodLine}\n\nClase temporal:\nÂ· ${formatClassLine(targetClass)}\n\nAparecerÃ¡ marcado como alumno recolocado temporalmente. No ocupa plaza formal en tu grupo, pero debes pasarle lista con normalidad.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+          body: `Hola ${targetClass.teacher},\n\nDesde coordinación te informamos de que ${displayName} aparecerá temporalmente en tu lista de asistencia durante este periodo:\n\n${periodLine}\n\nClase temporal:\n· ${formatClassLine(targetClass)}\n\nAparecerá marcado como alumno recolocado temporalmente. No ocupa plaza formal en tu grupo, pero debes pasarle lista con normalidad.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
       }
 
       await sendStudentNotification({
         studentEmail: student.email || '',
-        subject: `RecolocaciÃ³n temporal de clase - Escuela Los Mitos`,
-        body: `Hola ${student.name},\n\nTe confirmamos tu recolocaciÃ³n temporal de clase para el periodo ${periodLine}.\n\nDurante este periodo tu clase serÃ¡:\nÂ· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher || 'Profesor/a'}\n\nFuera de ese periodo volverÃ¡s a figurar en tu clase habitual:\nÂ· ${formatClassLine(sourceClass)}\n\nTu plaza habitual sigue reservada.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+        subject: `Recolocación temporal de clase - Escuela Los Mitos`,
+        body: `Hola ${student.name},\n\nTe confirmamos tu recolocación temporal de clase para el periodo ${periodLine}.\n\nDurante este periodo tu clase será:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher || 'Profesor/a'}\n\nFuera de ese periodo volverás a figurar en tu clase habitual:\n· ${formatClassLine(sourceClass)}\n\nTu plaza habitual sigue reservada.\n\nUn saludo,\nCoordinación Los Mitos.`
       });
 
-      alert('âœ… RecolocaciÃ³n temporal creada. TeacherPortal y StudentPortal la aplicarÃ¡n durante el periodo indicado.');
+      alert('✅ Recolocación temporal creada. TeacherPortal y StudentPortal la aplicarán durante el periodo indicado.');
       onClose?.();
     } catch (e) {
-      alert('Error al crear la recolocaciÃ³n temporal: ' + e.message);
+      alert('Error al crear la recolocación temporal: ' + e.message);
     } finally {
       setSaving(false);
     }
@@ -878,16 +878,16 @@ const TemporaryRelocationModalOverlay = ({
         <button onClick={onClose} disabled={saving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
         <div className="flex items-center gap-3 text-slate-800 mb-2">
           <ArrowRightLeft className="w-8 h-8 text-violet-600" />
-          <h2 className="text-xl font-black uppercase tracking-tight">RecolocaciÃ³n temporal</h2>
+          <h2 className="text-xl font-black uppercase tracking-tight">Recolocación temporal</h2>
         </div>
-        <p className="text-sm font-bold text-zinc-500 mb-6">{student.name}{student.alias ? ` Â· ${student.alias}` : ''}</p>
+        <p className="text-sm font-bold text-zinc-500 mb-6">{student.name}{student.alias ? ` · ${student.alias}` : ''}</p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
           <div>
             <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Clase origen formal</label>
             <select value={sourceClassId} onChange={e => { setSourceClassId(e.target.value); setTargetClassId(''); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500">
               {assignedClasses.length === 0 && <option value="">Sin clase formal</option>}
-              {assignedClasses.map(c => <option key={c.id} value={c.id}>{formatClassLine(c)} Â· Prof. {c.teacher}</option>)}
+              {assignedClasses.map(c => <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher}</option>)}
             </select>
             <p className="text-[10px] text-zinc-400 font-bold mt-1">Esta plaza no se libera.</p>
           </div>
@@ -897,10 +897,10 @@ const TemporaryRelocationModalOverlay = ({
               <option value="">Selecciona destino...</option>
               {possibleTargets.map(c => {
                 const formalCount = getCommercialCommittedSeatCount(c);
-                return <option key={c.id} value={c.id}>{formatClassLine(c)} Â· Prof. {c.teacher} Â· {formalCount}/{c.capacity || '?'}</option>;
+                return <option key={c.id} value={c.id}>{formatClassLine(c)} · Prof. {c.teacher} · {formalCount}/{c.capacity || '?'}</option>;
               })}
             </select>
-            <p className="text-[10px] text-zinc-400 font-bold mt-1">No ocuparÃ¡ plaza formal en el destino.</p>
+            <p className="text-[10px] text-zinc-400 font-bold mt-1">No ocupará plaza formal en el destino.</p>
           </div>
         </div>
 
@@ -917,7 +917,7 @@ const TemporaryRelocationModalOverlay = ({
 
         <div className="mb-6">
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Notas internas opcionales</label>
-          <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej: cambio temporal por obras, conciliaciÃ³n, prueba de horario..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500 min-h-[90px]" />
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Ej: cambio temporal por obras, conciliación, prueba de horario..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500 min-h-[90px]" />
         </div>
 
         {currentRelocations.length > 0 && (
@@ -928,7 +928,7 @@ const TemporaryRelocationModalOverlay = ({
                 <div key={rel.id} className="flex items-start justify-between gap-3 bg-white border border-zinc-200 rounded-xl p-3">
                   <div>
                     <p className="text-xs font-black text-slate-800">{formatDateSpanish(rel.from)} - {formatDateSpanish(rel.until)}</p>
-                    <p className="text-[10px] font-bold text-zinc-500 leading-relaxed">{rel.sourceClassLine || rel.sourceClassId} â†’ {rel.targetClassLine || rel.targetClassId}</p>
+                    <p className="text-[10px] font-bold text-zinc-500 leading-relaxed">{rel.sourceClassLine || rel.sourceClassId} → {rel.targetClassLine || rel.targetClassId}</p>
                     <p className={`mt-1 text-[9px] font-black uppercase tracking-widest ${isTemporaryRelocationActiveForDate(rel) ? 'text-emerald-600' : 'text-zinc-400'}`}>{isTemporaryRelocationActiveForDate(rel) ? 'Activa hoy' : 'No activa hoy'}</p>
                   </div>
                   <button onClick={() => cancelRelocation(rel)} disabled={saving} className="px-3 py-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest disabled:opacity-50">Cancelar</button>
@@ -939,7 +939,7 @@ const TemporaryRelocationModalOverlay = ({
         )}
 
         <button onClick={createRelocation} disabled={saving || assignedClasses.length === 0} className="w-full bg-violet-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-violet-700 transition-all shadow-md disabled:opacity-50">
-          {saving ? 'Creando recolocaciÃ³n...' : 'Crear recolocaciÃ³n temporal'}
+          {saving ? 'Creando recolocación...' : 'Crear recolocación temporal'}
         </button>
       </div>
     </div>
@@ -1057,24 +1057,24 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
   const validateWorkshop = (workshopData = form, targetStatus = workshopData.status) => {
     if (!String(workshopData.title || '').trim()) return 'Escribe el nombre del taller.';
     if (targetStatus === 'draft') return '';
-    if (!String(workshopData.shortDescription || '').trim()) return 'Escribe una descripciÃ³n breve para la tarjeta de Extras.';
-    if (!String(workshopData.description || '').trim()) return 'Escribe la descripciÃ³n completa del taller.';
+    if (!String(workshopData.shortDescription || '').trim()) return 'Escribe una descripción breve para la tarjeta de Extras.';
+    if (!String(workshopData.description || '').trim()) return 'Escribe la descripción completa del taller.';
     if (!workshopData.sessions?.length || workshopData.sessions.some(session => !session.date || !session.startTime || !session.endTime)) return 'Completa la fecha y el horario de todas las sesiones.';
-    if (workshopData.sessions.some(session => session.endTime <= session.startTime)) return 'La hora de finalizaciÃ³n debe ser posterior a la de inicio.';
-    if (!workshopData.registrationDeadline) return 'Indica la fecha lÃ­mite de inscripciÃ³n.';
+    if (workshopData.sessions.some(session => session.endTime <= session.startTime)) return 'La hora de finalización debe ser posterior a la de inicio.';
+    if (!workshopData.registrationDeadline) return 'Indica la fecha límite de inscripción.';
     const firstSessionStart = [...workshopData.sessions].sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`))[0];
-    if (firstSessionStart && workshopData.registrationDeadline >= `${firstSessionStart.date}T${firstSessionStart.startTime}`) return 'La inscripciÃ³n debe cerrarse antes de que empiece la primera sesiÃ³n.';
-    if (!workshopData.unlimitedCapacity && (!Number.isFinite(Number(workshopData.capacity)) || Number(workshopData.capacity) < 1)) return 'Indica un nÃºmero de plazas vÃ¡lido.';
-    if (workshopData.minimumParticipants && Number(workshopData.minimumParticipants) < 1) return 'El mÃ­nimo de participantes debe ser mayor que cero.';
-    if (!workshopData.unlimitedCapacity && workshopData.minimumParticipants && Number(workshopData.minimumParticipants) > Number(workshopData.capacity)) return 'El mÃ­nimo de participantes no puede superar el nÃºmero de plazas.';
-    if (workshopData.priceType === 'paid' && (!Number.isFinite(Number(workshopData.price)) || Number(workshopData.price) < 0)) return 'Indica un precio vÃ¡lido.';
-    if (['sede', 'instrument', 'teacher', 'class'].includes(workshopData.audienceType) && !workshopData.audienceValue) return 'Completa a quÃ© alumnos va dirigido el taller.';
+    if (firstSessionStart && workshopData.registrationDeadline >= `${firstSessionStart.date}T${firstSessionStart.startTime}`) return 'La inscripción debe cerrarse antes de que empiece la primera sesión.';
+    if (!workshopData.unlimitedCapacity && (!Number.isFinite(Number(workshopData.capacity)) || Number(workshopData.capacity) < 1)) return 'Indica un número de plazas válido.';
+    if (workshopData.minimumParticipants && Number(workshopData.minimumParticipants) < 1) return 'El mínimo de participantes debe ser mayor que cero.';
+    if (!workshopData.unlimitedCapacity && workshopData.minimumParticipants && Number(workshopData.minimumParticipants) > Number(workshopData.capacity)) return 'El mínimo de participantes no puede superar el número de plazas.';
+    if (workshopData.priceType === 'paid' && (!Number.isFinite(Number(workshopData.price)) || Number(workshopData.price) < 0)) return 'Indica un precio válido.';
+    if (['sede', 'instrument', 'teacher', 'class'].includes(workshopData.audienceType) && !workshopData.audienceValue) return 'Completa a qué alumnos va dirigido el taller.';
     if (workshopData.audienceType === 'manual' && !(workshopData.manualStudentIds || []).length) return 'Selecciona al menos un alumno.';
-    if (workshopData.cancellationMode === 'allowed_until' && !workshopData.cancellationDeadline) return 'Indica hasta cuÃ¡ndo puede cancelar el alumno.';
+    if (workshopData.cancellationMode === 'allowed_until' && !workshopData.cancellationDeadline) return 'Indica hasta cuándo puede cancelar el alumno.';
     if (workshopData.imageUrl && !/^https?:\/\//i.test(String(workshopData.imageUrl).trim())) return 'La imagen debe ser una URL que empiece por http:// o https://.';
     if (workshopData.resourceUrl && !/^https?:\/\//i.test(String(workshopData.resourceUrl).trim())) return 'El enlace adjunto debe empezar por http:// o https://.';
     if ((workshopData.questions || []).some(question => !String(question.label || '').trim())) return 'Todas las preguntas adicionales deben tener texto.';
-    if ((workshopData.questions || []).some(question => question.type === 'choice' && !String(question.optionsText || '').trim() && !(question.options || []).length)) return 'AÃ±ade las opciones de respuesta de las preguntas de selecciÃ³n.';
+    if ((workshopData.questions || []).some(question => question.type === 'choice' && !String(question.optionsText || '').trim() && !(question.options || []).length)) return 'Añade las opciones de respuesta de las preguntas de selección.';
     return '';
   };
 
@@ -1140,7 +1140,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
       resetForm();
     } catch (error) {
       console.error(error);
-      alert('No se ha podido guardar el taller. Revisa la conexiÃ³n y los permisos de Firestore.');
+      alert('No se ha podido guardar el taller. Revisa la conexión y los permisos de Firestore.');
     } finally {
       setSaving(false);
     }
@@ -1164,8 +1164,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
 
   const deleteWorkshop = async workshop => {
     const linkedRegistrations = getWorkshopRegistrations(workshop.id);
-    if (linkedRegistrations.length > 0) return alert('Este taller ya tiene inscripciones. CancÃ©lalo para conservar el historial; no puede eliminarse.');
-    if (!window.confirm(`Â¿Eliminar definitivamente el taller â€œ${workshop.title}â€?`)) return;
+    if (linkedRegistrations.length > 0) return alert('Este taller ya tiene inscripciones. Cancélalo para conservar el historial; no puede eliminarse.');
+    if (!window.confirm(`¿Eliminar definitivamente el taller “${workshop.title}”?`)) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'workshops', workshop.id));
     } catch (error) {
@@ -1222,7 +1222,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
       });
     } catch (error) {
       console.error(error);
-      alert(error.message === 'WORKSHOP_FULL' ? 'No se puede confirmar: el taller ya no tiene plazas libres.' : 'No se ha podido actualizar la inscripciÃ³n.');
+      alert(error.message === 'WORKSHOP_FULL' ? 'No se puede confirmar: el taller ya no tiene plazas libres.' : 'No se ha podido actualizar la inscripción.');
     }
   };
 
@@ -1232,7 +1232,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
     if (form.audienceType === 'teacher') return settings.teachersList || [];
     if (form.audienceType === 'class') return allClasses
       .filter(clase => !isPunctualClass(clase))
-      .map(clase => ({ value: clase.id, label: `${clase.sede || ''} Â· ${clase.subject || clase.instrument || 'Clase'} Â· ${clase.teacher || ''} Â· ${clase.time || ''}` }))
+      .map(clase => ({ value: clase.id, label: `${clase.sede || ''} · ${clase.subject || clase.instrument || 'Clase'} · ${clase.teacher || ''} · ${clase.time || ''}` }))
       .sort((a, b) => a.label.localeCompare(b.label));
     return [];
   }, [allClasses, form.audienceType, settings.instrumentos, settings.teachersList]);
@@ -1242,7 +1242,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
     if (workshop.audienceType === 'manual') return `${workshop.manualStudentIds?.length || 0} alumnos seleccionados`;
     if (workshop.audienceType === 'class' && workshop.audienceLabel) return `Clase: ${workshop.audienceLabel}`;
     const labels = { sede: 'Sede', instrument: 'Instrumento', teacher: 'Profesor', class: 'Clase' };
-    return `${labels[workshop.audienceType] || 'Destinatarios'}: ${workshop.audienceValue || 'â€”'}`;
+    return `${labels[workshop.audienceType] || 'Destinatarios'}: ${workshop.audienceValue || '—'}`;
   };
 
   const filteredWorkshops = useMemo(() => workshops.filter(workshop => {
@@ -1264,7 +1264,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
       <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Talleres</h2>
-          <p className="text-zinc-500 font-medium text-sm">Crea talleres de duraciÃ³n determinada y controla sus inscripciones.</p>
+          <p className="text-zinc-500 font-medium text-sm">Crea talleres de duración determinada y controla sus inscripciones.</p>
         </div>
         <button onClick={openNewWorkshop} className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center gap-2 shadow-md">
           <PlusCircle className="w-4 h-4"/> Nuevo taller
@@ -1283,40 +1283,40 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
 
           <div className="p-5 md:p-7 space-y-7">
             <section>
-              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><FileText className="w-4 h-4 text-violet-600"/> InformaciÃ³n principal</h4>
+              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><FileText className="w-4 h-4 text-violet-600"/> Información principal</h4>
               <div className="grid md:grid-cols-2 gap-4">
-                <div className="md:col-span-2"><label className={labelClass}>Nombre del taller *</label><input className={fieldClass} value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Ej. IniciaciÃ³n a la improvisaciÃ³n" /></div>
-                <div className="md:col-span-2"><label className={labelClass}>DescripciÃ³n breve para la tarjeta *</label><input className={fieldClass} maxLength={180} value={form.shortDescription} onChange={e => setForm({ ...form, shortDescription: e.target.value })} placeholder="Una o dos frases que verÃ¡ el alumno en Extras"/><p className="text-[10px] text-zinc-400 font-bold mt-1 text-right">{form.shortDescription.length}/180</p></div>
-                <div className="md:col-span-2"><label className={labelClass}>DescripciÃ³n completa *</label><textarea className={`${fieldClass} min-h-[130px] resize-y`} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Objetivos, contenido y dinÃ¡mica del taller"/></div>
+                <div className="md:col-span-2"><label className={labelClass}>Nombre del taller *</label><input className={fieldClass} value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Ej. Iniciación a la improvisación" /></div>
+                <div className="md:col-span-2"><label className={labelClass}>Descripción breve para la tarjeta *</label><input className={fieldClass} maxLength={180} value={form.shortDescription} onChange={e => setForm({ ...form, shortDescription: e.target.value })} placeholder="Una o dos frases que verá el alumno en Extras"/><p className="text-[10px] text-zinc-400 font-bold mt-1 text-right">{form.shortDescription.length}/180</p></div>
+                <div className="md:col-span-2"><label className={labelClass}>Descripción completa *</label><textarea className={`${fieldClass} min-h-[130px] resize-y`} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Objetivos, contenido y dinámica del taller"/></div>
                 <div className="md:col-span-2"><label className={labelClass}>URL de imagen de portada</label><input type="url" className={fieldClass} value={form.imageUrl} onChange={e => setForm({ ...form, imageUrl: e.target.value })} placeholder="https://..."/></div>
               </div>
             </section>
 
             <section className="border-t border-zinc-100 pt-6">
-              <div className="flex items-center justify-between gap-3 mb-4"><h4 className="font-black uppercase tracking-widest text-xs text-slate-800 flex items-center gap-2"><Calendar className="w-4 h-4 text-violet-600"/> Sesiones *</h4><button onClick={addSession} className="text-[10px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 px-3 py-2 rounded-lg hover:bg-violet-100"><Plus className="w-3 h-3 inline mr-1"/> AÃ±adir sesiÃ³n</button></div>
+              <div className="flex items-center justify-between gap-3 mb-4"><h4 className="font-black uppercase tracking-widest text-xs text-slate-800 flex items-center gap-2"><Calendar className="w-4 h-4 text-violet-600"/> Sesiones *</h4><button onClick={addSession} className="text-[10px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 px-3 py-2 rounded-lg hover:bg-violet-100"><Plus className="w-3 h-3 inline mr-1"/> Añadir sesión</button></div>
               <div className="space-y-3">
                 {form.sessions.map((session, index) => (
                   <div key={session.id} className="grid grid-cols-1 sm:grid-cols-[auto_1fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50 border border-zinc-200 p-4 rounded-2xl">
                     <span className="text-[10px] font-black uppercase tracking-widest text-violet-700 sm:pb-3">{index + 1}</span>
                     <div><label className={labelClass}>Fecha</label><input type="date" className={fieldClass} value={session.date} onChange={e => updateSession(session.id, 'date', e.target.value)}/></div>
                     <div><label className={labelClass}>Inicio</label><input type="time" className={fieldClass} value={session.startTime} onChange={e => updateSession(session.id, 'startTime', e.target.value)}/></div>
-                    <div><label className={labelClass}>FinalizaciÃ³n</label><input type="time" className={fieldClass} value={session.endTime} onChange={e => updateSession(session.id, 'endTime', e.target.value)}/></div>
+                    <div><label className={labelClass}>Finalización</label><input type="time" className={fieldClass} value={session.endTime} onChange={e => updateSession(session.id, 'endTime', e.target.value)}/></div>
                     <button onClick={() => removeSession(session.id)} disabled={form.sessions.length === 1} className="p-3 bg-white text-red-500 rounded-xl border border-zinc-200 disabled:opacity-25"><Trash2 className="w-4 h-4"/></button>
                   </div>
                 ))}
               </div>
               <div className="grid md:grid-cols-2 gap-4 mt-4">
-                <div><label className={labelClass}>Fecha y hora lÃ­mite de inscripciÃ³n *</label><input type="datetime-local" className={fieldClass} value={form.registrationDeadline} onChange={e => setForm({ ...form, registrationDeadline: e.target.value })}/></div>
+                <div><label className={labelClass}>Fecha y hora límite de inscripción *</label><input type="datetime-local" className={fieldClass} value={form.registrationDeadline} onChange={e => setForm({ ...form, registrationDeadline: e.target.value })}/></div>
                 <div><label className={labelClass}>Mostrar en Extras desde</label><input type="datetime-local" className={fieldClass} value={form.publishAt} onChange={e => setForm({ ...form, publishAt: e.target.value })}/></div>
               </div>
             </section>
 
             <section className="border-t border-zinc-100 pt-6">
-              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><MapPin className="w-4 h-4 text-violet-600"/> Lugar e imparticiÃ³n</h4>
+              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><MapPin className="w-4 h-4 text-violet-600"/> Lugar e impartición</h4>
               <div className="grid md:grid-cols-3 gap-4">
                 <div><label className={labelClass}>Lugar *</label><select className={fieldClass} value={form.locationType} onChange={e => setForm({ ...form, locationType: e.target.value, room: '', externalLocation: '' })}><option value="Tarragona">Tarragona</option><option value="Reus">Reus</option><option value="both">Ambas sedes</option><option value="online">Online</option><option value="other">Otro lugar</option></select></div>
                 {['Tarragona', 'Reus'].includes(form.locationType) && <div><label className={labelClass}>Aula o espacio</label><select className={fieldClass} value={form.room} onChange={e => setForm({ ...form, room: e.target.value })}><option value="">Por determinar</option>{SALAS.map(room => <option key={room} value={room}>{room}</option>)}</select></div>}
-                {form.locationType === 'other' && <div><label className={labelClass}>DirecciÃ³n o lugar</label><input className={fieldClass} value={form.externalLocation} onChange={e => setForm({ ...form, externalLocation: e.target.value })}/></div>}
+                {form.locationType === 'other' && <div><label className={labelClass}>Dirección o lugar</label><input className={fieldClass} value={form.externalLocation} onChange={e => setForm({ ...form, externalLocation: e.target.value })}/></div>}
                 <div><label className={labelClass}>Profesor o responsable</label><input list="workshop-teachers" className={fieldClass} value={form.instructor} onChange={e => setForm({ ...form, instructor: e.target.value })} placeholder="Profesor interno o externo"/><datalist id="workshop-teachers">{(settings.teachersList || []).map(teacher => <option key={teacher} value={teacher}/>)}</datalist></div>
               </div>
             </section>
@@ -1324,26 +1324,26 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
             <section className="border-t border-zinc-100 pt-6 grid lg:grid-cols-2 gap-7">
               <div>
                 <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><Users className="w-4 h-4 text-violet-600"/> Plazas</h4>
-                <label className="flex items-center gap-3 bg-zinc-50 border border-zinc-200 p-3 rounded-xl mb-3 cursor-pointer"><input type="checkbox" checked={form.unlimitedCapacity} onChange={e => setForm({ ...form, unlimitedCapacity: e.target.checked })} className="accent-violet-600"/><span className="text-xs font-black uppercase tracking-wider">Sin lÃ­mite de plazas</span></label>
-                <div className="grid grid-cols-2 gap-3"><div><label className={labelClass}>Plazas mÃ¡ximas</label><input type="number" min="1" disabled={form.unlimitedCapacity} className={fieldClass} value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })}/></div><div><label className={labelClass}>MÃ­nimo para realizarlo</label><input type="number" min="1" className={fieldClass} value={form.minimumParticipants} onChange={e => setForm({ ...form, minimumParticipants: e.target.value })} placeholder="Opcional"/></div></div>
+                <label className="flex items-center gap-3 bg-zinc-50 border border-zinc-200 p-3 rounded-xl mb-3 cursor-pointer"><input type="checkbox" checked={form.unlimitedCapacity} onChange={e => setForm({ ...form, unlimitedCapacity: e.target.checked })} className="accent-violet-600"/><span className="text-xs font-black uppercase tracking-wider">Sin límite de plazas</span></label>
+                <div className="grid grid-cols-2 gap-3"><div><label className={labelClass}>Plazas máximas</label><input type="number" min="1" disabled={form.unlimitedCapacity} className={fieldClass} value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })}/></div><div><label className={labelClass}>Mínimo para realizarlo</label><input type="number" min="1" className={fieldClass} value={form.minimumParticipants} onChange={e => setForm({ ...form, minimumParticipants: e.target.value })} placeholder="Opcional"/></div></div>
                 <label className="flex items-center gap-3 mt-3 cursor-pointer"><input type="checkbox" checked={form.waitlistEnabled} onChange={e => setForm({ ...form, waitlistEnabled: e.target.checked })} className="accent-violet-600"/><span className="text-xs font-bold text-zinc-700">Permitir lista de espera cuando se llene</span></label>
               </div>
               <div>
                 <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><DollarSign className="w-4 h-4 text-violet-600"/> Precio y cobro</h4>
-                <div className="grid grid-cols-2 gap-3"><div><label className={labelClass}>Tipo</label><select className={fieldClass} value={form.priceType} onChange={e => setForm({ ...form, priceType: e.target.value })}><option value="free">Gratuito</option><option value="paid">De pago</option></select></div>{form.priceType === 'paid' && <div><label className={labelClass}>Importe (â‚¬)</label><input type="number" min="0" step="0.01" className={fieldClass} value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}/></div>}</div>
-                {form.priceType === 'paid' && <div className="mt-3"><label className={labelClass}>Forma de cobro</label><select className={fieldClass} value={form.paymentMethod} onChange={e => setForm({ ...form, paymentMethod: e.target.value })}><option value="next_debit">Incluir en la prÃ³xima domiciliaciÃ³n</option><option value="manual_admin">Cobro manual por AdministraciÃ³n</option><option value="external_payment">Pago externo</option></select></div>}
+                <div className="grid grid-cols-2 gap-3"><div><label className={labelClass}>Tipo</label><select className={fieldClass} value={form.priceType} onChange={e => setForm({ ...form, priceType: e.target.value })}><option value="free">Gratuito</option><option value="paid">De pago</option></select></div>{form.priceType === 'paid' && <div><label className={labelClass}>Importe (€)</label><input type="number" min="0" step="0.01" className={fieldClass} value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}/></div>}</div>
+                {form.priceType === 'paid' && <div className="mt-3"><label className={labelClass}>Forma de cobro</label><select className={fieldClass} value={form.paymentMethod} onChange={e => setForm({ ...form, paymentMethod: e.target.value })}><option value="next_debit">Incluir en la próxima domiciliación</option><option value="manual_admin">Cobro manual por Administración</option><option value="external_payment">Pago externo</option></select></div>}
                 <div className="mt-3"><label className={labelClass}>Nota sobre el precio</label><input className={fieldClass} value={form.priceNote} onChange={e => setForm({ ...form, priceNote: e.target.value })} placeholder="Ej. Material incluido"/></div>
               </div>
             </section>
 
             <section className="border-t border-zinc-100 pt-6">
-              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><Target className="w-4 h-4 text-violet-600"/> Destinatarios e inscripciÃ³n</h4>
+              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><Target className="w-4 h-4 text-violet-600"/> Destinatarios e inscripción</h4>
               <div className="grid md:grid-cols-3 gap-4">
-                <div><label className={labelClass}>Â¿A quiÃ©n se ofrece?</label><select className={fieldClass} value={form.audienceType} onChange={e => setForm({ ...form, audienceType: e.target.value, audienceValue: '', manualStudentIds: [] })}><option value="all">Todos los alumnos</option><option value="sede">Solo una sede</option><option value="instrument">Solo un instrumento</option><option value="teacher">Alumnos de un profesor</option><option value="class">Una clase concreta</option><option value="manual">SelecciÃ³n manual</option></select></div>
-                {['sede', 'instrument', 'teacher', 'class'].includes(form.audienceType) && <div className="md:col-span-2"><label className={labelClass}>SelecciÃ³n *</label><select className={fieldClass} value={form.audienceValue} onChange={e => setForm({ ...form, audienceValue: e.target.value })}><option value="">Selecciona...</option>{audienceOptions.map(option => typeof option === 'string' ? <option key={option} value={option}>{option}</option> : <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>}
-                <div><label className={labelClass}>ConfirmaciÃ³n</label><select className={fieldClass} value={form.registrationMode} onChange={e => setForm({ ...form, registrationMode: e.target.value })}><option value="automatic">AutomÃ¡tica si hay plaza</option><option value="manual_review">Pendiente de revisiÃ³n</option></select></div>
-                <div><label className={labelClass}>CancelaciÃ³n del alumno</label><select className={fieldClass} value={form.cancellationMode} onChange={e => setForm({ ...form, cancellationMode: e.target.value })}><option value="contact_admin">Debe contactar con AdministraciÃ³n</option><option value="allowed_until">Puede cancelar hasta una fecha</option><option value="not_allowed">No puede cancelar desde Student</option></select></div>
-                {form.cancellationMode === 'allowed_until' && <div><label className={labelClass}>LÃ­mite de cancelaciÃ³n</label><input type="datetime-local" className={fieldClass} value={form.cancellationDeadline} onChange={e => setForm({ ...form, cancellationDeadline: e.target.value })}/></div>}
+                <div><label className={labelClass}>¿A quién se ofrece?</label><select className={fieldClass} value={form.audienceType} onChange={e => setForm({ ...form, audienceType: e.target.value, audienceValue: '', manualStudentIds: [] })}><option value="all">Todos los alumnos</option><option value="sede">Solo una sede</option><option value="instrument">Solo un instrumento</option><option value="teacher">Alumnos de un profesor</option><option value="class">Una clase concreta</option><option value="manual">Selección manual</option></select></div>
+                {['sede', 'instrument', 'teacher', 'class'].includes(form.audienceType) && <div className="md:col-span-2"><label className={labelClass}>Selección *</label><select className={fieldClass} value={form.audienceValue} onChange={e => setForm({ ...form, audienceValue: e.target.value })}><option value="">Selecciona...</option>{audienceOptions.map(option => typeof option === 'string' ? <option key={option} value={option}>{option}</option> : <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>}
+                <div><label className={labelClass}>Confirmación</label><select className={fieldClass} value={form.registrationMode} onChange={e => setForm({ ...form, registrationMode: e.target.value })}><option value="automatic">Automática si hay plaza</option><option value="manual_review">Pendiente de revisión</option></select></div>
+                <div><label className={labelClass}>Cancelación del alumno</label><select className={fieldClass} value={form.cancellationMode} onChange={e => setForm({ ...form, cancellationMode: e.target.value })}><option value="contact_admin">Debe contactar con Administración</option><option value="allowed_until">Puede cancelar hasta una fecha</option><option value="not_allowed">No puede cancelar desde Student</option></select></div>
+                {form.cancellationMode === 'allowed_until' && <div><label className={labelClass}>Límite de cancelación</label><input type="datetime-local" className={fieldClass} value={form.cancellationDeadline} onChange={e => setForm({ ...form, cancellationDeadline: e.target.value })}/></div>}
               </div>
               {form.audienceType === 'manual' && <div className="mt-4 bg-zinc-50 border border-zinc-200 rounded-2xl p-4"><p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Selecciona alumnos ({form.manualStudentIds.length})</p><div className="max-h-56 overflow-y-auto grid sm:grid-cols-2 lg:grid-cols-3 gap-2 pr-1">{students.map(student => <label key={student.id} className="flex items-center gap-2 bg-white border border-zinc-200 rounded-xl p-3 cursor-pointer"><input type="checkbox" checked={form.manualStudentIds.includes(student.id)} onChange={() => toggleManualStudent(student.id)} className="accent-violet-600"/><span className="text-xs font-bold text-slate-700 truncate">{student.name}</span></label>)}</div></div>}
             </section>
@@ -1351,14 +1351,14 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
             <button onClick={() => setAdvancedOpen(!advancedOpen)} className="w-full flex items-center justify-between p-4 bg-zinc-50 border border-zinc-200 rounded-2xl text-xs font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-100"><span>Opciones avanzadas</span>{advancedOpen ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button>
 
             {advancedOpen && <section className="space-y-6">
-              <div className="grid md:grid-cols-4 gap-4"><div><label className={labelClass}>Edad mÃ­nima</label><input type="number" min="0" className={fieldClass} value={form.ageMin} onChange={e => setForm({ ...form, ageMin: e.target.value })}/></div><div><label className={labelClass}>Edad mÃ¡xima</label><input type="number" min="0" className={fieldClass} value={form.ageMax} onChange={e => setForm({ ...form, ageMax: e.target.value })}/></div><div><label className={labelClass}>Nivel</label><select className={fieldClass} value={form.level} onChange={e => setForm({ ...form, level: e.target.value })}><option value="all">Todos los niveles</option><option value="beginner">IniciaciÃ³n</option><option value="intermediate">Intermedio</option><option value="advanced">Avanzado</option><option value="custom">Personalizado</option></select></div>{form.level === 'custom' && <div><label className={labelClass}>Nivel personalizado</label><input className={fieldClass} value={form.customLevel} onChange={e => setForm({ ...form, customLevel: e.target.value })}/></div>}</div>
-              <div><div className="flex items-center justify-between mb-3"><label className={labelClass}>Preguntas adicionales</label><button onClick={addQuestion} className="text-[10px] font-black uppercase tracking-widest text-violet-700"><Plus className="w-3 h-3 inline"/> AÃ±adir pregunta</button></div><div className="space-y-3">{form.questions.map(question => <div key={question.id} className="grid md:grid-cols-[1fr_150px_auto_auto] gap-3 items-center bg-zinc-50 border border-zinc-200 p-3 rounded-xl"><input className={fieldClass} value={question.label} onChange={e => updateQuestion(question.id, 'label', e.target.value)} placeholder="Pregunta para el alumno"/><select className={fieldClass} value={question.type} onChange={e => updateQuestion(question.id, 'type', e.target.value)}><option value="text">Texto libre</option><option value="choice">SelecciÃ³n</option></select><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={question.required} onChange={e => updateQuestion(question.id, 'required', e.target.checked)} className="accent-violet-600"/> Obligatoria</label><button onClick={() => setForm(prev => ({ ...prev, questions: prev.questions.filter(item => item.id !== question.id) }))} className="p-3 text-red-500"><Trash2 className="w-4 h-4"/></button>{question.type === 'choice' && <input className={`${fieldClass} md:col-span-4`} value={question.optionsText || ''} onChange={e => updateQuestion(question.id, 'optionsText', e.target.value)} placeholder="Opciones separadas por comas"/>}</div>)}</div></div>
-              <div className="grid md:grid-cols-2 gap-4"><div><label className={labelClass}>QuÃ© debe traer el alumno</label><textarea className={`${fieldClass} min-h-[90px]`} value={form.whatToBring} onChange={e => setForm({ ...form, whatToBring: e.target.value })}/></div><div><label className={labelClass}>Observaciones importantes</label><textarea className={`${fieldClass} min-h-[90px]`} value={form.importantNotes} onChange={e => setForm({ ...form, importantNotes: e.target.value })}/></div><div><label className={labelClass}>Contacto</label><input className={fieldClass} value={form.contact} onChange={e => setForm({ ...form, contact: e.target.value })} placeholder="Correo o persona responsable"/></div><div><label className={labelClass}>Documento o enlace adjunto</label><input type="url" className={fieldClass} value={form.resourceUrl} onChange={e => setForm({ ...form, resourceUrl: e.target.value })} placeholder="https://..."/></div></div>
+              <div className="grid md:grid-cols-4 gap-4"><div><label className={labelClass}>Edad mínima</label><input type="number" min="0" className={fieldClass} value={form.ageMin} onChange={e => setForm({ ...form, ageMin: e.target.value })}/></div><div><label className={labelClass}>Edad máxima</label><input type="number" min="0" className={fieldClass} value={form.ageMax} onChange={e => setForm({ ...form, ageMax: e.target.value })}/></div><div><label className={labelClass}>Nivel</label><select className={fieldClass} value={form.level} onChange={e => setForm({ ...form, level: e.target.value })}><option value="all">Todos los niveles</option><option value="beginner">Iniciación</option><option value="intermediate">Intermedio</option><option value="advanced">Avanzado</option><option value="custom">Personalizado</option></select></div>{form.level === 'custom' && <div><label className={labelClass}>Nivel personalizado</label><input className={fieldClass} value={form.customLevel} onChange={e => setForm({ ...form, customLevel: e.target.value })}/></div>}</div>
+              <div><div className="flex items-center justify-between mb-3"><label className={labelClass}>Preguntas adicionales</label><button onClick={addQuestion} className="text-[10px] font-black uppercase tracking-widest text-violet-700"><Plus className="w-3 h-3 inline"/> Añadir pregunta</button></div><div className="space-y-3">{form.questions.map(question => <div key={question.id} className="grid md:grid-cols-[1fr_150px_auto_auto] gap-3 items-center bg-zinc-50 border border-zinc-200 p-3 rounded-xl"><input className={fieldClass} value={question.label} onChange={e => updateQuestion(question.id, 'label', e.target.value)} placeholder="Pregunta para el alumno"/><select className={fieldClass} value={question.type} onChange={e => updateQuestion(question.id, 'type', e.target.value)}><option value="text">Texto libre</option><option value="choice">Selección</option></select><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={question.required} onChange={e => updateQuestion(question.id, 'required', e.target.checked)} className="accent-violet-600"/> Obligatoria</label><button onClick={() => setForm(prev => ({ ...prev, questions: prev.questions.filter(item => item.id !== question.id) }))} className="p-3 text-red-500"><Trash2 className="w-4 h-4"/></button>{question.type === 'choice' && <input className={`${fieldClass} md:col-span-4`} value={question.optionsText || ''} onChange={e => updateQuestion(question.id, 'optionsText', e.target.value)} placeholder="Opciones separadas por comas"/>}</div>)}</div></div>
+              <div className="grid md:grid-cols-2 gap-4"><div><label className={labelClass}>Qué debe traer el alumno</label><textarea className={`${fieldClass} min-h-[90px]`} value={form.whatToBring} onChange={e => setForm({ ...form, whatToBring: e.target.value })}/></div><div><label className={labelClass}>Observaciones importantes</label><textarea className={`${fieldClass} min-h-[90px]`} value={form.importantNotes} onChange={e => setForm({ ...form, importantNotes: e.target.value })}/></div><div><label className={labelClass}>Contacto</label><input className={fieldClass} value={form.contact} onChange={e => setForm({ ...form, contact: e.target.value })} placeholder="Correo o persona responsable"/></div><div><label className={labelClass}>Documento o enlace adjunto</label><input type="url" className={fieldClass} value={form.resourceUrl} onChange={e => setForm({ ...form, resourceUrl: e.target.value })} placeholder="https://..."/></div></div>
             </section>}
 
             <section className="border-t border-zinc-100 pt-6">
               <div className="grid md:grid-cols-2 gap-4"><div><label className={labelClass}>Estado inicial</label><select className={fieldClass} value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div><label className="flex items-center gap-3 md:mt-6 bg-amber-50 border border-amber-200 p-3 rounded-xl cursor-pointer"><input type="checkbox" checked={form.featured} onChange={e => setForm({ ...form, featured: e.target.checked })} className="accent-amber-500"/><span className="text-xs font-black uppercase tracking-wider text-amber-900">Destacar en Extras</span></label></div>
-              {form.status === 'cancelled' && <div className="mt-4"><label className={labelClass}>Mensaje de cancelaciÃ³n</label><textarea className={fieldClass} value={form.cancellationMessage} onChange={e => setForm({ ...form, cancellationMessage: e.target.value })}/></div>}
+              {form.status === 'cancelled' && <div className="mt-4"><label className={labelClass}>Mensaje de cancelación</label><textarea className={fieldClass} value={form.cancellationMessage} onChange={e => setForm({ ...form, cancellationMessage: e.target.value })}/></div>}
             </section>
 
             <div className="flex flex-col sm:flex-row justify-end gap-3 border-t border-zinc-100 pt-6"><button onClick={resetForm} className="px-5 py-3 bg-zinc-100 text-zinc-600 rounded-xl font-black uppercase tracking-widest text-[10px]">Cancelar</button><button onClick={saveWorkshop} disabled={saving} className="px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 disabled:opacity-50"><Save className="w-4 h-4"/>{saving ? 'Guardando...' : editingId ? 'Guardar cambios' : 'Crear taller'}</button></div>
@@ -1366,7 +1366,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
         </div>
       )}
 
-      <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex flex-col sm:flex-row gap-3"><div className="relative flex-1"><Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"/><input className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Buscar taller..."/></div><select className="px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-black text-[10px] uppercase tracking-widest" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="active">En gestiÃ³n</option><option value="all">Todos</option>{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+      <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex flex-col sm:flex-row gap-3"><div className="relative flex-1"><Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"/><input className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Buscar taller..."/></div><select className="px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-black text-[10px] uppercase tracking-widest" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="active">En gestión</option><option value="all">Todos</option>{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
 
       <div className="space-y-4">
         {filteredWorkshops.length === 0 && <div className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-10 text-center"><PartyPopper className="w-9 h-9 text-zinc-300 mx-auto mb-3"/><p className="font-black uppercase tracking-widest text-xs text-zinc-400">No hay talleres en esta vista</p></div>}
@@ -1378,13 +1378,13 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
           return <article key={workshop.id} className={`bg-white border rounded-2xl shadow-sm overflow-hidden ${workshop.featured ? 'border-amber-300 ring-1 ring-amber-100' : 'border-zinc-200'}`}>
             <div className="p-5">
               <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2 mb-2"><span className={`px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_STATUS_STYLE[workshop.status || 'draft']}`}>{getWorkshopStatusLabel(workshop.status)}</span>{workshop.featured && <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline"/> Destacado</span>}</div><h3 className="font-black text-lg text-slate-900 leading-tight">{workshop.title}</h3><p className="text-sm text-zinc-500 mt-1">{workshop.shortDescription}</p><div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 text-[10px] font-black uppercase tracking-wider text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5 text-violet-600"/>{firstSession ? `${formatDateSpanish(firstSession.date)} Â· ${firstSession.startTime}` : 'Sin sesiÃ³n'}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-violet-600"/>{workshop.locationType === 'both' ? 'Ambas sedes' : workshop.locationType === 'online' ? 'Online' : workshop.locationType === 'other' ? workshop.externalLocation : `${workshop.locationType}${workshop.room ? ` Â· ${workshop.room}` : ''}`}</span><span className="flex items-center gap-1"><Target className="w-3.5 h-3.5 text-violet-600"/>{getAudienceLabel(workshop)}</span><span className="flex items-center gap-1"><DollarSign className="w-3.5 h-3.5 text-violet-600"/>{workshop.priceType === 'free' ? 'Gratuito' : `${Number(workshop.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} â‚¬`}</span></div></div>
+                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2 mb-2"><span className={`px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_STATUS_STYLE[workshop.status || 'draft']}`}>{getWorkshopStatusLabel(workshop.status)}</span>{workshop.featured && <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline"/> Destacado</span>}</div><h3 className="font-black text-lg text-slate-900 leading-tight">{workshop.title}</h3><p className="text-sm text-zinc-500 mt-1">{workshop.shortDescription}</p><div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 text-[10px] font-black uppercase tracking-wider text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5 text-violet-600"/>{firstSession ? `${formatDateSpanish(firstSession.date)} · ${firstSession.startTime}` : 'Sin sesión'}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-violet-600"/>{workshop.locationType === 'both' ? 'Ambas sedes' : workshop.locationType === 'online' ? 'Online' : workshop.locationType === 'other' ? workshop.externalLocation : `${workshop.locationType}${workshop.room ? ` · ${workshop.room}` : ''}`}</span><span className="flex items-center gap-1"><Target className="w-3.5 h-3.5 text-violet-600"/>{getAudienceLabel(workshop)}</span><span className="flex items-center gap-1"><DollarSign className="w-3.5 h-3.5 text-violet-600"/>{workshop.priceType === 'free' ? 'Gratuito' : `${Number(workshop.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`}</span></div></div>
                 <div className="flex flex-wrap lg:justify-end gap-2 shrink-0"><select value={workshop.status || 'draft'} onChange={e => changeWorkshopStatus(workshop, e.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-[9px] font-black uppercase tracking-widest">{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><button onClick={() => editWorkshop(workshop)} className="p-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg" title="Editar"><Pencil className="w-4 h-4"/></button><button onClick={() => deleteWorkshop(workshop)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg" title="Eliminar"><Trash2 className="w-4 h-4"/></button></div>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-5"><div className="bg-emerald-50 p-3 rounded-xl"><span className="block text-xl font-black text-emerald-700">{summary.confirmed}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Confirmadas</span></div><div className="bg-amber-50 p-3 rounded-xl"><span className="block text-xl font-black text-amber-700">{summary.pending}</span><span className="text-[9px] font-black uppercase tracking-widest text-amber-600">Pendientes</span></div><div className="bg-blue-50 p-3 rounded-xl"><span className="block text-xl font-black text-blue-700">{summary.waitlist}</span><span className="text-[9px] font-black uppercase tracking-widest text-blue-600">En espera</span></div><div className="bg-zinc-50 p-3 rounded-xl"><span className="block text-xl font-black text-slate-800">{workshop.unlimitedCapacity ? 'âˆž' : Math.max(0, Number(workshop.capacity || 0) - summary.confirmed)}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Plazas libres</span></div></div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-5"><div className="bg-emerald-50 p-3 rounded-xl"><span className="block text-xl font-black text-emerald-700">{summary.confirmed}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Confirmadas</span></div><div className="bg-amber-50 p-3 rounded-xl"><span className="block text-xl font-black text-amber-700">{summary.pending}</span><span className="text-[9px] font-black uppercase tracking-widest text-amber-600">Pendientes</span></div><div className="bg-blue-50 p-3 rounded-xl"><span className="block text-xl font-black text-blue-700">{summary.waitlist}</span><span className="text-[9px] font-black uppercase tracking-widest text-blue-600">En espera</span></div><div className="bg-zinc-50 p-3 rounded-xl"><span className="block text-xl font-black text-slate-800">{workshop.unlimitedCapacity ? '∞' : Math.max(0, Number(workshop.capacity || 0) - summary.confirmed)}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Plazas libres</span></div></div>
               <button onClick={() => setExpandedWorkshopId(isExpanded ? null : workshop.id)} className="w-full mt-4 py-2.5 border-t border-zinc-100 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-violet-700 flex items-center justify-center gap-2">Inscripciones ({workshopRegistrations.length}) {isExpanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button>
             </div>
-            {isExpanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{workshopRegistrations.length === 0 ? <p className="text-center text-xs font-bold text-zinc-400 py-4">TodavÃ­a no hay inscripciones.</p> : workshopRegistrations.map(registration => <div key={registration.id} className="bg-white border border-zinc-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm text-slate-800">{registration.studentName || students.find(student => student.id === registration.studentId)?.name || 'Alumno'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status] || registration.status} Â· {registration.createdAt ? formatDateSpanish(registration.createdAt) : 'Sin fecha'}</p></div><div className="flex gap-2">{registration.status !== 'confirmed' && <button onClick={() => updateRegistrationStatus(registration, 'confirmed')} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600 hover:text-white"><Check className="w-3 h-3 inline"/> Confirmar</button>}{!['rejected', 'cancelled'].includes(registration.status) && <button onClick={() => updateRegistrationStatus(registration, 'rejected')} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white"><X className="w-3 h-3 inline"/> Rechazar</button>}</div></div>)}</div>}
+            {isExpanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{workshopRegistrations.length === 0 ? <p className="text-center text-xs font-bold text-zinc-400 py-4">Todavía no hay inscripciones.</p> : workshopRegistrations.map(registration => <div key={registration.id} className="bg-white border border-zinc-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm text-slate-800">{registration.studentName || students.find(student => student.id === registration.studentId)?.name || 'Alumno'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status] || registration.status} · {registration.createdAt ? formatDateSpanish(registration.createdAt) : 'Sin fecha'}</p></div><div className="flex gap-2">{registration.status !== 'confirmed' && <button onClick={() => updateRegistrationStatus(registration, 'confirmed')} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600 hover:text-white"><Check className="w-3 h-3 inline"/> Confirmar</button>}{!['rejected', 'cancelled'].includes(registration.status) && <button onClick={() => updateRegistrationStatus(registration, 'rejected')} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white"><X className="w-3 h-3 inline"/> Rechazar</button>}</div></div>)}</div>}
           </article>;
         })}
       </div>
@@ -1444,7 +1444,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
   const [archProjectionMode, setArchProjectionMode] = useState('actual'); // 'actual' o 'proyeccion'
   const [archDate, setArchDate] = useState(getTodayLocalString());
-  const [archDay, setArchDay] = useState('1'); // Compatibilidad interna para creaciÃ³n de clases
+  const [archDay, setArchDay] = useState('1'); // Compatibilidad interna para creación de clases
   const [archTime, setArchTime] = useState('17:00');
   const [archSede, setArchSede] = useState('Tarragona');
   const [informeSubTab, setInformeSubTab] = useState('resumen'); // 'resumen', 'sedes', 'instrumentos', 'profesores', 'semaforo'
@@ -1701,20 +1701,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const getScheduledClassStartAfterEndDate = (endDate) => addDaysToLocalDateString(endDate, 1);
 
-  const promptScheduledClassEndDate = (gestion = {}, actionLabel = 'este trÃ¡mite', silentMode = false) => {
+  const promptScheduledClassEndDate = (gestion = {}, actionLabel = 'este trámite', silentMode = false) => {
     const defaultEndDate = getDefaultScheduledClassEndDate(gestion);
     if (silentMode) return defaultEndDate;
 
     const defaultStartDate = getScheduledClassStartAfterEndDate(defaultEndDate);
     const answer = window.prompt(
-      `Fecha efectiva de fin para ${actionLabel}.\n\nPor defecto se aplica al Ãºltimo dÃ­a del mes administrativo: ${formatDateSpanish(defaultEndDate)}.\nDesde ${formatDateSpanish(defaultStartDate)} dejarÃ¡ de aparecer en Student/Teacher.\n\nPuedes cambiarla si necesitas una fecha especial. Formato: AAAA-MM-DD`,
+      `Fecha efectiva de fin para ${actionLabel}.\n\nPor defecto se aplica al último día del mes administrativo: ${formatDateSpanish(defaultEndDate)}.\nDesde ${formatDateSpanish(defaultStartDate)} dejará de aparecer en Student/Teacher.\n\nPuedes cambiarla si necesitas una fecha especial. Formato: AAAA-MM-DD`,
       defaultEndDate
     );
 
     if (answer === null) return null;
     const cleanDate = normalizeGestionDateString(answer);
     if (!cleanDate) {
-      alert('Fecha no vÃ¡lida. Usa formato AAAA-MM-DD, por ejemplo 2026-06-30.');
+      alert('Fecha no válida. Usa formato AAAA-MM-DD, por ejemplo 2026-06-30.');
       return null;
     }
     return cleanDate;
@@ -1831,7 +1831,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const twoMonths = buildMaintenancePeriodByMonths(defaultStart, 2);
 
     const answer = window.prompt(
-      `Esta solicitud de mantenimiento es antigua y no indica duraciÃ³n.\n\nElige la duraciÃ³n que quieres aplicar:\n\n1 = ${formatMaintenancePeriodLine(oneMonth)} Â· 15â‚¬\n2 = ${formatMaintenancePeriodLine(twoMonths)} Â· 30â‚¬\n\nEscribe 1 o 2:`,
+      `Esta solicitud de mantenimiento es antigua y no indica duración.\n\nElige la duración que quieres aplicar:\n\n1 = ${formatMaintenancePeriodLine(oneMonth)} · 15€\n2 = ${formatMaintenancePeriodLine(twoMonths)} · 30€\n\nEscribe 1 o 2:`,
       '1'
     );
 
@@ -1839,7 +1839,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     const months = parseMaintenanceMonths(answer);
     if (![1, 2].includes(months)) {
-      alert('DuraciÃ³n no vÃ¡lida. Escribe 1 para un mes o 2 para dos meses.');
+      alert('Duración no válida. Escribe 1 para un mes o 2 para dos meses.');
       return null;
     }
 
@@ -1855,8 +1855,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const monthlyFee = Number(period.monthlyFee || MAINTENANCE_MONTHLY_FEE);
     const totalFee = Number(period.totalFee || period.maintenanceFee || (months * monthlyFee));
 
-    if (months <= 1) return `${monthlyFee}â‚¬`;
-    return `${monthlyFee}â‚¬/mes (${totalFee}â‚¬ en total para ${months} meses)`;
+    if (months <= 1) return `${monthlyFee}€`;
+    return `${monthlyFee}€/mes (${totalFee}€ en total para ${months} meses)`;
   };
 
   const getMaintenanceStartFromAdminMonthInput = (value = '') => {
@@ -1882,7 +1882,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const promptManualMaintenancePeriod = (studentName = 'alumno') => {
     const defaultStart = nextMonthStartStr;
     const monthInput = window.prompt(
-      `Crear mantenimiento temporal manual para ${studentName}.\n\nIndica el mes de inicio en formato AAAA-MM.\nDÃ©jalo vacÃ­o para el prÃ³ximo mes administrativo.\n\nEjemplo: 2026-07`,
+      `Crear mantenimiento temporal manual para ${studentName}.\n\nIndica el mes de inicio en formato AAAA-MM.\nDéjalo vacío para el próximo mes administrativo.\n\nEjemplo: 2026-07`,
       defaultStart.substring(0, 7)
     );
 
@@ -1890,7 +1890,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     const start = getMaintenanceStartFromAdminMonthInput(monthInput);
     if (!start) {
-      alert('Mes no vÃ¡lido. Usa el formato AAAA-MM, por ejemplo 2026-07.');
+      alert('Mes no válido. Usa el formato AAAA-MM, por ejemplo 2026-07.');
       return null;
     }
 
@@ -1898,7 +1898,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const twoMonths = buildMaintenancePeriodByMonths(start, 2);
 
     const answer = window.prompt(
-      `Â¿DuraciÃ³n del mantenimiento de ${studentName}?\n\n1 = ${formatMaintenancePeriodLine(oneMonth)} Â· 15â‚¬\n2 = ${formatMaintenancePeriodLine(twoMonths)} Â· 30â‚¬\n\nEscribe 1 o 2:`,
+      `¿Duración del mantenimiento de ${studentName}?\n\n1 = ${formatMaintenancePeriodLine(oneMonth)} · 15€\n2 = ${formatMaintenancePeriodLine(twoMonths)} · 30€\n\nEscribe 1 o 2:`,
       '1'
     );
 
@@ -1906,7 +1906,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     const months = parseMaintenanceMonths(answer);
     if (![1, 2].includes(months)) {
-      alert('DuraciÃ³n no vÃ¡lida. Escribe 1 para un mes o 2 para dos meses.');
+      alert('Duración no válida. Escribe 1 para un mes o 2 para dos meses.');
       return null;
     }
 
@@ -1962,7 +1962,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const getCommercialCommittedSeatCount = (clase = {}) => getCommercialSeatDataForClass(clase).committedCount;
   const getCommercialFreeSpots = (clase = {}) => getCommercialSeatDataForClass(clase).freeSpots;
 
-  // LÃ“GICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
+  // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const businessIntelligence = useMemo(() => {
     let totalIngresosClases = 0;
     let costeTotalProfesores = 0;
@@ -2102,11 +2102,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     };
 
     const getBIClassStatusLabel = ({ activeCount, maintenanceCount, futureStartCount, relocatedCount }) => {
-      if (activeCount > 0) return relocatedCount > 0 ? 'OPERATIVA Â· incluye recolocaciÃ³n temporal' : 'OPERATIVA';
-      if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA Â· reservas / mantenimiento';
-      if (maintenanceCount > 0) return 'HIBERNADA Â· solo mantenimiento';
-      if (futureStartCount > 0) return 'HIBERNADA Â· inicio futuro';
-      return 'HIBERNADA Â· sin alumnos activos';
+      if (activeCount > 0) return relocatedCount > 0 ? 'OPERATIVA · incluye recolocación temporal' : 'OPERATIVA';
+      if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA · reservas / mantenimiento';
+      if (maintenanceCount > 0) return 'HIBERNADA · solo mantenimiento';
+      if (futureStartCount > 0) return 'HIBERNADA · inicio futuro';
+      return 'HIBERNADA · sin alumnos activos';
     };
 
     recurringClassesOnly.forEach(c => {
@@ -2393,7 +2393,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const formatClassLine = (clase) => {
     if (!clase) return '';
-    return `${clase.subject || 'Clase'} Â· ${getDayName(clase.dayOfWeek)} Â· ${clase.time}h Â· ${clase.sede || 'Sede no indicada'}${clase.sala ? ` Â· ${clase.sala}` : ''}`;
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
   };
 
   const getGestionSourceClass = (gestion = {}, classes = allClasses) => {
@@ -2478,7 +2478,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const cleanSubject = cleanEmailSubject(subject);
 
     if (!cleanTo || !cleanSubject || !body) {
-      console.warn('Correo automÃ¡tico omitido por falta de datos', { type, to, subject });
+      console.warn('Correo automático omitido por falta de datos', { type, to, subject });
       return false;
     }
 
@@ -2491,7 +2491,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       });
       return true;
     } catch (e) {
-      console.log('Fallo correo automÃ¡tico', e);
+      console.log('Fallo correo automático', e);
       return false;
     }
   };
@@ -2507,8 +2507,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (!cleanStudentEmail) {
       await sendNotificationEmail({
         to: 'admin@escuelalosmitos.com',
-        subject: `Aviso interno: alumno sin email para confirmaciÃ³n`,
-        body: `No se ha enviado una confirmaciÃ³n al alumno porque no hay email vÃ¡lido asociado.
+        subject: `Aviso interno: alumno sin email para confirmación`,
+        body: `No se ha enviado una confirmación al alumno porque no hay email válido asociado.
 
 Asunto previsto:
 ${subject}
@@ -2622,9 +2622,9 @@ ${body}`,
 
   const buildAnnouncementEmailBody = ({ title, content, url }, targetLabel) => {
     const cleanUrl = normalizeAnnouncementUrl(url);
-    return `Nuevo aviso en el TablÃ³n de Escuela Los Mitos
+    return `Nuevo aviso en el Tablón de Escuela Los Mitos
 
-TÃTULO:
+TÍTULO:
 ${title}
 
 DESTINATARIOS:
@@ -2634,8 +2634,8 @@ AVISO:
 ${content}${cleanUrl ? `\n\nENLACE:\n${cleanUrl}` : ''}
 
 ---
-Este correo corresponde a una comunicaciÃ³n operativa del servicio educativo de Escuela Los Mitos.
-TambiÃ©n puedes consultar los avisos publicados accediendo a tu portal.`;
+Este correo corresponde a una comunicación operativa del servicio educativo de Escuela Los Mitos.
+También puedes consultar los avisos publicados accediendo a tu portal.`;
   };
 
   const sendAnnouncementEmailToTargets = async ({ announcement, emailOptions = announceEmailOptions }) => {
@@ -2643,12 +2643,12 @@ TambiÃ©n puedes consultar los avisos publicados accediendo a tu portal.`;
 
     const targets = getAnnouncementEmailTargets(emailOptions);
     if (targets.length === 0) {
-      alert('No se ha enviado email porque el filtro elegido no tiene destinatarios con email vÃ¡lido.');
+      alert('No se ha enviado email porque el filtro elegido no tiene destinatarios con email válido.');
       return { requested: false, count: 0 };
     }
 
     const targetLabel = getAnnouncementTargetLabel(emailOptions);
-    const subject = `[TablÃ³n Escuela Los Mitos] ${announcement.title}`;
+    const subject = `[Tablón Escuela Los Mitos] ${announcement.title}`;
     const body = buildAnnouncementEmailBody(announcement, targetLabel);
 
     const requested = await sendNotificationEmail({
@@ -2710,7 +2710,7 @@ TambiÃ©n puedes consultar los avisos publicados accediendo a tu portal.`;
 
   const getBajaScopeLabel = (gestion = {}) => {
     if ((gestion.type || '') !== 'baja') return '';
-    return isTotalBajaGestion(gestion) ? 'Baja total Â· todas las clases' : 'Baja parcial Â· plaza concreta';
+    return isTotalBajaGestion(gestion) ? 'Baja total · todas las clases' : 'Baja parcial · plaza concreta';
   };
 
   const getGestionClassLine = (gestion = {}) => {
@@ -2735,8 +2735,8 @@ TambiÃ©n puedes consultar los avisos publicados accediendo a tu portal.`;
 
     const typeLabel = getGestionTypeLabel(gestion.type || 'tarea_manual');
     const phaseLabel = phase === 'ejecutada'
-      ? (status === 'rechazado' ? 'GestiÃ³n rechazada' : 'GestiÃ³n ejecutada')
-      : 'Nueva gestiÃ³n';
+      ? (status === 'rechazado' ? 'Gestión rechazada' : 'Gestión ejecutada')
+      : 'Nueva gestión';
     const studentInfo = gestion.studentId ? students.find(s => s.id === gestion.studentId) : null;
     const aliasLine = studentInfo?.alias ? `NOMBRE_REAL_ALUMNO: ${studentInfo.alias}\n` : '';
     const classLine = getGestionClassLine(gestion);
@@ -2751,8 +2751,8 @@ TambiÃ©n puedes consultar los avisos publicados accediendo a tu portal.`;
     const scheduledClassEndLine = gestion.scheduledClassEndDate || gestion.bajaClassEndDate || gestion.effectiveEndDate || '';
     const scheduledEffectiveLine = gestion.scheduledEffectiveDate || gestion.bajaEffectiveDate || gestion.effectiveStartDate || '';
     const extraServiceLine = gestion.extraServiceName || gestion.serviceName || getExtraServiceConfigForGestion(gestion)?.name || '';
-    const extraMonthlyFeeLine = gestion.extraMonthlyFee ? `${gestion.extraMonthlyFee} â‚¬` : (getExtraServiceConfigForGestion(gestion)?.monthlyFee ? `${getExtraServiceConfigForGestion(gestion).monthlyFee} â‚¬` : '');
-    const extraProratedFeeLine = gestion.extraProratedFee ? `${gestion.extraProratedFee} â‚¬` : (extraServiceLine ? 'A calcular manualmente segÃºn fecha real de activaciÃ³n' : '');
+    const extraMonthlyFeeLine = gestion.extraMonthlyFee ? `${gestion.extraMonthlyFee} €` : (getExtraServiceConfigForGestion(gestion)?.monthlyFee ? `${getExtraServiceConfigForGestion(gestion).monthlyFee} €` : '');
+    const extraProratedFeeLine = gestion.extraProratedFee ? `${gestion.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
     const extraActivationLine = getExtraServiceConfigForGestion(gestion)?.activationTarget || '';
 
     const body = `TIPO_GESTION: ${typeLabel}
@@ -2782,7 +2782,7 @@ ID_GESTION: ${gestion.id || ''}
 ORIGEN: ${gestion.source === 'manual_admin' ? 'Tarea manual AdminPortal' : 'Portal del alumno'}
 
 DETALLES:
-${gestion.details || gestion.title || 'Sin detalles aÃ±adidos.'}${executionNotes ? `\n\nNOTAS_EJECUCION:\n${executionNotes}` : ''}`;
+${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes ? `\n\nNOTAS_EJECUCION:\n${executionNotes}` : ''}`;
 
     return sendNotificationEmail({
       to: ADMIN_GESTION_EMAIL,
@@ -2832,14 +2832,14 @@ ${gestion.details || gestion.title || 'Sin detalles aÃ±adidos.'}${executionNot
     const now = new Date().toISOString();
 
     if (isAdminAssignment && status === 'cancelada') {
-      const response = window.prompt(`Motivo de cancelaciÃ³n del encargo para ${task.teacherName || 'profesor'} (opcional):`, task.adminResponse || '');
+      const response = window.prompt(`Motivo de cancelación del encargo para ${task.teacherName || 'profesor'} (opcional):`, task.adminResponse || '');
       if (response === null) return;
       adminResponse = String(response || '').trim();
     } else if (!isAdminAssignment && ['resuelta', 'rechazada'].includes(status)) {
       const response = window.prompt(`Respuesta para el profesor al marcar como ${statusLabel} (opcional):`, task.adminResponse || '');
       if (response === null) return;
       adminResponse = String(response || '').trim();
-    } else if (!window.confirm(`Â¿Marcar ${isAdminAssignment ? 'este encargo' : 'esta peticiÃ³n'} de ${task.teacherName || 'profesor'} como ${statusLabel}?`)) {
+    } else if (!window.confirm(`¿Marcar ${isAdminAssignment ? 'este encargo' : 'esta petición'} de ${task.teacherName || 'profesor'} como ${statusLabel}?`)) {
       return;
     }
 
@@ -2869,9 +2869,9 @@ ${gestion.details || gestion.title || 'Sin detalles aÃ±adidos.'}${executionNot
 
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'teacherTasks', task.id), payload);
-      alert(`${isAdminAssignment ? 'Encargo' : 'PeticiÃ³n'} marcado como ${getTeacherTaskStatusLabel(status)}.`);
+      alert(`${isAdminAssignment ? 'Encargo' : 'Petición'} marcado como ${getTeacherTaskStatusLabel(status)}.`);
     } catch (e) {
-      alert(`Error al actualizar ${isAdminAssignment ? 'el encargo' : 'la peticiÃ³n'} del profesor: ${e.message}`);
+      alert(`Error al actualizar ${isAdminAssignment ? 'el encargo' : 'la petición'} del profesor: ${e.message}`);
     }
   };
 
@@ -2880,42 +2880,42 @@ ${gestion.details || gestion.title || 'Sin detalles aÃ±adidos.'}${executionNot
 
     return `Hola ${studentName},
 
-Â¡LlegÃ³ el dÃ­a de confirmar tu plaza!
+¡Llegó el día de confirmar tu plaza!
 
 Te confirmamos que ya tienes tu plaza reservada en Escuela Los Mitos.
 
 Tu clase asignada es:
 
-Â· ${formatClassLine(classData)}
+· ${formatClassLine(classData)}
 Profesor/a: ${classData.teacher || 'Profesor/a'}
 
-Tu fecha de inicio serÃ¡:
+Tu fecha de inicio será:
 
 ${formattedStartDate}
 
-A partir de ese dÃ­a podrÃ¡s acceder a tu Ãrea del Alumno, donde encontrarÃ¡s tu informaciÃ³n de clase, avisos importantes, calendario, recuperaciones y gestiones relacionadas con tu plaza.
+A partir de ese día podrás acceder a tu Área del Alumno, donde encontrarás tu información de clase, avisos importantes, calendario, recuperaciones y gestiones relacionadas con tu plaza.
 
 Para activar tu cuenta, sigue estos pasos:
 
 1. Entra en ${STUDENT_PORTAL_URL}
-2. Pulsa en â€œÂ¿Primera vez aquÃ­? Activa tu cuentaâ€.
-3. Introduce el mismo correo electrÃ³nico con el que realizaste tu inscripciÃ³n:
-   ${studentEmail || 'el correo con el que realizaste tu inscripciÃ³n'}
-4. Escribe la contraseÃ±a que quieras usar para acceder al portal. Puedes pulsar el icono del ojo para comprobar que la has escrito correctamente.
-5. Pulsa en â€œCrear contraseÃ±aâ€.
+2. Pulsa en “¿Primera vez aquí? Activa tu cuenta”.
+3. Introduce el mismo correo electrónico con el que realizaste tu inscripción:
+   ${studentEmail || 'el correo con el que realizaste tu inscripción'}
+4. Escribe la contraseña que quieras usar para acceder al portal. Puedes pulsar el icono del ojo para comprobar que la has escrito correctamente.
+5. Pulsa en “Crear contraseña”.
 
-Una vez hecho esto, accederÃ¡s directamente a tu Ãrea del Alumno.
+Una vez hecho esto, accederás directamente a tu Área del Alumno.
 
-Te recomendamos guardar el enlace del portal para tenerlo siempre a mano o, mejor aÃºn, ponerlo como acceso directo en el escritorio de tu mÃ³vil:
+Te recomendamos guardar el enlace del portal para tenerlo siempre a mano o, mejor aún, ponerlo como acceso directo en el escritorio de tu móvil:
 
 ${STUDENT_PORTAL_URL}
 
-Si tienes cualquier problema para activar tu cuenta o acceder, escrÃ­benos a ${SUPPORT_EMAIL} y lo revisamos contigo.
+Si tienes cualquier problema para activar tu cuenta o acceder, escríbenos a ${SUPPORT_EMAIL} y lo revisamos contigo.
 
-Â¡Bienvenido/a a la escuela!
+¡Bienvenido/a a la escuela!
 
 Un saludo,
-CoordinaciÃ³n Escuela Los Mitos`;
+Coordinación Escuela Los Mitos`;
   };
 
   const buildNewFixedStudentTeacherEmailBody = ({ teacherName, displayName, classData, classStartDate, contextLabel = 'en tu clase' }) => {
@@ -2924,22 +2924,22 @@ CoordinaciÃ³n Escuela Los Mitos`;
 
     return `Hola ${teacherName || 'profesor/a'},
 
-Desde coordinaciÃ³n hemos aÃ±adido a ${displayName} como alumno fijo ${contextLabel}:
+Desde coordinación hemos añadido a ${displayName} como alumno fijo ${contextLabel}:
 
-Â· ${formatClassLine(classData)}
+· ${formatClassLine(classData)}
 
 Fecha de inicio: ${formattedStartDate}.
 
 ${startsInFuture ? 'El alumno ya tiene la plaza reservada, pero no debe aparecer como activo en la lista de asistencia hasta esa fecha.' : 'El alumno aparece activo desde hoy en tu lista de asistencia de la App.'}
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`;
+Coordinación Los Mitos.`;
   };
 
   const sendInitialClassAssignmentEmailIfNeeded = async ({ studentId, existingStudent = null, createdNow = false, studentName, studentEmail, classData, classStartDate }) => {
     // Este email es SOLO para altas completamente nuevas creadas desde el panel.
-    // No se envÃ­a en cambios de clase, ampliaciones, reactivaciones, descongelados
-    // ni al recuperar un alumno que ya existÃ­a en CRM aunque estuviera sin plaza.
+    // No se envía en cambios de clase, ampliaciones, reactivaciones, descongelados
+    // ni al recuperar un alumno que ya existía en CRM aunque estuviera sin plaza.
     if (!createdNow || !studentId || !classData || isPunctualClass(classData)) return false;
     if (existingStudent?.firstClassEmailSentAt || existingStudent?.welcomeEmailSentAt) return false;
 
@@ -3071,30 +3071,30 @@ CoordinaciÃ³n Los Mitos.`;
       return;
     }
 
-    if (!window.confirm(`Â¿Anular los tickets pendientes de ${student.name}?
+    if (!window.confirm(`¿Anular los tickets pendientes de ${student.name}?
 
 Tickets activos/futuros: ${pendingCount}
 
-Esto dejarÃ¡ su contador a cero sin borrar el historial.`)) return;
+Esto dejará su contador a cero sin borrar el historial.`)) return;
 
     try {
       const count = await voidStudentTickets(student.id, 'ajuste_manual_admin');
-      alert(`âœ… Tickets anulados: ${count}. El contador del alumno quedarÃ¡ a cero.`);
+      alert(`✅ Tickets anulados: ${count}. El contador del alumno quedará a cero.`);
     } catch (e) {
       alert('Error al anular tickets: ' + e.message);
     }
   };
 
   const handleDeleteClassGlobal = async (clase) => {
-    if (!window.confirm(`âš ï¸ PELIGRO: Â¿EstÃ¡s seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acciÃ³n eliminarÃ¡ el grupo para siempre.`)) return;
+    if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
     try {
       await deleteDoc(doc(db, clase.refPath));
       if (viewClassModal && viewClassModal.id === clase.id) {
         setViewClassModal(null);
       }
-      alert("âœ… Clase borrada correctamente.");
+      alert("✅ Clase borrada correctamente.");
     } catch (e) {
-      alert("âŒ Error al borrar la clase: " + e.message);
+      alert("❌ Error al borrar la clase: " + e.message);
     }
   };
 
@@ -3112,23 +3112,23 @@ Esto dejarÃ¡ su contador a cero sin borrar el historial.`)) return;
   const markGestionTadosiDone = async (gestion) => {
     if (!gestion?.id) return;
     if (!gestionRequiresTadosi(gestion)) {
-      alert('Este trÃ¡mite no requiere marcar Tadosi. Puedes ejecutarlo directamente.');
+      alert('Este trámite no requiere marcar Tadosi. Puedes ejecutarlo directamente.');
       return;
     }
 
     if (isGestionTadosiDone(gestion)) {
-      alert('Este trÃ¡mite ya estÃ¡ marcado como Tadosi hecho.');
+      alert('Este trámite ya está marcado como Tadosi hecho.');
       return;
     }
 
     const extraConfig = getExtraServiceConfigForGestion(gestion);
     const confirmText = extraConfig
-      ? `Â¿Marcar como TADOSI HECHO la domiciliaciÃ³n de ${extraConfig.name} para ${gestion.studentName || 'alumno'}?
+      ? `¿Marcar como TADOSI HECHO la domiciliación de ${extraConfig.name} para ${gestion.studentName || 'alumno'}?
 
-Esto NO activa todavÃ­a el servicio. Solo indica que la parte de Tadosi/domiciliaciÃ³n ya estÃ¡ preparada y deja el trÃ¡mite listo para ejecutar.`
-      : `Â¿Marcar como TADOSI HECHO este trÃ¡mite de ${gestion.studentName || 'alumno'}?
+Esto NO activa todavía el servicio. Solo indica que la parte de Tadosi/domiciliación ya está preparada y deja el trámite listo para ejecutar.`
+      : `¿Marcar como TADOSI HECHO este trámite de ${gestion.studentName || 'alumno'}?
 
-Esto NO ejecuta cambios en clases. Solo deja el trÃ¡mite listo para poder ejecutarlo al cierre.`;
+Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecutarlo al cierre.`;
 
     if (!window.confirm(confirmText)) return;
 
@@ -3139,7 +3139,7 @@ Esto NO ejecuta cambios en clases. Solo deja el trÃ¡mite listo para poder ejec
       workflowStatus: 'tadosi_hecho'
     });
 
-    alert('âœ… Tadosi marcado como hecho. El trÃ¡mite ya queda desbloqueado para ejecutar.');
+    alert('✅ Tadosi marcado como hecho. El trámite ya queda desbloqueado para ejecutar.');
   };
 
   const updateGestionStatus = async (gestionId, status, gestionData = null, options = {}) => {
@@ -3155,17 +3155,17 @@ Esto NO ejecuta cambios en clases. Solo deja el trÃ¡mite listo para poder ejec
     };
 
     if (status === 'completado' && gestionData && !isGestionReadyForExecution(gestionData)) {
-      return fail(`âš ï¸ Primero marca Tadosi hecho para poder ejecutar este trÃ¡mite.\n\nAsÃ­ evitamos cerrar cambios de clases antes de haber ajustado cobros.`);
+      return fail(`⚠️ Primero marca Tadosi hecho para poder ejecutar este trámite.\n\nAsí evitamos cerrar cambios de clases antes de haber ajustado cobros.`);
     }
 
-    if (!skipConfirm && !window.confirm(`Â¿Seguro que quieres ${accion} este trÃ¡mite?`)) {
+    if (!skipConfirm && !window.confirm(`¿Seguro que quieres ${accion} este trámite?`)) {
       return { ok: false, cancelled: true, message: 'Cancelado por el usuario.' };
     }
 
     try {
       if (status !== 'completado' || !gestionData) {
         await finalizeGestionStatus(gestionId, status, gestionData);
-        return notify(`TrÃ¡mite marcado como ${status.toUpperCase()}.`);
+        return notify(`Trámite marcado como ${status.toUpperCase()}.`);
       }
 
       const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData;
@@ -3180,10 +3180,10 @@ Esto NO ejecuta cambios en clases. Solo deja el trÃ¡mite listo para poder ejec
       if (isExtraServiceGestion(gestionData)) {
         const extraConfig = getExtraServiceConfigForGestion(gestionData);
         if (!extraConfig) {
-          return fail('âš ï¸ No se ha podido identificar el servicio extra solicitado.');
+          return fail('⚠️ No se ha podido identificar el servicio extra solicitado.');
         }
         if (!studentId || !studentInfo?.id) {
-          return fail(`âš ï¸ No se puede activar ${extraConfig.name}: no se ha encontrado la ficha del alumno.`);
+          return fail(`⚠️ No se puede activar ${extraConfig.name}: no se ha encontrado la ficha del alumno.`);
         }
 
         const alreadyActive = Boolean(studentInfo?.[extraConfig.studentFlag]);
@@ -3204,12 +3204,12 @@ Esto NO ejecuta cambios en clases. Solo deja el trÃ¡mite listo para poder ejec
 
 Te confirmamos que ya hemos activado tu alta en ${extraConfig.name}.
 
-La domiciliaciÃ³n correspondiente queda preparada por coordinaciÃ³n.
+La domiciliación correspondiente queda preparada por coordinación.
 
-${extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Ãrea del Alumno, pestaÃ±a Extras, usando el botÃ³n de Classroom.' : 'Ya puedes reservar sala desde el Ãrea del Alumno, pestaÃ±a Extras.'}
+${extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Área del Alumno, pestaña Extras, usando el botón de Classroom.' : 'Ya puedes reservar sala desde el Área del Alumno, pestaña Extras.'}
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
         await finalizeGestionStatus(
@@ -3226,7 +3226,7 @@ CoordinaciÃ³n Los Mitos.`
           }
         );
 
-        return notify(`âœ… ${extraConfig.name} activado para ${displayName}. El trÃ¡mite queda cerrado y el alumno ya verÃ¡ el servicio como activo en Extras.`);
+        return notify(`✅ ${extraConfig.name} activado para ${displayName}. El trámite queda cerrado y el alumno ya verá el servicio como activo en Extras.`);
       }
       else if (type === 'baja') {
         const sourceClass = getGestionSourceClass(gestionData);
@@ -3247,9 +3247,9 @@ CoordinaciÃ³n Los Mitos.`
         });
 
         if (canExecutePartialBaja && !sourceClass?.refPath) {
-          return fail(`âš ï¸ No se puede programar la baja por plaza.
+          return fail(`⚠️ No se puede programar la baja por plaza.
 
-La solicitud indica una plaza concreta, pero esa clase de origen ya no existe o no tiene ruta vÃ¡lida.
+La solicitud indica una plaza concreta, pero esa clase de origen ya no existe o no tiene ruta válida.
 
 Plaza indicada:
 ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
@@ -3275,51 +3275,51 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
             subjectBuilder: () => `Baja parcial programada: ${displayName}`,
             bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinaciÃ³n te informamos que ${displayName} tiene programada la baja de esta plaza:
+Desde coordinación te informamos que ${displayName} tiene programada la baja de esta plaza:
 
-Â· ${formatClassLine(sourceClass)}
+· ${formatClassLine(sourceClass)}
 
-Ãšltimo dÃ­a con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
 A partir de ${formatDateSpanish(scheduledEffectiveDate)} ya no debe aparecer como alumno activo en esta clase.
 
 El alumno sigue activo en la escuela en otra(s) clase(s).
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
           });
 
           await sendStudentNotification({
             studentEmail,
-            subject: `ConfirmaciÃ³n de baja de una plaza - Escuela Los Mitos`,
+            subject: `Confirmación de baja de una plaza - Escuela Los Mitos`,
             body: `Hola ${studentName},
 
 Te confirmamos que hemos programado la baja de esta plaza:
 
-Â· ${formatClassLine(sourceClass)}
+· ${formatClassLine(sourceClass)}
 
-Ãšltimo dÃ­a con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
-A partir de ${formatDateSpanish(scheduledEffectiveDate)} dejarÃ¡ de aparecer como clase activa en tu portal.
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} dejará de aparecer como clase activa en tu portal.
 
 Sigues activo/a en la escuela en el resto de clases que mantienes actualmente.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
           });
 
           await finalizeGestionStatus(
             gestionId,
             'completado',
             gestionData,
-            `Baja parcial programada. Plaza: ${formatClassLine(sourceClass)}. Ãšltimo dÃ­a: ${formatDateSpanish(scheduledEndDate)}. Mantiene ${remainingFixedClasses.length} plaza(s) fija(s).`,
+            `Baja parcial programada. Plaza: ${formatClassLine(sourceClass)}. Último día: ${formatDateSpanish(scheduledEndDate)}. Mantiene ${remainingFixedClasses.length} plaza(s) fija(s).`,
             scheduledExecutionUpdate
           );
-          return notify(`âœ… Baja parcial programada. ${displayName} seguirÃ¡ en ${formatClassLine(sourceClass)} hasta ${formatDateSpanish(scheduledEndDate)}. Desde ${formatDateSpanish(scheduledEffectiveDate)} dejarÃ¡ de aparecer en esa clase.`);
+          return notify(`✅ Baja parcial programada. ${displayName} seguirá en ${formatClassLine(sourceClass)} hasta ${formatDateSpanish(scheduledEndDate)}. Desde ${formatDateSpanish(scheduledEffectiveDate)} dejará de aparecer en esa clase.`);
         }
 
         const classesWithStudent = getFixedStudentClasses(studentId);
         if (classesWithStudent.length === 0) {
-          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Baja archivada: el alumno no tenÃ­a plazas fijas activas.', scheduledExecutionUpdate);
-          return notify(`â„¹ï¸ ${displayName} no tenÃ­a plazas fijas activas. El trÃ¡mite queda archivado.`);
+          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Baja archivada: el alumno no tenía plazas fijas activas.', scheduledExecutionUpdate);
+          return notify(`ℹ️ ${displayName} no tenía plazas fijas activas. El trámite queda archivado.`);
         }
 
         const groupedTeachers = groupClassesByTeacher(classesWithStudent);
@@ -3346,65 +3346,65 @@ CoordinaciÃ³n Los Mitos.`
           subjectBuilder: (group) => `Baja programada de alumno: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinaciÃ³n te informamos que ${displayName} tiene programada la baja y dejarÃ¡ de asistir a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+Desde coordinación te informamos que ${displayName} tiene programada la baja y dejará de asistir a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
 
-${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
 
-Ãšltimo dÃ­a con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
 A partir de ${formatDateSpanish(scheduledEffectiveDate)} ya no debe aparecer como alumno activo en tu lista de asistencia.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail,
-          subject: `ConfirmaciÃ³n de baja programada - Escuela Los Mitos`,
+          subject: `Confirmación de baja programada - Escuela Los Mitos`,
           body: `Hola ${studentName},
 
 Te confirmamos que tu solicitud de baja ha sido programada correctamente.
 
-Ãšltimo dÃ­a con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
-A partir de ${formatDateSpanish(scheduledEffectiveDate)} tu baja serÃ¡ efectiva y dejarÃ¡s de aparecer como alumno/a activo/a en la plataforma.
+Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} tu baja será efectiva y dejarás de aparecer como alumno/a activo/a en la plataforma.
 
 ${isTotalBaja
-  ? `Has solicitado la baja total, asÃ­ que se programan todas tus clases${sourceClassLine ? ` aunque la plaza de referencia fuera:\nÂ· ${sourceClassLine}` : ''}.\n`
+  ? `Has solicitado la baja total, así que se programan todas tus clases${sourceClassLine ? ` aunque la plaza de referencia fuera:\n· ${sourceClassLine}` : ''}.\n`
   : hasScopedBaja && sourceClassLine
-    ? `La plaza solicitada era:\nÂ· ${sourceClassLine}\n\nAl ser tu Ãºltima plaza fija, la baja queda programada como baja completa de Escuela Los Mitos.\n`
-    : 'La baja queda programada segÃºn la normativa administrativa del centro.\n'}
+    ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda programada como baja completa de Escuela Los Mitos.\n`
+    : 'La baja queda programada según la normativa administrativa del centro.\n'}
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
         await finalizeGestionStatus(gestionId, 'completado', gestionData, isTotalBaja
-          ? `Baja total programada por solicitud explÃ­cita del alumno. Ãšltimo dÃ­a: ${formatDateSpanish(scheduledEndDate)}${sourceClassLine ? `. Plaza de referencia: ${sourceClassLine}` : ''}`
+          ? `Baja total programada por solicitud explícita del alumno. Último día: ${formatDateSpanish(scheduledEndDate)}${sourceClassLine ? `. Plaza de referencia: ${sourceClassLine}` : ''}`
           : hasScopedBaja && sourceClassLine
-            ? `Baja total programada al ser Ãºltima plaza fija. Ãšltimo dÃ­a: ${formatDateSpanish(scheduledEndDate)}. Plaza solicitada: ${sourceClassLine}`
-            : `Baja programada desde bandeja Admin. Ãšltimo dÃ­a: ${formatDateSpanish(scheduledEndDate)}`,
+            ? `Baja total programada al ser última plaza fija. Último día: ${formatDateSpanish(scheduledEndDate)}. Plaza solicitada: ${sourceClassLine}`
+            : `Baja programada desde bandeja Admin. Último día: ${formatDateSpanish(scheduledEndDate)}`,
           scheduledExecutionUpdate);
-        return notify(`âœ… Baja programada. ${displayName} conserva sus clases hasta ${formatDateSpanish(scheduledEndDate)} y dejarÃ¡ de aparecer desde ${formatDateSpanish(scheduledEffectiveDate)}. Tickets y trivial quedan marcados para baja total cuando sea efectiva.`);
+        return notify(`✅ Baja programada. ${displayName} conserva sus clases hasta ${formatDateSpanish(scheduledEndDate)} y dejará de aparecer desde ${formatDateSpanish(scheduledEffectiveDate)}. Tickets y trivial quedan marcados para baja total cuando sea efectiva.`);
       }
       else if (type === 'mantenimiento') {
         let maintenancePeriod = getMaintenancePeriodFromGestion(gestionData);
 
         if (maintenancePeriod.isLegacyMissingDuration) {
           if (silent) {
-            return fail(`âš ï¸ Mantenimiento antiguo sin duraciÃ³n para ${displayName}. EjecÃºtalo individualmente para elegir 1 mes o 2 meses antes de crear el periodo.`);
+            return fail(`⚠️ Mantenimiento antiguo sin duración para ${displayName}. Ejecútalo individualmente para elegir 1 mes o 2 meses antes de crear el periodo.`);
           }
 
           const selectedPeriod = promptLegacyMaintenancePeriod(gestionData);
           if (!selectedPeriod) {
-            return { ok: false, cancelled: true, message: 'DuraciÃ³n de mantenimiento no seleccionada.' };
+            return { ok: false, cancelled: true, message: 'Duración de mantenimiento no seleccionada.' };
           }
           maintenancePeriod = selectedPeriod;
         }
 
         const { from, until } = maintenancePeriod;
         if (!from || !until) {
-          return fail('âš ï¸ No se puede ejecutar el mantenimiento: falta fecha de inicio o fecha de fin.');
+          return fail('⚠️ No se puede ejecutar el mantenimiento: falta fecha de inicio o fecha de fin.');
         }
         if (from > until) {
-          return fail('âš ï¸ No se puede ejecutar el mantenimiento: la fecha de inicio no puede ser posterior a la fecha de fin.');
+          return fail('⚠️ No se puede ejecutar el mantenimiento: la fecha de inicio no puede ser posterior a la fecha de fin.');
         }
 
         const maintenanceMonths = parseMaintenanceMonths(maintenancePeriod.months) || calculateMaintenanceMonthsFromRange(from, until) || 1;
@@ -3420,11 +3420,11 @@ CoordinaciÃ³n Los Mitos.`
 
         const overlapping = getStudentMaintenancePeriods(studentId).find(period => doDateRangesOverlap(from, until, period.from, period.until));
         if (overlapping) {
-          return fail(`âš ï¸ Este alumno ya tiene un mantenimiento que se solapa con ese periodo:
+          return fail(`⚠️ Este alumno ya tiene un mantenimiento que se solapa con ese periodo:
 
 ${formatMaintenancePeriodLine(overlapping)}
 
-CancÃ©lalo o ajusta fechas antes de crear otro.`);
+Cancélalo o ajusta fechas antes de crear otro.`);
         }
 
         const classesWithStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
@@ -3470,41 +3470,41 @@ CancÃ©lalo o ajusta fechas antes de crear otro.`);
           subjectBuilder: (group) => `Alumno en mantenimiento temporal: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinaciÃ³n te informamos que ${displayName} tendrÃ¡ la plaza en mantenimiento temporal ${periodLine}.
+Desde coordinación te informamos que ${displayName} tendrá la plaza en mantenimiento temporal ${periodLine}.
 
 Afecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
 
-${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
 
-Durante ese periodo no debes esperarlo en clase. Fuera de esas fechas volverÃ¡ a figurar como alumno activo automÃ¡ticamente en la plataforma.
+Durante ese periodo no debes esperarlo en clase. Fuera de esas fechas volverá a figurar como alumno activo automáticamente en la plataforma.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail,
-          subject: `ConfirmaciÃ³n de mantenimiento temporal de plaza - Escuela Los Mitos`,
+          subject: `Confirmación de mantenimiento temporal de plaza - Escuela Los Mitos`,
           body: `Hola ${studentName},
 
 Te confirmamos que tu solicitud de mantenimiento de plaza ha sido tramitada correctamente.
 
 Periodo de mantenimiento: ${periodLine}.
 
-Durante ese periodo conservas tu plaza con cuota de mantenimiento: ${maintenanceFeeLine}. Tu acceso al portal quedarÃ¡ limitado segÃºn la normativa del centro. Al finalizar el periodo, tu plaza volverÃ¡ a estar activa automÃ¡ticamente en la plataforma.
+Durante ese periodo conservas tu plaza con cuota de mantenimiento: ${maintenanceFeeLine}. Tu acceso al portal quedará limitado según la normativa del centro. Al finalizar el periodo, tu plaza volverá a estar activa automáticamente en la plataforma.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Mantenimiento temporal creado ${periodLine} Â· ${maintenanceFeeLine}`);
-        return notify(`â„ï¸ Mantenimiento temporal creado para ${displayName}: ${periodLine}. Cuota: ${maintenanceFeeLine}. Profesores y alumno avisados.`);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Mantenimiento temporal creado ${periodLine} · ${maintenanceFeeLine}`);
+        return notify(`❄️ Mantenimiento temporal creado para ${displayName}: ${periodLine}. Cuota: ${maintenanceFeeLine}. Profesores y alumno avisados.`);
       }
       else if (type === 'reactivar_plaza') {
         const periodsToCancel = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
         if (periodsToCancel.length === 0) {
-          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'No habÃ­a mantenimientos activos o futuros que cancelar');
-          return notify(`â„¹ï¸ ${displayName} no tenÃ­a mantenimientos activos o futuros. El trÃ¡mite queda archivado.`);
+          await finalizeGestionStatus(gestionId, 'completado', gestionData, 'No había mantenimientos activos o futuros que cancelar');
+          return notify(`ℹ️ ${displayName} no tenía mantenimientos activos o futuros. El trámite queda archivado.`);
         }
 
         for (let period of periodsToCancel) {
@@ -3512,7 +3512,7 @@ CoordinaciÃ³n Los Mitos.`
             status: 'cancelled',
             cancelledAt: new Date().toISOString(),
             cancelledBy: user?.email || 'admin',
-            cancelReason: `ReactivaciÃ³n anticipada desde gestiÃ³n ${gestionId}`
+            cancelReason: `Reactivación anticipada desde gestión ${gestionId}`
           });
         }
 
@@ -3534,37 +3534,37 @@ CoordinaciÃ³n Los Mitos.`
           subjectBuilder: (group) => `Fin anticipado de mantenimiento: ${displayName}`,
           bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinaciÃ³n te informamos que ${displayName} finaliza anticipadamente su mantenimiento temporal y vuelve a estar activo en ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
+Desde coordinación te informamos que ${displayName} finaliza anticipadamente su mantenimiento temporal y vuelve a estar activo en ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
 
-${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
 
-La plataforma dejarÃ¡ de tratarlo como alumno en mantenimiento.
+La plataforma dejará de tratarlo como alumno en mantenimiento.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail,
-          subject: `ConfirmaciÃ³n de fin de mantenimiento - Escuela Los Mitos`,
+          subject: `Confirmación de fin de mantenimiento - Escuela Los Mitos`,
           body: `Hola ${studentName},
 
 Te confirmamos que tu solicitud de finalizar el mantenimiento de plaza ha sido tramitada correctamente.
 
-A partir de este momento tu plaza vuelve a estar activa en la plataforma y podrÃ¡s volver a asistir a clase y gestionar recuperaciones segÃºn las condiciones del centro.
+A partir de este momento tu plaza vuelve a estar activa en la plataforma y podrás volver a asistir a clase y gestionar recuperaciones según las condiciones del centro.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
         });
 
         await finalizeGestionStatus(gestionId, 'completado', gestionData, `Cancelados ${periodsToCancel.length} periodo(s) de mantenimiento`);
-        return notify(`âœ… Mantenimiento finalizado anticipadamente. Periodos cancelados: ${periodsToCancel.length}. Profesores y alumno avisados.`);
+        return notify(`✅ Mantenimiento finalizado anticipadamente. Periodos cancelados: ${periodsToCancel.length}. Profesores y alumno avisados.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
         const maintenanceCheckDate = type === 'recuperacion' ? (recoveryDate || todayStr) : todayStr;
         if (isStudentInMaintenance(studentId, maintenanceCheckDate)) {
           const activeMaintenance = getActiveStudentMaintenancePeriod(studentId, maintenanceCheckDate);
-          return fail(`âš ï¸ No se puede ejecutar este trÃ¡mite.
+          return fail(`⚠️ No se puede ejecutar este trámite.
 
 ${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(activeMaintenance)}. Primero debe finalizar ese periodo o aprobarse un fin anticipado.`);
         }
@@ -3572,11 +3572,11 @@ ${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(act
         if (type === 'recuperacion') {
           const recoveryTicketStats = getTicketStatsForDate(studentId, recoveryDate, gestionId);
           if (recoveryTicketStats.free <= 0) {
-            return fail(`âš ï¸ No se puede aprobar esta recuperaciÃ³n.
+            return fail(`⚠️ No se puede aprobar esta recuperación.
 
-${displayName} no tiene tickets libres vÃ¡lidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).
+${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).
 
-Tickets vÃ¡lidos ese dÃ­a: ${recoveryTicketStats.active}
+Tickets válidos ese día: ${recoveryTicketStats.active}
 Recuperaciones comprometidas: ${recoveryTicketStats.committed}
 Tickets libres: ${recoveryTicketStats.free}`);
           }
@@ -3584,11 +3584,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
 
         if (!requestedClass) {
           await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Archivado sin clase destino');
-          return notify("âš ï¸ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se ha archivado el ticket.");
+          return notify("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se ha archivado el ticket.");
         }
         const targetClass = operationalClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
-          return fail(`âŒ Error crÃ­tico: La clase elegida por el alumno ya no existe en la base de datos.`);
+          return fail(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
         }
 
         let logMessage = `Iniciando proceso para ${displayName}:\n\n`;
@@ -3606,16 +3606,16 @@ Tickets libres: ${recoveryTicketStats.free}`);
           const scheduledStartDate = getScheduledClassStartAfterEndDate(scheduledEndDate);
 
           if (hasScopedChange && !sourceClass?.refPath) {
-            return fail(`âš ï¸ No se puede programar el cambio de horario por plaza.
+            return fail(`⚠️ No se puede programar el cambio de horario por plaza.
 
-La solicitud indica una plaza de origen, pero esa clase ya no existe o no tiene ruta vÃ¡lida.
+La solicitud indica una plaza de origen, pero esa clase ya no existe o no tiene ruta válida.
 
 Plaza indicada:
 ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           }
 
           if (hasScopedChange && sourceClass?.id === targetClass.id) {
-            return fail('âš ï¸ No se puede ejecutar el cambio: la plaza de origen y la clase de destino son la misma.');
+            return fail('⚠️ No se puede ejecutar el cambio: la plaza de origen y la clase de destino son la misma.');
           }
 
           oldClasses = hasScopedChange && sourceClass
@@ -3626,7 +3626,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
               }));
 
           if (oldClasses.length === 0) {
-            return fail('âš ï¸ No se ha encontrado una plaza de origen activa para programar el cambio de horario.');
+            return fail('⚠️ No se ha encontrado una plaza de origen activa para programar el cambio de horario.');
           }
 
           for (let c of oldClasses) {
@@ -3637,7 +3637,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
             );
             if (c.refPath) {
               await updateDoc(doc(db, c.refPath), { students: updatedList });
-              logMessage += `âž– Salida programada de ${formatClassLine(c)} el ${formatDateSpanish(scheduledEndDate)}.\n`;
+              logMessage += `➖ Salida programada de ${formatClassLine(c)} el ${formatDateSpanish(scheduledEndDate)}.\n`;
             }
           }
 
@@ -3656,7 +3656,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           };
           const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
           await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-          logMessage += `âž• Entrada programada en ${formatClassLine(targetClass)} desde ${formatDateSpanish(scheduledStartDate)}.\n`;
+          logMessage += `➕ Entrada programada en ${formatClassLine(targetClass)} desde ${formatDateSpanish(scheduledStartDate)}.\n`;
           await finalizeGestionStatus(
             gestionId,
             'completado',
@@ -3669,7 +3669,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
               scheduledTargetClassLine: formatClassLine(targetClass)
             })
           );
-          logMessage += `âœ… Cambio de horario programado con Ã©xito.\n`;
+          logMessage += `✅ Cambio de horario programado con éxito.\n`;
 
           const oldGroups = groupClassesByTeacher(oldClasses);
           const targetEmail = getTeacherEmail(targetClass.teacher);
@@ -3679,27 +3679,27 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           await sendGroupedTeacherSummary({
             groupedClasses: otherOldGroups,
             subjectBuilder: (group) => `Cambio de horario programado: ${displayName} deja tu clase`,
-            bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} tiene programado un cambio de horario y dejarÃ¡ de asistir a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}\n\nÃšltimo dÃ­a en el horario actual: ${formatDateSpanish(scheduledEndDate)}.\nA partir de ${formatDateSpanish(scheduledStartDate)} ya no debe aparecer como alumno activo en esa lista.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+            bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} tiene programado un cambio de horario y dejará de asistir a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nÚltimo día en el horario actual: ${formatDateSpanish(scheduledEndDate)}.\nA partir de ${formatDateSpanish(scheduledStartDate)} ya no debe aparecer como alumno activo en esa lista.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
           if (targetOldGroup) {
             await sendTeacherNotification({
               teacherName: targetClass.teacher,
               subject: `Cambio de horario interno programado: ${displayName}`,
-              body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} tiene programado un cambio de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}\n\nÃšltimo dÃ­a en el horario actual: ${formatDateSpanish(scheduledEndDate)}.\n\nY pasa a asistir a:\nÂ· ${formatClassLine(targetClass)}\n\nFecha de inicio en el nuevo horario: ${formatDateSpanish(scheduledStartDate)}.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+              body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} tiene programado un cambio de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nÚltimo día en el horario actual: ${formatDateSpanish(scheduledEndDate)}.\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nFecha de inicio en el nuevo horario: ${formatDateSpanish(scheduledStartDate)}.\n\nUn saludo,\nCoordinación Los Mitos.`
             });
           } else if (!isPunctualClass(targetClass)) {
             await sendTeacherNotification({
               teacherName: targetClass.teacher,
               subject: `Nuevo alumno fijo programado: ${displayName} (${targetClass.subject})`,
-              body: `Hola ${targetClass.teacher},\n\nDesde coordinaciÃ³n hemos programado a ${displayName} como alumno fijo en tu clase:\n\nÂ· ${formatClassLine(targetClass)}\n\nFecha de inicio en tu lista: ${formatDateSpanish(scheduledStartDate)}.\nHasta entonces no debe aparecer como alumno activo en esta clase.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+              body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nFecha de inicio en tu lista: ${formatDateSpanish(scheduledStartDate)}.\nHasta entonces no debe aparecer como alumno activo en esta clase.\n\nUn saludo,\nCoordinación Los Mitos.`
             });
           }
 
           await sendStudentNotification({
             studentEmail,
-            subject: `ConfirmaciÃ³n de cambio de horario programado - Escuela Los Mitos`,
-            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y programado correctamente.\n\n${sourceClassLine ? `Horario actual:\nÂ· ${sourceClassLine}\nÃšltimo dÃ­a en este horario: ${formatDateSpanish(scheduledEndDate)}.\n\n` : ''}Nuevo horario:\nÂ· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\nFecha de inicio: ${formatDateSpanish(scheduledStartDate)}.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+            subject: `Confirmación de cambio de horario programado - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu cambio de horario ha sido aprobado y programado correctamente.\n\n${sourceClassLine ? `Horario actual:\n· ${sourceClassLine}\nÚltimo día en este horario: ${formatDateSpanish(scheduledEndDate)}.\n\n` : ''}Nuevo horario:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\nFecha de inicio: ${formatDateSpanish(scheduledStartDate)}.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
           return notify(logMessage);
@@ -3717,45 +3717,45 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         };
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
         await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-        logMessage += `âž• AÃ±adido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
+        logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
-        logMessage += `âœ… TrÃ¡mite archivado con Ã©xito.\n`;
+        logMessage += `✅ Trámite archivado con éxito.\n`;
 
         if (type === 'ampliar_clases' && !isPunctualClass(targetClass)) {
           await sendTeacherNotification({
             teacherName: targetClass.teacher,
             subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
-            body: `Hola ${targetClass.teacher},\n\nDesde coordinaciÃ³n hemos aÃ±adido a ${displayName} como alumno fijo en tu clase:\n\nÂ· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+            body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
           await sendStudentNotification({
             studentEmail,
-            subject: `ConfirmaciÃ³n de ampliaciÃ³n de clases - Escuela Los Mitos`,
-            body: `Hola ${studentName},\n\nTe confirmamos que tu ampliaciÃ³n de clases ha sido aprobada y tramitada correctamente.\n\nNueva clase aÃ±adida a tu horario:\nÂ· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+            subject: `Confirmación de ampliación de clases - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu ampliación de clases ha sido aprobada y tramitada correctamente.\n\nNueva clase añadida a tu horario:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
           });
         }
 
         if (type === 'recuperacion') {
           await sendTeacherNotification({
             teacherName: targetClass.teacher,
-            subject: `RecuperaciÃ³n programada: ${displayName} (${targetClass.subject})`,
-            body: `Hola ${targetClass.teacher},\n\nDesde coordinaciÃ³n hemos programado a ${displayName} para recuperar una clase contigo.\n\nClase de destino:\nÂ· ${formatClassLine(targetClass)}\n\nFecha exacta de recuperaciÃ³n: ${formatDateSpanish(recoveryDate)}\n\nEl sistema es inteligente: el alumno NO aparecerÃ¡ en tu lista hasta que llegue exactamente ese dÃ­a.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+            subject: `Recuperación programada: ${displayName} (${targetClass.subject})`,
+            body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos programado a ${displayName} para recuperar una clase contigo.\n\nClase de destino:\n· ${formatClassLine(targetClass)}\n\nFecha exacta de recuperación: ${formatDateSpanish(recoveryDate)}\n\nEl sistema es inteligente: el alumno NO aparecerá en tu lista hasta que llegue exactamente ese día.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
 
           await sendStudentNotification({
             studentEmail,
-            subject: `ConfirmaciÃ³n de recuperaciÃ³n programada - Escuela Los Mitos`,
-            body: `Hola ${studentName},\n\nTe confirmamos que tu recuperaciÃ³n ha sido programada correctamente.\n\nRecuperaciÃ³n:\nÂ· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\nFecha exacta: ${formatDateSpanish(recoveryDate)}\n\nRecuerda que las clases de recuperaciÃ³n no son recuperables si no asistes.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+            subject: `Confirmación de recuperación programada - Escuela Los Mitos`,
+            body: `Hola ${studentName},\n\nTe confirmamos que tu recuperación ha sido programada correctamente.\n\nRecuperación:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\nFecha exacta: ${formatDateSpanish(recoveryDate)}\n\nRecuerda que las clases de recuperación no son recuperables si no asistes.\n\nUn saludo,\nCoordinación Los Mitos.`
           });
         }
 
         return notify(logMessage);
       } else {
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'TrÃ¡mite genÃ©rico archivado');
-        return notify("âœ… TrÃ¡mite genÃ©rico archivado correctamente.");
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Trámite genérico archivado');
+        return notify("✅ Trámite genérico archivado correctamente.");
       }
     } catch (error) {
-      return fail(`âŒ ERROR DEL SISTEMA:\n\n${error.message}`);
+      return fail(`❌ ERROR DEL SISTEMA:\n\n${error.message}`);
     }
   };
 
@@ -3771,17 +3771,17 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
     if (readyGestiones.length === 0) {
       if (legacyMaintenanceGestiones.length > 0) {
-        alert(`No hay trÃ¡mites listos para ejecutar en bloque.\n\nTienes ${legacyMaintenanceGestiones.length} mantenimiento(s) antiguo(s) sin duraciÃ³n. EjecÃºtalos individualmente para elegir 1 mes o 2 meses.`);
+        alert(`No hay trámites listos para ejecutar en bloque.\n\nTienes ${legacyMaintenanceGestiones.length} mantenimiento(s) antiguo(s) sin duración. Ejecútalos individualmente para elegir 1 mes o 2 meses.`);
         return;
       }
 
       alert(blockedGestiones.length > 0
-        ? `No hay trÃ¡mites listos para ejecutar. Tienes ${blockedGestiones.length} pendiente(s) de marcar como Tadosi hecho.`
-        : 'No hay trÃ¡mites pendientes para ejecutar.');
+        ? `No hay trámites listos para ejecutar. Tienes ${blockedGestiones.length} pendiente(s) de marcar como Tadosi hecho.`
+        : 'No hay trámites pendientes para ejecutar.');
       return;
     }
 
-    if (!window.confirm(`Â¿Ejecutar ahora ${readyGestiones.length} trÃ¡mite(s) listos?\n\nNo aparecerÃ¡n ventanas por cada trÃ¡mite. Al final verÃ¡s un resumen.\n\nSe omitirÃ¡n ${blockedGestiones.length} trÃ¡mite(s) pendientes de Tadosi.\nSe omitirÃ¡n ${legacyMaintenanceGestiones.length} mantenimiento(s) antiguo(s) sin duraciÃ³n: esos deben ejecutarse individualmente.`)) return;
+    if (!window.confirm(`¿Ejecutar ahora ${readyGestiones.length} trámite(s) listos?\n\nNo aparecerán ventanas por cada trámite. Al final verás un resumen.\n\nSe omitirán ${blockedGestiones.length} trámite(s) pendientes de Tadosi.\nSe omitirán ${legacyMaintenanceGestiones.length} mantenimiento(s) antiguo(s) sin duración: esos deben ejecutarse individualmente.`)) return;
 
     setBulkExecutingGestiones(true);
     const results = [];
@@ -3793,9 +3793,9 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
       const ok = results.filter(r => r.result?.ok).length;
       const errors = results.filter(r => !r.result?.ok);
-      const errorLines = errors.map(r => `- ${r.gestion.studentName || 'Sin alumno'} (${(r.gestion.type || 'trÃ¡mite').replace('_', ' ')}): ${r.result?.message || 'Error no especificado'}`);
+      const errorLines = errors.map(r => `- ${r.gestion.studentName || 'Sin alumno'} (${(r.gestion.type || 'trámite').replace('_', ' ')}): ${r.result?.message || 'Error no especificado'}`);
 
-      alert(`Cierre en bloque terminado.\n\nEjecutados correctamente: ${ok}\nCon error u omitidos: ${errors.length}\nPendientes de Tadosi omitidos: ${blockedGestiones.length}\nMantenimientos antiguos sin duraciÃ³n omitidos: ${legacyMaintenanceGestiones.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
+      alert(`Cierre en bloque terminado.\n\nEjecutados correctamente: ${ok}\nCon error u omitidos: ${errors.length}\nPendientes de Tadosi omitidos: ${blockedGestiones.length}\nMantenimientos antiguos sin duración omitidos: ${legacyMaintenanceGestiones.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
     } finally {
       setBulkExecutingGestiones(false);
     }
@@ -3879,7 +3879,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
   const consolidateScheduledBajaGestion = async (gestion = {}) => {
     const studentId = gestion.studentId;
-    if (!studentId) return { ok: false, message: 'GestiÃ³n de baja sin alumno asociado.' };
+    if (!studentId) return { ok: false, message: 'Gestión de baja sin alumno asociado.' };
 
     const studentInfo = students.find(s => s.id === studentId) || {};
     const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
@@ -3969,7 +3969,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
   const consolidateScheduledChangeGestion = async (gestion = {}) => {
     const studentId = gestion.studentId;
-    if (!studentId) return { ok: false, message: 'GestiÃ³n de cambio sin alumno asociado.' };
+    if (!studentId) return { ok: false, message: 'Gestión de cambio sin alumno asociado.' };
 
     const studentInfo = students.find(s => s.id === studentId) || {};
     const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
@@ -4068,12 +4068,12 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       const classLine = targetLine && sourceLine && targetLine !== sourceLine
         ? `Origen: ${sourceLine} / Destino: ${targetLine}`
         : (sourceLine || targetLine || 'Clase no indicada');
-      return `${index + 1}. ${gestion.studentName || 'Sin alumno'} Â· ${typeLabel}\n   Fin: ${formatDateSpanish(endDate)} Â· Efectiva: ${formatDateSpanish(effectiveDate)}\n   ${classLine}`;
+      return `${index + 1}. ${gestion.studentName || 'Sin alumno'} · ${typeLabel}\n   Fin: ${formatDateSpanish(endDate)} · Efectiva: ${formatDateSpanish(effectiveDate)}\n   ${classLine}`;
     });
     const hiddenPreviewCount = Math.max(expiredGestiones.length - previewLimit, 0);
-    const previewText = `${previewLines.join('\n\n')}${hiddenPreviewCount > 0 ? `\n\n...y ${hiddenPreviewCount} gestiÃ³n(es) mÃ¡s.` : ''}`;
+    const previewText = `${previewLines.join('\n\n')}${hiddenPreviewCount > 0 ? `\n\n...y ${hiddenPreviewCount} gestión(es) más.` : ''}`;
 
-    if (!window.confirm(`Vas a consolidar estas gestiones programadas vencidas:\n\n${previewText}\n\nResumen:\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. En bajas totales tambiÃ©n marca baja definitiva, anula tickets pendientes y pone el trivial a cero.\n\nNo procesa mantenimientos.\n\nÂ¿Confirmas la consolidaciÃ³n?`)) return;
+    if (!window.confirm(`Vas a consolidar estas gestiones programadas vencidas:\n\n${previewText}\n\nResumen:\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. En bajas totales también marca baja definitiva, anula tickets pendientes y pone el trivial a cero.\n\nNo procesa mantenimientos.\n\n¿Confirmas la consolidación?`)) return;
 
     setBulkConsolidatingGestiones(true);
     const results = [];
@@ -4092,9 +4092,9 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
       const okResults = results.filter(item => item.result?.ok);
       const errorResults = results.filter(item => !item.result?.ok);
-      const errorLines = errorResults.map(item => `- ${item.gestion.studentName || 'Sin alumno'} (${item.gestion.type || 'gestiÃ³n'}): ${item.result?.message || 'Error no especificado'}`);
+      const errorLines = errorResults.map(item => `- ${item.gestion.studentName || 'Sin alumno'} (${item.gestion.type || 'gestión'}): ${item.result?.message || 'Error no especificado'}`);
 
-      alert(`ConsolidaciÃ³n terminada.\n\nConsolidadas correctamente: ${okResults.length}\nCon error u omitidas: ${errorResults.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
+      alert(`Consolidación terminada.\n\nConsolidadas correctamente: ${okResults.length}\nCon error u omitidas: ${errorResults.length}${errorLines.length ? `\n\nErrores:\n${errorLines.join('\n')}` : ''}`);
     } finally {
       setBulkConsolidatingGestiones(false);
     }
@@ -4103,7 +4103,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';
     const newStatus = isStatusField ? (currentValue === 'congelado' ? 'activo' : 'congelado') : !currentValue;
-    if(window.confirm(`Â¿Cambiar este ajuste a ${isStatusField ? newStatus.toUpperCase() : (newStatus ? 'ON' : 'OFF')}?`)) {
+    if(window.confirm(`¿Cambiar este ajuste a ${isStatusField ? newStatus.toUpperCase() : (newStatus ? 'ON' : 'OFF')}?`)) {
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { [field]: newStatus });
     }
   };
@@ -4116,12 +4116,12 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const studentEmail = normalizeEmail(studentInfo?.email || '');
 
     if (studentInfo?.globalStatus === 'baja') {
-      alert(`${displayName} estÃ¡ dado de baja. No se puede crear un mantenimiento temporal sobre una baja.`);
+      alert(`${displayName} está dado de baja. No se puede crear un mantenimiento temporal sobre una baja.`);
       return false;
     }
 
     if (studentInfo?.globalStatus === 'impago') {
-      const okImpago = window.confirm(`${displayName} estÃ¡ marcado como IMPAGO.\n\nPuedes crear igualmente el mantenimiento temporal, pero mientras siga en impago el acceso del alumno seguirÃ¡ bloqueado por incidencia administrativa.\n\nÂ¿Quieres continuar?`);
+      const okImpago = window.confirm(`${displayName} está marcado como IMPAGO.\n\nPuedes crear igualmente el mantenimiento temporal, pero mientras siga en impago el acceso del alumno seguirá bloqueado por incidencia administrativa.\n\n¿Quieres continuar?`);
       if (!okImpago) return false;
     }
 
@@ -4130,7 +4130,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
     const overlapping = getStudentMaintenancePeriods(studentId).find(existingPeriod => doDateRangesOverlap(period.from, period.until, existingPeriod.from, existingPeriod.until));
     if (overlapping) {
-      alert(`âš ï¸ ${displayName} ya tiene un mantenimiento que se solapa con ese periodo:\n\n${formatMaintenancePeriodLine(overlapping)}\n\nCancÃ©lalo o elige otro mes.`);
+      alert(`⚠️ ${displayName} ya tiene un mantenimiento que se solapa con ese periodo:\n\n${formatMaintenancePeriodLine(overlapping)}\n\nCancélalo o elige otro mes.`);
       return false;
     }
 
@@ -4138,7 +4138,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const periodLine = formatMaintenancePeriodLine(period);
     const maintenanceFeeLine = formatMaintenanceFeeLine(period);
 
-    const ok = window.confirm(`Â¿Crear mantenimiento temporal manual para ${displayName}?\n\nPeriodo: ${periodLine}\nCuota: ${maintenanceFeeLine}\nClases afectadas: ${classesWithStudent.length}\n\nNo se cambiarÃ¡ globalStatus a congelado. Se crearÃ¡ un periodo en maintenancePeriods.`);
+    const ok = window.confirm(`¿Crear mantenimiento temporal manual para ${displayName}?\n\nPeriodo: ${periodLine}\nCuota: ${maintenanceFeeLine}\nClases afectadas: ${classesWithStudent.length}\n\nNo se cambiará globalStatus a congelado. Se creará un periodo en maintenancePeriods.`);
     if (!ok) return false;
 
     try {
@@ -4177,35 +4177,35 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         subjectBuilder: () => `Alumno en mantenimiento temporal: ${displayName}`,
         bodyBuilder: (group) => `Hola ${group.teacherName},
 
-Desde coordinaciÃ³n te informamos que ${displayName} tendrÃ¡ la plaza en mantenimiento temporal ${periodLine}.
+Desde coordinación te informamos que ${displayName} tendrá la plaza en mantenimiento temporal ${periodLine}.
 
 Afecta a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:
 
-${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}
+${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}
 
-Durante ese periodo no debes esperarlo en clase. Fuera de esas fechas volverÃ¡ a figurar como alumno activo automÃ¡ticamente en la plataforma.
+Durante ese periodo no debes esperarlo en clase. Fuera de esas fechas volverá a figurar como alumno activo automáticamente en la plataforma.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
       });
 
       await sendStudentNotification({
         studentEmail,
-        subject: `ConfirmaciÃ³n de mantenimiento temporal de plaza - Escuela Los Mitos`,
+        subject: `Confirmación de mantenimiento temporal de plaza - Escuela Los Mitos`,
         body: `Hola ${studentName},
 
-Te confirmamos que desde coordinaciÃ³n hemos registrado el mantenimiento temporal de tu plaza.
+Te confirmamos que desde coordinación hemos registrado el mantenimiento temporal de tu plaza.
 
 Periodo de mantenimiento: ${periodLine}.
 Cuota: ${maintenanceFeeLine}.
 
-Durante ese periodo conservas tu plaza y tu acceso al portal quedarÃ¡ limitado segÃºn la normativa del centro. Al finalizar el periodo, tu plaza volverÃ¡ a estar activa automÃ¡ticamente en la plataforma.
+Durante ese periodo conservas tu plaza y tu acceso al portal quedará limitado según la normativa del centro. Al finalizar el periodo, tu plaza volverá a estar activa automáticamente en la plataforma.
 
 Un saludo,
-CoordinaciÃ³n Los Mitos.`
+Coordinación Los Mitos.`
       });
 
-      alert(`â„ï¸ Mantenimiento temporal creado manualmente para ${displayName}: ${periodLine}. Cuota: ${maintenanceFeeLine}. Profesores y alumno avisados.`);
+      alert(`❄️ Mantenimiento temporal creado manualmente para ${displayName}: ${periodLine}. Cuota: ${maintenanceFeeLine}. Profesores y alumno avisados.`);
       return true;
     } catch (error) {
       alert('Error al crear el mantenimiento temporal manual: ' + error.message);
@@ -4220,11 +4220,11 @@ CoordinaciÃ³n Los Mitos.`
     }
 
     if (newStatus === 'baja') {
-      const confirmBaja = window.confirm(`âš ï¸ ACCIÃ“N DEFINITIVA: Â¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminarÃ¡ de todas las listas de los profesores y perderÃ¡ el acceso al portal.`);
+      const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
       if (!confirmBaja) return;
     }
     if (newStatus === 'impago') {
-      const confirmImpago = window.confirm(`Â¿Marcar a ${studentName} como IMPAGO?\n\nMantendrÃ¡ su plaza y seguirÃ¡ apareciendo en las clases, pero perderÃ¡ temporalmente el acceso al Ãrea del Alumno hasta que lo reactives.`);
+      const confirmImpago = window.confirm(`¿Marcar a ${studentName} como IMPAGO?\n\nMantendrá su plaza y seguirá apareciendo en las clases, pero perderá temporalmente el acceso al Área del Alumno hasta que lo reactives.`);
       if (!confirmImpago) return;
     }
     try {
@@ -4246,16 +4246,16 @@ CoordinaciÃ³n Los Mitos.`
         await sendGroupedTeacherSummary({
           groupedClasses: groupedTeachers,
           subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
-          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinaciÃ³n te informamos que ${displayName} ha sido dado de baja y ya no asistirÃ¡ a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha sido dado de baja y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
         await sendStudentNotification({
           studentEmail: studentInfo?.email || '',
-          subject: `ConfirmaciÃ³n de baja - Escuela Los Mitos`,
-          body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+          subject: `Confirmación de baja - Escuela Los Mitos`,
+          body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
 
-        alert(`âœ… ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
+        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
       } else if (newStatus === 'activo') {
         const activeOrFutureMaintenance = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
         for (let period of activeOrFutureMaintenance) {
@@ -4267,10 +4267,10 @@ CoordinaciÃ³n Los Mitos.`
           });
         }
         const clasesActualizadas = await syncStudentPauseStateInClasses(studentId, false);
-        alert(`âœ… Estado de ${studentName} cambiado a ACTIVO.${activeOrFutureMaintenance.length ? ` Mantenimientos cancelados: ${activeOrFutureMaintenance.length}.` : ''}${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
+        alert(`✅ Estado de ${studentName} cambiado a ACTIVO.${activeOrFutureMaintenance.length ? ` Mantenimientos cancelados: ${activeOrFutureMaintenance.length}.` : ''}${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
       } else if (newStatus === 'impago') {
         const clasesActualizadas = studentInfo?.globalStatus === 'congelado' ? await syncStudentPauseStateInClasses(studentId, false) : 0;
-        alert(`âš ï¸ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
+        alert(`⚠️ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
@@ -4280,7 +4280,7 @@ CoordinaciÃ³n Los Mitos.`
   };
 
   const handleRemoveFromSpecificClass = async (classData, studentId, studentName) => {
-    if (!window.confirm(`Â¿Seguro que quieres borrar a ${studentName} SOLO de esta clase de ${classData.subject}?\n\nSeguirÃ¡ activo en la escuela y en sus otras clases (si las tiene).`)) return;
+    if (!window.confirm(`¿Seguro que quieres borrar a ${studentName} SOLO de esta clase de ${classData.subject}?\n\nSeguirá activo en la escuela y en sus otras clases (si las tiene).`)) return;
     try {
       const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
       await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
@@ -4290,7 +4290,7 @@ CoordinaciÃ³n Los Mitos.`
   };
 
   const executeDirectClassChange = async (student, targetClass) => {
-    if (!window.confirm(`Â¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrarÃ¡ de cualquier otra clase del mismo instrumento.`)) return;
+    if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
     try {
       const oldClasses = recurringClassesOnly.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
       const displayName = student.useAlias && student.alias ? student.alias : student.name;
@@ -4321,34 +4321,34 @@ CoordinaciÃ³n Los Mitos.`
       await sendGroupedTeacherSummary({
         groupedClasses: otherOldGroups,
         subjectBuilder: (group) => `Cambio manual: ${displayName} deja tu clase`,
-        bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} ha sido cambiado manualmente de grupo y ya no asistirÃ¡ a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+        bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} ha sido cambiado manualmente de grupo y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
       });
 
       if (targetOldGroup) {
         await sendTeacherNotification({
           teacherName: targetClass.teacher,
           subject: `Cambio manual interno: ${displayName}`,
-          body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `Â· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\nÂ· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+          body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
       } else if (!targetIsPunctual) {
         await sendTeacherNotification({
           teacherName: targetClass.teacher,
           subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
-          body: `Hola ${targetClass.teacher},\n\nDesde coordinaciÃ³n hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\nÂ· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`
+          body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
         });
       }
 
       alert(targetIsPunctual
-        ? `âœ… ${student.name} aÃ±adido a una clase puntual de ${targetClass.teacher}. No se han enviado correos de alumno fijo.`
-        : `âœ… ${student.name} transferido con Ã©xito a la clase de ${targetClass.teacher}. Profesor avisado si correspondÃ­a. No se ha enviado email al alumno porque no es alta inicial.`);
+        ? `✅ ${student.name} añadido a una clase puntual de ${targetClass.teacher}. No se han enviado correos de alumno fijo.`
+        : `✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}. Profesor avisado si correspondía. No se ha enviado email al alumno porque no es alta inicial.`);
       setChangeClassModal(null);
     } catch (error) {
-      alert(`âŒ Error al cambiar de clase: ${error.message}`);
+      alert(`❌ Error al cambiar de clase: ${error.message}`);
     }
   };
 
   const grantRecoveryTicket = async (student) => {
-    const num = window.prompt(`Â¿CuÃ¡ntos tickets de recuperaciÃ³n quieres otorgarle a ${student.name} como cortesÃ­a?\n\n(Disponibles desde hoy por ser regalo de administraciÃ³n)`, "1");
+    const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Disponibles desde hoy por ser regalo de administración)`, "1");
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
     try {
       const { validFrom, validUntil } = generateImmediateGiftTicketDates();
@@ -4362,7 +4362,7 @@ CoordinaciÃ³n Los Mitos.`
           setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
             studentId: student.id,
             studentName: displayName,
-            subject: 'CortesÃ­a Escuela',
+            subject: 'Cortesía Escuela',
             originalDate: new Date().toISOString().split('T')[0],
             validFrom,
             validUntil,
@@ -4373,7 +4373,7 @@ CoordinaciÃ³n Los Mitos.`
         );
       }
       await Promise.all(promises);
-      alert(`ðŸŽ Se han otorgado ${num} tickets a ${student.name}. Ya estÃ¡n disponibles desde hoy.`);
+      alert(`🎁 Se han otorgado ${num} tickets a ${student.name}. Ya están disponibles desde hoy.`);
     } catch(e) {
       alert("Error al otorgar tickets.");
     }
@@ -4381,7 +4381,7 @@ CoordinaciÃ³n Los Mitos.`
 
   const cleanExpiredTickets = async () => {
     const today = new Date().toISOString().split('T')[0];
-    if (!window.confirm(`ðŸ§¹ LIMPIEZA DE BASE DE DATOS\n\nÂ¿Borrar definitivamente todos los tickets cuya validez expirÃ³ antes de hoy (${formatDateSpanish(today)})?`)) return;
+    if (!window.confirm(`🧹 LIMPIEZA DE BASE DE DATOS\n\n¿Borrar definitivamente todos los tickets cuya validez expiró antes de hoy (${formatDateSpanish(today)})?`)) return;
     try {
       setLoading(true);
       const ticketsQuery = collectionGroup(db, 'tickets');
@@ -4395,10 +4395,10 @@ CoordinaciÃ³n Los Mitos.`
           count++;
         }
       });
-      if (count === 0) alert("âœ¨ Todo reluciente. No hay tickets caducados que limpiar.");
+      if (count === 0) alert("✨ Todo reluciente. No hay tickets caducados que limpiar.");
       else {
         await batch.commit();
-        alert(`ðŸ—‘ï¸ Â¡Limpieza completada! Se han borrado ${count} tickets caducados.`);
+        alert(`🗑️ ¡Limpieza completada! Se han borrado ${count} tickets caducados.`);
       }
     } catch (e) {
       alert("Hubo un error en la limpieza masiva.");
@@ -4498,7 +4498,7 @@ CoordinaciÃ³n Los Mitos.`
 
 
   const deletePayrollAdjustment = async (adjustment) => {
-    if (!window.confirm(`Â¿Borrar este ajuste de ${adjustment.hours > 0 ? '+' : ''}${adjustment.hours}h para ${adjustment.teacher}?`)) return;
+    if (!window.confirm(`¿Borrar este ajuste de ${adjustment.hours > 0 ? '+' : ''}${adjustment.hours}h para ${adjustment.teacher}?`)) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'payrollAdjustments', adjustment.id));
       alert('Ajuste eliminado.');
@@ -4508,31 +4508,31 @@ CoordinaciÃ³n Los Mitos.`
   };
 
   const deleteAnnouncement = async (id) => { 
-    if(window.confirm('Â¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
+    if(window.confirm('¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id)); 
   };
 
   const handleDownloadBIReport = () => {
     const generatedAt = new Date();
     const dateLabel = generatedAt.toLocaleString('es-ES');
-    const money = value => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} â‚¬`;
+    const money = value => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
 
     const lines = [
-      'INFORME BI Â· ESCUELA LOS MITOS',
+      'INFORME BI · ESCUELA LOS MITOS',
       `Generado: ${dateLabel}`,
       '',
       'RESUMEN GLOBAL',
       `Ingresos por clases activas: ${money(businessIntelligence.totalIngresosClases)} (${businessIntelligence.totalAlumnosActivos || 0} alumno/s que ya generan cuota)`,
-      `Ingresos por mantenimiento: ${money(businessIntelligence.ingresosMantenimiento)} (${businessIntelligence.alumnosMantenimiento} alumno/s Ã— ${MAINTENANCE_MONTHLY_FEE} â‚¬)`,
-      `Inicios futuros sin ingreso todavÃ­a: ${businessIntelligence.totalAlumnosInicioFuturo || 0} alumno/s`,
+      `Ingresos por mantenimiento: ${money(businessIntelligence.ingresosMantenimiento)} (${businessIntelligence.alumnosMantenimiento} alumno/s × ${MAINTENANCE_MONTHLY_FEE} €)`,
+      `Inicios futuros sin ingreso todavía: ${businessIntelligence.totalAlumnosInicioFuturo || 0} alumno/s`,
       `Plazas fijas comprometidas: ${businessIntelligence.totalPlazasComprometidas || 0}`,
       `Impagos incluidos como plaza activa/riesgo: ${businessIntelligence.totalImpagos || 0}`,
       `Ingresos totales estimados: ${money(businessIntelligence.totalIngresos)}`,
       `Coste profesores previsto: ${money(businessIntelligence.costeTotalProfesores)} (solo clases operativas)`,
-      `Clases operativas: ${businessIntelligence.totalClasesOperativas || 0} Â· Hibernadas/no computables: ${businessIntelligence.totalClasesHibernadas || 0}`,
-      `Horas semanales computables: ${(businessIntelligence.totalHorasSemanalesOperativas || 0).toFixed(1)} Â· Hibernadas no computadas: ${(businessIntelligence.totalHorasSemanalesHibernadas || 0).toFixed(1)}`,
+      `Clases operativas: ${businessIntelligence.totalClasesOperativas || 0} · Hibernadas/no computables: ${businessIntelligence.totalClasesHibernadas || 0}`,
+      `Horas semanales computables: ${(businessIntelligence.totalHorasSemanalesOperativas || 0).toFixed(1)} · Hibernadas no computadas: ${(businessIntelligence.totalHorasSemanalesHibernadas || 0).toFixed(1)}`,
       `Gastos fijos: ${money(businessIntelligence.totalFijos)}`,
       `Resultado estimado: ${money(businessIntelligence.beneficioNeto)}`,
-      `Criterio de previsiÃ³n docente: ${BI_WEEKS_PER_MONTH} semanas/mes`,
+      `Criterio de previsión docente: ${BI_WEEKS_PER_MONTH} semanas/mes`,
       '',
       'POR SEDE',
       ...SEDES.flatMap(sede => {
@@ -4553,15 +4553,15 @@ CoordinaciÃ³n Los Mitos.`
       }),
       '',
       'POR PROFESOR',
-      ...businessIntelligence.porProfe.map(p => `${p.name}: ingresos ${money(p.ingresos)} Â· coste ${money(p.costes)} Â· margen ${money(p.beneficio)} Â· ${(p.horasSemanales || 0).toFixed(1)} h/sem computables Â· ${p.clasesOperativas || 0} clase(s) operativas Â· ${p.clasesHibernadas || 0} hibernada(s)`),
+      ...businessIntelligence.porProfe.map(p => `${p.name}: ingresos ${money(p.ingresos)} · coste ${money(p.costes)} · margen ${money(p.beneficio)} · ${(p.horasSemanales || 0).toFixed(1)} h/sem computables · ${p.clasesOperativas || 0} clase(s) operativas · ${p.clasesHibernadas || 0} hibernada(s)`),
       '',
       'POR INSTRUMENTO',
-      ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} Â· coste ${money(i.costes)} Â· margen ${money(i.beneficio)} Â· ${i.numGrupos || 0} grupo/s operativos Â· ${i.numGruposHibernados || 0} hibernado/s`),
+      ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} · coste ${money(i.costes)} · margen ${money(i.beneficio)} · ${i.numGrupos || 0} grupo/s operativos · ${i.numGruposHibernados || 0} hibernado/s`),
       '',
       'DETALLE POR CLASE',
-      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} Â· ${c.teacher} Â· ${c.sede} Â· ${getDayName(c.dayOfWeek)} ${c.time} Â· ${c.estadoOperativo || (c.isHibernated ? 'HIBERNADA' : 'OPERATIVA')} Â· activos con ingreso ${c.numAlumnos} Â· mantenimiento ${c.numCongelados} Â· inicio futuro ${c.numInicioFuturo || 0} Â· recolocados ${c.numRecolocados || 0} Â· plazas comprometidas ${c.numPlazasComprometidas || 0} Â· horas computables ${(c.horasComputables || 0).toFixed(1)} Â· ingresos ${money(c.ingresos)} Â· coste ${money(c.coste)} Â· margen ${money(c.beneficio)}`),
+      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · ${c.estadoOperativo || (c.isHibernated ? 'HIBERNADA' : 'OPERATIVA')} · activos con ingreso ${c.numAlumnos} · mantenimiento ${c.numCongelados} · inicio futuro ${c.numInicioFuturo || 0} · recolocados ${c.numRecolocados || 0} · plazas comprometidas ${c.numPlazasComprometidas || 0} · horas computables ${(c.horasComputables || 0).toFixed(1)} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}`),
       '',
-      'Nota: este informe es una previsiÃ³n operativa, no sustituye la contabilidad real de Tadosi.'
+      'Nota: este informe es una previsión operativa, no sustituye la contabilidad real de Tadosi.'
     ];
 
     const filename = `Informe_BI_Los_Mitos_${getTodayLocalString()}.txt`;
@@ -4582,11 +4582,11 @@ CoordinaciÃ³n Los Mitos.`
 
     const getSnapshotStatus = ({ activeCount, maintenanceCount, futureStartCount, relocatedCount }) => {
       if (activeCount > 0) return 'OPERATIVA';
-      if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA Â· reservas / mantenimiento';
-      if (maintenanceCount > 0) return 'HIBERNADA Â· solo mantenimiento';
-      if (futureStartCount > 0) return 'HIBERNADA Â· inicio futuro';
-      if (relocatedCount > 0) return 'OPERATIVA Â· recolocaciÃ³n temporal';
-      return 'HIBERNADA Â· sin alumnos activos';
+      if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA · reservas / mantenimiento';
+      if (maintenanceCount > 0) return 'HIBERNADA · solo mantenimiento';
+      if (futureStartCount > 0) return 'HIBERNADA · inicio futuro';
+      if (relocatedCount > 0) return 'OPERATIVA · recolocación temporal';
+      return 'HIBERNADA · sin alumnos activos';
     };
 
     const lines = [
@@ -4594,7 +4594,7 @@ CoordinaciÃ³n Los Mitos.`
       `Generada: ${new Date().toLocaleString('es-ES')}`,
       `Fecha operativa aplicada: ${formatDateSpanish(snapshotDate)}`,
       '',
-      'Criterio: foto operativa real. Usa la misma lÃ³gica de la Vista Arquitecto en modo Real.',
+      'Criterio: foto operativa real. Usa la misma lógica de la Vista Arquitecto en modo Real.',
       'Excluye recuperaciones y alumnos no fijos; aplica fechas de inicio/fin, mantenimiento y recolocaciones temporales.',
       'No es un informe comercial de plazas web.',
       '==============================================================='
@@ -4617,14 +4617,14 @@ CoordinaciÃ³n Los Mitos.`
       const statusLabel = getSnapshotStatus({ activeCount, maintenanceCount, futureStartCount, relocatedCount });
 
       const endTime = getClassEndTime(clase.time, clase.duration);
-      const turno = `${clase.sede || 'Tarragona'} Â· ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} Â· ${clase.sala || 'Sala no indicada'}`;
+      const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
 
       lines.push(
         '',
         turno,
-        `${clase.subject || 'Clase'} Â· Profesor/a: ${clase.teacher || 'Sin asignar'}`,
+        `${clase.subject || 'Clase'} · Profesor/a: ${clase.teacher || 'Sin asignar'}`,
         `Estado operativo: ${statusLabel}`,
-        `Cupo operativo: ${planningStudents.length}/${cap || 'sin aforo'} Â· Activos: ${activeCount} Â· Mantenimiento: ${maintenanceCount} Â· Inicio futuro: ${futureStartCount} Â· Recolocados aquÃ­: ${relocatedCount}`,
+        `Cupo operativo: ${planningStudents.length}/${cap || 'sin aforo'} · Activos: ${activeCount} · Mantenimiento: ${maintenanceCount} · Inicio futuro: ${futureStartCount} · Recolocados aquí: ${relocatedCount}`,
         'Alumnos:'
       );
 
@@ -4638,9 +4638,9 @@ CoordinaciÃ³n Los Mitos.`
           if (student.isMaintenance) labels.push('mantenimiento / plaza reservada');
           if (student.isFutureStart) labels.push(formatStudentClassStartLabel(student.startDate));
           if (student.endDate) labels.push(formatStudentClassEndLabel(student.endDate));
-          if (student.isRelocated) labels.push(student.relocationLabel || 'recolocado temporalmente aquÃ­');
+          if (student.isRelocated) labels.push(student.relocationLabel || 'recolocado temporalmente aquí');
 
-          lines.push(`- ${student.displayName} â€” ${student.email}${labels.length ? ` Â· ${labels.join(' Â· ')}` : ''}`);
+          lines.push(`- ${student.displayName} — ${student.email}${labels.length ? ` · ${labels.join(' · ')}` : ''}`);
         });
       }
     });
@@ -4704,7 +4704,7 @@ CoordinaciÃ³n Los Mitos.`
 
     const describeProjectedClass = (clase) => {
       if (!clase) return '';
-      return `${clase.subject || 'Clase'} Â· ${getDayName(clase.dayOfWeek)} Â· ${clase.time || ''}h Â· ${clase.sede || 'Tarragona'}${clase.sala ? ` Â· ${clase.sala}` : ''} Â· ${clase.teacher || 'Sin profesor'}`;
+      return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''} · ${clase.teacher || 'Sin profesor'}`;
     };
 
     const getStudentLineData = (studentEntry = {}, fallbackStudent = null) => {
@@ -4762,7 +4762,7 @@ CoordinaciÃ³n Los Mitos.`
       const details = gestion.details || gestion.title || '';
 
       if (!studentInfo?.id) {
-        movementsSummary.push(`- ${studentName} Â· ${gestion.type}: no aplicada porque la gestiÃ³n no tiene alumno asociado.`);
+        movementsSummary.push(`- ${studentName} · ${gestion.type}: no aplicada porque la gestión no tiene alumno asociado.`);
         return;
       }
 
@@ -4775,20 +4775,20 @@ CoordinaciÃ³n Los Mitos.`
           studentInfo.globalStatus = 'baja';
           let removedFrom = 0;
           projectedClasses.forEach(clase => {
-            if (removeStudentFromClass(clase, studentInfo.id, 'BAJA TOTAL PENDIENTE Â· sale de esta clase al cierre')) removedFrom += 1;
+            if (removeStudentFromClass(clase, studentInfo.id, 'BAJA TOTAL PENDIENTE · sale de esta clase al cierre')) removedFrom += 1;
           });
-          addStudentMovement(studentInfo.id, 'BAJA TOTAL PENDIENTE Â· todas las clases');
-          movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· BAJA total pendiente Â· sale de ${removedFrom} clase(s)${gestion.sourceClassLine ? ` Â· plaza de referencia: ${gestion.sourceClassLine}` : ''}${details ? ` Â· ${details}` : ''}`);
+          addStudentMovement(studentInfo.id, 'BAJA TOTAL PENDIENTE · todas las clases');
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA total pendiente · sale de ${removedFrom} clase(s)${gestion.sourceClassLine ? ` · plaza de referencia: ${gestion.sourceClassLine}` : ''}${details ? ` · ${details}` : ''}`);
           return;
         }
 
         if (hasScopedBaja && !sourceClass) {
-          movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· BAJA no proyectada: no se encontrÃ³ la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA no proyectada: no se encontró la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
           return;
         }
 
         if (hasScopedBaja && sourceClass) {
-          const removed = removeStudentFromClass(sourceClass, studentInfo.id, 'BAJA PARCIAL PENDIENTE Â· sale de esta plaza al cierre');
+          const removed = removeStudentFromClass(sourceClass, studentInfo.id, 'BAJA PARCIAL PENDIENTE · sale de esta plaza al cierre');
           const remainingFixed = projectedClasses.filter(clase =>
             clase.id !== sourceClass.id &&
             !isPunctualClass(clase) &&
@@ -4797,11 +4797,11 @@ CoordinaciÃ³n Los Mitos.`
 
           if (remainingFixed.length === 0) {
             studentInfo.globalStatus = 'baja';
-            addStudentMovement(studentInfo.id, 'BAJA TOTAL PENDIENTE Â· Ãºltima plaza fija');
-            movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· BAJA total pendiente Â· Ãºltima plaza fija: ${describeProjectedClass(sourceClass)}${details ? ` Â· ${details}` : ''}`);
+            addStudentMovement(studentInfo.id, 'BAJA TOTAL PENDIENTE · última plaza fija');
+            movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA total pendiente · última plaza fija: ${describeProjectedClass(sourceClass)}${details ? ` · ${details}` : ''}`);
           } else {
             addStudentMovement(studentInfo.id, 'BAJA PARCIAL PENDIENTE');
-            movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· BAJA parcial pendiente Â· sale de ${removed ? describeProjectedClass(sourceClass) : (gestion.sourceClassLine || gestion.sourceClassId)} Â· mantiene ${remainingFixed.length} plaza(s) fija(s)${details ? ` Â· ${details}` : ''}`);
+            movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA parcial pendiente · sale de ${removed ? describeProjectedClass(sourceClass) : (gestion.sourceClassLine || gestion.sourceClassId)} · mantiene ${remainingFixed.length} plaza(s) fija(s)${details ? ` · ${details}` : ''}`);
           }
           return;
         }
@@ -4809,10 +4809,10 @@ CoordinaciÃ³n Los Mitos.`
         studentInfo.globalStatus = 'baja';
         let removedFrom = 0;
         projectedClasses.forEach(clase => {
-          if (removeStudentFromClass(clase, studentInfo.id, 'BAJA PENDIENTE Â· sale de esta clase al cierre')) removedFrom += 1;
+          if (removeStudentFromClass(clase, studentInfo.id, 'BAJA PENDIENTE · sale de esta clase al cierre')) removedFrom += 1;
         });
         addStudentMovement(studentInfo.id, 'BAJA PENDIENTE');
-        movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· BAJA pendiente Â· sale de ${removedFrom} clase(s)${details ? ` Â· ${details}` : ''}`);
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · BAJA pendiente · sale de ${removedFrom} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
@@ -4827,8 +4827,8 @@ CoordinaciÃ³n Los Mitos.`
           );
           affected += 1;
         });
-        addStudentMovement(studentInfo.id, `MANTENIMIENTO PENDIENTE Â· ${formatMaintenancePeriodLine({ from, until })}`);
-        movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· MANTENIMIENTO pendiente ${formatMaintenancePeriodLine({ from, until })} Â· conserva plaza en ${affected} clase(s)${details ? ` Â· ${details}` : ''}`);
+        addStudentMovement(studentInfo.id, `MANTENIMIENTO PENDIENTE · ${formatMaintenancePeriodLine({ from, until })}`);
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · MANTENIMIENTO pendiente ${formatMaintenancePeriodLine({ from, until })} · conserva plaza en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
@@ -4843,14 +4843,14 @@ CoordinaciÃ³n Los Mitos.`
           affected += 1;
         });
         addStudentMovement(studentInfo.id, 'FIN ANTICIPADO MANTENIMIENTO PENDIENTE');
-        movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· FIN ANTICIPADO DE MANTENIMIENTO pendiente Â· vuelve activo en ${affected} clase(s)${details ? ` Â· ${details}` : ''}`);
+        movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · FIN ANTICIPADO DE MANTENIMIENTO pendiente · vuelve activo en ${affected} clase(s)${details ? ` · ${details}` : ''}`);
         return;
       }
 
       if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
         const targetClass = classById.get(gestion.requestedClass);
         if (!targetClass) {
-          movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· ${gestion.type}: no aplicada porque no se encontrÃ³ clase destino (${gestion.requestedClass || 'sin clase destino'}).`);
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · ${gestion.type}: no aplicada porque no se encontró clase destino (${gestion.requestedClass || 'sin clase destino'}).`);
           return;
         }
 
@@ -4860,25 +4860,25 @@ CoordinaciÃ³n Los Mitos.`
           const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
 
           if (hasScopedChange && !sourceClass) {
-            movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· CAMBIO no proyectado: no se encontrÃ³ la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
+            movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · CAMBIO no proyectado: no se encontró la plaza origen (${gestion.sourceClassLine || gestion.sourceClassId || 'sin datos'}).`);
             return;
           }
 
           if (hasScopedChange && sourceClass) {
-            if (sourceClass.id !== targetClass.id && removeStudentFromClass(sourceClass, studentInfo.id, `CAMBIO PENDIENTE Â· sale de esta plaza y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
+            if (sourceClass.id !== targetClass.id && removeStudentFromClass(sourceClass, studentInfo.id, `CAMBIO PENDIENTE · sale de esta plaza y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
           } else {
             projectedClasses.forEach(clase => {
               if (clase.id === targetClass.id) return;
               if (clase.subject !== targetClass.subject) return;
-              if (removeStudentFromClass(clase, studentInfo.id, `CAMBIO PENDIENTE Â· sale de esta clase y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
+              if (removeStudentFromClass(clase, studentInfo.id, `CAMBIO PENDIENTE · sale de esta clase y pasa a ${describeProjectedClass(targetClass)}`)) removedFrom += 1;
             });
           }
 
-          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'CAMBIO PENDIENTE Â· entra en esta clase');
-          movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· CAMBIO pendiente Â· sale de ${hasScopedChange ? (sourceClass ? describeProjectedClass(sourceClass) : (gestion.sourceClassLine || gestion.sourceClassId || 'plaza origen no encontrada')) : `${removedFrom} clase(s)`} y entra en ${describeProjectedClass(targetClass)}${details ? ` Â· ${details}` : ''}`);
+          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'CAMBIO PENDIENTE · entra en esta clase');
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · CAMBIO pendiente · sale de ${hasScopedChange ? (sourceClass ? describeProjectedClass(sourceClass) : (gestion.sourceClassLine || gestion.sourceClassId || 'plaza origen no encontrada')) : `${removedFrom} clase(s)`} y entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
         } else {
-          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'AMPLIACIÃ“N PENDIENTE Â· entra en esta clase');
-          movementsSummary.push(`- ${studentName} â€” ${studentEmail || 'sin email'} Â· AMPLIACIÃ“N pendiente Â· entra en ${describeProjectedClass(targetClass)}${details ? ` Â· ${details}` : ''}`);
+          addOrUpdateStudentInClass(targetClass, studentInfo, gestion, false, 'AMPLIACIÓN PENDIENTE · entra en esta clase');
+          movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · AMPLIACIÓN pendiente · entra en ${describeProjectedClass(targetClass)}${details ? ` · ${details}` : ''}`);
         }
       }
     });
@@ -4937,7 +4937,7 @@ CoordinaciÃ³n Los Mitos.`
 
       let statusKey = 'operativa';
       let statusLabel = 'OPERATIVA';
-      let statusHelp = 'OcupaciÃ³n suficiente.';
+      let statusHelp = 'Ocupación suficiente.';
       let priority = 99;
 
       if (cap && occupiedCount > cap) {
@@ -4948,10 +4948,10 @@ CoordinaciÃ³n Los Mitos.`
       } else if (!thresholds) {
         statusKey = 'particular';
         statusLabel = 'PARTICULAR / AFORO 1';
-        statusHelp = 'Clase de aforo 1: no entra en la lÃ³gica de grupos en peligro.';
+        statusHelp = 'Clase de aforo 1: no entra en la lógica de grupos en peligro.';
       } else if (activeCount === 0 && maintenanceCount === 0 && futureStartCount === 0) {
         statusKey = 'vacia';
-        statusLabel = 'VACÃA / HIBERNADA';
+        statusLabel = 'VACÍA / HIBERNADA';
         statusHelp = 'Sin alumnos activos, sin mantenimiento y sin inicios futuros.';
         priority = 0;
       } else if (activeCount === 0 && maintenanceCount > 0) {
@@ -4961,8 +4961,8 @@ CoordinaciÃ³n Los Mitos.`
         priority = 1;
       } else if (thresholds && activeCount <= thresholds.critical) {
         statusKey = 'critico';
-        statusLabel = 'CRÃTICA';
-        statusHelp = `Criterio aplicado: aforo ${cap}, crÃ­tica con ${thresholds.critical} alumno(s) activo(s) o menos.`;
+        statusLabel = 'CRÍTICA';
+        statusHelp = `Criterio aplicado: aforo ${cap}, crítica con ${thresholds.critical} alumno(s) activo(s) o menos.`;
         priority = 2;
       } else if (thresholds && activeCount <= thresholds.review) {
         statusKey = 'revisar';
@@ -4980,8 +4980,8 @@ CoordinaciÃ³n Los Mitos.`
       }
 
       const endTime = getClassEndTime(clase.time, clase.duration);
-      const turno = `${clase.sede || 'Tarragona'} Â· ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} Â· ${clase.sala || 'Sala no indicada'}`;
-      const summaryLine = `${turno} Â· ${clase.subject || 'Clase'} Â· ${clase.teacher || 'Sin profesor'} Â· ${statusLabel} Â· activos ${activeCount} Â· mantenimiento ${maintenanceCount} Â· inicio futuro ${futureStartCount} Â· ocupaciÃ³n ${occupiedCount}/${cap || 'sin aforo'} Â· libres ${freeSpotsLabel}`;
+      const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
+      const summaryLine = `${turno} · ${clase.subject || 'Clase'} · ${clase.teacher || 'Sin profesor'} · ${statusLabel} · activos ${activeCount} · mantenimiento ${maintenanceCount} · inicio futuro ${futureStartCount} · ocupación ${occupiedCount}/${cap || 'sin aforo'} · libres ${freeSpotsLabel}`;
 
       return {
         id: clase.id,
@@ -5049,31 +5049,31 @@ CoordinaciÃ³n Los Mitos.`
       });
 
     const lines = [
-      'PROYECCIÃ“N ESCUELA LOS MITOS',
+      'PROYECCIÓN ESCUELA LOS MITOS',
       `Generada: ${new Date().toLocaleString('es-ES')}`,
       '',
-      'SimulaciÃ³n: foto actual + gestiones pendientes de bandeja.',
-      'No ejecuta trÃ¡mites, no modifica Firebase y no envÃ­a correos.',
+      'Simulación: foto actual + gestiones pendientes de bandeja.',
+      'No ejecuta trámites, no modifica Firebase y no envía correos.',
       '',
       'CRITERIOS DE RIESGO APLICADOS',
-      '- Aforo 8 o mÃ¡s: CRÃTICA con 3 alumnos activos o menos; REVISAR con 5 alumnos activos o menos.',
-      '- Aforo 5: CRÃTICA con 1 alumno activo; REVISAR con 2 alumnos activos.',
-      '- Aforo 4: CRÃTICA con 1 alumno activo; REVISAR con 2 alumnos activos.',
-      '- Aforos no previstos: CRÃTICA con 1 alumno activo; REVISAR con media ocupaciÃ³n aproximada.',
+      '- Aforo 8 o más: CRÍTICA con 3 alumnos activos o menos; REVISAR con 5 alumnos activos o menos.',
+      '- Aforo 5: CRÍTICA con 1 alumno activo; REVISAR con 2 alumnos activos.',
+      '- Aforo 4: CRÍTICA con 1 alumno activo; REVISAR con 2 alumnos activos.',
+      '- Aforos no previstos: CRÍTICA con 1 alumno activo; REVISAR con media ocupación aproximada.',
       '- Las clases 1/1 no se consideran grupos en peligro.',
-      '- Los alumnos con fecha futura de inicio no cuentan como activos hasta su primer dÃ­a de clase.',
+      '- Los alumnos con fecha futura de inicio no cuentan como activos hasta su primer día de clase.',
       '==============================================================='
     ];
 
     analysisRows.forEach(row => {
       const clase = row.classData;
-      const classLine = `${clase.subject || 'Clase'} Â· Profesor/a: ${clase.teacher || 'Sin asignar'}`;
+      const classLine = `${clase.subject || 'Clase'} · Profesor/a: ${clase.teacher || 'Sin asignar'}`;
 
       lines.push(
         '',
         row.turno,
         classLine,
-        `Cupo proyectado: ${row.occupiedCount}/${row.cap || 'sin aforo'} Â· Activos: ${row.activeCount} Â· Mantenimiento: ${row.maintenanceCount} Â· Inicio futuro: ${row.futureStartCount} Â· Libres: ${row.freeSpotsLabel}`,
+        `Cupo proyectado: ${row.occupiedCount}/${row.cap || 'sin aforo'} · Activos: ${row.activeCount} · Mantenimiento: ${row.maintenanceCount} · Inicio futuro: ${row.futureStartCount} · Libres: ${row.freeSpotsLabel}`,
         `Estado proyectado: ${row.statusLabel}`,
         `Criterio: ${row.statusHelp}`,
         'Alumnos:'
@@ -5083,12 +5083,12 @@ CoordinaciÃ³n Los Mitos.`
         lines.push('- Sin alumnos proyectados');
       } else {
         row.studentRows.forEach(student => {
-          const futureStartLabel = student.isFutureStart ? ` Â· ${formatStudentClassStartLabel(student.startDate)}` : '';
+          const futureStartLabel = student.isFutureStart ? ` · ${formatStudentClassStartLabel(student.startDate)}` : '';
           const statusLabel = student.crmStatus === 'impago'
-            ? ` Â· incidencia administrativa${futureStartLabel}`
-            : `${student.isMaintenance ? ' Â· mantenimiento / plaza reservada' : ''}${futureStartLabel}`;
-          const movementSuffix = student.movementLabel ? ` Â· ${student.movementLabel}` : '';
-          lines.push(`- ${student.displayName} â€” ${student.email}${statusLabel}${movementSuffix}`);
+            ? ` · incidencia administrativa${futureStartLabel}`
+            : `${student.isMaintenance ? ' · mantenimiento / plaza reservada' : ''}${futureStartLabel}`;
+          const movementSuffix = student.movementLabel ? ` · ${student.movementLabel}` : '';
+          lines.push(`- ${student.displayName} — ${student.email}${statusLabel}${movementSuffix}`);
         });
       }
 
@@ -5096,7 +5096,7 @@ CoordinaciÃ³n Los Mitos.`
       if (notes.length > 0) {
         lines.push('Movimientos pendientes en esta clase:');
         notes.forEach(note => {
-          lines.push(`- ${note.name} â€” ${note.email} Â· ${note.label}`);
+          lines.push(`- ${note.name} — ${note.email} · ${note.label}`);
         });
       }
     });
@@ -5112,17 +5112,17 @@ CoordinaciÃ³n Los Mitos.`
       }
     };
 
-    pushSummaryBlock('CLASES CRÃTICAS', criticalRows, 'Ninguna clase queda en estado crÃ­tico.');
-    pushSummaryBlock('CLASES EN REVISIÃ“N', reviewRows, 'Ninguna clase queda en revisiÃ³n.');
-    pushSummaryBlock('CLASES VACÃAS / HIBERNADAS PROYECTADAS', emptyRows, 'Ninguna clase queda vacÃ­a.');
+    pushSummaryBlock('CLASES CRÍTICAS', criticalRows, 'Ninguna clase queda en estado crítico.');
+    pushSummaryBlock('CLASES EN REVISIÓN', reviewRows, 'Ninguna clase queda en revisión.');
+    pushSummaryBlock('CLASES VACÍAS / HIBERNADAS PROYECTADAS', emptyRows, 'Ninguna clase queda vacía.');
     pushSummaryBlock('CLASES SOLO CON MANTENIMIENTO', onlyMaintenanceRows, 'Ninguna clase queda solo en mantenimiento.');
 
     lines.push('', 'A CONTACTAR');
     if (contactRows.length === 0) {
-      lines.push('- No hay alumnos activos en clases crÃ­ticas.');
+      lines.push('- No hay alumnos activos en clases críticas.');
     } else {
       contactRows.forEach(({ row, student }) => {
-        lines.push(`- ${student.displayName} â€” ${student.email} Â· ${row.subject} Â· ${getDayName(row.dayOfWeek)} ${row.time}h Â· ${row.sede} Â· ${row.teacher} Â· activos ${row.activeCount}/${row.cap}`);
+        lines.push(`- ${student.displayName} — ${student.email} · ${row.subject} · ${getDayName(row.dayOfWeek)} ${row.time}h · ${row.sede} · ${row.teacher} · activos ${row.activeCount}/${row.cap}`);
       });
     }
 
@@ -5146,21 +5146,21 @@ CoordinaciÃ³n Los Mitos.`
     };
 
     const planningRows = [...criticalRows, ...reviewRows, ...emptyRows, ...onlyMaintenanceRows];
-    const dayOrder = ['Lunes', 'Martes', 'MiÃ©rcoles', 'Jueves', 'Viernes', 'SÃ¡bado', 'Domingo'];
+    const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 
     pushGroupedRows('POR PROFESOR', planningRows, row => row.teacher || 'Sin profesor');
     pushGroupedRows('POR SEDE', planningRows, row => row.sede || 'Tarragona', (a, b) => SEDES.indexOf(a) - SEDES.indexOf(b));
-    pushGroupedRows('POR DÃA DE LA SEMANA', planningRows, row => getDayName(row.dayOfWeek), (a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
-    pushSummaryBlock('PLAZAS LIBRES PROYECTADAS', freeSpotsRows, 'No hay plazas libres proyectadas.', row => `${row.turno} Â· ${row.subject} Â· ${row.teacher} Â· ${row.freeSpots} plaza(s) libre(s) Â· estado: ${row.statusLabel}`);
+    pushGroupedRows('POR DÍA DE LA SEMANA', planningRows, row => getDayName(row.dayOfWeek), (a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+    pushSummaryBlock('PLAZAS LIBRES PROYECTADAS', freeSpotsRows, 'No hay plazas libres proyectadas.', row => `${row.turno} · ${row.subject} · ${row.teacher} · ${row.freeSpots} plaza(s) libre(s) · estado: ${row.statusLabel}`);
 
-    lines.push('', 'GESTIONES PENDIENTES APLICADAS EN ESTA SIMULACIÃ“N');
+    lines.push('', 'GESTIONES PENDIENTES APLICADAS EN ESTA SIMULACIÓN');
     if (movementsSummary.length === 0) {
       lines.push('- No hay bajas, mantenimientos temporales, fines anticipados, cambios o ampliaciones pendientes que afecten a clases fijas.');
     } else {
       movementsSummary.forEach(item => lines.push(item));
     }
 
-    lines.push('', 'Nota: la proyecciÃ³n no sustituye el cierre real de Tadosi ni la ejecuciÃ³n manual de los checks verdes en la bandeja.');
+    lines.push('', 'Nota: la proyección no sustituye el cierre real de Tadosi ni la ejecución manual de los checks verdes en la bandeja.');
 
     const filename = `Proyeccion_Escuela_Los_Mitos_${getTodayLocalString()}.txt`;
     downloadTextFile(filename, lines.join('\n'), 'text/plain;charset=utf-8');
@@ -5168,7 +5168,7 @@ CoordinaciÃ³n Los Mitos.`
 
 
   const handleGenerateSocialText = () => {
-    let t = "ðŸŽ¶ **Â¡ÃšLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** ðŸŽ¶\n\n";
+    let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";
     let foundAny = false;
 
     const getDaySortIndex = (dayVal) => {
@@ -5189,11 +5189,11 @@ CoordinaciÃ³n Los Mitos.`
 
       if (filteredWithSpots.length > 0) {
         foundAny = true;
-        t += `ðŸ“ **SEDE ${sede.toUpperCase()}**\n`;
+        t += `📍 **SEDE ${sede.toUpperCase()}**\n`;
         const instrumentosEnSede = [...new Set(filteredWithSpots.map(c => c.subject))].sort();
         
         instrumentosEnSede.forEach(inst => {
-          t += `ðŸ”¹ *${inst.toUpperCase()}:*\n`;
+          t += `🔹 *${inst.toUpperCase()}:*\n`;
           
           const grupos = filteredWithSpots.filter(c => c.subject === inst);
           
@@ -5206,9 +5206,9 @@ CoordinaciÃ³n Los Mitos.`
 
           grupos.forEach(c => {
             const libres = getCommercialFreeSpots(c);
-            const tagPlazas = libres === 1 ? " - Ãšltima plaza" : "";
+            const tagPlazas = libres === 1 ? " - Última plaza" : "";
             
-            t += `â€¢ ${getDayName(c.dayOfWeek)} ${formatTimeCompact(c.time)}${tagPlazas}\n`;
+            t += `• ${getDayName(c.dayOfWeek)} ${formatTimeCompact(c.time)}${tagPlazas}\n`;
           });
         });
         t += "\n";
@@ -5216,9 +5216,9 @@ CoordinaciÃ³n Los Mitos.`
     });
 
     if (!foundAny) {
-      t = "ðŸ“¢ Â¡Todos nuestros grupos web estÃ¡n completos en este momento! No hay plazas libres publicadas.";
+      t = "📢 ¡Todos nuestros grupos web están completos en este momento! No hay plazas libres publicadas.";
     } else {
-      t += "ðŸ“² Â¡Reserva tu plaza directamente desde el formulario de nuestra web o escrÃ­benos un mensaje privado antes de que se agoten! ðŸš€";
+      t += "📲 ¡Reserva tu plaza directamente desde el formulario de nuestra web o escríbenos un mensaje privado antes de que se agoten! 🚀";
     }
 
     setSocialModalText(t);
@@ -5229,7 +5229,7 @@ CoordinaciÃ³n Los Mitos.`
     if(players.length === 0) return alert("Nadie ha jugado este mes.");
     const maxScore = players[0].triviaPoints;
     const winners = players.filter(s => s.triviaPoints === maxScore);
-    if(!window.confirm(`Â¿Confirmas el cierre del MES?\n\nLos puntos pasarÃ¡n al acumulado del Trimestre y del AÃ±o, y el mes quedarÃ¡ a cero.\n\nHay ${winners.length} ganadores este mes con ${maxScore} puntos.`)) return;
+    if(!window.confirm(`¿Confirmas el cierre del MES?\n\nLos puntos pasarán al acumulado del Trimestre y del Año, y el mes quedará a cero.\n\nHay ${winners.length} ganadores este mes con ${maxScore} puntos.`)) return;
     setLoading(true);
     try {
       const winnerNames = winners.map(w => w.name);
@@ -5242,10 +5242,10 @@ CoordinaciÃ³n Los Mitos.`
         });
       });
       await Promise.all(updatePromises);
-      const msg = `Â¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} puntos!\n\nEl contador mensual vuelve a cero, pero vuestros puntos se acumulan para el Ranking Trimestral y Anual. Â¡A por todas!`;
+      const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} puntos!\n\nEl contador mensual vuelve a cero, pero vuestros puntos se acumulan para el Ranking Trimestral y Anual. ¡A por todas!`;
       const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "ðŸ† Â¡Ganadores del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
-      alert("Mes cerrado con Ã©xito. Puntos volcados a los rankings superiores.");
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "🏆 ¡Ganadores del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
+      alert("Mes cerrado con éxito. Puntos volcados a los rankings superiores.");
     } catch (e) { 
       alert("Error al cerrar el mes: " + e.message); 
     } finally {
@@ -5259,7 +5259,7 @@ CoordinaciÃ³n Los Mitos.`
     if(players.length === 0) return alert("Nadie ha acumulado puntos en el trimestre.");
     const maxScore = (players[0].triviaPointsQuarterly || 0) + (players[0].triviaPoints || 0);
     const winners = players.filter(s => ((s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0)) === maxScore);
-    if(!window.confirm(`Â¿Confirmas el cierre del TRIMESTRE?\n\nLos puntos trimestrales se pondrÃ¡n a cero (los anuales seguirÃ¡n intactos).\n\nHay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
+    if(!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nLos puntos trimestrales se pondrán a cero (los anuales seguirán intactos).\n\nHay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
     setLoading(true);
     try {
       const winnerNames = winners.map(w => w.name);
@@ -5269,10 +5269,10 @@ CoordinaciÃ³n Los Mitos.`
         });
       });
       await Promise.all(updatePromises);
-      const msg = `Â¡Felicidades a ${winnerNames.join(', ')} por coronarse como los campeones del Trimestre con ${maxScore} puntos!\n\nPasaros por coordinaciÃ³n a recoger vuestro premio. El contador trimestral se reinicia, Â¡pero la carrera por el Gran Premio Anual sigue activa!`;
+      const msg = `¡Felicidades a ${winnerNames.join(', ')} por coronarse como los campeones del Trimestre con ${maxScore} puntos!\n\nPasaros por coordinación a recoger vuestro premio. El contador trimestral se reinicia, ¡pero la carrera por el Gran Premio Anual sigue activa!`;
       const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "ðŸ‘‘ Â¡Campeones del Trimestre!", content: msg, date: new Date().toISOString().split('T')[0] });
-      alert("Trimestre cerrado con Ã©xito. Puedes proceder a dar los premios.");
+      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "👑 ¡Campeones del Trimestre!", content: msg, date: new Date().toISOString().split('T')[0] });
+      alert("Trimestre cerrado con éxito. Puedes proceder a dar los premios.");
     } catch (e) { 
       alert("Error al cerrar el trimestre: " + e.message); 
     } finally {
@@ -5281,7 +5281,7 @@ CoordinaciÃ³n Los Mitos.`
   };
 
   const handleCerrarRetoAnual = async () => {
-    if(!window.confirm(`âš ï¸ PELIGRO: REINICIO TOTAL\n\nÂ¿Seguro que quieres CERRAR LA TEMPORADA?\n\nEsto pondrÃ¡ a CERO ABSOLUTO los contadores de todos los alumnos (Mes, Trimestre, AÃ±o, Rachas y Victorias). Ãšsalo solo para empezar un nuevo curso o terminar el periodo de pruebas.`)) return;
+    if(!window.confirm(`⚠️ PELIGRO: REINICIO TOTAL\n\n¿Seguro que quieres CERRAR LA TEMPORADA?\n\nEsto pondrá a CERO ABSOLUTO los contadores de todos los alumnos (Mes, Trimestre, Año, Rachas y Victorias). Úsalo solo para empezar un nuevo curso o terminar el periodo de pruebas.`)) return;
     setLoading(true);
     try {
       const players = students.filter(s => 
@@ -5301,9 +5301,9 @@ CoordinaciÃ³n Los Mitos.`
         });
       });
       await Promise.all(updatePromises);
-      alert("ðŸ§¹ Â¡Limpieza profunda completada! El sistema estÃ¡ a cero y listo para una nueva temporada.");
+      alert("🧹 ¡Limpieza profunda completada! El sistema está a cero y listo para una nueva temporada.");
     } catch (e) { 
-      alert("Error al cerrar el aÃ±o: " + e.message); 
+      alert("Error al cerrar el año: " + e.message); 
     } finally {
       setLoading(false);
     }
@@ -5381,7 +5381,7 @@ CoordinaciÃ³n Los Mitos.`
 
     const isCovered = teacherSlots.some(slot => isClassFullyCoveredBySlot(editClassData, slot));
     if (!isCovered) {
-      const confirmForce = window.confirm(`AVISO DE DISPONIBILIDAD:\n\nEl profesor ${cleanTeacher} no ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\nÂ¿Quieres guardar igualmente estos cambios?`);
+      const confirmForce = window.confirm(`AVISO DE DISPONIBILIDAD:\n\nEl profesor ${cleanTeacher} no ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\n¿Quieres guardar igualmente estos cambios?`);
       if (!confirmForce) return;
     }
 
@@ -5403,7 +5403,7 @@ CoordinaciÃ³n Los Mitos.`
 
     if (collidingClasses.length > 0) {
       const clash = collidingClasses[0];
-      const confirmForceRoom = window.confirm(`ADVERTENCIA DE ESPACIO:\n\nLa ${editClassData.sala} de ${editClassData.sede} ya estÃ¡ ocupada ese dÃ­a a las ${editClassData.time}h por la clase de ${clash.subject} de ${clash.teacher}.\n\nÂ¿Quieres guardar la clase en este mismo hueco igualmente?`);
+      const confirmForceRoom = window.confirm(`ADVERTENCIA DE ESPACIO:\n\nLa ${editClassData.sala} de ${editClassData.sede} ya está ocupada ese día a las ${editClassData.time}h por la clase de ${clash.subject} de ${clash.teacher}.\n\n¿Quieres guardar la clase en este mismo hueco igualmente?`);
       if (!confirmForceRoom) return;
     }
 
@@ -5473,11 +5473,11 @@ CoordinaciÃ³n Los Mitos.`
     const teacherSlots = availabilities[teacherKey]?.[dayKey.toString()] || [];
     const isCovered = teacherSlots.some(slot => isClassFullyCoveredBySlot(newClassData, slot));
     if (!isCovered) {
-      const confirmForce = window.confirm(`âš ï¸ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\nÂ¿Quieres FORZAR la creaciÃ³n de la clase de todos modos?`);
+      const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
       if (!confirmForce) return; 
     }
 
-    // --- 2. Aviso de Solapamiento FÃ­sico de Sala ---
+    // --- 2. Aviso de Solapamiento Físico de Sala ---
     const collidingClasses = operationalClasses.filter(c => {
       if (c.sede !== newClassData.sede) return false;
       if (c.sala !== newClassData.sala) return false;
@@ -5495,7 +5495,7 @@ CoordinaciÃ³n Los Mitos.`
 
     if (collidingClasses.length > 0) {
       const clash = collidingClasses[0];
-      const confirmForceRoom = window.confirm(`âš ï¸ ADVERTENCIA DE ESPACIO:\n\nLa ${newClassData.sala} de ${newClassData.sede} ya estÃ¡ ocupada ese dÃ­a a las ${newClassData.time}h por la clase de ${clash.subject} de ${clash.teacher}.\n\nSabemos que a veces usÃ¡is el vestÃ­bulo o buscÃ¡is apaÃ±os.\nÂ¿Quieres forzar la creaciÃ³n de la clase en este mismo hueco de todas formas?`);
+      const confirmForceRoom = window.confirm(`⚠️ ADVERTENCIA DE ESPACIO:\n\nLa ${newClassData.sala} de ${newClassData.sede} ya está ocupada ese día a las ${newClassData.time}h por la clase de ${clash.subject} de ${clash.teacher}.\n\nSabemos que a veces usáis el vestíbulo o buscáis apaños.\n¿Quieres forzar la creación de la clase en este mismo hueco de todas formas?`);
       if (!confirmForceRoom) return;
     }
     
@@ -5523,7 +5523,7 @@ CoordinaciÃ³n Los Mitos.`
       await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
         ...newClassData,
         ...baseWebConfig,
-        cuotaBase: Number(newClassData.cuotaBase) || 0, // ðŸ‘ˆ Cuota para Informes
+        cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
         id: classId,
         students: [],
         exceptions: {},
@@ -5531,7 +5531,7 @@ CoordinaciÃ³n Los Mitos.`
         dayOfWeek: dayKey,
         date: newClassData.isRecurring ? null : newClassData.specificDate
       });
-      alert(`âœ… Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
+      alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
 
       setCreateClassModal(false);
       setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: '' });
@@ -5542,7 +5542,7 @@ CoordinaciÃ³n Los Mitos.`
 
   const handleMassImport = async () => {
     if (!importText.trim()) return alert("Pega los datos del Excel primero.");
-    if (!window.confirm("âš ï¸ ATENCIÃ“N: Vas a importar alumnos masivamente. Â¿EstÃ¡n las columnas ordenadas como Nombre | Email?")) return;
+    if (!window.confirm("⚠️ ATENCIÓN: Vas a importar alumnos masivamente. ¿Están las columnas ordenadas como Nombre | Email?")) return;
     setIsImporting(true);
     try {
       const rows = importText.trim().split('\n');
@@ -5573,10 +5573,10 @@ CoordinaciÃ³n Los Mitos.`
         }
       });
       await batch.commit();
-      alert(`ðŸŽ‰ Â¡BOOM! Se han importado ${count} alumnos correctamente.`);
+      alert(`🎉 ¡BOOM! Se han importado ${count} alumnos correctamente.`);
       setImportText('');
     } catch (error) {
-      alert(`âŒ Error en la importaciÃ³n: ${error.message}`);
+      alert(`❌ Error en la importación: ${error.message}`);
     } finally {
       setIsImporting(false);
     }
@@ -5652,8 +5652,8 @@ CoordinaciÃ³n Los Mitos.`
         status: 'archivado',
         autoArchivedAt: new Date().toISOString(),
         autoArchivedBy: 'admin_portal',
-        autoArchivedReason: `Aviso de ausencia archivado automÃ¡ticamente un dÃ­a despuÃ©s de la fecha de la ausencia${absenceDate ? ` (${absenceDate})` : ''}.`
-      }).catch(error => console.warn('No se pudo archivar automÃ¡ticamente el aviso de ausencia', gestion.id, error));
+        autoArchivedReason: `Aviso de ausencia archivado automáticamente un día después de la fecha de la ausencia${absenceDate ? ` (${absenceDate})` : ''}.`
+      }).catch(error => console.warn('No se pudo archivar automáticamente el aviso de ausencia', gestion.id, error));
     });
   }, [gestiones, db, appId, todayStr]);
 
@@ -5714,7 +5714,7 @@ CoordinaciÃ³n Los Mitos.`
       task.teacherResponse,
       task.rejectionReason,
       task.adminResponse,
-      isTeacherAdminAssignment(task) ? 'encargo coordinaciÃ³n admin profesor' : getTeacherTaskRequestLabel(task.requestType)
+      isTeacherAdminAssignment(task) ? 'encargo coordinación admin profesor' : getTeacherTaskRequestLabel(task.requestType)
     ].filter(Boolean).join(' '));
     return haystack.includes(gestionSearchNeedle);
   };
@@ -5814,7 +5814,7 @@ CoordinaciÃ³n Los Mitos.`
           isRecovery: false,
           isTemporaryRelocation: true,
           temporaryRelocationId: rel.id,
-          relocationLabel: `Recolocado temporalmente Â· ${formatDateSpanish(rel.from)} - ${formatDateSpanish(rel.until)}`,
+          relocationLabel: `Recolocado temporalmente · ${formatDateSpanish(rel.from)} - ${formatDateSpanish(rel.until)}`,
           sourceClassId: rel.sourceClassId,
           sourceClassLine: rel.sourceClassLine || ''
         };
@@ -5940,7 +5940,7 @@ CoordinaciÃ³n Los Mitos.`
         return buildArchitectStudentPlanningRow(studentEntry, clase, projected, referenceDate, {
           isRelocatedOut: Boolean(relocationOut),
           relocationOutLabel: relocationOut
-            ? `Fuera temporalmente Â· ${formatDateSpanish(relocationOut.from)} - ${formatDateSpanish(relocationOut.until)}`
+            ? `Fuera temporalmente · ${formatDateSpanish(relocationOut.from)} - ${formatDateSpanish(relocationOut.until)}`
             : '',
           relocationOutTargetLine: relocationOut?.targetClassLine || '',
           absenceAnnounced: Boolean(absenceGestion),
@@ -5966,7 +5966,7 @@ CoordinaciÃ³n Los Mitos.`
           isRecovery: false,
           isTemporaryRelocation: true,
           temporaryRelocationId: rel.id,
-          relocationLabel: `Recolocado temporalmente aquÃ­ Â· ${formatDateSpanish(rel.from)} - ${formatDateSpanish(rel.until)}`,
+          relocationLabel: `Recolocado temporalmente aquí · ${formatDateSpanish(rel.from)} - ${formatDateSpanish(rel.until)}`,
           sourceClassId: rel.sourceClassId,
           sourceClassLine: rel.sourceClassLine || ''
         };
@@ -6034,7 +6034,7 @@ CoordinaciÃ³n Los Mitos.`
     }
 
     if (activeCount === 0 && maintenanceCount === 0 && futureStartCount === 0) {
-      return { include: true, cap, activeCount, maintenanceCount, futureStartCount, activeStudents, maintenanceStudents, futureStartStudents, statusKey: 'vacia', statusLabel: 'VacÃ­a', statusHelp: 'Sin alumnos activos, sin mantenimiento y sin inicios futuros. Candidata a cerrar o hibernar.', priority: 0 };
+      return { include: true, cap, activeCount, maintenanceCount, futureStartCount, activeStudents, maintenanceStudents, futureStartStudents, statusKey: 'vacia', statusLabel: 'Vacía', statusHelp: 'Sin alumnos activos, sin mantenimiento y sin inicios futuros. Candidata a cerrar o hibernar.', priority: 0 };
     }
 
     if (activeCount === 0 && (maintenanceCount > 0 || futureStartCount > 0)) {
@@ -6042,14 +6042,14 @@ CoordinaciÃ³n Los Mitos.`
     }
 
     if (activeCount <= thresholds.critical) {
-      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'critico', statusLabel: 'CrÃ­tico', statusHelp: `Criterio: aforo ${cap}, crÃ­tico con ${thresholds.critical} alumno(s) activo(s) o menos.`, priority: 2 };
+      return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'critico', statusLabel: 'Crítico', statusHelp: `Criterio: aforo ${cap}, crítico con ${thresholds.critical} alumno(s) activo(s) o menos.`, priority: 2 };
     }
 
     if (activeCount <= thresholds.review) {
       return { include: true, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'revisar', statusLabel: 'Revisar', statusHelp: `Criterio: aforo ${cap}, revisar con ${thresholds.review} alumno(s) activo(s) o menos.`, priority: 3 };
     }
 
-    return { include: false, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'sana', statusLabel: 'Sana', statusHelp: 'OcupaciÃ³n suficiente.', priority: 99 };
+    return { include: false, cap, activeCount, maintenanceCount, activeStudents, maintenanceStudents, statusKey: 'sana', statusLabel: 'Sana', statusHelp: 'Ocupación suficiente.', priority: 99 };
   };
 
   const projectedPlanningClasses = useMemo(() => {
@@ -6273,9 +6273,9 @@ CoordinaciÃ³n Los Mitos.`
 
     return rows.reduce((acc, row) => {
       const labels = {
-        vacia: 'VacÃ­as / hibernadas',
+        vacia: 'Vacías / hibernadas',
         solo_mantenimiento: 'Solo mantenimiento',
-        critico: 'CrÃ­ticas',
+        critico: 'Críticas',
         revisar: 'Revisar'
       };
       const key = labels[row.statusKey] || row.statusLabel || 'Otros';
@@ -6292,7 +6292,7 @@ CoordinaciÃ³n Los Mitos.`
         key: `${row.id}-${student.id}`,
         studentName: student.displayName,
         email: student.email || 'sin email',
-        classLine: `${row.subject || 'Clase'} Â· ${getDayName(row.dayOfWeek)} ${row.time || ''}h Â· ${row.sede || 'Tarragona'} Â· ${row.teacher || 'Sin profesor'}`,
+        classLine: `${row.subject || 'Clase'} · ${getDayName(row.dayOfWeek)} ${row.time || ''}h · ${row.sede || 'Tarragona'} · ${row.teacher || 'Sin profesor'}`,
         row
       })))
       .sort((a, b) => a.studentName.localeCompare(b.studentName, 'es'));
@@ -6380,7 +6380,7 @@ CoordinaciÃ³n Los Mitos.`
     if (evaluation.dayOfWeek !== undefined && evaluation.dayOfWeek !== null && evaluation.dayOfWeek !== '') parts.push(getDayName(Number(evaluation.dayOfWeek)));
     if (evaluation.time) parts.push(`${evaluation.time}h`);
     if (evaluation.sede) parts.push(evaluation.sede);
-    return parts.join(' Â· ');
+    return parts.join(' · ');
   };
 
   const getEvaluationComments = (evaluation = {}) => {
@@ -6534,7 +6534,7 @@ CoordinaciÃ³n Los Mitos.`
 
     const valueOrDash = (value) => {
       const clean = String(value ?? '').trim();
-      return clean || 'â€”';
+      return clean || '—';
     };
 
     const sortedEvaluations = [...filteredTeacherEvaluations].sort((a, b) => {
@@ -6546,12 +6546,12 @@ CoordinaciÃ³n Los Mitos.`
     const generatedAt = new Date().toLocaleString('es-ES');
     const selectedPeriodLabel = teacherEvaluationPeriod === 'all' ? 'Todos los periodos' : teacherEvaluationPeriod;
     const lines = [
-      'EVALUACIONES DOCENTES Â· ESCUELA LOS MITOS',
+      'EVALUACIONES DOCENTES · ESCUELA LOS MITOS',
       `Generado: ${generatedAt}`,
       `Filtro aplicado: ${selectedPeriodLabel}`,
       `Total evaluaciones exportadas: ${sortedEvaluations.length}`,
       '',
-      'Este archivo es una copia legible de cada evaluaciÃ³n recibida con el filtro actual.',
+      'Este archivo es una copia legible de cada evaluación recibida con el filtro actual.',
       'Incluye puntuaciones, datos de contexto y comentarios escritos.',
       ''
     ];
@@ -6564,7 +6564,7 @@ CoordinaciÃ³n Los Mitos.`
 
       lines.push(
         '============================================================',
-        `EVALUACIÃ“N ${index + 1}`,
+        `EVALUACIÓN ${index + 1}`,
         '------------------------------------------------------------',
         `ID: ${valueOrDash(evaluation.id)}`,
         `Fecha visible: ${valueOrDash(getEvaluationCreatedDate(evaluation))}`,
@@ -6582,13 +6582,13 @@ CoordinaciÃ³n Los Mitos.`
         ...TEACHER_EVALUATION_QUESTIONS.map(question => `- ${question.label} ${valueOrDash(ratings?.[question.key])} / 5`),
         '',
         'COMENTARIOS',
-        `Lo que mÃ¡s valora de sus clases:
+        `Lo que más valora de sus clases:
 ${valueOrDash(comments.positive)}`,
         '',
-        `QuÃ© cree que podrÃ­a mejorar / sugerencias para coordinaciÃ³n:
+        `Qué cree que podría mejorar / sugerencias para coordinación:
 ${valueOrDash(comments.improvement)}`,
         '',
-        `Nota privada para coordinaciÃ³n:
+        `Nota privada para coordinación:
 ${valueOrDash(comments.privateNote)}`,
         ''
       );
@@ -6646,7 +6646,7 @@ ${valueOrDash(comments.privateNote)}`,
 
     const handleSave = async () => {
       const parsedHours = Number(String(hours).replace(',', '.'));
-      if (!parsedHours || parsedHours <= 0) return alert('Indica un nÃºmero de horas mayor que cero.');
+      if (!parsedHours || parsedHours <= 0) return alert('Indica un número de horas mayor que cero.');
       if (!reason.trim()) return alert('El motivo es obligatorio para dejar trazabilidad.');
 
       setSaving(true);
@@ -6680,12 +6680,12 @@ ${valueOrDash(comments.privateNote)}`,
             </div>
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight">{actionLabel}</h2>
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{payrollAdjustModal.teacher} Â· {selectedPayrollMonth}</p>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{payrollAdjustModal.teacher} · {selectedPayrollMonth}</p>
             </div>
           </div>
 
           <div className="bg-amber-50 border border-amber-100 text-amber-900 p-4 rounded-2xl mb-6 text-xs font-bold leading-relaxed">
-            Esto no modifica las clases ni las asistencias. Solo aÃ±ade una correcciÃ³n administrativa al cÃ¡lculo mensual de profesores.
+            Esto no modifica las clases ni las asistencias. Solo añade una corrección administrativa al cálculo mensual de profesores.
           </div>
 
           <div className="space-y-4 mb-6">
@@ -6695,7 +6695,7 @@ ${valueOrDash(comments.privateNote)}`,
             </div>
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Motivo *</label>
-              <textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Ej: Clase firmada en papel no registrada / correcciÃ³n por clase vacÃ­a de Ãºltima hora..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[120px] resize-y text-sm font-medium text-slate-700" />
+              <textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Ej: Clase firmada en papel no registrada / corrección por clase vacía de última hora..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[120px] resize-y text-sm font-medium text-slate-700" />
             </div>
           </div>
 
@@ -6729,7 +6729,7 @@ ${valueOrDash(comments.privateNote)}`,
           <div className="flex items-center gap-3 text-indigo-600 mb-2"><FileText className="w-8 h-8" /><h2 className="text-xl font-black uppercase tracking-tight">Ficha Interna</h2></div>
           <p className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-widest">{notesModal.name}</p>
           <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6">
-            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinaciÃ³n. Ãšsalo para anotar parentescos o estado del alumno.</p>
+            <p className="text-xs text-indigo-800 font-medium leading-relaxed">Este bloc de notas es privado y compartido entre todos los profesores y coordinación. Úsalo para anotar parentescos o estado del alumno.</p>
           </div>
           <textarea value={text} onChange={e => setText(e.target.value)} placeholder="Ej: Es el hermano menor de Hugo..." className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-indigo-500 outline-none min-h-[150px] resize-y text-sm font-medium text-slate-700 mb-6" />
           <div className="flex gap-4">
@@ -6748,7 +6748,7 @@ ${valueOrDash(comments.privateNote)}`,
     const [name, setName] = useState(editStudentModal.name || '');
     const [email, setEmail] = useState(editStudentModal.email || '');
     
-    // ðŸ‘‡ FIX: Nuevos estados para el Alias ninja
+    // 👇 FIX: Nuevos estados para el Alias ninja
     const [alias, setAlias] = useState(editStudentModal.alias || '');
     const [useAlias, setUseAlias] = useState(editStudentModal.useAlias || false);
     const [classStartDate, setClassStartDate] = useState(editStudentModal.classStartDate || '');
@@ -6783,7 +6783,7 @@ ${valueOrDash(comments.privateNote)}`,
         await batch.commit();
         
         alert(cleanClassStartDate
-          ? `Datos del alumno actualizados. No aparecerÃ¡ en listas de asistencia hasta ${formatDateSpanish(cleanClassStartDate)} con el TeacherPortal actualizado.`
+          ? `Datos del alumno actualizados. No aparecerá en listas de asistencia hasta ${formatDateSpanish(cleanClassStartDate)} con el TeacherPortal actualizado.`
           : 'Datos del alumno actualizados en todo el sistema. Inicio de clases: inmediato.');
         setEditStudentModal(null);
       } catch (e) {
@@ -6807,9 +6807,9 @@ ${valueOrDash(comments.privateNote)}`,
               <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo ElectrÃ³nico (Acceso App)</label>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo Electrónico (Acceso App)</label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vacio@sin-correo.com" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black transition-colors" />
-              {!email && <p className="text-[10px] text-rose-500 font-bold mt-1">âš ï¸ Sin correo, el alumno no podrÃ¡ entrar a la App.</p>}
+              {!email && <p className="text-[10px] text-rose-500 font-bold mt-1">⚠️ Sin correo, el alumno no podrá entrar a la App.</p>}
             </div>
 
             <div>
@@ -6820,15 +6820,15 @@ ${valueOrDash(comments.privateNote)}`,
                 onChange={e => setClassStartDate(e.target.value)}
                 className="w-full p-3 bg-emerald-50/60 border-2 border-emerald-100 rounded-xl font-bold text-sm outline-none focus:border-emerald-500 transition-colors"
               />
-              <p className="text-[10px] text-zinc-500 font-bold mt-1 leading-relaxed">DÃ©jalo vacÃ­o para inicio inmediato. Si marcas una fecha futura, el alumno seguirÃ¡ matriculado, pero TeacherPortal no debe mostrarlo en listas hasta ese dÃ­a.</p>
+              <p className="text-[10px] text-zinc-500 font-bold mt-1 leading-relaxed">Déjalo vacío para inicio inmediato. Si marcas una fecha futura, el alumno seguirá matriculado, pero TeacherPortal no debe mostrarlo en listas hasta ese día.</p>
               {classStartDate && (
                 <button type="button" onClick={() => setClassStartDate('')} className="mt-2 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black">Quitar fecha / inicio inmediato</button>
               )}
             </div>
             
-            {/* ðŸ‘‡ FIX: Campos para el Alias ninja */}
+            {/* 👇 FIX: Campos para el Alias ninja */}
             <div className="pt-4 border-t border-zinc-100 mt-4">
-              <label className="text-[10px] font-black uppercase text-indigo-600 mb-1 block flex items-center gap-1"><User className="w-3 h-3"/> Nombre Real (NiÃ±o/a)</label>
+              <label className="text-[10px] font-black uppercase text-indigo-600 mb-1 block flex items-center gap-1"><User className="w-3 h-3"/> Nombre Real (Niño/a)</label>
               <input type="text" value={alias} onChange={e => setAlias(e.target.value)} placeholder="Ej: Hugo..." className="w-full p-3 bg-indigo-50/50 border-2 border-indigo-100 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" />
               <label className="flex items-start gap-2 mt-3 cursor-pointer">
                 <input type="checkbox" checked={useAlias} onChange={e => setUseAlias(e.target.checked)} className="mt-0.5 w-4 h-4 text-indigo-600 rounded" />
@@ -6868,7 +6868,7 @@ ${valueOrDash(comments.privateNote)}`,
           whatsappGroupUrl: cleanWhatsappUrl || '',
           cuotaBase: Number(formData.cuotaBase) || 0
         });
-        alert("ConfiguraciÃ³n web, informes y grupo de WhatsApp guardada correctamente.");
+        alert("Configuración web, informes y grupo de WhatsApp guardada correctamente.");
         setEditWebModal(null);
       } catch(e) { alert("Error al guardar: " + e.message); } finally { setSaving(false); }
     };
@@ -6880,7 +6880,7 @@ ${valueOrDash(comments.privateNote)}`,
             <Globe className="w-8 h-8" />
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight">Configurar Clase</h2>
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{editWebModal.subject} â€¢ {getDayName(editWebModal.dayOfWeek)} {editWebModal.time}h</p>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{editWebModal.subject} • {getDayName(editWebModal.dayOfWeek)} {editWebModal.time}h</p>
             </div>
           </div>
           
@@ -6888,9 +6888,9 @@ ${valueOrDash(comments.privateNote)}`,
             <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl mb-6">
               <h4 className="text-[10px] font-black uppercase text-emerald-800 tracking-widest mb-3 flex items-center gap-1"><DollarSign className="w-4 h-4"/> Datos Internos (Informes)</h4>
               <div>
-                <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 block">Cuota Base MatemÃ¡tica (â‚¬) *</label>
+                <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 block">Cuota Base Matemática (€) *</label>
                 <input type="number" value={formData.cuotaBase} onChange={e => setFormData({...formData, cuotaBase: e.target.value})} placeholder="60" className="w-full p-3 bg-white border-2 border-emerald-100 rounded-xl font-black text-sm outline-none focus:border-emerald-500 transition-colors" />
-                <p className="text-[9px] text-emerald-600 mt-1 font-bold">Se usa para calcular la rentabilidad en la pestaÃ±a Informes (Alumnos activos x Cuota = Ingresos).</p>
+                <p className="text-[9px] text-emerald-600 mt-1 font-bold">Se usa para calcular la rentabilidad en la pestaña Informes (Alumnos activos x Cuota = Ingresos).</p>
               </div>
             </div>
 
@@ -6910,22 +6910,22 @@ ${valueOrDash(comments.privateNote)}`,
 
                <div className="space-y-4">
                   <div>
-                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">URL de inscripciÃ³n (Tadosi) *</label>
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">URL de inscripción (Tadosi) *</label>
                     <input type="text" value={formData.tadosiUrl} onChange={e => setFormData({...formData, tadosiUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Precio Display (Texto)</label>
-                      <input type="text" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} placeholder="Ej: 60â‚¬/mes" className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                      <input type="text" value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} placeholder="Ej: 60€/mes" className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
                     </div>
                     <div>
-                      <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">DÃ­a exacto de Inicio</label>
+                      <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día exacto de Inicio</label>
                       <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle pÃºblico adicional</label>
-                    <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Nivel iniciaciÃ³n..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500" />
+                    <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
+                    <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Nivel iniciación..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500" />
                   </div>
                </div>
             </div>
@@ -6934,11 +6934,11 @@ ${valueOrDash(comments.privateNote)}`,
               <h4 className="text-[10px] font-black uppercase text-emerald-700 tracking-widest mb-3 flex items-center gap-1"><Send className="w-4 h-4"/> Grupo de WhatsApp de la clase</h4>
               <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 block">URL del grupo <span className="text-emerald-500">(opcional)</span></label>
               <input type="text" value={formData.whatsappGroupUrl} onChange={e => setFormData({...formData, whatsappGroupUrl: e.target.value})} placeholder="https://chat.whatsapp.com/..." className="w-full p-3 bg-white border-2 border-emerald-100 rounded-xl font-bold text-sm outline-none focus:border-emerald-500" />
-              <p className="text-[9px] text-emerald-700 mt-1 font-bold leading-relaxed">Campo interno. Si se rellena, StudentPortal podrÃ¡ mostrar el acceso al grupo especÃ­fico de esta clase. DÃ©jalo vacÃ­o en particulares o clases sin grupo.</p>
+              <p className="text-[9px] text-emerald-700 mt-1 font-bold leading-relaxed">Campo interno. Si se rellena, StudentPortal podrá mostrar el acceso al grupo específico de esta clase. Déjalo vacío en particulares o clases sin grupo.</p>
             </div>
           </div>
           <button onClick={handleSave} disabled={saving} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-blue-700 transition-all shadow-md disabled:opacity-50">
-            {saving ? 'Guardando...' : 'Guardar ConfiguraciÃ³n Web'}
+            {saving ? 'Guardando...' : 'Guardar Configuración Web'}
           </button>
         </div>
       </div>
@@ -6956,12 +6956,12 @@ ${valueOrDash(comments.privateNote)}`,
             <FileText className="w-8 h-8" />
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight">Fotos de Escuela</h2>
-              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Actual o proyecciÃ³n con bandeja pendiente</p>
+              <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Actual o proyección con bandeja pendiente</p>
             </div>
           </div>
 
           <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-4 mb-6 text-xs font-bold text-slate-600 leading-relaxed">
-            La proyecciÃ³n no modifica Firebase. Solo simula bajas, mantenimientos temporales, fines anticipados, cambios de horario y ampliaciones pendientes para ver cÃ³mo quedarÃ­a la escuela.
+            La proyección no modifica Firebase. Solo simula bajas, mantenimientos temporales, fines anticipados, cambios de horario y ampliaciones pendientes para ver cómo quedaría la escuela.
           </div>
 
           <div className="grid grid-cols-1 gap-3">
@@ -6981,7 +6981,7 @@ ${valueOrDash(comments.privateNote)}`,
               }}
               className="w-full bg-black hover:bg-zinc-800 text-white px-5 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors"
             >
-              <Activity className="w-4 h-4"/> ProyecciÃ³n
+              <Activity className="w-4 h-4"/> Proyección
             </button>
           </div>
         </div>
@@ -7012,7 +7012,7 @@ ${valueOrDash(comments.privateNote)}`,
             <button 
               onClick={() => {
                 navigator.clipboard.writeText(socialModalText);
-                alert("ðŸ“‹ Â¡Texto copiado al portapapeles con Ã©xito!");
+                alert("📋 ¡Texto copiado al portapapeles con éxito!");
               }} 
               className="flex-1 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-all shadow-md"
             >
@@ -7035,14 +7035,14 @@ ${valueOrDash(comments.privateNote)}`,
           <button onClick={closeEditClassModal} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <h2 className="text-xl font-black uppercase tracking-tight mb-2 flex items-center gap-2"><Pencil className="text-amber-600"/> Editar Clase</h2>
           <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-6">
-            {editClassModal.subject} Â· {editClassModal.teacher} Â· {getDayName(editClassModal.dayOfWeek)} {editClassModal.time}h
+            {editClassModal.subject} · {editClassModal.teacher} · {getDayName(editClassModal.dayOfWeek)} {editClassModal.time}h
           </p>
 
           {isTeacherChanged && (
             <div className="mb-5 p-4 bg-amber-50 border-2 border-amber-200 rounded-2xl text-amber-900">
               <p className="text-[10px] font-black uppercase tracking-widest mb-1">Cambio de profesor detectado</p>
               <p className="text-xs font-bold leading-relaxed">
-                Al guardar, la clase se trasladarÃ¡ al TeacherPortal del nuevo profesor sin perder alumnos, excepciones ni configuraciÃ³n web.
+                Al guardar, la clase se trasladará al TeacherPortal del nuevo profesor sin perder alumnos, excepciones ni configuración web.
               </p>
             </div>
           )}
@@ -7072,7 +7072,7 @@ ${valueOrDash(comments.privateNote)}`,
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {editClassData.isRecurring ? (
                 <div>
-                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">DÃ­a de la semana</label>
+                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día de la semana</label>
                   <select value={editClassData.dayOfWeek} onChange={e => setEditClassData({...editClassData, dayOfWeek: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
                     {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
                   </select>
@@ -7108,11 +7108,11 @@ ${valueOrDash(comments.privateNote)}`,
               <input type="number" min="1" value={editClassData.capacity} onChange={e => setEditClassData({...editClassData, capacity: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">DuraciÃ³n min.</label>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Duración min.</label>
               <input type="number" min="15" step="15" value={editClassData.duration} onChange={e => setEditClassData({...editClassData, duration: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase text-emerald-600 mb-1 block">Cuota BI (â‚¬)</label>
+              <label className="text-[10px] font-black uppercase text-emerald-600 mb-1 block">Cuota BI (€)</label>
               <input type="number" min="0" value={editClassData.cuotaBase} onChange={e => setEditClassData({...editClassData, cuotaBase: e.target.value})} className="w-full p-3 bg-emerald-50 border-2 border-emerald-200 rounded-xl font-black text-sm outline-none text-emerald-900" />
             </div>
           </div>
@@ -7181,7 +7181,7 @@ ${valueOrDash(comments.privateNote)}`,
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {newClassData.isRecurring ? (
                 <div>
-                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">DÃ­a de la semana</label>
+                  <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día de la semana</label>
                   <select value={newClassData.dayOfWeek} onChange={e => setNewClassData({...newClassData, dayOfWeek: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
                     {[1,2,3,4,5,6].map(d => <option key={d} value={d}>{getDayName(d)}</option>)}
                   </select>
@@ -7216,7 +7216,7 @@ ${valueOrDash(comments.privateNote)}`,
               <input type="number" min="1" value={newClassData.capacity} onChange={e => setNewClassData({...newClassData, capacity: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" placeholder="Ej: 4" />
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase text-emerald-600 mb-1 block">Cuota Alumno (â‚¬)</label>
+              <label className="text-[10px] font-black uppercase text-emerald-600 mb-1 block">Cuota Alumno (€)</label>
               <input type="number" min="0" value={newClassData.cuotaBase} onChange={e => setNewClassData({...newClassData, cuotaBase: e.target.value})} className="w-full p-3 bg-emerald-50 border-2 border-emerald-200 rounded-xl font-black text-sm outline-none text-emerald-900" placeholder="Ej: 60" />
             </div>
           </div>
@@ -7323,11 +7323,11 @@ ${valueOrDash(comments.privateNote)}`,
         const startDateWarning = createdNow && !isPunctualClass(resurrectClassModal)
           ? getClassStartDateWarning(selectedClassStartDate, resurrectClassModal.dayOfWeek, todayStr)
           : '';
-        if (startDateWarning && !window.confirm(`âš ï¸ Revisa la fecha de inicio:
+        if (startDateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:
 
 ${startDateWarning}
 
-Â¿Quieres continuar igualmente?`)) {
+¿Quieres continuar igualmente?`)) {
           setSaving(false);
           return;
         }
@@ -7353,7 +7353,7 @@ ${startDateWarning}
             hasMitoverso: false,
             triviaPoints: 0,
             triviaVictories: 0,
-            internalNotes: 'AÃ±adido al reactivar grupo',
+            internalNotes: 'Añadido al reactivar grupo',
             classStartDate: selectedClassStartDate
           });
         }
@@ -7396,10 +7396,10 @@ ${startDateWarning}
         }
 
         alert(isPunctualClass(resurrectClassModal)
-          ? "âœ… Alumno aÃ±adido a clase puntual. No se han enviado correos de alumno fijo."
+          ? "✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo."
           : createdNow
-            ? `ðŸŽ‰ Â¡Clase reactivada con alumno nuevo! Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. El profesor ha sido avisado por correo.${initialEmailSent ? ' El alumno ha recibido el email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email vÃ¡lido o ya constaba enviado.'}`
-            : `ðŸŽ‰ Â¡Clase reactivada! Alumno existente aÃ±adido. El profesor ha sido avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
+            ? `🎉 ¡Clase reactivada con alumno nuevo! Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. El profesor ha sido avisado por correo.${initialEmailSent ? ' El alumno ha recibido el email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email válido o ya constaba enviado.'}`
+            : `🎉 ¡Clase reactivada! Alumno existente añadido. El profesor ha sido avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
         setResurrectClassModal(null);
       } catch (e) {
         alert("Error al reactivar: " + e.message);
@@ -7416,7 +7416,7 @@ ${startDateWarning}
             <h2 className="text-xl font-black uppercase tracking-tight">Reactivar Grupo</h2>
           </div>
           <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl mb-6 text-indigo-800 text-xs font-medium">
-            Al aÃ±adir un alumno, esta clase saldrÃ¡ del modo hibernaciÃ³n automÃ¡ticamente.
+            Al añadir un alumno, esta clase saldrá del modo hibernación automáticamente.
           </div>
           <div className="space-y-4 mb-6 relative">
             <div>
@@ -7431,7 +7431,7 @@ ${startDateWarning}
               {searchName.length >= 2 && (
                 <div className="absolute left-0 right-0 mt-1 bg-white border-2 border-zinc-800 rounded-xl shadow-2xl z-50 max-h-40 overflow-y-auto">
                   {students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).length === 0 ? (
-                    <div className="p-3 text-xs font-bold text-zinc-500 bg-zinc-50">Se crearÃ¡ como alumno nuevo.</div>
+                    <div className="p-3 text-xs font-bold text-zinc-500 bg-zinc-50">Se creará como alumno nuevo.</div>
                   ) : (
                     students.filter(s => s.name.toLowerCase().includes(searchName.trim().toLowerCase())).map(st => (
                       <div key={st.id} onClick={() => setSearchName(st.name)} className="p-3 text-sm font-bold text-slate-700 hover:bg-black hover:text-white cursor-pointer border-b border-zinc-100 transition-colors">
@@ -7443,7 +7443,7 @@ ${startDateWarning}
               )}
             </div>
             <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo ElectrÃ³nico (Opcional)</label>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Correo Electrónico (Opcional)</label>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Solo si es alumno nuevo" className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-indigo-500 transition-colors" />
             </div>
             {showClassStartDateForResurrect && (
@@ -7459,9 +7459,9 @@ ${startDateWarning}
                   <p className="mt-2 text-xs font-bold text-emerald-800">Empieza: {formatDateWithWeekday(classStartDateInput)}</p>
                 )}
                 {classStartDateWarningForResurrect && (
-                  <p className="mt-2 text-[10px] font-black text-amber-700 uppercase tracking-wide">âš ï¸ {classStartDateWarningForResurrect}</p>
+                  <p className="mt-2 text-[10px] font-black text-amber-700 uppercase tracking-wide">⚠️ {classStartDateWarningForResurrect}</p>
                 )}
-                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el prÃ³ximo dÃ­a real de esta clase: {getDayName(resurrectClassModal.dayOfWeek)}.</p>
+                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(resurrectClassModal.dayOfWeek)}.</p>
               </div>
             )}
           </div>
@@ -7504,7 +7504,7 @@ ${startDateWarning}
     const handleAddStudent = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
       if (isFull) {
-        if (!window.confirm(`âš ï¸ AVISO MODO DIOS:\n\nEl aforo de esta clase estÃ¡ completo (${currentCount}/${maxCap}).\nÂ¿Quieres forzar la matriculaciÃ³n saltÃ¡ndote el lÃ­mite?`)) return;
+        if (!window.confirm(`⚠️ AVISO MODO DIOS:\n\nEl aforo de esta clase está completo (${currentCount}/${maxCap}).\n¿Quieres forzar la matriculación saltándote el límite?`)) return;
       }
       setSaving(true);
       try {
@@ -7538,11 +7538,11 @@ ${startDateWarning}
         const startDateWarning = createdNow && !isPunctual
           ? getClassStartDateWarning(selectedClassStartDate, c.dayOfWeek, todayStr)
           : '';
-        if (startDateWarning && !window.confirm(`âš ï¸ Revisa la fecha de inicio:
+        if (startDateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:
 
 ${startDateWarning}
 
-Â¿Quieres continuar igualmente?`)) {
+¿Quieres continuar igualmente?`)) {
           setSaving(false);
           return;
         }
@@ -7568,7 +7568,7 @@ ${startDateWarning}
             hasMitoverso: false,
             triviaPoints: 0,
             triviaVictories: 0,
-            internalNotes: 'AÃ±adido desde panel de clase',
+            internalNotes: 'Añadido desde panel de clase',
             classStartDate: selectedClassStartDate
           });
         }
@@ -7611,10 +7611,10 @@ ${startDateWarning}
         }
 
         alert(isPunctual
-          ? `âœ… Alumno aÃ±adido a clase puntual. No se han enviado correos de alumno fijo.`
+          ? `✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo.`
           : createdNow
-            ? `âœ… Alumno nuevo aÃ±adido. Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. Profesor avisado por correo.${initialEmailSent ? ' Alumno avisado por email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email vÃ¡lido o ya constaba enviado.'}`
-            : `âœ… Alumno existente aÃ±adido. Profesor avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
+            ? `✅ Alumno nuevo añadido. Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. Profesor avisado por correo.${initialEmailSent ? ' Alumno avisado por email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email válido o ya constaba enviado.'}`
+            : `✅ Alumno existente añadido. Profesor avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
         setSearchName('');
         setEmailInput('');
         setClassStartDateInput(isPunctual ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
@@ -7634,12 +7634,12 @@ ${startDateWarning}
           <div className="flex items-center gap-3 mb-6 shrink-0">
             <BookOpen className="w-8 h-8 text-indigo-600"/>
             <div>
-              <h2 className="text-xl font-black uppercase tracking-tight">GestiÃ³n de Clase</h2>
-              <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{c.subject} â€¢ {c.teacher} â€¢ {getDayName(c.dayOfWeek)} {c.time}h</p>
+              <h2 className="text-xl font-black uppercase tracking-tight">Gestión de Clase</h2>
+              <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{c.subject} • {c.teacher} • {getDayName(c.dayOfWeek)} {c.time}h</p>
             </div>
           </div>
           <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl shrink-0">
-            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-3">AÃ±adir Alumno al Grupo</h3>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-3">Añadir Alumno al Grupo</h3>
             <div className="flex flex-col sm:flex-row gap-2 relative">
               <div className="flex-1 relative">
                 <input 
@@ -7675,7 +7675,7 @@ ${startDateWarning}
                 disabled={saving || !searchName} 
                 className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-indigo-700 transition-all disabled:opacity-50"
               >
-                {saving ? '...' : 'AÃ±adir'}
+                {saving ? '...' : 'Añadir'}
               </button>
             </div>
             {showClassStartDateForAdd && (
@@ -7691,32 +7691,32 @@ ${startDateWarning}
                   <p className="mt-2 text-xs font-bold text-emerald-800">Empieza: {formatDateWithWeekday(classStartDateInput)}</p>
                 )}
                 {classStartDateWarningForAdd && (
-                  <p className="mt-2 text-[10px] font-black text-amber-700 uppercase tracking-wide">âš ï¸ {classStartDateWarningForAdd}</p>
+                  <p className="mt-2 text-[10px] font-black text-amber-700 uppercase tracking-wide">⚠️ {classStartDateWarningForAdd}</p>
                 )}
-                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el prÃ³ximo dÃ­a real de esta clase: {getDayName(c.dayOfWeek)}.</p>
+                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(c.dayOfWeek)}.</p>
               </div>
             )}
           </div>
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
-              Alumnos Matriculados ({currentCount}/{c.capacity}) Â· Activos: {activeCount}
+              Alumnos Matriculados ({currentCount}/{c.capacity}) · Activos: {activeCount}
               {(maintenanceCount > 0 || futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) && (
                 <span className="block mt-1 text-[10px] text-zinc-500">
                   {maintenanceCount > 0 ? `${maintenanceCount} en mantenimiento` : ''}
-                  {maintenanceCount > 0 && (futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' Â· ' : ''}
+                  {maintenanceCount > 0 && (futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
                   {futureStartCount > 0 ? `${futureStartCount} con inicio futuro` : ''}
-                  {futureStartCount > 0 && (relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' Â· ' : ''}
-                  {relocatedInCount > 0 ? `${relocatedInCount} recolocado(s) aquÃ­` : ''}
-                  {relocatedInCount > 0 && (relocatedOutCount > 0 || absenceCount > 0) ? ' Â· ' : ''}
+                  {futureStartCount > 0 && (relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
+                  {relocatedInCount > 0 ? `${relocatedInCount} recolocado(s) aquí` : ''}
+                  {relocatedInCount > 0 && (relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
                   {relocatedOutCount > 0 ? `${relocatedOutCount} fuera temporalmente` : ''}
-                  {relocatedOutCount > 0 && absenceCount > 0 ? ' Â· ' : ''}
+                  {relocatedOutCount > 0 && absenceCount > 0 ? ' · ' : ''}
                   {absenceCount > 0 ? `${absenceCount} ausencia(s) anunciada(s)` : ''}
                 </span>
               )}
             </h3>
             {(planningStudents.length === 0) ? (
               <div className="p-4 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-xl text-center text-xs font-bold text-zinc-400 uppercase tracking-widest">
-                Clase vacÃ­a (Hibernada)
+                Clase vacía (Hibernada)
               </div>
             ) : (
               planningStudents.map(s => {
@@ -7727,7 +7727,7 @@ ${startDateWarning}
                   s.isFutureStart ? { label: `Inicio: ${formatDateSpanish(s.startDate)}`, className: 'bg-emerald-50 text-emerald-700 border-emerald-100' } : null,
                   s.endDate ? { label: `Fin: ${formatDateSpanish(s.endDate)}`, className: 'bg-orange-50 text-orange-700 border-orange-100' } : null,
                   s.isRelocatedOut ? { label: 'Fuera temporalmente', className: 'bg-violet-50 text-violet-700 border-violet-100' } : null,
-                  s.isRelocated ? { label: 'Recolocado temporalmente aquÃ­', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' } : null,
+                  s.isRelocated ? { label: 'Recolocado temporalmente aquí', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' } : null,
                   s.absenceAnnounced ? { label: 'Ausencia anunciada', className: 'bg-amber-50 text-amber-700 border-amber-100' } : null
                 ].filter(Boolean);
                 const mutedStudent = !s.isActive || s.absenceAnnounced;
@@ -7820,7 +7820,7 @@ ${startDateWarning}
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
           <div>
             <div className="flex items-center gap-3 text-white mb-1"><ShieldAlert className="w-6 h-6 text-red-500" /><h1 className="text-xl font-black uppercase tracking-tight">Modo Dios</h1></div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 hidden md:block">Panel de AdministraciÃ³n</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 hidden md:block">Panel de Administración</p>
           </div>
           <button onClick={switchToTeacher} className="md:hidden bg-zinc-800 text-white p-2 rounded-lg"><ArrowRightLeft className="w-5 h-5"/></button>
         </div>
@@ -7832,11 +7832,11 @@ ${startDateWarning}
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
-            { id: 'announcements', icon: Megaphone, label: 'TablÃ³n' },
+            { id: 'announcements', icon: Megaphone, label: 'Tablón' },
             { id: 'workshops', icon: PartyPopper, label: 'Talleres' },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
             { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
-            { id: 'settings', icon: Settings, label: 'ConfiguraciÃ³n' }
+            { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
               <tab.icon className="w-4 h-4 shrink-0" />
@@ -7850,7 +7850,7 @@ ${startDateWarning}
             <ArrowRightLeft className="w-4 h-4"/> Vista Profesor
           </button>
           <button onClick={logout} className="w-full flex items-center justify-center gap-2 text-zinc-500 hover:text-red-400 p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
-            <LogOut className="w-4 h-4"/> Cerrar SesiÃ³n
+            <LogOut className="w-4 h-4"/> Cerrar Sesión
           </button>
         </div>
       </aside>
@@ -7862,8 +7862,8 @@ ${startDateWarning}
             <div className="flex items-center gap-3 text-amber-950">
               <AlertTriangle className="w-6 h-6" />
               <div>
-                <p className="font-black uppercase tracking-widest text-sm">Hoy es el Ãºltimo dÃ­a del mes</p>
-                <p className="text-xs font-bold opacity-80">Recuerda ir a la pestaÃ±a "Retos" y hacer clic en Cerrar Mes para el Trivial.</p>
+                <p className="font-black uppercase tracking-widest text-sm">Hoy es el último día del mes</p>
+                <p className="text-xs font-bold opacity-80">Recuerda ir a la pestaña "Retos" y hacer clic en Cerrar Mes para el Trivial.</p>
               </div>
             </div>
             <button onClick={() => setActiveTab('gamification')} className="bg-amber-950 text-amber-400 px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors whitespace-nowrap">
@@ -7872,13 +7872,13 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- PESTAÃ‘A: INFORMES (BUSINESS INTELLIGENCE) --- */}
+        {/* --- PESTAÑA: INFORMES (BUSINESS INTELLIGENCE) --- */}
         {activeTab === 'informes' && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4">
             <header className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-3xl font-black text-slate-800 uppercase tracking-tight">Business Intelligence</h2>
-                <p className="text-zinc-500 font-bold text-sm mt-1 uppercase tracking-widest">InformaciÃ³n estratÃ©gica y anÃ¡lisis de mÃ¡rgenes</p>
+                <p className="text-zinc-500 font-bold text-sm mt-1 uppercase tracking-widest">Información estratégica y análisis de márgenes</p>
               </div>
               <button onClick={handleDownloadBIReport} className="w-full sm:w-auto bg-slate-900 hover:bg-black text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                 <FileText className="w-4 h-4"/> Generar informe
@@ -7892,7 +7892,7 @@ ${startDateWarning}
                 { id: 'sedes', label: 'Por Sede', icon: MapPin },
                 { id: 'instrumentos', label: 'Por Instrumento', icon: Music },
                 { id: 'profesores', label: 'Por Profesor', icon: User },
-                { id: 'semaforo', label: 'SemÃ¡foro Aulas', icon: Activity }
+                { id: 'semaforo', label: 'Semáforo Aulas', icon: Activity }
               ].map(sub => (
                 <button key={sub.id} onClick={() => setInformeSubTab(sub.id)} className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider whitespace-nowrap transition-all ${informeSubTab === sub.id ? 'bg-white text-slate-900 shadow-sm' : 'text-zinc-500 hover:text-slate-800'}`}>
                    <sub.icon className="w-3.5 h-3.5"/> {sub.label}
@@ -7905,19 +7905,19 @@ ${startDateWarning}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
                 <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
-                  <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}â‚¬</p>
-                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Clases: {businessIntelligence.totalIngresosClases.toLocaleString('es-ES')}â‚¬ Â· Mantenimiento: {businessIntelligence.ingresosMantenimiento.toLocaleString('es-ES')}â‚¬ ({businessIntelligence.alumnosMantenimiento}) Â· Inicio futuro sin ingreso: {businessIntelligence.totalAlumnosInicioFuturo || 0}</p>
+                  <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
+                  <p className="text-[10px] font-bold text-emerald-700/70 uppercase mt-2">Clases: {businessIntelligence.totalIngresosClases.toLocaleString('es-ES')}€ · Mantenimiento: {businessIntelligence.ingresosMantenimiento.toLocaleString('es-ES')}€ ({businessIntelligence.alumnosMantenimiento}) · Inicio futuro sin ingreso: {businessIntelligence.totalAlumnosInicioFuturo || 0}</p>
                 </div>
                 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-rose-600 mb-2"><Users className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste Profesores</h3></div>
-                  <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}â‚¬</p>
-                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Solo clases operativas Â· {businessIntelligence.totalHorasSemanalesOperativas.toFixed(1)} h/sem Â· {businessIntelligence.totalClasesHibernadas} hibernadas no computan Â· Paco = 0â‚¬</p>
+                  <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.costeTotalProfesores.toLocaleString('es-ES', {maximumFractionDigits:0})}€</p>
+                  <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Solo clases operativas · {businessIntelligence.totalHorasSemanalesOperativas.toFixed(1)} h/sem · {businessIntelligence.totalClasesHibernadas} hibernadas no computan · Paco = 0€</p>
                 </div>
 
                 <div className="bg-rose-50 border border-rose-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-rose-600 mb-2"><MapPin className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Gastos Fijos</h3></div>
-                  <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}â‚¬</p>
+                  <p className="text-4xl font-black text-rose-900 tracking-tighter">-{businessIntelligence.totalFijos.toLocaleString('es-ES')}€</p>
                   <p className="text-[10px] font-bold text-rose-700/70 uppercase mt-2">Locales y costes compartidos</p>
                 </div>
 
@@ -7925,7 +7925,7 @@ ${startDateWarning}
                   <div className="relative z-10">
                     <div className="flex items-center gap-2 text-zinc-400 mb-2"><DollarSign className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Beneficio Neto</h3></div>
                     <p className={`text-4xl font-black tracking-tighter ${businessIntelligence.beneficioNeto >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>
-                      {businessIntelligence.beneficioNeto >= 0 ? '+' : ''}{businessIntelligence.beneficioNeto.toLocaleString('es-ES', {maximumFractionDigits:0})}â‚¬
+                      {businessIntelligence.beneficioNeto >= 0 ? '+' : ''}{businessIntelligence.beneficioNeto.toLocaleString('es-ES', {maximumFractionDigits:0})}€
                     </p>
                   </div>
                   <PieChart className="absolute -bottom-6 -right-6 w-32 h-32 text-zinc-800 opacity-50 pointer-events-none" />
@@ -7944,20 +7944,20 @@ ${startDateWarning}
                        <div key={sede} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col">
                           <h3 className="font-black text-2xl uppercase text-slate-800 tracking-tight border-b pb-3 flex items-center gap-2"><MapPin className="text-blue-500"/> Sede {sede}</h3>
                           <div className="mt-4 space-y-3 flex-1 text-sm font-bold">
-                             <div className="flex justify-between text-slate-600"><span>Ingresos por clases:</span><span className="text-emerald-600">+{dataSede.ingresosClases}â‚¬</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Ingresos por clases:</span><span className="text-emerald-600">+{dataSede.ingresosClases}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Alumnos con cuota:</span><span>{dataSede.alumnosActivos || 0}</span></div>
                              <div className="flex justify-between text-slate-600"><span>Inicio futuro:</span><span>{dataSede.alumnosInicioFuturo || 0}</span></div>
                              <div className="flex justify-between text-slate-600"><span>Plazas comprometidas:</span><span>{dataSede.plazasComprometidas || 0}</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}â‚¬</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}â‚¬</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}€</span></div>
                              <div className="flex justify-between text-slate-600"><span>Clases operativas / hibernadas:</span><span>{dataSede.clasesOperativas || 0} / {dataSede.clasesHibernadas || 0}</span></div>
                              <div className="flex justify-between text-slate-600"><span>Horas prof. computables:</span><span>{(dataSede.horasSemanalesOperativas || 0).toFixed(1)} h/sem</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}â‚¬</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}â‚¬</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
+                             <div className="flex justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}€</span></div>
                           </div>
                           <div className="mt-6 pt-4 border-t border-zinc-100 flex justify-between items-center bg-zinc-50 p-4 rounded-xl">
                              <span className="text-xs font-black uppercase text-zinc-400">Beneficio Neto Local:</span>
-                             <span className={`text-xl font-black ${beneficioSede >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{beneficioSede >= 0 ? '+' : ''}{beneficioSede.toFixed(0)}â‚¬</span>
+                             <span className={`text-xl font-black ${beneficioSede >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{beneficioSede >= 0 ? '+' : ''}{beneficioSede.toFixed(0)}€</span>
                           </div>
                        </div>
                     );
@@ -7983,12 +7983,12 @@ ${startDateWarning}
                           {businessIntelligence.porInstrumento.map(inst => (
                              <tr key={inst.name} className="border-b hover:bg-zinc-50">
                                 <td className="p-4 uppercase font-black text-slate-900">{inst.name}</td>
-                                <td className="p-4 text-center">{inst.numGrupos || 0} clases{inst.numGruposHibernados ? ` Â· ${inst.numGruposHibernados} hib.` : ''}</td>
-                                <td className="p-4 text-right text-emerald-600">+{inst.ingresos}â‚¬</td>
-                                <td className="p-4 text-right text-rose-500">-{inst.costes.toFixed(0)}â‚¬</td>
+                                <td className="p-4 text-center">{inst.numGrupos || 0} clases{inst.numGruposHibernados ? ` · ${inst.numGruposHibernados} hib.` : ''}</td>
+                                <td className="p-4 text-right text-emerald-600">+{inst.ingresos}€</td>
+                                <td className="p-4 text-right text-rose-500">-{inst.costes.toFixed(0)}€</td>
                                 <td className="p-4 text-right">
                                    <span className={`px-2.5 py-1 rounded-lg ${inst.beneficio >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                                      {inst.beneficio > 0 ? '+' : ''}{inst.beneficio.toFixed(0)}â‚¬
+                                      {inst.beneficio > 0 ? '+' : ''}{inst.beneficio.toFixed(0)}€
                                    </span>
                                 </td>
                              </tr>
@@ -8020,12 +8020,12 @@ ${startDateWarning}
                                   {p.name}
                                   {p.name.toLowerCase() === 'paco' && <span className="ml-2 bg-zinc-200 text-zinc-500 text-[9px] px-2 py-0.5 rounded">Socio</span>}
                                 </td>
-                                <td className="p-4 text-center">{(p.horasSemanales || 0).toFixed(1)} h/sem{p.clasesHibernadas ? ` Â· ${p.clasesHibernadas} hib.` : ''}</td>
-                                <td className="p-4 text-right text-emerald-600">+{p.ingresos}â‚¬</td>
-                                <td className="p-4 text-right text-rose-500">-{p.costes.toFixed(0)}â‚¬</td>
+                                <td className="p-4 text-center">{(p.horasSemanales || 0).toFixed(1)} h/sem{p.clasesHibernadas ? ` · ${p.clasesHibernadas} hib.` : ''}</td>
+                                <td className="p-4 text-right text-emerald-600">+{p.ingresos}€</td>
+                                <td className="p-4 text-right text-rose-500">-{p.costes.toFixed(0)}€</td>
                                 <td className="p-4 text-right">
                                    <span className={`px-2.5 py-1 rounded-lg ${p.beneficio >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                                      {p.beneficio > 0 ? '+' : ''}{p.beneficio.toFixed(0)}â‚¬
+                                      {p.beneficio > 0 ? '+' : ''}{p.beneficio.toFixed(0)}€
                                    </span>
                                 </td>
                              </tr>
@@ -8036,11 +8036,11 @@ ${startDateWarning}
               </div>
             )}
 
-            {/* SUBVISTA 5: EL SEMÃFORO INDIVIDUAL */}
+            {/* SUBVISTA 5: EL SEMÁFORO INDIVIDUAL */}
             {informeSubTab === 'semaforo' && (
               <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden animate-in fade-in">
                 <div className="p-6 border-b border-zinc-100 bg-zinc-50 flex items-center justify-between">
-                  <h3 className="font-black uppercase tracking-widest text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5"/> Rentabilidad por Aula (SemÃ¡foro)</h3>
+                  <h3 className="font-black uppercase tracking-widest text-slate-800 flex items-center gap-2"><Activity className="w-5 h-5"/> Rentabilidad por Aula (Semáforo)</h3>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse min-w-[800px]">
@@ -8079,11 +8079,11 @@ ${startDateWarning}
                                 </div>
                               )}
                             </td>
-                            <td className="p-4 text-right font-black text-emerald-600">+{c.ingresos}â‚¬</td>
-                            <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}â‚¬</td>
+                            <td className="p-4 text-right font-black text-emerald-600">+{c.ingresos}€</td>
+                            <td className="p-4 text-right font-black text-rose-600">-{c.coste.toFixed(0)}€</td>
                             <td className="p-4 text-right">
                               <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest ${isGreen ? 'bg-emerald-100 text-emerald-800' : isYellow ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>
-                                {c.beneficio > 0 ? '+' : ''}{c.beneficio.toFixed(0)}â‚¬
+                                {c.beneficio > 0 ? '+' : ''}{c.beneficio.toFixed(0)}€
                               </span>
                             </td>
                           </tr>
@@ -8109,7 +8109,7 @@ ${startDateWarning}
                 <button onClick={consolidateExpiredScheduledGestiones} disabled={bulkConsolidatingGestiones || scheduledGestionesVencidas.length === 0} className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Consolida solo bajas y cambios de horario programados cuya fecha efectiva ya ha llegado. No procesa mantenimientos.">
                   <CheckCircle className="w-4 h-4"/> {bulkConsolidatingGestiones ? 'Consolidando...' : 'Consolidar gestiones programadas vencidas'} {scheduledGestionesVencidas.length > 0 ? `(${scheduledGestionesVencidas.length})` : ''}
                 </button>
-                <button onClick={executeAllReadyGestiones} disabled={bulkExecutingGestiones || readyPendingGestiones.length === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Ejecuta solo los trÃ¡mites listos: Tadosi hecho o trÃ¡mites que no requieren Tadosi">
+                <button onClick={executeAllReadyGestiones} disabled={bulkExecutingGestiones || readyPendingGestiones.length === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Ejecuta solo los trámites listos: Tadosi hecho o trámites que no requieren Tadosi">
                   <CheckCircle className="w-4 h-4"/> Ejecutar todas ({readyPendingGestiones.length})
                 </button>
                 <button onClick={() => setManualTaskModal(true)} className="bg-black hover:bg-zinc-800 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
@@ -8148,7 +8148,7 @@ ${startDateWarning}
             {totalPendingInbox === 0 && resolvedGestiones.length === 0 && resolvedTeacherRequests.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <Check className="w-12 h-12 text-emerald-400 mx-auto mb-4 bg-emerald-50 rounded-full p-2" />
-                <h3 className="text-lg font-black text-slate-800 uppercase">Todo al dÃ­a</h3>
+                <h3 className="text-lg font-black text-slate-800 uppercase">Todo al día</h3>
               </div>
             ) : (
               <div className="space-y-4">
@@ -8158,7 +8158,7 @@ ${startDateWarning}
                     type="text"
                     value={gestionSearchTerm}
                     onChange={e => setGestionSearchTerm(e.target.value)}
-                    placeholder="Buscar por alumno, email, profesor, encargo, texto de solicitud o trÃ¡mites cerrados..."
+                    placeholder="Buscar por alumno, email, profesor, encargo, texto de solicitud o trámites cerrados..."
                     className="w-full pl-11 pr-4 py-3 rounded-2xl outline-none font-bold text-sm text-slate-700"
                   />
                 </div>
@@ -8253,7 +8253,7 @@ ${startDateWarning}
                     <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                       <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
                       <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay tareas de profesores en esta vista</h3>
-                      <p className="text-xs text-zinc-400 font-medium mt-2">AquÃ­ verÃ¡s peticiones de profesores a coordinaciÃ³n y encargos enviados desde Admin.</p>
+                      <p className="text-xs text-zinc-400 font-medium mt-2">Aquí verás peticiones de profesores a coordinación y encargos enviados desde Admin.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -8271,7 +8271,7 @@ ${startDateWarning}
                                 <div className="flex flex-wrap gap-2 mt-2">
                                   <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(status)}`}>{getTeacherTaskStatusLabel(status)}</span>
                                   {isAdminAssignmentTask ? (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-violet-50 text-violet-700 border-violet-200">Encargo de coordinaciÃ³n</span>
+                                    <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-violet-50 text-violet-700 border-violet-200">Encargo de coordinación</span>
                                   ) : (
                                     <span className="inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border-blue-200">{getTeacherTaskRequestLabel(task.requestType)}</span>
                                   )}
@@ -8283,7 +8283,7 @@ ${startDateWarning}
                             <div className="space-y-3 text-xs font-bold text-slate-600">
                               <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3">
                                 <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Profesor</p>
-                                <p className="text-slate-800">{task.teacherName || 'Profesor'} Â· {task.teacherEmail || 'sin email'}</p>
+                                <p className="text-slate-800">{task.teacherName || 'Profesor'} · {task.teacherEmail || 'sin email'}</p>
                               </div>
                               {task.relatedClassLine && (
                                 <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3">
@@ -8293,13 +8293,13 @@ ${startDateWarning}
                               )}
                               {task.dueDate && (
                                 <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-amber-900">
-                                  <p className="text-[10px] font-black uppercase tracking-widest mb-1">Fecha lÃ­mite</p>
+                                  <p className="text-[10px] font-black uppercase tracking-widest mb-1">Fecha límite</p>
                                   <p>{formatDateSpanish(task.dueDate)}</p>
                                 </div>
                               )}
                               <div className="bg-white border border-zinc-100 rounded-xl p-3">
                                 <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1">Detalles</p>
-                                <p className="whitespace-pre-wrap leading-relaxed">{task.description || 'Sin detalles aÃ±adidos.'}</p>
+                                <p className="whitespace-pre-wrap leading-relaxed">{task.description || 'Sin detalles añadidos.'}</p>
                               </div>
                               {task.teacherResponse && (
                                 <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-emerald-900">
@@ -8320,7 +8320,7 @@ ${startDateWarning}
                                 <button onClick={() => updateTeacherRequestStatus(task, 'cancelada')} className="flex-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Cancelar encargo</button>
                               ) : (
                                 <>
-                                  <button onClick={() => updateTeacherRequestStatus(task, 'en_revision')} disabled={status === 'en_revision'} className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed">En revisiÃ³n</button>
+                                  <button onClick={() => updateTeacherRequestStatus(task, 'en_revision')} disabled={status === 'en_revision'} className="flex-1 bg-blue-50 hover:bg-blue-100 text-blue-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed">En revisión</button>
                                   <button onClick={() => updateTeacherRequestStatus(task, 'resuelta')} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Resolver</button>
                                   <button onClick={() => updateTeacherRequestStatus(task, 'rechazada')} className="flex-1 bg-red-50 hover:bg-red-100 text-red-700 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">Rechazar</button>
                                 </>
@@ -8336,14 +8336,14 @@ ${startDateWarning}
                     <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                       <Clock className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
                       <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay gestiones programadas en esta vista</h3>
-                      <p className="text-xs text-zinc-400 font-medium mt-2">AquÃ­ aparecerÃ¡n las bajas y cambios de horario ya ejecutados como programados, hasta que se consoliden.</p>
+                      <p className="text-xs text-zinc-400 font-medium mt-2">Aquí aparecerán las bajas y cambios de horario ya ejecutados como programados, hasta que se consoliden.</p>
                     </div>
                   ) : (
                     <div className="bg-white rounded-2xl shadow-sm border border-violet-200 overflow-hidden">
                       <div className="p-4 bg-violet-50 border-b border-violet-100 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                         <div>
                           <h3 className="text-sm font-black uppercase tracking-tight text-violet-950 flex items-center gap-2"><Clock className="w-4 h-4"/> Gestiones programadas pendientes de consolidar</h3>
-                          <p className="text-xs font-bold text-violet-800/70 mt-1">Son trÃ¡mites ya ejecutados en modo programado. Student/Teacher los respetan por fecha; este bloque sirve para no perderlos de vista hasta su consolidaciÃ³n final.</p>
+                          <p className="text-xs font-bold text-violet-800/70 mt-1">Son trámites ya ejecutados en modo programado. Student/Teacher los respetan por fecha; este bloque sirve para no perderlos de vista hasta su consolidación final.</p>
                         </div>
                         <span className="px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-white text-violet-700 border border-violet-100">
                           {scheduledGestionesVencidas.length} vencida(s)
@@ -8392,7 +8392,7 @@ ${startDateWarning}
                                   </td>
                                   <td className="p-4 text-right whitespace-nowrap">
                                     <span className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest ${isDue ? 'bg-fuchsia-100 text-fuchsia-700' : 'bg-violet-100 text-violet-700'}`}>
-                                      {isDue ? 'Vencida Â· lista' : 'Programada'}
+                                      {isDue ? 'Vencida · lista' : 'Programada'}
                                     </span>
                                   </td>
                                 </tr>
@@ -8406,8 +8406,8 @@ ${startDateWarning}
                 ) : filteredPendingGestiones.length === 0 ? (
                   <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                     <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
-                    <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay trÃ¡mites pendientes en esta vista</h3>
-                    <p className="text-xs text-zinc-400 font-medium mt-2">El resto de notificaciones pendientes sigue disponible en â€œTodasâ€.</p>
+                    <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay trámites pendientes en esta vista</h3>
+                    <p className="text-xs text-zinc-400 font-medium mt-2">El resto de notificaciones pendientes sigue disponible en “Todas”.</p>
                   </div>
                 ) : (
                   <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
@@ -8417,7 +8417,7 @@ ${startDateWarning}
                       <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                         <th className="p-4 font-black">Fecha</th>
                         <th className="p-4 font-black">Alumno</th>
-                        <th className="p-4 font-black">Tipo de TrÃ¡mite</th>
+                        <th className="p-4 font-black">Tipo de Trámite</th>
                         <th className="p-4 font-black">Detalles</th>
                         <th className="p-4 font-black text-right">Acciones</th>
                       </tr>
@@ -8456,11 +8456,11 @@ ${startDateWarning}
                                 {visibleClasses.map(c => (
                                   <div key={c.id} className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-snug flex items-start gap-1">
                                     <BookOpen className="w-3 h-3 mt-0.5 shrink-0 text-zinc-400"/>
-                                    <span>{c.subject} Â· {getDayName(c.dayOfWeek)} Â· {c.time}h Â· {c.sede || 'Tarragona'}{c.sala ? ` Â· ${c.sala}` : ''}</span>
+                                    <span>{c.subject} · {getDayName(c.dayOfWeek)} · {c.time}h · {c.sede || 'Tarragona'}{c.sala ? ` · ${c.sala}` : ''}</span>
                                   </div>
                                 ))}
                                 {hiddenClassCount > 0 && (
-                                  <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">+{hiddenClassCount} clase(s) mÃ¡s</div>
+                                  <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">+{hiddenClassCount} clase(s) más</div>
                                 )}
                               </div>
                             )}
@@ -8478,7 +8478,7 @@ ${startDateWarning}
                               return (
                                 <div className="mt-2 p-2 rounded-xl bg-slate-50 border border-slate-100 text-[10px] font-bold text-slate-700 leading-snug">
                                   <span className="font-black uppercase tracking-widest block mb-0.5">Servicio extra</span>
-                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} Â· cuota {g.extraMonthlyFee || extraConfig?.monthlyFee || 'â€”'}â‚¬/mes
+                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} · cuota {g.extraMonthlyFee || extraConfig?.monthlyFee || '—'}€/mes
                                   <span className="block text-zinc-500 mt-0.5">Prorrata del mes corriente: a calcular al activar.</span>
                                 </div>
                               );
@@ -8494,7 +8494,7 @@ ${startDateWarning}
                               if (period.isLegacyMissingDuration) {
                                 return (
                                   <div className="text-[10px] font-black text-blue-700 mt-1 uppercase leading-snug">
-                                    Periodo: pendiente de elegir al ejecutar Â· 1 mes / 2 meses
+                                    Periodo: pendiente de elegir al ejecutar · 1 mes / 2 meses
                                   </div>
                                 );
                               }
@@ -8502,8 +8502,8 @@ ${startDateWarning}
                               return (
                                 <div className="text-[10px] font-bold text-blue-700 mt-1 uppercase leading-snug">
                                   Periodo: {formatDateSpanish(period.from)} - {formatDateSpanish(period.until)}
-                                  {period.months ? ` Â· ${period.months} mes${period.months > 1 ? 'es' : ''}` : ''}
-                                  {period.totalFee ? ` Â· ${period.totalFee}â‚¬` : ''}
+                                  {period.months ? ` · ${period.months} mes${period.months > 1 ? 'es' : ''}` : ''}
+                                  {period.totalFee ? ` · ${period.totalFee}€` : ''}
                                 </div>
                               );
                             })()}
@@ -8519,12 +8519,12 @@ ${startDateWarning}
                                 {targetClassLine}
                               </div>
                             )}
-                            {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">DÃ­a Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
+                            {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
                             {g.type === 'recuperacion' && (() => {
                               const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };
                               return (
                                 <div className={`text-[10px] font-black mt-1 uppercase ${ticketStats.free > 0 ? 'text-amber-700' : 'text-red-600'}`}>
-                                  Tickets: {ticketStats.free} libres / {ticketStats.active} activos Â· {ticketStats.committed} comprometidos
+                                  Tickets: {ticketStats.free} libres / {ticketStats.active} activos · {ticketStats.committed} comprometidos
                                 </div>
                               );
                             })()}
@@ -8535,7 +8535,7 @@ ${startDateWarning}
                               title={detailsText}
                               style={{ display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
                             >
-                              {detailsText || <span className="text-zinc-300 italic">Sin detalles aÃ±adidos.</span>}
+                              {detailsText || <span className="text-zinc-300 italic">Sin detalles añadidos.</span>}
                             </div>
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
@@ -8575,10 +8575,10 @@ ${startDateWarning}
             {filteredResolvedGestiones.length > 0 && (
               <div className="mt-12 pt-8 border-t border-zinc-200">
                 <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight mb-2 flex items-center gap-2">
-                  <History className="w-5 h-5 text-zinc-400"/> Historial de TrÃ¡mites (Cerrados)
+                  <History className="w-5 h-5 text-zinc-400"/> Historial de Trámites (Cerrados)
                 </h3>
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-4">
-                  {gestionSearchNeedle ? `${filteredResolvedGestiones.length} trÃ¡mite(s) cerrado(s) encontrados con la bÃºsqueda actual.` : `${resolvedGestiones.length} trÃ¡mite(s) cerrado(s) archivados.`}
+                  {gestionSearchNeedle ? `${filteredResolvedGestiones.length} trámite(s) cerrado(s) encontrados con la búsqueda actual.` : `${resolvedGestiones.length} trámite(s) cerrado(s) archivados.`}
                 </p>
                 <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden opacity-80 hover:opacity-100 transition-opacity">
                   <div className="overflow-x-auto">
@@ -8607,7 +8607,7 @@ ${startDateWarning}
                             </td>
                             <td className="p-4 text-right whitespace-nowrap">
                               <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
-                                Cerrado Â· {g.status}
+                                Cerrado · {g.status}
                               </span>
                             </td>
                           </tr>
@@ -8622,7 +8622,7 @@ ${startDateWarning}
                       onClick={() => setResolvedGestionesVisible(prev => prev + HISTORIAL_TRAMITES_BLOCK_SIZE)}
                       className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-6 py-3 rounded-xl transition-colors"
                     >
-                      Cargar mÃ¡s trÃ¡mites ({Math.min(HISTORIAL_TRAMITES_BLOCK_SIZE, filteredResolvedGestiones.length - resolvedGestionesVisible)} mÃ¡s)
+                      Cargar más trámites ({Math.min(HISTORIAL_TRAMITES_BLOCK_SIZE, filteredResolvedGestiones.length - resolvedGestionesVisible)} más)
                     </button>
                   </div>
                 )}
@@ -8639,7 +8639,7 @@ ${startDateWarning}
                     <div className="flex items-start justify-between gap-3 mb-2">
                       <div>
                         <h4 className="font-black text-slate-800 uppercase tracking-tight">{task.title}</h4>
-                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{task.teacherName || 'Profesor'} Â· {isTeacherAdminAssignment(task) ? 'Encargo de coordinaciÃ³n' : getTeacherTaskRequestLabel(task.requestType)}</p>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{task.teacherName || 'Profesor'} · {isTeacherAdminAssignment(task) ? 'Encargo de coordinación' : getTeacherTaskRequestLabel(task.requestType)}</p>
                       </div>
                       <span className={`px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${getTeacherTaskStatusStyle(task.status || 'resuelta')}`}>{getTeacherTaskStatusLabel(task.status || 'resuelta')}</span>
                     </div>
@@ -8738,7 +8738,7 @@ ${startDateWarning}
                         <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
                           <td className="p-4 overflow-hidden">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
-                            {/* ðŸ‘‡ FIX: Muestra el Alias debajo si existe */}
+                            {/* 👇 FIX: Muestra el Alias debajo si existe */}
                             {student.useAlias && student.alias && (
                               <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 mt-0.5 flex items-center gap-1">
                                 <User className="w-3 h-3"/> Alumno: {student.alias}
@@ -8780,7 +8780,7 @@ ${startDateWarning}
                                 </span>
                               )}
                               {getActiveStudentTemporaryRelocations(student.id).map(rel => (
-                                <span key={rel.id} className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 border border-violet-100 px-2 py-0.5 rounded" title={`${rel.sourceClassLine || ''} â†’ ${rel.targetClassLine || ''}`}>
+                                <span key={rel.id} className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 border border-violet-100 px-2 py-0.5 rounded" title={`${rel.sourceClassLine || ''} → ${rel.targetClassLine || ''}`}>
                                   <Clock className="w-3 h-3" /> Recolocado temporalmente
                                 </span>
                               ))}
@@ -8797,8 +8797,8 @@ ${startDateWarning}
                                   const classStartDate = getStudentClassStartDate(studentInClass, student);
                                   const startsLater = classStartDate && classStartDate > todayStr;
                                   return (
-                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}${isMaintenanceNow ? ` Â· Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` Â· Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
-                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isMaintenanceNow ? ' Â· Mantenimiento' : startsLater ? ` Â· Inicio ${formatDateSpanish(classStartDate)}` : ''}
+                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}${isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
+                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isMaintenanceNow ? ' · Mantenimiento' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
                                     </span>
                                   );
                                 })}
@@ -8820,7 +8820,7 @@ ${startDateWarning}
                                 const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, future: 0, used: 0, expired: 0, pending: 0, scheduled: 0, committed: 0, free: 0 };
                                 const hasOvercommittedTickets = ticketStats.committed > ticketStats.active;
                                 return (
-                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${hasOvercommittedTickets ? 'bg-red-100 text-red-800' : ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} Â· Activos hoy: ${ticketStats.active} Â· Verano activos: ${ticketStats.summerActive || 0} Â· Libres reales: ${ticketStats.free} Â· Comprometidos: ${ticketStats.committed} (${ticketStats.pending} pendientes + ${ticketStats.scheduled} programados) Â· Futuros: ${ticketStats.future} Â· Verano futuros: ${ticketStats.summerFuture || 0} Â· Usados/anulados: ${ticketStats.used} Â· Caducados: ${ticketStats.expired}`}>
+                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${hasOvercommittedTickets ? 'bg-red-100 text-red-800' : ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos hoy: ${ticketStats.active} · Verano activos: ${ticketStats.summerActive || 0} · Libres reales: ${ticketStats.free} · Comprometidos: ${ticketStats.committed} (${ticketStats.pending} pendientes + ${ticketStats.scheduled} programados) · Futuros: ${ticketStats.future} · Verano futuros: ${ticketStats.summerFuture || 0} · Usados/anulados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
                                     <Ticket className="w-3 h-3"/> {ticketStats.free}/{ticketStats.active}
                                   </span>
                                 );
@@ -8838,7 +8838,7 @@ ${startDateWarning}
                               <button onClick={() => setTemporaryRelocationModal(student)} className="p-2.5 bg-violet-100 text-violet-700 rounded-lg hover:bg-violet-600 hover:text-white transition-colors" title="Recolocar temporalmente sin liberar su plaza formal">
                                 <Clock className="w-4 h-4"/>
                               </button>
-                              <button onClick={() => grantRecoveryTicket(student)} className="p-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors" title="Regalar Ticket de RecuperaciÃ³n">
+                              <button onClick={() => grantRecoveryTicket(student)} className="p-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors" title="Regalar Ticket de Recuperación">
                                 <Gift className="w-4 h-4"/>
                               </button>
                               <button onClick={() => resetStudentTickets(student)} className="p-2.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-600 hover:text-white transition-colors" title="Anular tickets pendientes">
@@ -8875,7 +8875,7 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 3. NUEVA PESTAÃ‘A MITOBOX --- */}
+        {/* --- 3. NUEVA PESTAÑA MITOBOX --- */}
         {activeTab === 'mitobox' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
@@ -8886,7 +8886,7 @@ ${startDateWarning}
             <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
               <div className="flex flex-col sm:flex-row gap-4 mb-6">
                 <div className="flex-1">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">DÃ­a a consultar</label>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Día a consultar</label>
                   <input type="date" value={mboxAdminDate} onChange={e => setMboxAdminDate(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800" />
                 </div>
                 <div className="flex-1">
@@ -8924,7 +8924,7 @@ ${startDateWarning}
             <header className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mapa de Clases</h2>
-                <p className="text-zinc-500 font-medium text-sm">VisiÃ³n global de la escuela y planificaciÃ³n de espacios.</p>
+                <p className="text-zinc-500 font-medium text-sm">Visión global de la escuela y planificación de espacios.</p>
               </div>
               <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
                 <div className="flex bg-zinc-200 p-1 rounded-xl w-full sm:w-auto">
@@ -8983,10 +8983,10 @@ ${startDateWarning}
                   {isArchitectProjection && (
                     <div className="bg-black text-white p-4 rounded-2xl border border-zinc-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-black uppercase tracking-widest">SimulaciÃ³n proyectada por fecha</p>
+                        <p className="text-sm font-black uppercase tracking-widest">Simulación proyectada por fecha</p>
                         <p className="text-xs font-bold text-zinc-400 mt-1">Cuadrante del {architectReferenceLabel} + bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes de la bandeja. No modifica Firebase.</p>
                       </div>
-                      <span className="bg-white text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest w-max">{pendingGestiones.filter(g => PROJECTABLE_GESTION_TYPES.has(g.type)).length} trÃ¡mite(s) aplicados</span>
+                      <span className="bg-white text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest w-max">{pendingGestiones.filter(g => PROJECTABLE_GESTION_TYPES.has(g.type)).length} trámite(s) aplicados</span>
                     </div>
                   )}
 
@@ -9050,8 +9050,8 @@ ${startDateWarning}
                                                    const committedCount = planningStudents.filter(student => student.isActive || student.isMaintenance || student.isFutureStart).length;
                                                    const activeCount = activeStudents.length;
                                                    const isHibernatedCard = activeCount === 0;
-                                                   const capacityLabel = c.capacity ? `${committedCount}/${c.capacity}` : `${committedCount}/â€”`;
-                                                   const activeCapacityLabel = c.capacity ? `${activeCount}/${c.capacity}` : `${activeCount}/â€”`;
+                                                   const capacityLabel = c.capacity ? `${committedCount}/${c.capacity}` : `${committedCount}/—`;
+                                                   const activeCapacityLabel = c.capacity ? `${activeCount}/${c.capacity}` : `${activeCount}/—`;
                                                    const visibleStudentNames = fixedActiveStudents.slice(0, 5);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
                                                    const teacherTheme = getTeacherColorTheme(c.teacher, settings);
@@ -9062,7 +9062,7 @@ ${startDateWarning}
                                                         : futureStartCount > 0
                                                           ? 'Inicio futuro'
                                                           : relocatedOutCount > 0
-                                                            ? 'RecolocaciÃ³n temporal'
+                                                            ? 'Recolocación temporal'
                                                             : 'Sin alumnos activos';
                                                    const cardStyle = isHibernatedCard
                                                       ? { background: '#f8fafc', border: '2px dashed #94a3b8' }
@@ -9075,7 +9075,7 @@ ${startDateWarning}
                                                       <div key={c.id} className={`${cardTextClass} p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5 cursor-pointer ${isHibernatedCard ? 'opacity-95' : ''}`} style={cardStyle} onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }}>
                                                          <div className="flex items-start justify-between gap-2">
                                                            <div className="min-w-0">
-                                                             <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' Â· PROY.' : ''}</div>
+                                                             <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
                                                              <div className="text-[10px] font-bold truncate mt-1" style={mutedTextStyle}>Prof: {c.teacher}</div>
                                                            </div>
                                                            <span className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${isHibernatedCard ? 'bg-slate-200 text-slate-700' : 'bg-white/20 text-white'}`} title="Plazas comprometidas / aforo">{capacityLabel}</span>
@@ -9095,13 +9095,13 @@ ${startDateWarning}
                                                             </div>
                                                          ) : visibleStudentNames.length > 0 && (
                                                             <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ ...dividerStyle, color: 'rgba(255,255,255,.82)' }}>
-                                                               {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} mÃ¡s` : ''}
+                                                               {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
                                                             </div>
                                                          )}
 
                                                          {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0 || relocatedOutCount > 0 || isHibernatedCard) && (
                                                             <div className={`mt-1 text-[8px] font-black uppercase tracking-widest ${isHibernatedCard ? 'text-slate-500' : ''}`} style={isHibernatedCard ? undefined : { color: 'rgba(255,255,255,.68)' }}>
-                                                               Activos {activeCapacityLabel}{maintenanceCount > 0 ? ` Â· ${maintenanceCount} mant.` : ''}{futureStartCount > 0 ? ` Â· ${futureStartCount} futuro` : ''}{relocatedCount > 0 ? ` Â· ${relocatedCount} recol. aquÃ­` : ''}{relocatedOutCount > 0 ? ` Â· ${relocatedOutCount} recol. fuera` : ''}
+                                                               Activos {activeCapacityLabel}{maintenanceCount > 0 ? ` · ${maintenanceCount} mant.` : ''}{futureStartCount > 0 ? ` · ${futureStartCount} futuro` : ''}{relocatedCount > 0 ? ` · ${relocatedCount} recol. aquí` : ''}{relocatedOutCount > 0 ? ` · ${relocatedOutCount} recol. fuera` : ''}
                                                             </div>
                                                          )}
 
@@ -9153,7 +9153,7 @@ ${startDateWarning}
                </div>
             )}
 
-            {/* VISTA CLÃSICA (POR LISTADO DE PROFESORES) */}
+            {/* VISTA CLÁSICA (POR LISTADO DE PROFESORES) */}
             {classesViewMode === 'profesores' && (
               <div className="space-y-4 animate-in fade-in slide-in-from-left-4">
                 {Object.keys(classesByTeacher).length === 0 ? (
@@ -9205,11 +9205,11 @@ ${startDateWarning}
                                     <span className="bg-zinc-100 p-1 rounded">{c.time}</span>
                                     {isPunctualClass(c) && <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Puntual {formatDateSpanish(c.date)}</span>}
                                   </div>
-                                  <div className="text-xs font-bold uppercase mt-1" style={{ color: teacherTheme.text }}>{c.subject} â€¢ {c.sede} ({c.sala})</div>
-                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? 'ðŸ’¤ Hibernada' : `${activeC}/${c.capacity} activos`}</div>
+                                  <div className="text-xs font-bold uppercase mt-1" style={{ color: teacherTheme.text }}>{c.subject} • {c.sede} ({c.sala})</div>
+                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} activos`}</div>
                                   {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
                                     <div className="text-right text-[9px] font-black uppercase tracking-widest mt-1" style={{ color: teacherTheme.text }}>
-                                      {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' Â· ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' Â· ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
+                                      {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
                                     </div>
                                   )}
 
@@ -9219,7 +9219,7 @@ ${startDateWarning}
                                     </div>
                                   ) : visibleStudentNames.length > 0 && (
                                     <div className="mt-2 pt-2 border-t text-[9px] font-bold leading-snug normal-case tracking-normal" style={{ borderColor: teacherTheme.border, color: teacherTheme.text }}>
-                                      {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} mÃ¡s` : ''}
+                                      {visibleStudentNames.join(', ')}{hiddenStudentCount > 0 ? ` +${hiddenStudentCount} más` : ''}
                                     </div>
                                   )}
 
@@ -9246,7 +9246,7 @@ ${startDateWarning}
                 <div className="bg-zinc-900 text-white rounded-3xl p-5 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
                     <h3 className="text-lg font-black uppercase tracking-tight flex items-center gap-2"><Ghost className="w-5 h-5 text-zinc-300"/> Clases hibernadas</h3>
-                    <p className="text-xs font-bold text-zinc-400 mt-1">Turnos recurrentes sin alumnos activos. Ãštil para conservar ofertas futuras sin mezclarlas con â€œEn peligroâ€.</p>
+                    <p className="text-xs font-bold text-zinc-400 mt-1">Turnos recurrentes sin alumnos activos. Útil para conservar ofertas futuras sin mezclarlas con “En peligro”.</p>
                   </div>
                   <span className="bg-white text-black px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest w-max">{hibernatedClasses.length} clase(s)</span>
                 </div>
@@ -9275,11 +9275,11 @@ ${startDateWarning}
                             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{totalEnLista} en lista</span>
                           </div>
                           <h4 className="font-black uppercase tracking-tight text-slate-900 text-lg">{c.subject}</h4>
-                          <p className="text-xs font-bold text-slate-600 mt-1">{getDayName(c.dayOfWeek)} Â· {c.time}h Â· {c.sede || 'Tarragona'} Â· {c.sala || 'Sala no indicada'}</p>
-                          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-2">Prof: {c.teacher || 'Sin asignar'} Â· Aforo: {c.capacity || '-'}</p>
+                          <p className="text-xs font-bold text-slate-600 mt-1">{getDayName(c.dayOfWeek)} · {c.time}h · {c.sede || 'Tarragona'} · {c.sala || 'Sala no indicada'}</p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-2">Prof: {c.teacher || 'Sin asignar'} · Aforo: {c.capacity || '-'}</p>
                           {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
                             <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-600 bg-zinc-100 border border-zinc-200 px-2 py-1 rounded w-max">
-                              {maintenanceC > 0 ? `${maintenanceC} mantenimiento` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' Â· ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' Â· ' : ''}{relocatedC > 0 ? `${relocatedC} recolocaciÃ³n` : ''}
+                              {maintenanceC > 0 ? `${maintenanceC} mantenimiento` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recolocación` : ''}
                             </p>
                           )}
                           {c.isWebVisible && <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-1 rounded w-max">Visible en web</p>}
@@ -9339,10 +9339,10 @@ ${startDateWarning}
             <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-4">
               <div className="flex flex-wrap gap-2">
                 {[
-                  { id: 'ocupacion', label: 'Por ocupaciÃ³n' },
+                  { id: 'ocupacion', label: 'Por ocupación' },
                   { id: 'profesor', label: 'Por profesor' },
                   { id: 'sede', label: 'Por sede' },
-                  { id: 'dia', label: 'Por dÃ­a' },
+                  { id: 'dia', label: 'Por día' },
                   { id: 'contactar', label: `A contactar (${dangerContactRows.length})` }
                 ].map(view => (
                   <button
@@ -9358,9 +9358,9 @@ ${startDateWarning}
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               {[
-                { label: 'CrÃ­ticas', count: dangerRowsForView.filter(row => row.statusKey === 'critico').length, className: 'bg-red-50 border-red-200 text-red-900' },
+                { label: 'Críticas', count: dangerRowsForView.filter(row => row.statusKey === 'critico').length, className: 'bg-red-50 border-red-200 text-red-900' },
                 { label: 'Revisar', count: dangerRowsForView.filter(row => row.statusKey === 'revisar').length, className: 'bg-amber-50 border-amber-200 text-amber-900' },
-                { label: 'VacÃ­as', count: dangerRowsForView.filter(row => row.statusKey === 'vacia').length, className: 'bg-zinc-50 border-zinc-200 text-zinc-700' },
+                { label: 'Vacías', count: dangerRowsForView.filter(row => row.statusKey === 'vacia').length, className: 'bg-zinc-50 border-zinc-200 text-zinc-700' },
                 { label: 'Solo mant.', count: dangerRowsForView.filter(row => row.statusKey === 'solo_mantenimiento').length, className: 'bg-blue-50 border-blue-200 text-blue-900' }
               ].map(item => (
                 <div key={item.label} className={`rounded-2xl border-2 p-4 ${item.className}`}>
@@ -9372,12 +9372,12 @@ ${startDateWarning}
 
             <div className="bg-slate-50 border border-slate-200 text-slate-700 rounded-2xl p-4 text-xs font-bold leading-relaxed">
               <strong className="uppercase tracking-widest text-[10px] text-slate-900 block mb-2">Criterios activos</strong>
-              Grupos de 8: <strong>crÃ­tico â‰¤3</strong>, revisar â‰¤5. Grupos de 4: <strong>crÃ­tico â‰¤1</strong>, revisar â‰¤2. Grupos de 5: <strong>crÃ­tico â‰¤1</strong>, revisar â‰¤2. Las clases 1/1 quedan fuera de esta vista.
+              Grupos de 8: <strong>crítico ≤3</strong>, revisar ≤5. Grupos de 4: <strong>crítico ≤1</strong>, revisar ≤2. Grupos de 5: <strong>crítico ≤1</strong>, revisar ≤2. Las clases 1/1 quedan fuera de esta vista.
             </div>
 
             {dangerViewMode === 'proyeccion' && (
               <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 text-xs font-bold leading-relaxed">
-                Esta vista no modifica Firebase. Cruza la foto actual con bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes. Sirve para decidir recolocaciones y cierres antes del dÃ­a 1.
+                Esta vista no modifica Firebase. Cruza la foto actual con bajas, mantenimientos temporales, fines anticipados, cambios y ampliaciones pendientes. Sirve para decidir recolocaciones y cierres antes del día 1.
               </div>
             )}
 
@@ -9386,13 +9386,13 @@ ${startDateWarning}
                 <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                   <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
                   <h3 className="text-lg font-black text-slate-800 uppercase">Sin llamadas urgentes</h3>
-                  <p className="text-zinc-500 text-sm">No hay alumnos activos en clases crÃ­ticas. Las clases en â€œRevisarâ€ quedan omitidas aquÃ­.</p>
+                  <p className="text-zinc-500 text-sm">No hay alumnos activos en clases críticas. Las clases en “Revisar” quedan omitidas aquí.</p>
                 </div>
               ) : (
                 <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
                   <div className="p-5 border-b border-zinc-100 bg-red-50">
                     <h3 className="font-black uppercase tracking-tight text-red-900 flex items-center gap-2"><Mail className="w-5 h-5"/> Alumnos a contactar</h3>
-                    <p className="text-xs font-bold text-red-700 mt-1">Solo alumnos activos de clases en estado crÃ­tico. No incluye clases en â€œRevisarâ€.</p>
+                    <p className="text-xs font-bold text-red-700 mt-1">Solo alumnos activos de clases en estado crítico. No incluye clases en “Revisar”.</p>
                   </div>
                   <div className="divide-y divide-zinc-100">
                     {dangerContactRows.map(item => (
@@ -9407,7 +9407,7 @@ ${startDateWarning}
                             {item.row.activeCount}/{item.row.cap} activos
                           </span>
                           {item.email && item.email !== 'sin email' && (
-                            <a href={`mailto:${item.email}?subject=ReubicaciÃ³n%20de%20clase%20-%20Escuela%20Los%20Mitos`} className="bg-black text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-colors">
+                            <a href={`mailto:${item.email}?subject=Reubicación%20de%20clase%20-%20Escuela%20Los%20Mitos`} className="bg-black text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-colors">
                               Email
                             </a>
                           )}
@@ -9421,7 +9421,7 @@ ${startDateWarning}
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Grupos sanos</h3>
-                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo segÃºn los criterios actuales.</p>
+                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo según los criterios actuales.</p>
               </div>
             ) : (
               <div className="space-y-6">
@@ -9455,14 +9455,14 @@ ${startDateWarning}
                               <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : onlyMaintenance ? 'bg-blue-200 text-blue-800' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
                                 {row.statusLabel}
                               </span>
-                              <span className="font-black text-lg">{row.activeCount} / {row.cap || 'â€”'}</span>
+                              <span className="font-black text-lg">{row.activeCount} / {row.cap || '—'}</span>
                             </div>
 
                             <h4 className="font-black uppercase tracking-tight text-slate-900">{row.subject}</h4>
-                            <p className="text-xs font-bold text-slate-600 mb-2">{row.sede || 'Tarragona'} Â· {getDayName(row.dayOfWeek)} a las {row.time}h Â· {row.sala || 'Sala 1'}</p>
+                            <p className="text-xs font-bold text-slate-600 mb-2">{row.sede || 'Tarragona'} · {getDayName(row.dayOfWeek)} a las {row.time}h · {row.sala || 'Sala 1'}</p>
                             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {row.teacher}</div>
                             <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                              Activos: {row.activeCount} Â· Mantenimiento: {row.maintenanceCount} Â· Cupo: {row.cap || 'sin aforo'}
+                              Activos: {row.activeCount} · Mantenimiento: {row.maintenanceCount} · Cupo: {row.cap || 'sin aforo'}
                             </div>
                             <p className="mt-2 text-[10px] font-bold text-slate-500 leading-relaxed">{row.statusHelp}</p>
 
@@ -9482,7 +9482,7 @@ ${startDateWarning}
 
                             {isReview && (
                               <div className="mt-3 bg-amber-100/70 border border-amber-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-amber-800">
-                                Revisar evoluciÃ³n, pero no entra en â€œA contactarâ€.
+                                Revisar evolución, pero no entra en “A contactar”.
                               </div>
                             )}
                             {onlyMaintenance && (
@@ -9529,7 +9529,7 @@ ${startDateWarning}
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Profesores</h2>
-                <p className="text-zinc-500 font-medium text-sm">Seguimiento docente, horas reales, ajustes administrativos y nÃ³mina orientativa.</p>
+                <p className="text-zinc-500 font-medium text-sm">Seguimiento docente, horas reales, ajustes administrativos y nómina orientativa.</p>
               </div>
               {teacherPanelTab === 'payroll' && (
                 <select 
@@ -9555,7 +9555,7 @@ ${startDateWarning}
                 onClick={() => setTeacherPanelTab('payroll')}
                 className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'payroll' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
               >
-                <Calculator className="w-4 h-4"/> Horas y nÃ³minas
+                <Calculator className="w-4 h-4"/> Horas y nóminas
               </button>
             </div>
 
@@ -9564,8 +9564,8 @@ ${startDateWarning}
                 <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 text-xs font-bold text-indigo-900 leading-relaxed flex items-start gap-3">
                   <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-black uppercase tracking-widest text-[10px] mb-1">EvaluaciÃ³n confidencial para coordinaciÃ³n</p>
-                    <p>Las respuestas se guardan una a una. AquÃ­ ves solo medias y seÃ±ales de alerta para mantener el panel limpio. El detalle completo, incluidos comentarios, se descarga en TXT.</p>
+                    <p className="font-black uppercase tracking-widest text-[10px] mb-1">Evaluación confidencial para coordinación</p>
+                    <p>Las respuestas se guardan una a una. Aquí ves solo medias y señales de alerta para mantener el panel limpio. El detalle completo, incluidos comentarios, se descarga en TXT.</p>
                   </div>
                 </div>
 
@@ -9633,7 +9633,7 @@ ${startDateWarning}
                         <div className="p-5 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                           <div>
                             <h3 className="font-black uppercase tracking-tight text-slate-900 text-lg flex items-center gap-2"><User className="w-5 h-5 text-black"/> {stat.name}</h3>
-                            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mt-1">{stat.activeClassCount} clase(s) Â· {stat.activeStudentCount} alumno(s) con plaza</p>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mt-1">{stat.activeClassCount} clase(s) · {stat.activeStudentCount} alumno(s) con plaza</p>
                           </div>
                           <div className="flex items-center gap-2">
                             <div className={`px-4 py-2 rounded-2xl border text-center ${stat.responseCount === 0 ? 'bg-zinc-50 border-zinc-100 text-zinc-400' : stat.average < 3.5 ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-emerald-50 border-emerald-100 text-emerald-700'}`}>
@@ -9650,25 +9650,25 @@ ${startDateWarning}
                         {stat.responseCount === 0 ? (
                           <div className="p-6 text-center text-zinc-400">
                             <Star className="w-8 h-8 mx-auto mb-2 text-zinc-200" />
-                            <p className="text-xs font-black uppercase tracking-widest">Sin evaluaciones todavÃ­a en este filtro.</p>
+                            <p className="text-xs font-black uppercase tracking-widest">Sin evaluaciones todavía en este filtro.</p>
                           </div>
                         ) : (
                           <div className="p-5 space-y-5">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3">
                                 <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700 mb-1">Punto fuerte</p>
-                                <p className="text-sm font-black text-emerald-950">{bestQuestion ? `${bestQuestion.shortLabel} Â· ${formatAverageScore(bestQuestion.average)}/5` : 'Sin datos'}</p>
+                                <p className="text-sm font-black text-emerald-950">{bestQuestion ? `${bestQuestion.shortLabel} · ${formatAverageScore(bestQuestion.average)}/5` : 'Sin datos'}</p>
                               </div>
                               <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3">
                                 <p className="text-[9px] font-black uppercase tracking-widest text-amber-700 mb-1">A revisar</p>
-                                <p className="text-sm font-black text-amber-950">{worstQuestion ? `${worstQuestion.shortLabel} Â· ${formatAverageScore(worstQuestion.average)}/5` : 'Sin datos'}</p>
+                                <p className="text-sm font-black text-amber-950">{worstQuestion ? `${worstQuestion.shortLabel} · ${formatAverageScore(worstQuestion.average)}/5` : 'Sin datos'}</p>
                               </div>
                             </div>
 
                             {stat.lowSignalCount > 0 && (
                               <div className="bg-rose-50 border border-rose-100 text-rose-800 rounded-2xl p-3 text-xs font-bold flex items-start gap-2">
                                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                                {stat.lowSignalCount} evaluaciÃ³n(es) con media baja o alguna puntuaciÃ³n de 1-2. Conviene revisarlas en el TXT exportado.
+                                {stat.lowSignalCount} evaluación(es) con media baja o alguna puntuación de 1-2. Conviene revisarlas en el TXT exportado.
                               </div>
                             )}
 
@@ -9691,7 +9691,7 @@ ${startDateWarning}
                             </div>
 
                             <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-3 text-xs font-bold text-zinc-500 leading-relaxed">
-                              El detalle completo de cada evaluaciÃ³n, incluidos comentarios, se consulta desde <strong className="text-slate-800">Exportar TXT</strong>. AsÃ­ la tarjeta del profesor queda limpia aunque haya muchas respuestas.
+                              El detalle completo de cada evaluación, incluidos comentarios, se consulta desde <strong className="text-slate-800">Exportar TXT</strong>. Así la tarjeta del profesor queda limpia aunque haya muchas respuestas.
                             </div>
 
                           </div>
@@ -9706,7 +9706,7 @@ ${startDateWarning}
             {teacherPanelTab === 'payroll' && (
               <div className="space-y-6">
                 <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
-                  Los ajustes manuales no alteran los registros de asistencia. Sirven para cotejar con las hojas firmadas fÃ­sicamente o corregir errores del sistema.
+                  Los ajustes manuales no alteran los registros de asistencia. Sirven para cotejar con las hojas firmadas físicamente o corregir errores del sistema.
                 </div>
 
                 <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
@@ -9718,7 +9718,7 @@ ${startDateWarning}
                           <th className="p-4 font-black text-right">Horas Reales</th>
                           <th className="p-4 font-black text-right">Ajustes</th>
                           <th className="p-4 font-black text-right">Total Liquidable</th>
-                          <th className="p-4 font-black text-right">Acumulado (â‚¬)</th>
+                          <th className="p-4 font-black text-right">Acumulado (€)</th>
                           <th className="p-4 font-black text-center">Corregir</th>
                         </tr>
                       </thead>
@@ -9745,7 +9745,7 @@ ${startDateWarning}
                               <td className="p-4 text-right font-black">{t.realHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
                               <td className={`p-4 text-right font-black ${t.adjustmentHours > 0 ? 'text-emerald-600' : t.adjustmentHours < 0 ? 'text-rose-600' : 'text-zinc-400'}`}>{t.adjustmentHours > 0 ? '+' : ''}{t.adjustmentHours.toFixed(2)} <span className="text-[10px] uppercase">h</span></td>
                               <td className="p-4 text-right font-black text-slate-900">{t.totalHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
-                              <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">â‚¬</span></td>
+                              <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">€</span></td>
                               <td className="p-4 text-center">
                                 <div className="flex items-center justify-center gap-2">
                                   <button onClick={() => setPayrollAdjustModal({ teacher: t.name, mode: 'add' })} className="p-2 bg-emerald-100 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-colors" title="Sumar horas"><Plus className="w-4 h-4"/></button>
@@ -9764,23 +9764,23 @@ ${startDateWarning}
           </div>
         )}        
         
-{/* --- 7. TABLÃ“N --- */}
+{/* --- 7. TABLÓN --- */}
         {activeTab === 'announcements' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
-              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">TablÃ³n de Avisos</h2>
-              <p className="text-zinc-500 font-medium text-sm">Publica noticias en el tablÃ³n de alumnos y profesores.</p>
+              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tablón de Avisos</h2>
+              <p className="text-zinc-500 font-medium text-sm">Publica noticias en el tablón de alumnos y profesores.</p>
             </header>
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-zinc-200 mb-8">
               <div className="space-y-4">
                 <input type="text" placeholder="Titular impactante..." value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-sm" />
                 <textarea placeholder="Detalles del aviso..." value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
-                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si aÃ±ades URL, el alumno verÃ¡ un botÃ³n clicable en el tablÃ³n.</p>
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
                 <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-4">
                   <div>
-                    <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Destinatarios del aviso en el TablÃ³n</span>
-                    <span className="block text-xs text-sky-700 font-semibold mt-1">El aviso aparecerÃ¡ segÃºn el filtro elegido. La opciÃ³n profesores se publica solo para TeacherPortal.</span>
+                    <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Destinatarios del aviso en el Tablón</span>
+                    <span className="block text-xs text-sky-700 font-semibold mt-1">El aviso aparecerá según el filtro elegido. La opción profesores se publica solo para TeacherPortal.</span>
                   </div>
                   <div className="grid md:grid-cols-2 gap-3">
                     <select
@@ -9807,7 +9807,7 @@ ${startDateWarning}
                       </select>
                     )}
                     <div className="md:col-span-2 text-[11px] font-bold text-sky-800 bg-white/70 rounded-xl px-3 py-2">
-                      Destinatarios estimados con email: {getAnnouncementEmailTargets(announceEmailOptions).length} Â· {getAnnouncementTargetLabel(announceEmailOptions)}
+                      Destinatarios estimados con email: {getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
                     </div>
                   </div>
                   <label className="flex items-start gap-3 cursor-pointer select-none pt-2 border-t border-sky-100">
@@ -9818,8 +9818,8 @@ ${startDateWarning}
                       className="mt-1 w-4 h-4 accent-sky-600"
                     />
                     <span>
-                      <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar tambiÃ©n por email a esos destinatarios</span>
-                      <span className="block text-xs text-sky-700 font-semibold mt-1">Uso recomendado solo para avisos importantes de funcionamiento. No se envÃ­a nada si dejas esta casilla desmarcada.</span>
+                      <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email a esos destinatarios</span>
+                      <span className="block text-xs text-sky-700 font-semibold mt-1">Uso recomendado solo para avisos importantes de funcionamiento. No se envía nada si dejas esta casilla desmarcada.</span>
                     </span>
                   </label>
                 </div>
@@ -9829,7 +9829,7 @@ ${startDateWarning}
                   </button>
                   {editingAnnouncementId && (
                     <button onClick={cancelEditAnnouncement} className="bg-zinc-100 text-zinc-600 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-200">
-                      <X className="w-4 h-4"/> Cancelar ediciÃ³n
+                      <X className="w-4 h-4"/> Cancelar edición
                     </button>
                   )}
                 </div>
@@ -9841,7 +9841,7 @@ ${startDateWarning}
                   <div className="min-w-0">
                     <h4 className="font-black text-slate-800 text-md leading-tight">{ann.title}</h4>
                     <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
-                      {formatDateSpanish(ann.date)} {ann.updatedAt ? 'Â· Editado' : ''}
+                      {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}
                     </p>
                     <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>
                     <div className="flex flex-wrap items-center gap-3 mt-2">
@@ -9850,12 +9850,12 @@ ${startDateWarning}
                       </span>
                       {normalizeAnnouncementUrl(ann.url) && (
                         <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
-                          <Globe className="w-3 h-3"/> Enlace aÃ±adido
+                          <Globe className="w-3 h-3"/> Enlace añadido
                         </a>
                       )}
                       {ann.emailNotificationSentAt && (
                         <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-700">
-                          <Send className="w-3 h-3"/> Email enviado a {ann.emailNotificationRecipientCount || '?'} Â· {ann.emailNotificationTargetLabel || 'segmento'}
+                          <Send className="w-3 h-3"/> Email enviado a {ann.emailNotificationRecipientCount || '?'} · {ann.emailNotificationTargetLabel || 'segmento'}
                         </span>
                       )}
                     </div>
@@ -9872,7 +9872,7 @@ ${startDateWarning}
               ))}
               {visibleAnnouncementsCount < announcements.length && (
                 <button onClick={() => setVisibleAnnouncementsCount(c => c + 10)} className="w-full py-3 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
-                  Cargar mÃ¡s avisos ({Math.min(10, announcements.length - visibleAnnouncementsCount)} mÃ¡s)
+                  Cargar más avisos ({Math.min(10, announcements.length - visibleAnnouncementsCount)} más)
                 </button>
               )}
             </div>
@@ -9891,13 +9891,13 @@ ${startDateWarning}
           />
         )}
 
-        {/* --- 9. GAMIFICACIÃ“N (Rankings en Cascada) --- */}
+        {/* --- 9. GAMIFICACIÓN (Rankings en Cascada) --- */}
         {activeTab === 'gamification' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Retos y Rankings</h2>
-                <p className="text-zinc-500 font-medium text-sm">Gestiona la competiciÃ³n del trivial.</p>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona la competición del trivial.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                 <button onClick={handleCerrarRetoMensual} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
@@ -9907,7 +9907,7 @@ ${startDateWarning}
                   <Award className="w-3 h-3"/> Cerrar Trimestre
                 </button>
                 <button onClick={handleCerrarRetoAnual} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
-                  <Star className="w-3 h-3"/> Cerrar AÃ±o
+                  <Star className="w-3 h-3"/> Cerrar Año
                 </button>
               </div>
             </header>
@@ -9974,12 +9974,12 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 10. CONFIGURACIÃ“N COMPLETA (TARIFA, FIJOS E INSTRUMENTOS) --- */}
+        {/* --- 10. CONFIGURACIÓN COMPLETA (TARIFA, FIJOS E INSTRUMENTOS) --- */}
         {activeTab === 'settings' && (
           <div className="space-y-6 animate-in fade-in">
              <header className="mb-6">
-              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">ConfiguraciÃ³n Global</h2>
-              <p className="text-zinc-500 font-medium text-sm">Ajustes estratÃ©gicos de la infraestructura escolar.</p>
+              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración Global</h2>
+              <p className="text-zinc-500 font-medium text-sm">Ajustes estratégicos de la infraestructura escolar.</p>
             </header>
             
             {/* PANELS DE FINANZAS Y GASTOS (GRID) */}
@@ -9993,11 +9993,11 @@ ${startDateWarning}
                   <div className="flex items-center justify-between bg-zinc-50 p-4 rounded-xl border border-zinc-100">
                     <div>
                       <p className="text-xs font-black uppercase tracking-widest text-slate-800">Tarifa Convenio (Visible profe)</p>
-                      <p className="text-[10px] font-bold text-zinc-400">Calcula su nÃ³mina estimada.</p>
+                      <p className="text-[10px] font-bold text-zinc-400">Calcula su nómina estimada.</p>
                     </div>
                     <div className="flex items-center gap-2">
                       <input type="number" step="0.01" value={settings.hourlyRate} onChange={e => setSettings({...settings, hourlyRate: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-black outline-none bg-transparent text-right" />
-                      <span className="text-sm font-bold text-slate-800">â‚¬/h</span>
+                      <span className="text-sm font-bold text-slate-800">€/h</span>
                     </div>
                   </div>
 
@@ -10008,7 +10008,7 @@ ${startDateWarning}
                     </div>
                     <div className="flex items-center gap-2">
                       <input type="number" step="0.01" value={settings.costeEmpresa} onChange={e => setSettings({...settings, costeEmpresa: e.target.value})} className="text-lg font-black w-20 p-1 border-b-2 border-rose-500 outline-none bg-transparent text-right text-rose-900" />
-                      <span className="text-sm font-bold text-rose-800">â‚¬/h</span>
+                      <span className="text-sm font-bold text-rose-800">€/h</span>
                     </div>
                   </div>
                 </div>
@@ -10017,28 +10017,28 @@ ${startDateWarning}
               {/* Gastos Fijos */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Activity className="w-5 h-5 text-black"/> Gastos Fijos Mensuales</h3>
-                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Alquileres, luz, agua, cuota de gestorÃ­a, etc.</p>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-6">Alquileres, luz, agua, cuota de gestoría, etc.</p>
                 
                 <div className="space-y-3 mt-auto">
                   <div className="flex items-center justify-between bg-zinc-50 p-3 rounded-xl border border-zinc-100">
                     <p className="text-xs font-black uppercase tracking-widest text-slate-800">Gastos Compartidos (Global)</p>
                     <div className="flex items-center gap-2">
                       <input type="number" value={settings.gastosFijos?.global || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, global: e.target.value}})} className="text-sm font-black w-20 p-2 border border-zinc-200 rounded-lg outline-none focus:border-black text-right" />
-                      <span className="text-xs font-bold text-zinc-500">â‚¬</span>
+                      <span className="text-xs font-bold text-zinc-500">€</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between bg-blue-50 p-3 rounded-xl border border-blue-100">
                     <p className="text-xs font-black uppercase tracking-widest text-blue-900">Sede Tarragona</p>
                     <div className="flex items-center gap-2">
                       <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg outline-none focus:border-blue-500 text-right text-blue-900" />
-                      <span className="text-xs font-bold text-blue-600">â‚¬</span>
+                      <span className="text-xs font-bold text-blue-600">€</span>
                     </div>
                   </div>
                   <div className="flex items-center justify-between bg-rose-50 p-3 rounded-xl border border-rose-100">
                     <p className="text-xs font-black uppercase tracking-widest text-rose-900">Sede Reus</p>
                     <div className="flex items-center gap-2">
                       <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg outline-none focus:border-rose-500 text-right text-rose-900" />
-                      <span className="text-xs font-bold text-rose-600">â‚¬</span>
+                      <span className="text-xs font-bold text-rose-600">€</span>
                     </div>
                   </div>
                 </div>
@@ -10049,11 +10049,11 @@ ${startDateWarning}
               <Save className="w-4 h-4"/> Guardar Ajustes Financieros
             </button>
 
-            {/* NUEVO: OFERTA DE INSTRUMENTOS DINÃMICA */}
+            {/* NUEVO: OFERTA DE INSTRUMENTOS DINÁMICA */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Music className="w-5 h-5 text-black"/> Oferta de Instrumentos</h3>
               <div className="flex gap-2 mb-4">
-                <input id="adminInstInput" type="text" placeholder="Ej: SaxofÃ³n..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
+                <input id="adminInstInput" type="text" placeholder="Ej: Saxofón..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
                 <button onClick={() => { 
                   const val = document.getElementById('adminInstInput').value.trim(); 
                   if(val) { 
@@ -10073,9 +10073,9 @@ ${startDateWarning}
               </div>
             </div>
 
-            {/* AFOROS FÃSICOS DE LAS SALAS */}
+            {/* AFOROS FÍSICOS DE LAS SALAS */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos FÃ­sicos de las Salas</h3>
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
               <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -10096,7 +10096,7 @@ ${startDateWarning}
                     </div>
                  ))}
               </div>
-              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos FÃ­sicos</button>
+              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
             </div>
 
             {/* CALENDARIO ESCOLAR */}
@@ -10184,7 +10184,7 @@ ${startDateWarning}
                           delete nextColors[t];
                           const s = { ...settings, teacherColors: nextColors };
                           setSettings(s);
-                        }} className="text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 p-1.5 rounded transition-colors" title="Restaurar color automÃ¡tico">
+                        }} className="text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 p-1.5 rounded transition-colors" title="Restaurar color automático">
                           <History className="w-4 h-4"/>
                         </button>
                         <button onClick={() => {
@@ -10213,7 +10213,7 @@ ${startDateWarning}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Timer className="w-5 h-5 text-amber-600"/> Protocolo de Hora Muerta</h3>
               <p className="text-xs text-zinc-500 font-medium mb-4 leading-relaxed">
-                Define las tareas que aparecerÃ¡n al profesor cuando todos los alumnos activos falten sin aviso suficiente y no sea la Ãºltima clase del dÃ­a. AÃ±ade cada tarea de forma individual.
+                Define las tareas que aparecerán al profesor cuando todos los alumnos activos falten sin aviso suficiente y no sea la última clase del día. Añade cada tarea de forma individual.
               </p>
 
               <div className="flex flex-col sm:flex-row gap-2 mb-4">
@@ -10246,13 +10246,13 @@ ${startDateWarning}
                     saveGlobalSettings(s);
                     input.value = '';
                   }
-                }} className="bg-amber-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-amber-700 transition-colors flex items-center justify-center gap-2"><Plus className="w-4 h-4"/> AÃ±adir</button>
+                }} className="bg-amber-600 text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-amber-700 transition-colors flex items-center justify-center gap-2"><Plus className="w-4 h-4"/> Añadir</button>
               </div>
 
               <div className="space-y-2 max-h-56 overflow-y-auto pr-2">
                 {(settings.generalTasks || []).length === 0 ? (
                   <div className="p-4 bg-amber-50/50 border border-dashed border-amber-200 rounded-xl text-xs font-bold text-amber-700 uppercase tracking-widest text-center">
-                    No hay tareas configuradas. El TeacherPortal usarÃ¡ tareas bÃ¡sicas por defecto.
+                    No hay tareas configuradas. El TeacherPortal usará tareas básicas por defecto.
                   </div>
                 ) : (
                   (settings.generalTasks || []).map((task, i) => (
@@ -10290,7 +10290,7 @@ ${startDateWarning}
 
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Importador Masivo (Excel)</h3>
-              <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquÃ­ las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl font-mono text-xs text-slate-700 min-h-[120px] mb-4"/>
+              <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquí las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl font-mono text-xs text-slate-700 min-h-[120px] mb-4"/>
               <button onClick={handleMassImport} disabled={isImporting || !importText} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest disabled:opacity-50">{isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}</button>
             </div>
 

@@ -8,7 +8,7 @@ import {
 import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
-const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario"]);
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
 const ANNOUNCEMENT_EMAIL_TO = "gestiones@escuelalosmitos.com";
 const ANNOUNCEMENT_EMAIL_BATCH_SIZE = 50;
 const BI_WEEKS_PER_MONTH = 4.333;
@@ -29,8 +29,33 @@ const defaultRoomCapacities = {
 const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 
 const PROJECTABLE_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
-const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
+const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox"]);
 const HISTORIAL_TRAMITES_BLOCK_SIZE = 30;
+
+const EXTRA_SERVICE_GESTION_TYPES = new Set(["alta_mitoverso", "alta_mitobox"]);
+const EXTRA_SERVICE_CONFIG_BY_TYPE = {
+  alta_mitoverso: {
+    key: 'mitoverso',
+    name: 'Mitoverso',
+    studentFlag: 'hasMitoverso',
+    monthlyFee: 15,
+    activationTarget: 'Classroom/Mitoverso',
+    badgeClass: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+    readyActionLabel: 'Activar Mitoverso'
+  },
+  alta_mitobox: {
+    key: 'mitobox',
+    name: 'Mitobox',
+    studentFlag: 'hasMitobox',
+    monthlyFee: 35,
+    activationTarget: 'Mitobox / reserva de sala',
+    badgeClass: 'bg-blue-100 text-blue-800 border-blue-200',
+    readyActionLabel: 'Activar Mitobox'
+  }
+};
+
+const getExtraServiceConfigByType = (type = '') => EXTRA_SERVICE_CONFIG_BY_TYPE[type] || null;
+const isExtraServiceGestionType = (type = '') => EXTRA_SERVICE_GESTION_TYPES.has(type);
 
 const TEACHER_TASK_REQUEST_TYPES = [
   { value: 'clase_puntual', label: 'Crear clase puntual' },
@@ -2128,7 +2153,29 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     return ADMIN_COPY_GESTION_TYPES.has(type);
   };
 
-  const getGestionTypeLabel = (type = 'tarea_manual') => String(type || 'tarea_manual').replace(/_/g, ' ');
+  const getGestionTypeLabel = (type = 'tarea_manual') => ({
+    alta_mitoverso: 'Alta Mitoverso',
+    alta_mitobox: 'Alta Mitobox',
+    aviso_ausencia: 'Aviso de ausencia',
+    reserva_mitobox: 'Reserva Mitobox',
+    tarea_manual: 'Tarea manual'
+  }[type] || String(type || 'tarea_manual').replace(/_/g, ' '));
+
+  const isExtraServiceGestion = (gestion = {}) => isExtraServiceGestionType(gestion?.type || '');
+
+  const getExtraServiceConfigForGestion = (gestion = {}) => getExtraServiceConfigByType(gestion?.type || '') || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
+
+  const getGestionTypeBadgeClass = (gestion = {}) => {
+    const extraConfig = getExtraServiceConfigForGestion(gestion);
+    if (extraConfig?.badgeClass) return extraConfig.badgeClass;
+    const type = String(gestion?.type || '');
+    if (type.includes('mitobox')) return 'bg-blue-100 text-blue-800 border-blue-200';
+    if (type.includes('baja')) return 'bg-red-100 text-red-800 border-red-200';
+    if (type.includes('mantenimiento') || type.includes('reactivar')) return 'bg-amber-100 text-amber-800 border-amber-200';
+    if (type.includes('recuperacion')) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+    if (type.includes('manual') || gestion?.source === 'manual_admin') return 'bg-purple-100 text-purple-800 border-purple-200';
+    return 'bg-zinc-200 text-zinc-800 border-zinc-200';
+  };
 
   const isTotalBajaGestion = (gestion = {}) => {
     const scope = String(gestion.bajaScope || gestion.scope || gestion.bajaType || '').trim().toLowerCase();
@@ -2184,6 +2231,10 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     const ejecucion = phase === 'ejecutada' ? new Date().toLocaleString('es-ES') : '';
     const scheduledClassEndLine = gestion.scheduledClassEndDate || gestion.bajaClassEndDate || gestion.effectiveEndDate || '';
     const scheduledEffectiveLine = gestion.scheduledEffectiveDate || gestion.bajaEffectiveDate || gestion.effectiveStartDate || '';
+    const extraServiceLine = gestion.extraServiceName || gestion.serviceName || getExtraServiceConfigForGestion(gestion)?.name || '';
+    const extraMonthlyFeeLine = gestion.extraMonthlyFee ? `${gestion.extraMonthlyFee} €` : (getExtraServiceConfigForGestion(gestion)?.monthlyFee ? `${getExtraServiceConfigForGestion(gestion).monthlyFee} €` : '');
+    const extraProratedFeeLine = gestion.extraProratedFee ? `${gestion.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
+    const extraActivationLine = getExtraServiceConfigForGestion(gestion)?.activationTarget || '';
 
     const body = `TIPO_GESTION: ${typeLabel}
 ESTADO: ${status}
@@ -2199,6 +2250,10 @@ MES_OBJETIVO: ${gestion.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
 CUOTA_MANTENIMIENTO: ${maintenanceFeeLine}
 FECHA_RECUPERACION: ${gestion.recoveryDate ? formatDateSpanish(gestion.recoveryDate) : ''}
+SERVICIO_EXTRA: ${extraServiceLine}
+CUOTA_MENSUAL_EXTRA: ${extraMonthlyFeeLine}
+PRORRATA_MES_ACTUAL: ${extraProratedFeeLine}
+ACTIVACION_EXTRA: ${extraActivationLine}
 FECHA_SOLICITUD: ${solicitud}
 FECHA_EJECUCION: ${ejecucion}
 FECHA_FIN_PROGRAMADA: ${scheduledClassEndLine}
@@ -2547,7 +2602,16 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       return;
     }
 
-    if (!window.confirm(`¿Marcar como TADOSI HECHO este trámite de ${gestion.studentName || 'alumno'}?\n\nEsto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecutarlo al cierre.`)) return;
+    const extraConfig = getExtraServiceConfigForGestion(gestion);
+    const confirmText = extraConfig
+      ? `¿Marcar como TADOSI HECHO la domiciliación de ${extraConfig.name} para ${gestion.studentName || 'alumno'}?
+
+Esto NO activa todavía el servicio. Solo indica que la parte de Tadosi/domiciliación ya está preparada y deja el trámite listo para ejecutar.`
+      : `¿Marcar como TADOSI HECHO este trámite de ${gestion.studentName || 'alumno'}?
+
+Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecutarlo al cierre.`;
+
+    if (!window.confirm(confirmText)) return;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
       tadosiDone: true,
@@ -2594,7 +2658,58 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
         displayName = studentInfo.alias;
       }
 
-      if (type === 'baja') {
+      if (isExtraServiceGestion(gestionData)) {
+        const extraConfig = getExtraServiceConfigForGestion(gestionData);
+        if (!extraConfig) {
+          return fail('⚠️ No se ha podido identificar el servicio extra solicitado.');
+        }
+        if (!studentId || !studentInfo?.id) {
+          return fail(`⚠️ No se puede activar ${extraConfig.name}: no se ha encontrado la ficha del alumno.`);
+        }
+
+        const alreadyActive = Boolean(studentInfo?.[extraConfig.studentFlag]);
+        const nowIso = new Date().toISOString();
+        const updatePayload = {
+          [extraConfig.studentFlag]: true,
+          [`${extraConfig.key}ActivatedAt`]: studentInfo?.[`${extraConfig.key}ActivatedAt`] || nowIso,
+          [`${extraConfig.key}ActivatedBy`]: user?.email || 'admin',
+          [`${extraConfig.key}SourceGestionId`]: gestionId
+        };
+
+        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), updatePayload);
+
+        await sendStudentNotification({
+          studentEmail,
+          subject: `Alta en ${extraConfig.name} activada - Escuela Los Mitos`,
+          body: `Hola ${studentName},
+
+Te confirmamos que ya hemos activado tu alta en ${extraConfig.name}.
+
+La domiciliación correspondiente queda preparada por coordinación.
+
+${extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Área del Alumno, pestaña Extras, usando el botón de Classroom.' : 'Ya puedes reservar sala desde el Área del Alumno, pestaña Extras.'}
+
+Un saludo,
+Coordinación Los Mitos.`
+        });
+
+        await finalizeGestionStatus(
+          gestionId,
+          'completado',
+          gestionData,
+          `${extraConfig.name} activado manualmente. ${alreadyActive ? 'El alumno ya figuraba como activo; se ha cerrado igualmente la solicitud.' : 'Se ha activado el acceso en la ficha del alumno.'}`,
+          {
+            workflowStatus: 'servicio_activado',
+            extraServiceActivatedAt: nowIso,
+            extraServiceActivatedBy: user?.email || 'admin',
+            activatedExtraService: extraConfig.key,
+            activatedStudentFlag: extraConfig.studentFlag
+          }
+        );
+
+        return notify(`✅ ${extraConfig.name} activado para ${displayName}. El trámite queda cerrado y el alumno ya verá el servicio como activo en Extras.`);
+      }
+      else if (type === 'baja') {
         const sourceClass = getGestionSourceClass(gestionData);
         const sourceClassLine = getGestionSourceClassLine(gestionData);
         const hasScopedBaja = Boolean(gestionData.sourceClassId || gestionData.sourceClassLine);
@@ -5045,6 +5160,7 @@ Coordinación Los Mitos.`
     { id: 'tadosi_pendiente', label: 'Pend. Tadosi', matcher: (g) => gestionRequiresTadosi(g) && !isGestionTadosiDone(g) },
     { id: 'tadosi_hecho', label: 'Tadosi hecho', matcher: (g) => gestionRequiresTadosi(g) && isGestionTadosiDone(g) },
     { id: 'mantenimiento', label: 'Mantenimiento', matcher: (g) => ['mantenimiento', 'reactivar_plaza'].includes(g.type) },
+    { id: 'extras', label: 'Extras', matcher: (g) => isExtraServiceGestion(g) },
     { id: 'ausencias', label: 'Ausencias', matcher: (g) => isAbsenceGestion(g) },
     { id: 'bajas', label: 'Bajas', matcher: (g) => (g.type || '').includes('baja') },
     { id: 'manuales', label: 'Manuales', matcher: (g) => g.source === 'manual_admin' || (g.type || '').includes('manual') || g.type === 'tarea_manual' || g.type === 'incidencia_manual' },
@@ -5063,7 +5179,7 @@ Coordinación Los Mitos.`
     if (!gestionSearchNeedle) return true;
     const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
     const haystack = normalizeSearchText([
-      g.studentName, g.studentEmail, g.title, g.details, g.sourceClassLine, g.requestedClassLine, studentInfo?.name, studentInfo?.alias, studentInfo?.email
+      g.studentName, g.studentEmail, g.title, g.details, g.sourceClassLine, g.requestedClassLine, g.extraServiceName, g.serviceName, g.extraService, getGestionTypeLabel(g.type), studentInfo?.name, studentInfo?.alias, studentInfo?.email
     ].filter(Boolean).join(' '));
     return haystack.includes(gestionSearchNeedle);
   };
@@ -7830,13 +7946,23 @@ ${startDateWarning}
                             )}
                           </td>
                           <td className="p-4">
-                            <span className={`px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest ${(g.type || '').includes('mitobox') ? 'bg-blue-100 text-blue-800' : (g.type || '').includes('baja') ? 'bg-red-100 text-red-800' : (g.type || '').includes('manual') || (g.source === 'manual_admin') ? 'bg-purple-100 text-purple-800' : 'bg-zinc-200 text-zinc-800'}`}>
-                              {(g.type || 'tarea').replace('_', ' ')}
+                            <span className={`px-2 py-1 rounded border text-[10px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>
+                              {getGestionTypeLabel(g.type || 'tarea')}
                             </span>
                             <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isGestionReadyForExecution(g) ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                               {getGestionWorkflowLabel(g)}
                             </div>
                             {g.tadosiDoneAt && <div className="text-[9px] font-bold text-emerald-600 mt-1 uppercase">Tadosi: {new Date(g.tadosiDoneAt).toLocaleDateString('es-ES')}</div>}
+                            {isExtraServiceGestion(g) && (() => {
+                              const extraConfig = getExtraServiceConfigForGestion(g);
+                              return (
+                                <div className="mt-2 p-2 rounded-xl bg-slate-50 border border-slate-100 text-[10px] font-bold text-slate-700 leading-snug">
+                                  <span className="font-black uppercase tracking-widest block mb-0.5">Servicio extra</span>
+                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} · cuota {g.extraMonthlyFee || extraConfig?.monthlyFee || '—'}€/mes
+                                  <span className="block text-zinc-500 mt-0.5">Prorrata del mes corriente: a calcular al activar.</span>
+                                </div>
+                              );
+                            })()}
                             {bajaScopeLabel && (
                               <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isTotalBajaGestion(g) ? 'bg-red-100 text-red-700' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
                                 {bajaScopeLabel}
@@ -7908,7 +8034,7 @@ ${startDateWarning}
                                 onClick={() => updateGestionStatus(g.id, 'completado', g)}
                                 disabled={!isGestionReadyForExecution(g)}
                                 className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                title={isGestionReadyForExecution(g) ? 'Ejecutar ahora' : 'Primero marca Tadosi hecho'}
+                                title={isGestionReadyForExecution(g) ? (getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora') : 'Primero marca Tadosi hecho'}
                               >
                                 <Check className="w-4 h-4"/>
                               </button>
@@ -7952,8 +8078,8 @@ ${startDateWarning}
                             <td className="p-4 whitespace-nowrap text-zinc-500">{formatDateSpanish(g.date)}</td>
                             <td className="p-4 font-black text-black">{g.studentName}</td>
                             <td className="p-4">
-                              <span className="px-2 py-1 rounded text-[10px] font-black uppercase tracking-widest bg-zinc-200 text-zinc-800">
-                                {(g.type || 'tarea').replace('_', ' ')}
+                              <span className={`px-2 py-1 rounded border text-[10px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>
+                                {getGestionTypeLabel(g.type || 'tarea')}
                               </span>
                             </td>
                             <td className="p-4">

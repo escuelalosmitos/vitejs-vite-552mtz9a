@@ -4,7 +4,7 @@ import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, coll
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
-const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario"]);
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
@@ -58,6 +58,54 @@ const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
   return dateString.split('-').reverse().join('/');
 };
+
+const formatEuro = (value = 0) => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}€`;
+
+const getCurrentMonthProration = (monthlyFee = 0, baseDate = new Date()) => {
+  const year = baseDate.getFullYear();
+  const monthIndex = baseDate.getMonth();
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const currentDay = baseDate.getDate();
+  const billableDays = Math.max(daysInMonth - currentDay + 1, 1);
+  const lastDay = new Date(year, monthIndex + 1, 0);
+  const amount = Number(((Number(monthlyFee || 0) * billableDays) / daysInMonth).toFixed(2));
+
+  return {
+    amount,
+    billableDays,
+    daysInMonth,
+    from: formatLocalDateString(baseDate),
+    until: formatLocalDateString(lastDay),
+    monthLabel: baseDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+  };
+};
+
+const EXTRA_SERVICES = {
+  mitoverso: {
+    key: 'mitoverso',
+    type: 'alta_mitoverso',
+    name: 'Mitoverso',
+    title: 'Solicitud de alta en Mitoverso',
+    monthlyFee: 15,
+    Icon: MonitorPlay,
+    accent: 'indigo',
+    shortDescription: 'Cursos online, audios y recursos exclusivos.',
+    adminAction: 'Activar acceso manual en Classroom/Mitoverso y preparar la domiciliación en Tadosi.'
+  },
+  mitobox: {
+    key: 'mitobox',
+    type: 'alta_mitobox',
+    name: 'Mitobox',
+    title: 'Solicitud de alta en Mitobox',
+    monthlyFee: 35,
+    Icon: DoorOpen,
+    accent: 'blue',
+    shortDescription: 'Tarifa plana para reservar aulas libres y venir a practicar.',
+    adminAction: 'Activar tarifa plana Mitobox y preparar la domiciliación en Tadosi.'
+  }
+};
+
+const getExtraServiceConfig = (serviceKey = '') => EXTRA_SERVICES[serviceKey] || null;
 
 const getSafeAnnouncementUrl = (url = '') => {
   const cleanUrl = String(url || '').trim();
@@ -276,6 +324,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [mboxSede, setMboxSede] = useState('Tarragona');
   const [mboxInst, setMboxInst] = useState('');
   const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
+  const [extraSignupModal, setExtraSignupModal] = useState(null);
+  const [isSendingExtraSignup, setIsSendingExtraSignup] = useState(false);
 
   const [triviaModal, setTriviaModal] = useState(false);
   const [triviaTime, setTriviaTime] = useState(10);
@@ -1269,6 +1319,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const requestedDate = payload.recoveryDate ? formatDateSpanish(payload.recoveryDate) : '';
     const maintenancePeriodLine = payload.maintenanceFrom && payload.maintenanceUntil ? formatMaintenancePeriodLine({ from: payload.maintenanceFrom, until: payload.maintenanceUntil }) : '';
     const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
+    const extraServiceLine = payload.extraServiceName || payload.serviceName || '';
+    const extraMonthlyFeeLine = payload.extraMonthlyFee ? `${payload.extraMonthlyFee} €` : '';
+    const extraProratedFeeLine = payload.extraProratedFee ? `${payload.extraProratedFee} €` : '';
+    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : '';
 
     const body = `TIPO_GESTION: ${typeLabel}
 ESTADO: ${status}
@@ -1283,6 +1337,10 @@ MES_OBJETIVO: ${payload.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
 DURACION_MANTENIMIENTO: ${payload.maintenanceMonths ? `${payload.maintenanceMonths} mes(es)` : ''}
 CUOTA_MANTENIMIENTO: ${payload.maintenanceFee ? `${payload.maintenanceFee} €` : ''}
+SERVICIO_EXTRA: ${extraServiceLine}
+CUOTA_MENSUAL_EXTRA: ${extraMonthlyFeeLine}
+PRORRATA_MES_ACTUAL: ${extraProratedFeeLine}
+PERIODO_PRORRATA_EXTRA: ${extraProrationPeriodLine}
 FECHA_SOLICITUD: ${submittedAt}
 ID_GESTION: ${gestionId || ''}
 ORIGEN: Portal del alumno
@@ -1487,30 +1545,97 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     }
   };
 
-  const requestMitoverso = () => {
-    const ok = window.confirm('Serás redirigido al portal de inscripciones de Tadosi.\n\n⚠️ MUY IMPORTANTE: Cuando rellenes tus datos, no olvides marcar la casilla "Tengo una suscripción y quiero otra" para que el sistema reconozca tu descuento de alumno.');
-    if (ok) window.open('https://qow.es/GKidLP', '_blank');
+  const hasPendingExtraSignup = (serviceKey = '') => {
+    const serviceConfig = getExtraServiceConfig(serviceKey);
+    if (!serviceConfig) return false;
+    return myGestiones.some(g => g.status === 'pendiente' && g.type === serviceConfig.type);
   };
 
-  const requestMitobox = async () => {
-    const ok = window.confirm('Serás redirigido al portal de inscripciones de Tadosi para formalizar tu alta en la tarifa plana.\n\nAl continuar, también enviaremos un aviso a administración.');
-    if (ok) {
-      window.open('https://qow.es/wIXCp7', '_blank');
-      try {
-        const gestionId = `mbox-req-${Date.now()}`;
-        await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
-          studentId: profile.id,
-          studentName: profile.name,
-          studentEmail: profile.email,
-          type: 'alta_mitobox',
-          title: 'Solicitud Alta Mitobox',
-          details: 'El alumno ha iniciado el proceso de alta en la tarifa plana Mitobox a través de Tadosi.',
-          status: 'pendiente',
-          date: new Date().toISOString()
-        });
-      } catch (e) {
-        console.error(e);
+  const openExtraSignupModal = (serviceKey) => {
+    const serviceConfig = getExtraServiceConfig(serviceKey);
+    if (!serviceConfig) return;
+
+    if (serviceKey === 'mitoverso' && profile?.hasMitoverso) {
+      window.open('https://classroom.google.com/', '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    if (serviceKey === 'mitobox' && profile?.hasMitobox) {
+      setMitoboxModal(true);
+      return;
+    }
+
+    if (hasPendingExtraSignup(serviceKey)) {
+      showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisión.`, 'error');
+      return;
+    }
+
+    setExtraSignupModal(serviceKey);
+  };
+
+  const closeExtraSignupModal = () => {
+    if (isSendingExtraSignup) return;
+    setExtraSignupModal(null);
+  };
+
+  const sendExtraSignupRequest = async () => {
+    const serviceConfig = getExtraServiceConfig(extraSignupModal);
+    if (!serviceConfig || !profile?.id || isSendingExtraSignup) return;
+
+    if (hasPendingExtraSignup(serviceConfig.key)) {
+      showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisión.`, 'error');
+      setExtraSignupModal(null);
+      return;
+    }
+
+    const proration = getCurrentMonthProration(serviceConfig.monthlyFee, new Date());
+    const gestionId = `${serviceConfig.type}-${Date.now()}`;
+    const nowIso = new Date().toISOString();
+
+    setIsSendingExtraSignup(true);
+    try {
+      const payload = {
+        studentId: profile.id,
+        studentName: profile.name,
+        studentEmail: profile.email,
+        type: serviceConfig.type,
+        title: serviceConfig.title,
+        details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente (${formatEuro(proration.amount)} del ${formatDateSpanish(proration.from)} al ${formatDateSpanish(proration.until)}) y que después se aplique la cuota mensual de ${serviceConfig.monthlyFee}€. Administración debe activar el acceso manualmente y preparar la domiciliación en Tadosi.`,
+        extraService: serviceConfig.key,
+        extraServiceName: serviceConfig.name,
+        serviceName: serviceConfig.name,
+        extraMonthlyFee: serviceConfig.monthlyFee,
+        extraProratedFee: proration.amount,
+        extraProrationFrom: proration.from,
+        extraProrationUntil: proration.until,
+        extraProrationDays: proration.billableDays,
+        extraProrationMonth: proration.monthLabel,
+        requiresManualActivation: true,
+        requiresTadosiSetup: true,
+        tadosiDone: false,
+        status: 'pendiente',
+        date: nowIso
+      };
+
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
+
+      if (ADMIN_COPY_GESTION_TYPES.has(payload.type)) {
+        const sent = await sendAdminGestionCopy({ gestionId, payload, phase: 'recibida', status: 'pendiente' });
+        if (sent) {
+          await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
+            adminCopySentAt: new Date().toISOString(),
+            adminCopyRecipient: ADMIN_GESTION_EMAIL
+          });
+        }
       }
+
+      setExtraSignupModal(null);
+      showToast(`Solicitud de alta en ${serviceConfig.name} enviada a Administración.`);
+    } catch (error) {
+      console.error('Error al solicitar alta extra', error);
+      showToast(`Error al solicitar el alta en ${serviceConfig.name}.`, 'error');
+    } finally {
+      setIsSendingExtraSignup(false);
     }
   };
 
@@ -1653,7 +1778,9 @@ END:VCALENDAR`;
   };
 
   const pendingAbsences = [];
-  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.type !== 'alta_mitobox'); 
+  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
+  const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');
+  const pendingMitoboxSignup = hasPendingExtraSignup('mitobox');
   
   const pendingAdminGestiones = myGestiones.filter(g => 
     g.status === 'pendiente' && 
@@ -2227,6 +2354,65 @@ END:VCALENDAR`;
     );
   };
 
+  const renderExtraSignupModal = () => {
+    const serviceConfig = getExtraServiceConfig(extraSignupModal);
+    if (!serviceConfig) return null;
+
+    const proration = getCurrentMonthProration(serviceConfig.monthlyFee, new Date());
+    const ServiceIcon = serviceConfig.Icon || Sparkles;
+    const accentClasses = serviceConfig.key === 'mitoverso'
+      ? {
+          icon: 'bg-indigo-50 text-indigo-600 border-indigo-100',
+          box: 'bg-indigo-50 border-indigo-100 text-indigo-950',
+          button: 'bg-indigo-600 hover:bg-indigo-700'
+        }
+      : {
+          icon: 'bg-blue-50 text-blue-600 border-blue-100',
+          box: 'bg-blue-50 border-blue-100 text-blue-950',
+          button: 'bg-blue-600 hover:bg-blue-700'
+        };
+
+    return (
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
+          <button onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
+
+          <div className="flex flex-col items-center text-center mb-6">
+            <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 border ${accentClasses.icon}`}>
+              <ServiceIcon className="w-8 h-8" />
+            </div>
+            <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Alta en {serviceConfig.name}</h2>
+            <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">{serviceConfig.shortDescription}</p>
+          </div>
+
+          <div className={`p-4 rounded-2xl border mb-4 ${accentClasses.box}`}>
+            <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Condiciones económicas</p>
+            <div className="space-y-2 text-sm font-bold leading-relaxed">
+              <p>Cuota mensual: <strong>{formatEuro(serviceConfig.monthlyFee)}</strong> / mes.</p>
+              <p>Alta durante {proration.monthLabel}: <strong>{formatEuro(proration.amount)}</strong> de parte proporcional.</p>
+              <p className="text-xs opacity-80">Cálculo aplicado: {proration.billableDays} de {proration.daysInMonth} días, del {formatDateSpanish(proration.from)} al {formatDateSpanish(proration.until)}.</p>
+            </div>
+          </div>
+
+          <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5 text-xs font-bold text-zinc-600 leading-relaxed space-y-2">
+            <p>Al aceptar, no tendrás que rellenar ningún formulario externo de Tadosi.</p>
+            <p>Enviaremos una solicitud a Administración. Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.</p>
+            <p className="text-slate-800 font-black">El acceso no es inmediato: quedará pendiente de revisión administrativa.</p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors disabled:opacity-50">
+              Cancelar
+            </button>
+            <button onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup} className={`${accentClasses.button} text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors shadow-md flex items-center justify-center gap-2 disabled:opacity-50`}>
+              {isSendingExtraSignup ? 'Enviando...' : <><Send className="w-4 h-4"/> Aceptar alta</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderMitoboxModal = () => {
     if (!mitoboxModal) return null;
     
@@ -2571,6 +2757,7 @@ END:VCALENDAR`;
       {renderAbsenceModal()}
       {renderGestionModal()}
       {renderMitoboxModal()}
+      {renderExtraSignupModal()}
       {renderContract()}
       {renderTriviaModal()}
 
@@ -2956,9 +3143,13 @@ END:VCALENDAR`;
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                {profile?.hasMitoverso && (
+                {profile?.hasMitoverso ? (
                   <div className="absolute top-4 right-4 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
                     <Star className="w-3 h-3"/> Suscripción Activa
+                  </div>
+                ) : pendingMitoversoSignup && (
+                  <div className="absolute top-4 right-4 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                    <Clock className="w-3 h-3"/> En revisión
                   </div>
                 )}
                 <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
@@ -2977,25 +3168,30 @@ END:VCALENDAR`;
                 
                 {profile?.hasMitoverso ? (
                   <button 
-                    onClick={() => window.open('https://classroom.google.com/', '_blank')}
+                    onClick={() => window.open('https://classroom.google.com/', '_blank', 'noopener,noreferrer')}
                     className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-colors shadow-lg flex items-center justify-center gap-2"
                   >
                     Entrar a Classroom <ArrowRight className="w-4 h-4"/>
                   </button>
                 ) : (
                   <button 
-                    onClick={requestMitoverso}
-                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                    onClick={() => openExtraSignupModal('mitoverso')}
+                    disabled={pendingMitoversoSignup}
+                    className={`w-full font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors shadow-lg flex items-center justify-center gap-2 ${pendingMitoversoSignup ? 'bg-amber-100 text-amber-700 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800'}`}
                   >
-                    Solicitar Acceso
+                    {pendingMitoversoSignup ? <><Clock className="w-4 h-4"/> Solicitud enviada</> : 'Solicitar Acceso'}
                   </button>
                 )}
               </div>
 
               <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                {profile?.hasMitobox && (
+                {profile?.hasMitobox ? (
                   <div className="absolute top-4 right-4 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
                     <Star className="w-3 h-3"/> Tarifa Plana Activa
+                  </div>
+                ) : pendingMitoboxSignup && (
+                  <div className="absolute top-4 right-4 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
+                    <Clock className="w-3 h-3"/> En revisión
                   </div>
                 )}
                 <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
@@ -3021,10 +3217,11 @@ END:VCALENDAR`;
                   </button>
                 ) : (
                   <button 
-                    onClick={requestMitobox}
-                    className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg"
+                    onClick={() => openExtraSignupModal('mitobox')}
+                    disabled={pendingMitoboxSignup}
+                    className={`w-full font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors shadow-lg flex items-center justify-center gap-2 ${pendingMitoboxSignup ? 'bg-amber-100 text-amber-700 cursor-not-allowed' : 'bg-black text-white hover:bg-zinc-800'}`}
                   >
-                    Solicitar Acceso
+                    {pendingMitoboxSignup ? <><Clock className="w-4 h-4"/> Solicitud enviada</> : 'Solicitar Acceso'}
                   </button>
                 )}
               </div>

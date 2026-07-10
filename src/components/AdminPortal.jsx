@@ -81,6 +81,14 @@ const WORKSHOP_REGISTRATION_STATUS_LABELS = {
   cancelled: 'Cancelada'
 };
 
+const WORKSHOP_REGISTRATION_STATUS_STYLE = {
+  pending: 'bg-amber-50 text-amber-800 border-amber-200',
+  confirmed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  waitlist: 'bg-blue-50 text-blue-700 border-blue-200',
+  rejected: 'bg-red-50 text-red-700 border-red-200',
+  cancelled: 'bg-zinc-50 text-zinc-500 border-zinc-200'
+};
+
 const createWorkshopLocalId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 const getLocalDateTimeInputValue = (date = new Date()) => {
@@ -946,9 +954,8 @@ const TemporaryRelocationModalOverlay = ({
   );
 };
 
-const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses }) => {
+const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses, registrations = [] }) => {
   const [workshops, setWorkshops] = useState([]);
-  const [registrations, setRegistrations] = useState([]);
   const [loadingWorkshops, setLoadingWorkshops] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -971,12 +978,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses 
         setLoadingWorkshops(false);
       }
     );
-    const unsubRegistrations = onSnapshot(
-      collection(db, 'artifacts', appId, 'workshopRegistrations'),
-      snap => setRegistrations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))),
-      error => console.error('No se pudieron cargar las inscripciones de talleres:', error)
-    );
-    return () => { unsubWorkshops(); unsubRegistrations(); };
+    return () => { unsubWorkshops(); };
   }, [appId, db]);
 
   const getWorkshopRegistrations = workshopId => registrations.filter(registration => registration.workshopId === workshopId);
@@ -1409,6 +1411,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
   const [teacherEvaluations, setTeacherEvaluations] = useState([]);
+  const [workshopRegistrations, setWorkshopRegistrations] = useState([]);
+  const workshopEmailClaimsRef = useRef(new Set());
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -1483,7 +1487,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 13) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 14) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -1557,7 +1561,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubMaintenancePeriods(); unsubTeacherTasks(); unsubTeacherEvaluations(); };
+    const unsubWorkshopRegistrations = onSnapshot(
+      collection(db, 'artifacts', appId, 'workshopRegistrations'),
+      (snap) => {
+        setWorkshopRegistrations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)));
+        checkLoad();
+      },
+      (error) => {
+        console.error('No se pudieron cargar las inscripciones de talleres:', error);
+        checkLoad();
+      }
+    );
+
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubMaintenancePeriods(); unsubTeacherTasks(); unsubTeacherEvaluations(); unsubWorkshopRegistrations(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -2495,6 +2511,110 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       return false;
     }
   };
+
+  const markWorkshopRegistrationsSeen = async () => {
+    const unseen = workshopRegistrations.filter(registration => !registration.adminSeenAt);
+    if (unseen.length === 0) return;
+    const seenAt = new Date().toISOString();
+
+    try {
+      for (let start = 0; start < unseen.length; start += 450) {
+        const batch = writeBatch(db);
+        unseen.slice(start, start + 450).forEach(registration => {
+          batch.update(doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id), {
+            adminSeenAt: seenAt,
+            adminSeenBy: user?.email || user?.uid || 'admin'
+          });
+        });
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('No se pudieron marcar las inscripciones de talleres como vistas:', error);
+    }
+  };
+
+  const handleAdminTabChange = (tabId) => {
+    setActiveTab(tabId);
+    if (tabId === 'workshops') markWorkshopRegistrationsSeen();
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const notifyNewWorkshopRegistrations = async () => {
+      const registrationsToNotify = workshopRegistrations.filter(registration =>
+        !registration.adminNotificationEmailSentAt &&
+        !registration.adminNotificationEmailClaimedAt &&
+        !workshopEmailClaimsRef.current.has(registration.id)
+      );
+
+      for (const registration of registrationsToNotify) {
+        if (cancelled) return;
+        workshopEmailClaimsRef.current.add(registration.id);
+        const registrationRef = doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id);
+        const claimedAt = new Date().toISOString();
+        let claimed = false;
+
+        try {
+          await runTransaction(db, async transaction => {
+            const registrationSnap = await transaction.get(registrationRef);
+            if (!registrationSnap.exists()) return;
+            const currentData = registrationSnap.data();
+            if (currentData.adminNotificationEmailSentAt || currentData.adminNotificationEmailClaimedAt) return;
+            transaction.update(registrationRef, {
+              adminNotificationEmailClaimedAt: claimedAt,
+              adminNotificationEmailClaimedBy: user?.email || user?.uid || 'admin'
+            });
+            claimed = true;
+          });
+
+          if (!claimed || cancelled) continue;
+
+          const answersText = Array.isArray(registration.answers) && registration.answers.length > 0
+            ? registration.answers.map(answer => `- ${answer.question || 'Pregunta'}: ${answer.answer || 'Sin respuesta'}`).join('\n')
+            : 'Sin preguntas adicionales.';
+          const statusLabel = WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status] || registration.status || 'Registrada';
+          const priceLine = registration.priceType === 'paid'
+            ? `${Number(registration.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} € · cobro pendiente: ${registration.billingPending === false ? 'no' : 'sí'}`
+            : 'Gratuito';
+          const body = `NUEVA INSCRIPCIÓN EN TALLER
+
+TALLER: ${registration.workshopTitle || registration.workshopId || 'Taller'}
+ALUMNO: ${registration.studentName || 'Sin nombre'}
+EMAIL: ${registration.studentEmail || 'Sin email'}
+ESTADO: ${statusLabel}
+PRECIO: ${priceLine}
+FECHA: ${new Date(registration.updatedAt || registration.createdAt || Date.now()).toLocaleString('es-ES')}
+
+RESPUESTAS:
+${answersText}
+
+La inscripción ya está registrada en AdminPortal > Talleres y aparece a título informativo en la Bandeja.`;
+
+          const sent = await sendNotificationEmail({
+            to: ADMIN_GESTION_EMAIL,
+            subject: `Nueva inscripción en taller: ${registration.workshopTitle || registration.studentName || 'Taller'}`,
+            body,
+            type: 'notificacion_email',
+            workshopRegistrationId: registration.id,
+            workshopId: registration.workshopId || ''
+          });
+
+          await updateDoc(registrationRef, sent ? {
+            adminNotificationEmailSentAt: new Date().toISOString(),
+            adminNotificationEmailRecipient: ADMIN_GESTION_EMAIL
+          } : {
+            adminNotificationEmailFailedAt: new Date().toISOString()
+          });
+        } catch (error) {
+          console.error('No se pudo enviar el aviso de nueva inscripción en taller:', registration.id, error);
+        }
+      }
+    };
+
+    notifyNewWorkshopRegistrations();
+    return () => { cancelled = true; };
+  }, [workshopRegistrations, db, appId, user?.email, user?.uid]);
 
   const sendTeacherNotification = async ({ teacherName, subject, body }) => {
     const to = getTeacherEmail(teacherName);
@@ -5673,6 +5793,8 @@ Coordinación Los Mitos.`
   const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
   const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length + scheduledGestionesProgramadas.length;
+  const unreadWorkshopRegistrations = workshopRegistrations.filter(registration => !registration.adminSeenAt);
+  const totalInboxNotifications = totalPendingInbox + unreadWorkshopRegistrations.length;
 
   const gestionPendingFilters = [
     { id: 'todas', label: 'Todas gestiones', matcher: () => true },
@@ -5719,6 +5841,19 @@ Coordinación Los Mitos.`
     return haystack.includes(gestionSearchNeedle);
   };
 
+  const matchesWorkshopRegistrationSearch = (registration = {}) => {
+    if (!gestionSearchNeedle) return true;
+    const haystack = normalizeSearchText([
+      registration.studentName,
+      registration.studentEmail,
+      registration.workshopTitle,
+      registration.workshopId,
+      WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status],
+      ...(Array.isArray(registration.answers) ? registration.answers.flatMap(answer => [answer.question, answer.answer]) : [])
+    ].filter(Boolean).join(' '));
+    return haystack.includes(gestionSearchNeedle);
+  };
+
   const activeGestionPendingFilter = gestionPendingFilters.find(f => f.id === gestionPendingFilter) || gestionPendingFilters[0];
   const activeTeacherTaskInboxFilter = teacherTaskInboxFilters.find(f => f.id === teacherTaskInboxFilter) || teacherTaskInboxFilters[0];
   const filteredPendingGestiones = pendingGestiones.filter(activeGestionPendingFilter.matcher).filter(matchesGestionSearch);
@@ -5726,6 +5861,7 @@ Coordinación Los Mitos.`
   const filteredTeacherRequests = pendingTeacherPanelTasks
     .filter(activeTeacherTaskInboxFilter.matcher)
     .filter(matchesTeacherRequestSearch);
+  const filteredWorkshopRegistrations = workshopRegistrations.filter(matchesWorkshopRegistrationSearch);
   const filteredResolvedGestiones = resolvedGestiones.filter(matchesGestionSearch);
   const visibleResolvedGestiones = filteredResolvedGestiones.slice(0, resolvedGestionesVisible);
   const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
@@ -7826,21 +7962,22 @@ ${startDateWarning}
         </div>
         <nav className="flex-1 flex md:flex-col p-4 gap-1 no-scrollbar overflow-x-auto md:overflow-visible">
           {[
-            { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalPendingInbox },
+            { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalInboxNotifications },
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
             { id: 'mitobox', icon: DoorOpen, label: 'Mitobox' }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
             { id: 'announcements', icon: Megaphone, label: 'Tablón' },
-            { id: 'workshops', icon: PartyPopper, label: 'Talleres' },
+            { id: 'workshops', icon: PartyPopper, label: 'Talleres', notificationCount: unreadWorkshopRegistrations.length },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
             { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
             { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
+            <button key={tab.id} onClick={() => handleAdminTabChange(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
               <tab.icon className="w-4 h-4 shrink-0" />
               <span className="flex-1">{tab.label}</span>
+              {tab.notificationCount > 0 && <span className="min-w-5 h-5 px-1.5 bg-red-500 text-white border-2 border-zinc-950 rounded-full text-[9px] font-black flex items-center justify-center" title={`${tab.notificationCount} nueva(s) inscripción(es)`}>{tab.notificationCount}</span>}
               {tab.count > 0 && <span className="bg-white text-red-600 px-2 py-0.5 rounded-full text-[10px] font-black">{tab.count}</span>}
             </button>
           ))}
@@ -8103,7 +8240,7 @@ ${startDateWarning}
             <header className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bandeja de Entrada</h2>
-                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos, tareas manuales internas y peticiones de profesores.</p>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos, tareas internas y consulta las nuevas inscripciones en talleres.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
                 <button onClick={consolidateExpiredScheduledGestiones} disabled={bulkConsolidatingGestiones || scheduledGestionesVencidas.length === 0} className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Consolida solo bajas y cambios de horario programados cuya fecha efectiva ya ha llegado. No procesa mantenimientos.">
@@ -8118,7 +8255,7 @@ ${startDateWarning}
               </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Pendientes totales</p>
                 <p className="text-2xl font-black text-slate-900">{totalPendingInbox}</p>
@@ -8143,9 +8280,13 @@ ${startDateWarning}
                 <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-700">Programadas vencidas</p>
                 <p className="text-2xl font-black text-fuchsia-900">{scheduledGestionesVencidas.length}</p>
               </div>
+              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-widest text-rose-700">Inscripciones nuevas</p>
+                <p className="text-2xl font-black text-rose-900">{unreadWorkshopRegistrations.length}</p>
+              </div>
             </div>
 
-            {totalPendingInbox === 0 && resolvedGestiones.length === 0 && resolvedTeacherRequests.length === 0 ? (
+            {totalPendingInbox === 0 && resolvedGestiones.length === 0 && resolvedTeacherRequests.length === 0 && workshopRegistrations.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <Check className="w-12 h-12 text-emerald-400 mx-auto mb-4 bg-emerald-50 rounded-full p-2" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Todo al día</h3>
@@ -8158,12 +8299,12 @@ ${startDateWarning}
                     type="text"
                     value={gestionSearchTerm}
                     onChange={e => setGestionSearchTerm(e.target.value)}
-                    placeholder="Buscar por alumno, email, profesor, encargo, texto de solicitud o trámites cerrados..."
+                    placeholder="Buscar por alumno, email, profesor, taller, encargo o texto de solicitud..."
                     className="w-full pl-11 pr-4 py-3 rounded-2xl outline-none font-bold text-sm text-slate-700"
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                   <button
                     onClick={() => setInboxSection('gestiones')}
                     className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'gestiones' ? 'bg-black text-white border-black shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-black'}`}
@@ -8198,6 +8339,18 @@ ${startDateWarning}
                         <p className="text-sm font-black uppercase tracking-tight mt-1">Bajas y cambios pendientes de consolidar</p>
                       </div>
                       <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'programadas' ? 'bg-white/20 text-white' : 'bg-violet-50 text-violet-700'}`}>{scheduledGestionesProgramadas.length}</span>
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => { setInboxSection('talleres'); markWorkshopRegistrationsSeen(); }}
+                    className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'talleres' ? 'bg-rose-700 text-white border-rose-700 shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-rose-500'}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Talleres · informativo</p>
+                        <p className="text-sm font-black uppercase tracking-tight mt-1">Nuevas inscripciones recibidas</p>
+                      </div>
+                      <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'talleres' ? 'bg-white/20 text-white' : 'bg-rose-50 text-rose-700'}`}>{workshopRegistrations.length}</span>
                     </div>
                   </button>
                 </div>
@@ -8248,7 +8401,60 @@ ${startDateWarning}
                   </div>
                 )}
 
-                {inboxSection === 'profesores' ? (
+                {inboxSection === 'talleres' ? (
+                  filteredWorkshopRegistrations.length === 0 ? (
+                    <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
+                      <PartyPopper className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
+                      <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay inscripciones de talleres en esta vista</h3>
+                      <p className="text-xs text-zinc-400 font-medium mt-2">Este apartado es informativo; las inscripciones se gestionan desde Talleres.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-black uppercase tracking-tight text-rose-950 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Inscripciones recibidas</h3>
+                          <p className="text-xs font-bold text-rose-800/70 mt-1">Información de entrada. Confirmaciones, rechazos y listas de espera se gestionan en el apartado Talleres.</p>
+                        </div>
+                        <button onClick={() => { setActiveTab('workshops'); markWorkshopRegistrationsSeen(); }} className="bg-rose-700 hover:bg-rose-800 text-white px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 shrink-0"><ArrowRightLeft className="w-4 h-4"/> Ir a Talleres</button>
+                      </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {filteredWorkshopRegistrations.map(registration => {
+                          const answers = Array.isArray(registration.answers) ? registration.answers : [];
+                          const status = registration.status || 'pending';
+                          const createdAt = registration.updatedAt || registration.createdAt || '';
+                          return (
+                            <article key={registration.id} className={`bg-white rounded-3xl border-2 p-5 shadow-sm ${!registration.adminSeenAt ? 'border-rose-300 ring-2 ring-rose-50' : 'border-zinc-100'}`}>
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                                    {!registration.adminSeenAt && <span className="bg-red-500 text-white px-2 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Nueva</span>}
+                                    <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_REGISTRATION_STATUS_STYLE[status] || WORKSHOP_REGISTRATION_STATUS_STYLE.pending}`}>{WORKSHOP_REGISTRATION_STATUS_LABELS[status] || status}</span>
+                                  </div>
+                                  <h4 className="font-black text-slate-900 uppercase tracking-tight text-lg leading-tight">{registration.workshopTitle || 'Taller'}</h4>
+                                  <p className="text-xs font-black text-rose-700 mt-1">{registration.studentName || 'Alumno sin nombre'}</p>
+                                  <p className="text-[10px] font-bold text-zinc-400 mt-0.5">{registration.studentEmail || 'Sin email'}</p>
+                                </div>
+                                <div className="w-11 h-11 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center shrink-0"><PartyPopper className="w-5 h-5"/></div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2 mt-4">
+                                <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Fecha</p><p className="text-xs font-black text-slate-700 mt-1">{createdAt ? new Date(createdAt).toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Sin fecha'}</p></div>
+                                <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Precio</p><p className="text-xs font-black text-slate-700 mt-1">{registration.priceType === 'paid' ? `${Number(registration.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €` : 'Gratuito'}</p></div>
+                              </div>
+
+                              {answers.length > 0 && <div className="mt-3 bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-2">Respuestas del alumno</p><div className="space-y-2">{answers.map((answer, index) => <div key={answer.questionId || index}><p className="text-[10px] font-black text-slate-600">{answer.question || 'Pregunta'}</p><p className="text-xs font-medium text-zinc-600 whitespace-pre-wrap">{answer.answer || 'Sin respuesta'}</p></div>)}</div></div>}
+
+                              <div className="mt-4 pt-3 border-t border-zinc-100 flex flex-wrap items-center justify-between gap-2">
+                                <span className={`text-[9px] font-black uppercase tracking-widest flex items-center gap-1 ${registration.adminNotificationEmailSentAt ? 'text-emerald-700' : 'text-amber-700'}`}>{registration.adminNotificationEmailSentAt ? <><Mail className="w-3 h-3"/> Email enviado a Gestiones</> : <><Clock className="w-3 h-3"/> Email pendiente</>}</span>
+                                <button onClick={() => { setActiveTab('workshops'); markWorkshopRegistrationsSeen(); }} className="text-[9px] font-black uppercase tracking-widest text-rose-700 hover:text-rose-900">Abrir en Talleres →</button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )
+                ) : inboxSection === 'profesores' ? (
                   filteredTeacherRequests.length === 0 ? (
                     <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                       <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
@@ -9888,6 +10094,7 @@ ${startDateWarning}
             settings={settings}
             students={students}
             allClasses={allClasses}
+            registrations={workshopRegistrations}
           />
         )}
 

@@ -1321,8 +1321,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
     const extraServiceLine = payload.extraServiceName || payload.serviceName || '';
     const extraMonthlyFeeLine = payload.extraMonthlyFee ? `${payload.extraMonthlyFee} €` : '';
-    const extraProratedFeeLine = payload.extraProratedFee ? `${payload.extraProratedFee} €` : '';
-    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : '';
+    const extraProratedFeeLine = payload.extraProratedFee ? `${payload.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
+    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : (extraServiceLine ? 'Mes corriente según activación administrativa' : '');
 
     const body = `TIPO_GESTION: ${typeLabel}
 ESTADO: ${status}
@@ -1588,7 +1588,6 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       return;
     }
 
-    const proration = getCurrentMonthProration(serviceConfig.monthlyFee, new Date());
     const gestionId = `${serviceConfig.type}-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
@@ -1600,16 +1599,17 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         studentEmail: profile.email,
         type: serviceConfig.type,
         title: serviceConfig.title,
-        details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente (${formatEuro(proration.amount)} del ${formatDateSpanish(proration.from)} al ${formatDateSpanish(proration.until)}) y que después se aplique la cuota mensual de ${serviceConfig.monthlyFee}€. Administración debe activar el acceso manualmente y preparar la domiciliación en Tadosi.`,
+        details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente y que después se aplique la cuota mensual de ${serviceConfig.monthlyFee}€. Administración debe activar el acceso manualmente y preparar la domiciliación en Tadosi.`,
         extraService: serviceConfig.key,
         extraServiceName: serviceConfig.name,
         serviceName: serviceConfig.name,
         extraMonthlyFee: serviceConfig.monthlyFee,
-        extraProratedFee: proration.amount,
-        extraProrationFrom: proration.from,
-        extraProrationUntil: proration.until,
-        extraProrationDays: proration.billableDays,
-        extraProrationMonth: proration.monthLabel,
+        extraProratedFee: null,
+        extraProrationFrom: '',
+        extraProrationUntil: '',
+        extraProrationDays: null,
+        extraProrationMonth: '',
+        extraProrationPolicy: 'parte_proporcional_mes_corriente_segun_fecha_activacion_admin',
         requiresManualActivation: true,
         requiresTadosiSetup: true,
         tadosiDone: false,
@@ -2358,7 +2358,6 @@ END:VCALENDAR`;
     const serviceConfig = getExtraServiceConfig(extraSignupModal);
     if (!serviceConfig) return null;
 
-    const proration = getCurrentMonthProration(serviceConfig.monthlyFee, new Date());
     const ServiceIcon = serviceConfig.Icon || Sparkles;
     const accentClasses = serviceConfig.key === 'mitoverso'
       ? {
@@ -2389,14 +2388,12 @@ END:VCALENDAR`;
             <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Condiciones económicas</p>
             <div className="space-y-2 text-sm font-bold leading-relaxed">
               <p>Cuota mensual: <strong>{formatEuro(serviceConfig.monthlyFee)}</strong> / mes.</p>
-              <p>Alta durante {proration.monthLabel}: <strong>{formatEuro(proration.amount)}</strong> de parte proporcional.</p>
-              <p className="text-xs opacity-80">Cálculo aplicado: {proration.billableDays} de {proration.daysInMonth} días, del {formatDateSpanish(proration.from)} al {formatDateSpanish(proration.until)}.</p>
+              <p>Se te pasará la parte proporcional del mes corriente.</p>
             </div>
           </div>
 
           <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5 text-xs font-bold text-zinc-600 leading-relaxed space-y-2">
-            <p>Al aceptar, no tendrás que rellenar ningún formulario externo de Tadosi.</p>
-            <p>Enviaremos una solicitud a Administración. Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.</p>
+            <p>Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.</p>
             <p className="text-slate-800 font-black">El acceso no es inmediato: quedará pendiente de revisión administrativa.</p>
           </div>
 

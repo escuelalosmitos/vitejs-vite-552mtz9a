@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen } from 'lucide-react';
-import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
-const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
+const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "BaterÃ­a", "Bajo", "Ukelele", "ArmÃ³nica", "Combo", "SensibilizaciÃ³n", "ViolÃ­n"];
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
 
@@ -19,7 +19,7 @@ const getDayOfYear = () => {
 };
 
 const getDayName = (dayIndex) => {
-  const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  const days = ['Domingo', 'Lunes', 'Martes', 'MiÃ©rcoles', 'Jueves', 'Viernes', 'SÃ¡bado'];
   return days[dayIndex];
 };
 
@@ -59,7 +59,7 @@ const formatDateSpanish = (dateString) => {
   return dateString.split('-').reverse().join('/');
 };
 
-const formatEuro = (value = 0) => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}€`;
+const formatEuro = (value = 0) => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}â‚¬`;
 
 const getCurrentMonthProration = (monthlyFee = 0, baseDate = new Date()) => {
   const year = baseDate.getFullYear();
@@ -90,7 +90,7 @@ const EXTRA_SERVICES = {
     Icon: MonitorPlay,
     accent: 'indigo',
     shortDescription: 'Cursos online, audios y recursos exclusivos.',
-    adminAction: 'Activar acceso manual en Classroom/Mitoverso y preparar la domiciliación en Tadosi.'
+    adminAction: 'Activar acceso manual en Classroom/Mitoverso y preparar la domiciliaciÃ³n en Tadosi.'
   },
   mitobox: {
     key: 'mitobox',
@@ -101,7 +101,7 @@ const EXTRA_SERVICES = {
     Icon: DoorOpen,
     accent: 'blue',
     shortDescription: 'Tarifa plana para reservar aulas libres y venir a practicar.',
-    adminAction: 'Activar tarifa plana Mitobox y preparar la domiciliación en Tadosi.'
+    adminAction: 'Activar tarifa plana Mitobox y preparar la domiciliaciÃ³n en Tadosi.'
   }
 };
 
@@ -112,6 +112,58 @@ const getSafeAnnouncementUrl = (url = '') => {
   if (!/^https?:\/\//i.test(cleanUrl)) return '';
   return cleanUrl;
 };
+
+const WORKSHOP_REGISTRATION_STATUS_LABELS = {
+  pending: 'Pendiente de revisiÃ³n',
+  confirmed: 'InscripciÃ³n confirmada',
+  waitlist: 'En lista de espera',
+  rejected: 'Solicitud rechazada',
+  cancelled: 'InscripciÃ³n cancelada'
+};
+
+const WORKSHOP_REGISTRATION_STATUS_STYLE = {
+  pending: 'bg-amber-100 text-amber-800 border-amber-200',
+  confirmed: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  waitlist: 'bg-blue-100 text-blue-800 border-blue-200',
+  rejected: 'bg-red-100 text-red-800 border-red-200',
+  cancelled: 'bg-zinc-100 text-zinc-600 border-zinc-200'
+};
+
+const getLocalDateTimeString = (date = new Date()) => {
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - (offset * 60000)).toISOString().slice(0, 16);
+};
+
+const formatWorkshopDate = (dateString = '') => {
+  if (!dateString) return '';
+  const [year, month, day] = String(dateString).slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return dateString;
+  return new Date(year, month - 1, day).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+};
+
+const formatWorkshopDeadline = (dateTimeString = '') => {
+  if (!dateTimeString) return '';
+  const date = new Date(dateTimeString);
+  if (Number.isNaN(date.getTime())) return dateTimeString;
+  return date.toLocaleString('es-ES', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+};
+
+const getWorkshopLocationLabel = (workshop = {}) => {
+  if (workshop.locationType === 'both') return 'Tarragona y Reus';
+  if (workshop.locationType === 'online') return 'Online';
+  if (workshop.locationType === 'other') return workshop.externalLocation || 'Lugar por determinar';
+  return `${workshop.locationType || 'Sede por determinar'}${workshop.room ? ` Â· ${workshop.room}` : ''}`;
+};
+
+const getWorkshopLevelLabel = (workshop = {}) => ({
+  all: 'Todos los niveles',
+  beginner: 'IniciaciÃ³n',
+  intermediate: 'Intermedio',
+  advanced: 'Avanzado',
+  custom: workshop.customLevel || 'Nivel especÃ­fico'
+}[workshop.level || 'all']);
+
+const buildWorkshopRegistrationId = (workshopId = '', studentId = '') => `workshop_${String(workshopId).replace(/[^a-zA-Z0-9_-]/g, '_')}_${String(studentId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
 const REVIEW_URLS = {
   Tarragona: 'https://g.page/r/CbRESEBKdg37EBM/review',
@@ -127,7 +179,7 @@ const SOCIAL_LINKS = [
 const CLASS_RESOURCE_TYPES = [
   { value: 'pdf', label: 'PDF' },
   { value: 'drive_folder', label: 'Carpeta Drive' },
-  { value: 'video', label: 'Vídeo' },
+  { value: 'video', label: 'VÃ­deo' },
   { value: 'audio', label: 'Audio' },
   { value: 'document', label: 'Documento' },
   { value: 'link', label: 'Enlace' },
@@ -140,12 +192,12 @@ const TEACHER_EVALUATION_QUESTIONS = [
   { key: 'clarity', label: 'El profesor explica de forma clara y comprensible.' },
   { key: 'knowledge', label: 'Percibo que el profesor domina su instrumento y el contenido que imparte.' },
   { key: 'adaptation', label: 'El profesor adapta la clase a mi nivel y necesidades.' },
-  { key: 'organization', label: 'La clase está bien organizada y se aprovecha el tiempo.' },
+  { key: 'organization', label: 'La clase estÃ¡ bien organizada y se aprovecha el tiempo.' },
   { key: 'motivation', label: 'El profesor me motiva y me anima a mejorar.' },
-  { key: 'progress', label: 'Siento que he mejorado durante el último trimestre.' },
-  { key: 'homeworkClarity', label: 'Sé qué tengo que practicar en casa.' },
-  { key: 'resourcesUseful', label: 'Los materiales o recursos me resultan útiles para practicar.' },
-  { key: 'recommendation', label: 'Recomendaría este profesor a otro alumno.' }
+  { key: 'progress', label: 'Siento que he mejorado durante el Ãºltimo trimestre.' },
+  { key: 'homeworkClarity', label: 'SÃ© quÃ© tengo que practicar en casa.' },
+  { key: 'resourcesUseful', label: 'Los materiales o recursos me resultan Ãºtiles para practicar.' },
+  { key: 'recommendation', label: 'RecomendarÃ­a este profesor a otro alumno.' }
 ];
 
 const TEACHER_EVALUATION_SCALE = [1, 2, 3, 4, 5];
@@ -326,6 +378,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
   const [extraSignupModal, setExtraSignupModal] = useState(null);
   const [isSendingExtraSignup, setIsSendingExtraSignup] = useState(false);
+  const [workshops, setWorkshops] = useState([]);
+  const [myWorkshopRegistrations, setMyWorkshopRegistrations] = useState([]);
+  const [workshopsLoaded, setWorkshopsLoaded] = useState(false);
+  const [workshopModal, setWorkshopModal] = useState(null);
+  const [workshopAnswers, setWorkshopAnswers] = useState({});
+  const [isSendingWorkshopRegistration, setIsSendingWorkshopRegistration] = useState(false);
 
   const [triviaModal, setTriviaModal] = useState(false);
   const [triviaTime, setTriviaTime] = useState(10);
@@ -503,6 +561,46 @@ export default function StudentPortal({ user, logout, db, appId }) {
       .filter(Boolean)
   )];
 
+  const workshopRegistrationsByWorkshop = useMemo(() => {
+    const byWorkshop = new Map();
+    myWorkshopRegistrations.forEach(registration => byWorkshop.set(registration.workshopId, registration));
+    return byWorkshop;
+  }, [myWorkshopRegistrations]);
+
+  const workshopMatchesStudent = (workshop = {}) => {
+    const audienceType = workshop.audienceType || 'all';
+    const audienceValue = String(workshop.audienceValue || '').trim();
+    const referenceClasses = fixedMyClasses.length > 0 ? fixedMyClasses : effectiveMyClasses;
+
+    if (audienceType === 'all') return true;
+    if (audienceType === 'manual') return (workshop.manualStudentIds || []).includes(profile?.id);
+    if (!audienceValue) return false;
+    if (audienceType === 'sede') return referenceClasses.some(clase => (clase.sede || 'Tarragona') === audienceValue);
+    if (audienceType === 'instrument') return referenceClasses.some(clase => (clase.subject || '') === audienceValue);
+    if (audienceType === 'teacher') return referenceClasses.some(clase => (clase.teacher || '') === audienceValue);
+    if (audienceType === 'class') return referenceClasses.some(clase => String(clase.id) === audienceValue);
+    return false;
+  };
+
+  const visibleWorkshops = useMemo(() => {
+    const nowLocal = getLocalDateTimeString();
+    return workshops
+      .filter(workshop => {
+        const registration = workshopRegistrationsByWorkshop.get(workshop.id);
+        const hasActiveHistory = registration && registration.status !== 'cancelled';
+        if (hasActiveHistory && ['published', 'registration_closed', 'completed', 'cancelled'].includes(workshop.status)) return true;
+        if (!['published', 'registration_closed'].includes(workshop.status)) return false;
+        if (workshop.publishAt && workshop.publishAt > nowLocal) return false;
+        if (!workshopMatchesStudent(workshop)) return false;
+        const lastSessionDate = [...(workshop.sessions || [])].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0]?.date || '';
+        return !lastSessionDate || lastSessionDate >= todayStr;
+      })
+      .sort((a, b) => {
+        if (Boolean(a.featured) !== Boolean(b.featured)) return a.featured ? -1 : 1;
+        return String(a.sessions?.[0]?.date || '2999-12-31').localeCompare(String(b.sessions?.[0]?.date || '2999-12-31'));
+      });
+  }, [workshops, workshopRegistrationsByWorkshop, fixedMyClasses, effectiveMyClasses, profile?.id, todayStr]);
+
   const classWhatsappLinks = useMemo(() => {
     const byUrl = new Map();
 
@@ -516,7 +614,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       if (!byUrl.has(url)) {
         byUrl.set(url, {
           url,
-          label: `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}h · ${clase.sede || 'Sede'}`,
+          label: `${clase.subject || 'Clase'} Â· ${getDayName(clase.dayOfWeek)} ${clase.time || ''}h Â· ${clase.sede || 'Sede'}`,
           teacher: clase.teacher || '',
           classId: clase.id
         });
@@ -623,7 +721,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
             {expanded ? 'Ocultar tareas y recursos' : 'Desplegar tareas y recursos'}
           </span>
           <span className={`flex items-center gap-2 ${styles.count || ''}`}>
-            {summaryParts.join(' · ')}
+            {summaryParts.join(' Â· ')}
             <ArrowRight className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
           </span>
         </button>
@@ -659,7 +757,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
                           <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest mb-1 ${styles.resourceMeta || ''}`}>
                             {getClassResourceTypeLabel(resource.type)}
                           </span>
-                          <p className="font-black uppercase tracking-tight text-sm truncate">{resource.title || 'Recurso sin título'}</p>
+                          <p className="font-black uppercase tracking-tight text-sm truncate">{resource.title || 'Recurso sin tÃ­tulo'}</p>
                           {resource.notes && <p className={`text-[11px] font-medium mt-1 leading-relaxed whitespace-pre-wrap ${styles.resourceMeta || ''}`}>{resource.notes}</p>}
                         </div>
                         <span className={`shrink-0 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${styles.cta || ''}`}>
@@ -738,8 +836,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
       return { id: deterministicSnap.id, ...deterministicSnap.data() };
     }
 
-    // Compatibilidad con evaluaciones guardadas antes de imponer el límite trimestral.
-    // Así una evaluación antigua con ID temporal también bloquea repetir en el mismo trimestre.
+    // Compatibilidad con evaluaciones guardadas antes de imponer el lÃ­mite trimestral.
+    // AsÃ­ una evaluaciÃ³n antigua con ID temporal tambiÃ©n bloquea repetir en el mismo trimestre.
     if (classId) {
       const existingQuery = query(
         collection(db, 'artifacts', appId, 'teacherEvaluations'),
@@ -774,8 +872,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
       setReviewModalView('teacher_form');
     } catch (error) {
-      console.error('Error al comprobar evaluación docente existente', error);
-      showToast('No se pudo comprobar si ya habías evaluado esta clase.', 'error');
+      console.error('Error al comprobar evaluaciÃ³n docente existente', error);
+      showToast('No se pudo comprobar si ya habÃ­as evaluado esta clase.', 'error');
       setReviewModalView(evaluableTeacherClasses.length > 1 ? 'teacher_select' : 'choice');
     }
   };
@@ -809,7 +907,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (!teacherEvaluationClass || isSendingTeacherEvaluation) return;
 
     if (!areTeacherEvaluationRatingsComplete) {
-      showToast('Puntúa todas las preguntas antes de enviar la evaluación.', 'error');
+      showToast('PuntÃºa todas las preguntas antes de enviar la evaluaciÃ³n.', 'error');
       return;
     }
 
@@ -831,7 +929,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       if (existingEvaluation) {
         setTeacherEvaluationExistingEvaluation(existingEvaluation);
         setReviewModalView('teacher_already_sent');
-        showToast('Ya habías enviado la evaluación de esta clase este trimestre.', 'error');
+        showToast('Ya habÃ­as enviado la evaluaciÃ³n de esta clase este trimestre.', 'error');
         return;
       }
 
@@ -870,11 +968,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
         confidentialForAdmin: true
       });
 
-      showToast('Gracias. Evaluación enviada a coordinación.');
+      showToast('Gracias. EvaluaciÃ³n enviada a coordinaciÃ³n.');
       closeReviewModal();
     } catch (error) {
-      console.error('Error al enviar evaluación docente', error);
-      showToast('Error al enviar la evaluación.', 'error');
+      console.error('Error al enviar evaluaciÃ³n docente', error);
+      showToast('Error al enviar la evaluaciÃ³n.', 'error');
     } finally {
       setIsSendingTeacherEvaluation(false);
     }
@@ -894,8 +992,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
             <>
               <div className="flex flex-col items-center text-center mb-6">
                 <Star className="w-12 h-12 text-amber-400 fill-amber-400 mb-3" />
-                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Valóranos</h2>
-                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Tu opinión nos ayuda a mejorar la escuela y el seguimiento de las clases.</p>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">ValÃ³ranos</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Tu opiniÃ³n nos ayuda a mejorar la escuela y el seguimiento de las clases.</p>
               </div>
               <div className="space-y-3">
                 <button onClick={openSchoolReviewFlow} className="w-full bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-black py-4 px-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-between gap-3">
@@ -917,8 +1015,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </button>
               <div className="flex flex-col items-center text-center mb-6">
                 <MapPin className="w-12 h-12 text-amber-500 mb-3" />
-                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Evalúa la escuela</h2>
-                <p className="text-xs font-bold text-zinc-500 mt-2">Elige sede para dejar una reseña pública en Google Maps.</p>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">EvalÃºa la escuela</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2">Elige sede para dejar una reseÃ±a pÃºblica en Google Maps.</p>
               </div>
               <div className="space-y-3">
                 <a href={REVIEW_URLS.Tarragona} target="_blank" rel="noopener noreferrer" onClick={closeReviewModal} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
@@ -938,8 +1036,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </button>
               <div className="flex flex-col items-center text-center py-8">
                 <Clock className="w-12 h-12 text-zinc-300 mb-4 animate-pulse" />
-                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Comprobando evaluación</h2>
-                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Estamos revisando si ya enviaste tu valoración de esta clase durante este trimestre.</p>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Comprobando evaluaciÃ³n</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Estamos revisando si ya enviaste tu valoraciÃ³n de esta clase durante este trimestre.</p>
               </div>
             </>
           )}
@@ -951,8 +1049,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </button>
               <div className="flex flex-col items-center text-center mb-6">
                 <CheckCircle className="w-12 h-12 text-emerald-500 mb-3" />
-                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Evaluación ya enviada</h2>
-                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Ya hemos recibido tu evaluación de esta clase durante el trimestre actual. Podrás volver a valorarla en el próximo trimestre.</p>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">EvaluaciÃ³n ya enviada</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Ya hemos recibido tu evaluaciÃ³n de esta clase durante el trimestre actual. PodrÃ¡s volver a valorarla en el prÃ³ximo trimestre.</p>
               </div>
               <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5">
                 <p className="text-sm font-black uppercase tracking-tight text-slate-800">{teacherEvaluationClass.teacher || 'Profesor'}</p>
@@ -975,8 +1073,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
               </button>
               <div className="flex flex-col items-center text-center mb-6">
                 <User className="w-12 h-12 text-black mb-3" />
-                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Evalúa a tu profesor</h2>
-                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Elige la clase sobre la que quieres enviar tu valoración.</p>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">EvalÃºa a tu profesor</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Elige la clase sobre la que quieres enviar tu valoraciÃ³n.</p>
               </div>
               <div className="space-y-3">
                 {evaluableTeacherClasses.map(clase => (
@@ -986,8 +1084,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
                     onClick={() => startTeacherEvaluation(clase)}
                     className="w-full p-4 rounded-2xl border-2 border-zinc-100 hover:border-black text-left transition-all bg-white"
                   >
-                    <p className="text-sm font-black uppercase tracking-tight text-slate-800">{clase.subject || 'Clase'} · {clase.teacher || 'Profesor'}</p>
-                    <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{getDayName(clase.dayOfWeek)} {clase.time || ''}h · {clase.sede || 'Sede'}{clase.sala ? ` · ${clase.sala}` : ''}</p>
+                    <p className="text-sm font-black uppercase tracking-tight text-slate-800">{clase.subject || 'Clase'} Â· {clase.teacher || 'Profesor'}</p>
+                    <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{getDayName(clase.dayOfWeek)} {clase.time || ''}h Â· {clase.sede || 'Sede'}{clase.sala ? ` Â· ${clase.sala}` : ''}</p>
                   </button>
                 ))}
               </div>
@@ -1000,8 +1098,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 <ArrowRight className="w-3 h-3 rotate-180" /> Volver
               </button>
               <div className="mb-5">
-                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">Evalúa a tu profesor</h2>
-                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Esta evaluación es confidencial para coordinación. El profesor no verá tu nombre.</p>
+                <h2 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">EvalÃºa a tu profesor</h2>
+                <p className="text-xs font-bold text-zinc-500 mt-2 leading-relaxed">Esta evaluaciÃ³n es confidencial para coordinaciÃ³n. El profesor no verÃ¡ tu nombre.</p>
                 <div className="mt-4 bg-zinc-50 border border-zinc-100 rounded-2xl p-3">
                   <p className="text-sm font-black uppercase tracking-tight text-slate-800">{teacherEvaluationClass.teacher || 'Profesor'}</p>
                   <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{selectedClassLine}</p>
@@ -1040,13 +1138,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 <textarea
                   value={teacherEvaluationComments.positive}
                   onChange={e => updateTeacherEvaluationComment('positive', e.target.value)}
-                  placeholder="¿Qué es lo que más valoras de tus clases? (Opcional)"
+                  placeholder="Â¿QuÃ© es lo que mÃ¡s valoras de tus clases? (Opcional)"
                   className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[90px] resize-y text-sm font-medium"
                 />
                 <textarea
                   value={teacherEvaluationComments.improvement}
                   onChange={e => updateTeacherEvaluationComment('improvement', e.target.value)}
-                  placeholder="¿Qué crees que podría mejorar? Sugerencias para coordinación. (Opcional)"
+                  placeholder="Â¿QuÃ© crees que podrÃ­a mejorar? Sugerencias para coordinaciÃ³n. (Opcional)"
                   className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[90px] resize-y text-sm font-medium"
                 />
               </div>
@@ -1057,7 +1155,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 disabled={!areTeacherEvaluationRatingsComplete || isSendingTeacherEvaluation}
                 className="w-full mt-5 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isSendingTeacherEvaluation ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar evaluación</>}
+                {isSendingTeacherEvaluation ? 'Enviando...' : <><Send className="w-4 h-4"/> Enviar evaluaciÃ³n</>}
               </button>
             </>
           )}
@@ -1087,7 +1185,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const audienceValue = String(ann.audienceValue || '').trim();
 
     // Los avisos dirigidos a profesores se leen solo desde TeacherPortal.
-    // StudentPortal debe ignorarlos aunque estén en la misma colección announcements.
+    // StudentPortal debe ignorarlos aunque estÃ©n en la misma colecciÃ³n announcements.
     if (audienceType === 'teachers') return false;
 
     if (audienceType === 'all') return true;
@@ -1102,16 +1200,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const visibleAnnouncements = announcements.filter(announcementMatchesStudent);
 
-  // 👇 LÓGICA DE LA BOLITA ROJA (NOTIFICACIONES TABLÓN)
+  // ðŸ‘‡ LÃ“GICA DE LA BOLITA ROJA (NOTIFICACIONES TABLÃ“N)
   const latestAnnounceId = visibleAnnouncements.length > 0 ? Math.max(...visibleAnnouncements.map(a => Number(a.id))).toString() : null;
   const hasUnreadNews = latestAnnounceId && profile?.lastSeenTablon !== latestAnnounceId;
 
-  // Actualiza la marca de tiempo del tablón en Firestore cuando el alumno entra a la pestaña 'news'
+  // Actualiza la marca de tiempo del tablÃ³n en Firestore cuando el alumno entra a la pestaÃ±a 'news'
   useEffect(() => {
     if (activeTab === 'news' && hasUnreadNews && profile?.id) {
       updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
         lastSeenTablon: latestAnnounceId
-      }).catch(e => console.error("Error al actualizar estado del tablón:", e));
+      }).catch(e => console.error("Error al actualizar estado del tablÃ³n:", e));
     }
   }, [activeTab, hasUnreadNews, profile?.id, latestAnnounceId, db, appId]);
 
@@ -1127,7 +1225,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setContractText(data.contract || 'El contrato aún no está disponible.');
+        setContractText(data.contract || 'El contrato aÃºn no estÃ¡ disponible.');
         setGlobalSettings({
           festivos: data.festivos || [],
           vacaciones: data.vacaciones || [],
@@ -1173,6 +1271,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     if (!profile?.id) return;
     setClassesLoaded(false);
+    setWorkshopsLoaded(false);
     
     const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
       if (docSnap.exists()) {
@@ -1212,6 +1311,28 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setMaintenancePeriods(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
+    const unsubWorkshops = onSnapshot(
+      collection(db, 'artifacts', appId, 'workshops'),
+      (snapshot) => {
+        setWorkshops(snapshot.docs.map(workshopDoc => ({ id: workshopDoc.id, ...workshopDoc.data() })));
+        setWorkshopsLoaded(true);
+      },
+      (error) => {
+        console.error('Error al cargar talleres', error);
+        setWorkshopsLoaded(true);
+      }
+    );
+
+    const workshopRegistrationsQuery = query(
+      collection(db, 'artifacts', appId, 'workshopRegistrations'),
+      where('studentId', '==', profile.id)
+    );
+    const unsubWorkshopRegistrations = onSnapshot(
+      workshopRegistrationsQuery,
+      (snapshot) => setMyWorkshopRegistrations(snapshot.docs.map(registrationDoc => ({ id: registrationDoc.id, ...registrationDoc.data() }))),
+      (error) => console.error('Error al cargar inscripciones de talleres', error)
+    );
+
     const ticketsQuery = collectionGroup(db, 'tickets');
     const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
       let validTicketsCount = 0;
@@ -1247,6 +1368,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubGestiones();
       unsubTemporaryRelocations();
       unsubMaintenancePeriods();
+      unsubWorkshops();
+      unsubWorkshopRegistrations();
       unsubTickets(); 
     };
   }, [profile?.id, db, appId]);
@@ -1266,6 +1389,166 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const showToast = (msg, type = 'success') => {
     setNotification({ text: msg, type });
     setTimeout(() => setNotification(null), 4000);
+  };
+
+  const getWorkshopRegistration = (workshopId = '') => workshopRegistrationsByWorkshop.get(workshopId) || null;
+
+  const getWorkshopFreeSeats = (workshop = {}) => {
+    if (workshop.unlimitedCapacity) return null;
+    return Math.max(0, Number(workshop.capacity || 0) - Number(workshop.confirmedCount || 0));
+  };
+
+  const isWorkshopRegistrationOpen = (workshop = {}) => {
+    const nowLocal = getLocalDateTimeString();
+    if (workshop.status !== 'published') return false;
+    if (workshop.publishAt && workshop.publishAt > nowLocal) return false;
+    if (!workshop.registrationDeadline || workshop.registrationDeadline <= nowLocal) return false;
+    return true;
+  };
+
+  const openWorkshopModal = (workshop) => {
+    const initialAnswers = {};
+    (workshop.questions || []).forEach(question => { initialAnswers[question.id] = ''; });
+    setWorkshopAnswers(initialAnswers);
+    setWorkshopModal(workshop);
+  };
+
+  const closeWorkshopModal = () => {
+    if (isSendingWorkshopRegistration) return;
+    setWorkshopModal(null);
+    setWorkshopAnswers({});
+  };
+
+  const sendWorkshopRegistration = async () => {
+    if (!workshopModal?.id || !profile?.id || isSendingWorkshopRegistration) return;
+
+    const currentWorkshop = workshops.find(workshop => workshop.id === workshopModal.id) || workshopModal;
+    const missingRequiredAnswer = (currentWorkshop.questions || []).some(question => question.required && !String(workshopAnswers[question.id] || '').trim());
+    if (missingRequiredAnswer) {
+      showToast('Completa las preguntas obligatorias antes de continuar.', 'error');
+      return;
+    }
+
+    const workshopRef = doc(db, 'artifacts', appId, 'workshops', currentWorkshop.id);
+    const registrationId = buildWorkshopRegistrationId(currentWorkshop.id, profile.id);
+    const registrationRef = doc(db, 'artifacts', appId, 'workshopRegistrations', registrationId);
+    const nowIso = new Date().toISOString();
+
+    setIsSendingWorkshopRegistration(true);
+    try {
+      const registrationStatus = await runTransaction(db, async transaction => {
+        const workshopSnap = await transaction.get(workshopRef);
+        const registrationSnap = await transaction.get(registrationRef);
+        if (!workshopSnap.exists()) throw new Error('WORKSHOP_NOT_FOUND');
+
+        const workshopData = workshopSnap.data();
+        const nowLocal = getLocalDateTimeString();
+        if (workshopData.status !== 'published' || (workshopData.publishAt && workshopData.publishAt > nowLocal) || !workshopData.registrationDeadline || workshopData.registrationDeadline <= nowLocal) {
+          throw new Error('REGISTRATION_CLOSED');
+        }
+
+        if (registrationSnap.exists()) {
+          const existingStatus = registrationSnap.data().status;
+          if (['confirmed', 'pending', 'waitlist'].includes(existingStatus)) throw new Error('ALREADY_REGISTERED');
+          if (existingStatus === 'rejected') throw new Error('REGISTRATION_REJECTED');
+        }
+
+        const confirmedCount = Number(workshopData.confirmedCount || 0);
+        const capacity = Number(workshopData.capacity || 0);
+        const isFull = !workshopData.unlimitedCapacity && confirmedCount >= capacity;
+        let status = 'confirmed';
+
+        if (isFull) {
+          if (!workshopData.waitlistEnabled) throw new Error('WORKSHOP_FULL');
+          status = 'waitlist';
+        } else if (workshopData.registrationMode === 'manual_review') {
+          status = 'pending';
+        }
+
+        const answers = (workshopData.questions || []).map(question => ({
+          questionId: question.id,
+          question: question.label,
+          answer: String(workshopAnswers[question.id] || '').trim()
+        }));
+
+        transaction.set(registrationRef, {
+          workshopId: currentWorkshop.id,
+          workshopTitle: workshopData.title || currentWorkshop.title,
+          studentId: profile.id,
+          studentName: profile.name || '',
+          studentEmail: profile.email || user.email || '',
+          status,
+          answers,
+          price: Number(workshopData.price || 0),
+          priceType: workshopData.priceType || 'free',
+          paymentMethod: workshopData.paymentMethod || '',
+          billingPending: workshopData.priceType === 'paid',
+          createdAt: registrationSnap.exists() ? (registrationSnap.data().createdAt || nowIso) : nowIso,
+          updatedAt: nowIso
+        });
+
+        const counterField = status === 'confirmed' ? 'confirmedCount' : status === 'pending' ? 'pendingCount' : 'waitlistCount';
+        transaction.update(workshopRef, {
+          [counterField]: Number(workshopData[counterField] || 0) + 1,
+          updatedAt: nowIso
+        });
+
+        return status;
+      });
+
+      setWorkshopModal(null);
+      setWorkshopAnswers({});
+      if (registrationStatus === 'confirmed') showToast('Â¡Ya estÃ¡s apuntado al taller!');
+      if (registrationStatus === 'pending') showToast('Solicitud enviada. Queda pendiente de revisiÃ³n.');
+      if (registrationStatus === 'waitlist') showToast('Te has apuntado a la lista de espera.');
+    } catch (error) {
+      const messages = {
+        WORKSHOP_NOT_FOUND: 'Este taller ya no estÃ¡ disponible.',
+        REGISTRATION_CLOSED: 'La inscripciÃ³n ya estÃ¡ cerrada.',
+        ALREADY_REGISTERED: 'Ya tienes una inscripciÃ³n activa en este taller.',
+        REGISTRATION_REJECTED: 'AdministraciÃ³n rechazÃ³ esta solicitud. Contacta con la escuela si necesitas revisarla.',
+        WORKSHOP_FULL: 'El taller estÃ¡ completo y no admite lista de espera.'
+      };
+      console.error('Error al inscribirse en taller', error);
+      showToast(messages[error.message] || 'No se ha podido completar la inscripciÃ³n.', 'error');
+    } finally {
+      setIsSendingWorkshopRegistration(false);
+    }
+  };
+
+  const cancelWorkshopRegistration = async (workshop) => {
+    const registration = getWorkshopRegistration(workshop.id);
+    if (!registration || !['confirmed', 'pending', 'waitlist'].includes(registration.status)) return;
+    if (workshop.cancellationMode !== 'allowed_until' || !workshop.cancellationDeadline || workshop.cancellationDeadline <= getLocalDateTimeString()) {
+      showToast('Esta inscripciÃ³n ya no puede cancelarse desde el portal.', 'error');
+      return;
+    }
+    if (!window.confirm(`Â¿Cancelar tu inscripciÃ³n en â€œ${workshop.title}â€?`)) return;
+
+    const workshopRef = doc(db, 'artifacts', appId, 'workshops', workshop.id);
+    const registrationRef = doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id);
+    const nowIso = new Date().toISOString();
+    setIsSendingWorkshopRegistration(true);
+    try {
+      await runTransaction(db, async transaction => {
+        const workshopSnap = await transaction.get(workshopRef);
+        const registrationSnap = await transaction.get(registrationRef);
+        if (!workshopSnap.exists() || !registrationSnap.exists()) throw new Error('NOT_FOUND');
+        const currentRegistration = registrationSnap.data();
+        if (!['confirmed', 'pending', 'waitlist'].includes(currentRegistration.status)) return;
+        const workshopData = workshopSnap.data();
+        const counterField = currentRegistration.status === 'confirmed' ? 'confirmedCount' : currentRegistration.status === 'pending' ? 'pendingCount' : 'waitlistCount';
+        transaction.update(registrationRef, { status: 'cancelled', cancelledAt: nowIso, updatedAt: nowIso });
+        transaction.update(workshopRef, { [counterField]: Math.max(0, Number(workshopData[counterField] || 0) - 1), updatedAt: nowIso });
+      });
+      setWorkshopModal(null);
+      showToast('InscripciÃ³n cancelada.');
+    } catch (error) {
+      console.error('Error al cancelar inscripciÃ³n de taller', error);
+      showToast('No se ha podido cancelar la inscripciÃ³n.', 'error');
+    } finally {
+      setIsSendingWorkshopRegistration(false);
+    }
   };
 
   const checkRegistration = async () => {
@@ -1306,23 +1589,23 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const formatClassLineForAdminCopy = (clase) => {
     if (!clase) return '';
-    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''}${clase.teacher ? ` · Prof. ${clase.teacher}` : ''}`;
+    return `${clase.subject || 'Clase'} Â· ${getDayName(clase.dayOfWeek)} Â· ${clase.time || ''}h Â· ${clase.sede || 'Tarragona'}${clase.sala ? ` Â· ${clase.sala}` : ''}${clase.teacher ? ` Â· Prof. ${clase.teacher}` : ''}`;
   };
 
   const sendAdminGestionCopy = async ({ gestionId, payload, selectedClass = null, phase = 'recibida', status = 'pendiente' }) => {
     if (!payload || !ADMIN_COPY_GESTION_TYPES.has(payload.type)) return false;
 
     const typeLabel = (payload.type || 'gestion').replace(/_/g, ' ');
-    const phaseLabel = phase === 'ejecutada' ? 'Gestión ejecutada' : 'Nueva gestión';
+    const phaseLabel = phase === 'ejecutada' ? 'GestiÃ³n ejecutada' : 'Nueva gestiÃ³n';
     const classLine = payload.requestedClassLine || formatClassLineForAdminCopy(selectedClass) || payload.requestedClass || '';
     const sourceClassLine = payload.sourceClassLine || '';
     const requestedDate = payload.recoveryDate ? formatDateSpanish(payload.recoveryDate) : '';
     const maintenancePeriodLine = payload.maintenanceFrom && payload.maintenanceUntil ? formatMaintenancePeriodLine({ from: payload.maintenanceFrom, until: payload.maintenanceUntil }) : '';
     const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
     const extraServiceLine = payload.extraServiceName || payload.serviceName || '';
-    const extraMonthlyFeeLine = payload.extraMonthlyFee ? `${payload.extraMonthlyFee} €` : '';
-    const extraProratedFeeLine = payload.extraProratedFee ? `${payload.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
-    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : (extraServiceLine ? 'Mes corriente según activación administrativa' : '');
+    const extraMonthlyFeeLine = payload.extraMonthlyFee ? `${payload.extraMonthlyFee} â‚¬` : '';
+    const extraProratedFeeLine = payload.extraProratedFee ? `${payload.extraProratedFee} â‚¬` : (extraServiceLine ? 'A calcular manualmente segÃºn fecha real de activaciÃ³n' : '');
+    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : (extraServiceLine ? 'Mes corriente segÃºn activaciÃ³n administrativa' : '');
 
     const body = `TIPO_GESTION: ${typeLabel}
 ESTADO: ${status}
@@ -1336,7 +1619,7 @@ FECHA_RECUPERACION: ${requestedDate}
 MES_OBJETIVO: ${payload.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
 DURACION_MANTENIMIENTO: ${payload.maintenanceMonths ? `${payload.maintenanceMonths} mes(es)` : ''}
-CUOTA_MANTENIMIENTO: ${payload.maintenanceFee ? `${payload.maintenanceFee} €` : ''}
+CUOTA_MANTENIMIENTO: ${payload.maintenanceFee ? `${payload.maintenanceFee} â‚¬` : ''}
 SERVICIO_EXTRA: ${extraServiceLine}
 CUOTA_MENSUAL_EXTRA: ${extraMonthlyFeeLine}
 PRORRATA_MES_ACTUAL: ${extraProratedFeeLine}
@@ -1346,7 +1629,7 @@ ID_GESTION: ${gestionId || ''}
 ORIGEN: Portal del alumno
 
 DETALLES:
-${payload.details || payload.title || 'Sin detalles añadidos.'}`;
+${payload.details || payload.title || 'Sin detalles aÃ±adidos.'}`;
 
     try {
       await fetch(APPS_SCRIPT_URL, {
@@ -1362,7 +1645,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       });
       return true;
     } catch (e) {
-      console.warn('No se pudo enviar copia interna de gestión', e);
+      console.warn('No se pudo enviar copia interna de gestiÃ³n', e);
       return false;
     }
   };
@@ -1401,7 +1684,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         studentEmail: profile.email,
         type: 'aviso_ausencia',
         title: `Falta a clase: ${absenceModal.clase.subject}`,
-        details: `El alumno no asistirá el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
+        details: `El alumno no asistirÃ¡ el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
         requestedClass: absenceModal.clase.id, 
         status: 'pendiente',
         date: new Date().toISOString()
@@ -1410,15 +1693,15 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       try {
         const emailProfe = `${absenceModal.clase.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
         
-        let subjectEmail = `⚠️ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`;
-        let bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado que NO asistirá a tu clase de ${absenceModal.clase.subject} el próximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\n${isLate ? '⚠️ IMPORTANTE: El aviso se ha realizado FUERA DE PLAZO (con menos de 16h de antelación).' : '✅ El aviso se ha realizado dentro de plazo.'}\n\nEl sistema ya ha actualizado tu lista de asistencia para que no le esperes.\n\nUn saludo,\nCoordinación Los Mitos.`;
+        let subjectEmail = `âš ï¸ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`;
+        let bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado que NO asistirÃ¡ a tu clase de ${absenceModal.clase.subject} el prÃ³ximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\n${isLate ? 'âš ï¸ IMPORTANTE: El aviso se ha realizado FUERA DE PLAZO (con menos de 16h de antelaciÃ³n).' : 'âœ… El aviso se ha realizado dentro de plazo.'}\n\nEl sistema ya ha actualizado tu lista de asistencia para que no le esperes.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`;
 
         if (isCancelledWithNotice) {
-          subjectEmail = `🚨 CLASE CANCELADA (+2h antelación): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
-          bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nAl haberse vaciado la clase con MÁS DE 2 HORAS de antelación, esta sesión queda CANCELADA.\n\nSegún normativa, esta hora no requiere asistencia presencial, no se habilitará el protocolo de tareas y no computará en nómina.\n\nUn saludo,\nCoordinación Los Mitos.`;
+          subjectEmail = `ðŸš¨ CLASE CANCELADA (+2h antelaciÃ³n): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
+          bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nAl haberse vaciado la clase con MÃS DE 2 HORAS de antelaciÃ³n, esta sesiÃ³n queda CANCELADA.\n\nSegÃºn normativa, esta hora no requiere asistencia presencial, no se habilitarÃ¡ el protocolo de tareas y no computarÃ¡ en nÃ³mina.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`;
         } else if (allAbsentNow) {
-          subjectEmail = `⚠️ CLASE VACÍA (Aviso de última hora): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
-          bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nComo el último aviso se ha producido con MENOS DE 2 HORAS de antelación, mantienes tu derecho a cobrar la hora.\n\nAl abrir la App para pasar lista, se activará el Protocolo de Hora Muerta para que selecciones una tarea y puedas registrarla en tu nómina.\n\nUn saludo,\nCoordinación Los Mitos.`;
+          subjectEmail = `âš ï¸ CLASE VACÃA (Aviso de Ãºltima hora): ${absenceModal.clase.subject} a las ${absenceModal.clase.time}h`;
+          bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nComo el Ãºltimo aviso se ha producido con MENOS DE 2 HORAS de antelaciÃ³n, mantienes tu derecho a cobrar la hora.\n\nAl abrir la App para pasar lista, se activarÃ¡ el Protocolo de Hora Muerta para que selecciones una tarea y puedas registrarla en tu nÃ³mina.\n\nUn saludo,\nCoordinaciÃ³n Los Mitos.`;
         }
         
         await fetch(APPS_SCRIPT_URL, {
@@ -1461,11 +1744,11 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     }
 
     if (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) {
-      showToast('Elige la plaza concreta sobre la que quieres hacer este trámite.', 'error');
+      showToast('Elige la plaza concreta sobre la que quieres hacer este trÃ¡mite.', 'error');
       return;
     }
     if (resolvedSourceClass && hasPendingGestionForClass(resolvedSourceClass.id)) {
-      showToast('Ya hay un trámite pendiente sobre esa plaza. Puedes gestionar otra plaza distinta, pero no repetir sobre la misma.', 'error');
+      showToast('Ya hay un trÃ¡mite pendiente sobre esa plaza. Puedes gestionar otra plaza distinta, pero no repetir sobre la misma.', 'error');
       return;
     }
     
@@ -1537,7 +1820,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       setMaintenanceMonths(1);
       setAcceptLatePenalty(false);
       setSelectedInst(''); 
-      showToast('Solicitud enviada a Administración.');
+      showToast('Solicitud enviada a AdministraciÃ³n.');
     } catch (error) {
       showToast('Error al enviar la solicitud.', 'error');
     } finally {
@@ -1566,7 +1849,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     }
 
     if (hasPendingExtraSignup(serviceKey)) {
-      showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisión.`, 'error');
+      showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisiÃ³n.`, 'error');
       return;
     }
 
@@ -1583,7 +1866,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     if (!serviceConfig || !profile?.id || isSendingExtraSignup) return;
 
     if (hasPendingExtraSignup(serviceConfig.key)) {
-      showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisión.`, 'error');
+      showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisiÃ³n.`, 'error');
       setExtraSignupModal(null);
       return;
     }
@@ -1599,7 +1882,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         studentEmail: profile.email,
         type: serviceConfig.type,
         title: serviceConfig.title,
-        details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente y que después se aplique la cuota mensual de ${serviceConfig.monthlyFee}€. Administración debe activar el acceso manualmente y preparar la domiciliación en Tadosi.`,
+        details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente y que despuÃ©s se aplique la cuota mensual de ${serviceConfig.monthlyFee}â‚¬. AdministraciÃ³n debe activar el acceso manualmente y preparar la domiciliaciÃ³n en Tadosi.`,
         extraService: serviceConfig.key,
         extraServiceName: serviceConfig.name,
         serviceName: serviceConfig.name,
@@ -1630,7 +1913,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       }
 
       setExtraSignupModal(null);
-      showToast(`Solicitud de alta en ${serviceConfig.name} enviada a Administración.`);
+      showToast(`Solicitud de alta en ${serviceConfig.name} enviada a AdministraciÃ³n.`);
     } catch (error) {
       console.error('Error al solicitar alta extra', error);
       showToast(`Error al solicitar el alta en ${serviceConfig.name}.`, 'error');
@@ -1699,9 +1982,9 @@ END:VCALENDAR`;
   const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
 
   const diffMap = {
-    'facil': { label: 'Fácil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
+    'facil': { label: 'FÃ¡cil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
     'medio': { label: 'Medio', points: 6, color: 'text-amber-700', bg: 'bg-amber-100', border: 'border-amber-500' },
-    'dificil': { label: 'Difícil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
+    'dificil': { label: 'DifÃ­cil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
   };
   
   const currentDifficulty = diffMap[currentQuestion.difficulty || 'facil'];
@@ -1813,12 +2096,12 @@ END:VCALENDAR`;
       : fixedSeatClasses
   );
   const hasAvailableSeatForGestion = (type = '') => getAvailableFixedSeatClassesForGestion(type).length > 0;
-  const getSeatGestionLockMessage = (type = 'trámite') => {
-    if (hasGlobalPendingAdminGestion) return 'Ya tienes un trámite que afecta a toda tu cuenta. No puedes solicitar otro hasta que se resuelva.';
+  const getSeatGestionLockMessage = (type = 'trÃ¡mite') => {
+    if (hasGlobalPendingAdminGestion) return 'Ya tienes un trÃ¡mite que afecta a toda tu cuenta. No puedes solicitar otro hasta que se resuelva.';
     if (isSeatSpecificGestionType(type) && !hasAvailableSeatForGestion(type)) {
       return isMultiSeatStudent
-        ? 'Ya tienes un trámite pendiente sobre todas tus plazas disponibles para esta gestión.'
-        : 'Ya tienes un trámite pendiente sobre esta plaza. No puedes repetir gestión sobre la misma hasta que se resuelva.';
+        ? 'Ya tienes un trÃ¡mite pendiente sobre todas tus plazas disponibles para esta gestiÃ³n.'
+        : 'Ya tienes un trÃ¡mite pendiente sobre esta plaza. No puedes repetir gestiÃ³n sobre la misma hasta que se resuelva.';
     }
     return '';
   };
@@ -1847,21 +2130,21 @@ END:VCALENDAR`;
   const isMantenimientoLocked = hasPendingAdminGestion;
 
   const getGestionUiCopy = (type = '', { isBajaTotalRequest = false } = {}) => {
-    const commonPlaceholder = 'Añade observaciones para Administración, si lo necesitas.';
+    const commonPlaceholder = 'AÃ±ade observaciones para AdministraciÃ³n, si lo necesitas.';
     const bajaPlaceholder = 'Puedes indicarnos brevemente el motivo de la baja. Nos ayuda a mejorar.';
 
     if (type === 'cambio_horario') {
       return isMultiSeatStudent
         ? {
             title: 'Cambiar horario fijo',
-            description: 'Elige primero qué plaza quieres cambiar. Después verás grupos disponibles para ese mismo instrumento. El resto de tus clases no se modifican.',
-            sourceLabel: '¿Qué plaza quieres cambiar?',
+            description: 'Elige primero quÃ© plaza quieres cambiar. DespuÃ©s verÃ¡s grupos disponibles para ese mismo instrumento. El resto de tus clases no se modifican.',
+            sourceLabel: 'Â¿QuÃ© plaza quieres cambiar?',
             searchLabel: 'Grupos disponibles para esa plaza',
             placeholder: commonPlaceholder
           }
         : {
             title: 'Cambiar horario fijo',
-            description: 'Busca otro grupo disponible para tu misma asignatura. Tu plaza actual se mantiene hasta que Administración confirme el cambio.',
+            description: 'Busca otro grupo disponible para tu misma asignatura. Tu plaza actual se mantiene hasta que AdministraciÃ³n confirme el cambio.',
             sourceLabel: 'Tu plaza actual',
             searchLabel: 'Grupos disponibles',
             placeholder: commonPlaceholder
@@ -1872,14 +2155,14 @@ END:VCALENDAR`;
       return isMultiSeatStudent
         ? {
             title: 'Pasar a mantenimiento',
-            description: 'El mantenimiento es por persona, no por clase. 15€/mes. Máximo 2 meses.',
-            notice: 'Si tienes varias clases, el mantenimiento afectará a todas durante el periodo elegido.',
+            description: 'El mantenimiento es por persona, no por clase. 15â‚¬/mes. MÃ¡ximo 2 meses.',
+            notice: 'Si tienes varias clases, el mantenimiento afectarÃ¡ a todas durante el periodo elegido.',
             placeholder: commonPlaceholder
           }
         : {
             title: 'Pasar a mantenimiento',
-            description: 'Mantén tu plaza reservada durante una pausa temporal. 15€/mes. Máximo 2 meses.',
-            notice: 'Durante el mantenimiento no asistirás a clase, pero conservarás tu plaza hasta que termine el periodo.',
+            description: 'MantÃ©n tu plaza reservada durante una pausa temporal. 15â‚¬/mes. MÃ¡ximo 2 meses.',
+            notice: 'Durante el mantenimiento no asistirÃ¡s a clase, pero conservarÃ¡s tu plaza hasta que termine el periodo.',
             placeholder: commonPlaceholder
           };
     }
@@ -1889,7 +2172,7 @@ END:VCALENDAR`;
         return {
           title: 'Dar de baja',
           description: 'Has seleccionado baja total de todas tus clases.',
-          notice: 'Esta opción cancelará todas tus plazas y desactivará tu acceso al portal. También perderás los tickets de recuperación pendientes y los puntos acumulados del trivial.',
+          notice: 'Esta opciÃ³n cancelarÃ¡ todas tus plazas y desactivarÃ¡ tu acceso al portal. TambiÃ©n perderÃ¡s los tickets de recuperaciÃ³n pendientes y los puntos acumulados del trivial.',
           sourceLabel: 'Baja total',
           placeholder: bajaPlaceholder
         };
@@ -1898,17 +2181,17 @@ END:VCALENDAR`;
       return isMultiSeatStudent
         ? {
             title: 'Dar de baja',
-            description: 'Elige qué plaza quieres dar de baja. Seguirás activo en las demás clases que mantengas.',
-            notice: 'Si solo das de baja una plaza, conservarás el acceso al portal, tus otras clases, tus tickets de recuperación y tus puntos del trivial.',
-            sourceLabel: '¿Qué plaza quieres dar de baja?',
+            description: 'Elige quÃ© plaza quieres dar de baja. SeguirÃ¡s activo en las demÃ¡s clases que mantengas.',
+            notice: 'Si solo das de baja una plaza, conservarÃ¡s el acceso al portal, tus otras clases, tus tickets de recuperaciÃ³n y tus puntos del trivial.',
+            sourceLabel: 'Â¿QuÃ© plaza quieres dar de baja?',
             totalBajaCheckboxTitle: 'Quiero darme de baja de todas mis clases',
-            totalBajaCheckboxText: 'Marca esta opción solo si quieres cancelar todas tus plazas.',
+            totalBajaCheckboxText: 'Marca esta opciÃ³n solo si quieres cancelar todas tus plazas.',
             placeholder: bajaPlaceholder
           }
         : {
             title: 'Dar de baja',
-            description: 'Solicita la baja de tu plaza actual. Al tramitarse, dejarás de asistir a clase y se desactivará tu acceso al portal.',
-            notice: 'La baja implica perder los tickets de recuperación pendientes y los puntos acumulados del trivial.',
+            description: 'Solicita la baja de tu plaza actual. Al tramitarse, dejarÃ¡s de asistir a clase y se desactivarÃ¡ tu acceso al portal.',
+            notice: 'La baja implica perder los tickets de recuperaciÃ³n pendientes y los puntos acumulados del trivial.',
             sourceLabel: 'Tu plaza actual',
             placeholder: bajaPlaceholder
           };
@@ -1934,7 +2217,7 @@ END:VCALENDAR`;
     const isGlobalGestion = ['mantenimiento', 'reactivar_plaza'].includes(gestionPayload.type);
 
     if (isGlobalGestion && hasPendingAdminGestion) {
-      showToast('Ya tienes un trámite administrativo en curso. Como este trámite afecta a toda tu cuenta, espera a que se resuelva.', 'error');
+      showToast('Ya tienes un trÃ¡mite administrativo en curso. Como este trÃ¡mite afecta a toda tu cuenta, espera a que se resuelva.', 'error');
       return;
     }
 
@@ -2012,11 +2295,11 @@ END:VCALENDAR`;
             <button onClick={() => setShowRules(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
             <div className="flex items-center gap-3 text-black mb-6"><FileText className="w-8 h-8" /><h2 className="text-xl font-black uppercase tracking-tight">Normativa</h2></div>
             <div className="space-y-4 text-sm text-zinc-600 font-medium">
-              <p>1. <strong className="text-black">Preaviso de 16h:</strong> Para recuperar una clase, avisa con mín. 16 horas de antelación.</p>
-              <p>2. <strong className="text-black">Caducidad:</strong> Los tickets normales caducan al mes siguiente de la falta. Los tickets de verano generados en junio, julio y agosto se podrán gestionar de septiembre a diciembre.</p>
+              <p>1. <strong className="text-black">Preaviso de 16h:</strong> Para recuperar una clase, avisa con mÃ­n. 16 horas de antelaciÃ³n.</p>
+              <p>2. <strong className="text-black">Caducidad:</strong> Los tickets normales caducan al mes siguiente de la falta. Los tickets de verano generados en junio, julio y agosto se podrÃ¡n gestionar de septiembre a diciembre.</p>
               <p>3. <strong className="text-black">Alta activa:</strong> Solo alumnos al corriente de pago pueden recuperar.</p>
-              <p>4. <strong className="text-black">Causas justificadas:</strong> Las recuperaciones solo se concederán por motivos de salud, trabajo o estudios.</p>
-              <p>5. <strong className="text-black">Límite de recuperación:</strong> Las clases de recuperación no se pueden volver a recuperar en caso de nueva falta.</p>
+              <p>4. <strong className="text-black">Causas justificadas:</strong> Las recuperaciones solo se concederÃ¡n por motivos de salud, trabajo o estudios.</p>
+              <p>5. <strong className="text-black">LÃ­mite de recuperaciÃ³n:</strong> Las clases de recuperaciÃ³n no se pueden volver a recuperar en caso de nueva falta.</p>
             </div>
             <button onClick={() => setShowRules(false)} className="w-full mt-8 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest">Entendido</button>
           </div>
@@ -2031,7 +2314,7 @@ END:VCALENDAR`;
             <>
               <div className="flex items-center justify-center w-16 h-16 bg-red-100 text-red-500 rounded-full mb-6 mx-auto"><Clock className="w-8 h-8" /></div>
               <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso fuera de plazo</h2>
-              <p className="text-center text-zinc-500 font-medium mb-6">Avisas con menos de 16h. Informaremos al profesor, pero <strong className="text-red-500">no generará ticket</strong>.</p>
+              <p className="text-center text-zinc-500 font-medium mb-6">Avisas con menos de 16h. Informaremos al profesor, pero <strong className="text-red-500">no generarÃ¡ ticket</strong>.</p>
               <div className="space-y-3">
                 <button onClick={() => confirmAbsence(false)} disabled={isSendingAbsence} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 shadow-lg disabled:opacity-50">
                   {isSendingAbsence ? 'Enviando...' : 'Avisar de todas formas'}
@@ -2043,8 +2326,8 @@ END:VCALENDAR`;
             <>
               <div className="flex items-center justify-center w-16 h-16 bg-emerald-100 text-emerald-500 rounded-full mb-6 mx-auto"><CheckCircle className="w-8 h-8" /></div>
               <h2 className="text-2xl font-black text-center uppercase tracking-tight text-slate-800 mb-2">Aviso a tiempo</h2>
-              <p className="text-center text-zinc-500 font-medium mb-4">Informaremos a tu profesor. Tienes derecho a recuperar esta clase el próximo mes.</p>
-              <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-2">¿Quieres ticket de recuperación?</h3>
+              <p className="text-center text-zinc-500 font-medium mb-4">Informaremos a tu profesor. Tienes derecho a recuperar esta clase el prÃ³ximo mes.</p>
+              <h3 className="font-black text-center text-sm uppercase tracking-widest text-slate-800 mb-2">Â¿Quieres ticket de recuperaciÃ³n?</h3>
               <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl mb-4">
                 <p className="text-xs text-amber-800 font-bold mb-3 leading-relaxed">Recuerda que solo se puede recuperar por razones de <strong>salud, trabajo o estudios</strong>.</p>
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -2054,7 +2337,7 @@ END:VCALENDAR`;
               </div>
               <div className="space-y-3">
                 <button onClick={() => confirmAbsence(true)} disabled={!healthCheck || isSendingAbsence} className="w-full bg-emerald-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-emerald-600 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                  {isSendingAbsence ? 'Enviando...' : 'Sí, quiero recuperarla'}
+                  {isSendingAbsence ? 'Enviando...' : 'SÃ­, quiero recuperarla'}
                 </button>
                 <button onClick={() => confirmAbsence(false)} disabled={isSendingAbsence} className="w-full bg-zinc-800 text-zinc-300 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-black disabled:opacity-50">
                   {isSendingAbsence ? 'Enviando...' : 'No, gracias. Solo aviso.'}
@@ -2085,7 +2368,7 @@ END:VCALENDAR`;
     const gestionUiCopy = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
     const modalTitle = gestionUiCopy.title || gestionModal.title;
     const modalDescription = gestionUiCopy.description || gestionModal.desc || '';
-    const modalPlaceholder = gestionUiCopy.placeholder || gestionModal.placeholder || 'Añade observaciones para Administración, si lo necesitas.';
+    const modalPlaceholder = gestionUiCopy.placeholder || gestionModal.placeholder || 'AÃ±ade observaciones para AdministraciÃ³n, si lo necesitas.';
     const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
     const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
       ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
@@ -2162,7 +2445,7 @@ END:VCALENDAR`;
             <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
               <p className="text-xs font-bold text-emerald-800 flex items-start gap-2 leading-relaxed">
                 <CheckCircle className="w-4 h-4 shrink-0 mt-0.5"/> 
-                ¡Genial! Tu nueva plaza quedará reservada directamente para {timeRules.next} sin restricciones de fecha límite.
+                Â¡Genial! Tu nueva plaza quedarÃ¡ reservada directamente para {timeRules.next} sin restricciones de fecha lÃ­mite.
               </p>
             </div>
           )}
@@ -2190,7 +2473,7 @@ END:VCALENDAR`;
                   />
                   <span className="text-xs font-bold text-red-900 leading-relaxed">
                     <strong className="font-black uppercase tracking-widest block text-[10px] mb-1">{gestionUiCopy.totalBajaCheckboxTitle || 'Quiero darme de baja de todas mis clases'}</strong>
-                    {gestionUiCopy.totalBajaCheckboxText || 'Marca esta opción solo si quieres cancelar todas tus plazas.'}
+                    {gestionUiCopy.totalBajaCheckboxText || 'Marca esta opciÃ³n solo si quieres cancelar todas tus plazas.'}
                   </span>
                 </label>
               )}
@@ -2222,9 +2505,9 @@ END:VCALENDAR`;
                           >
                             <div className="flex items-center justify-between gap-3">
                               <div>
-                                <p className="text-sm font-black uppercase tracking-tight">{c.subject || 'Clase'} · {getDayName(c.dayOfWeek)} {c.time || ''}h</p>
-                                <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{c.sede || 'Sede'}{c.sala ? ` · ${c.sala}` : ''}{c.teacher ? ` · Prof. ${c.teacher}` : ''}</p>
-                                {locked && <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mt-1">Trámite pendiente sobre esta plaza</p>}
+                                <p className="text-sm font-black uppercase tracking-tight">{c.subject || 'Clase'} Â· {getDayName(c.dayOfWeek)} {c.time || ''}h</p>
+                                <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{c.sede || 'Sede'}{c.sala ? ` Â· ${c.sala}` : ''}{c.teacher ? ` Â· Prof. ${c.teacher}` : ''}</p>
+                                {locked && <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mt-1">TrÃ¡mite pendiente sobre esta plaza</p>}
                               </div>
                               {selected && <CheckCircle className="w-5 h-5 text-black shrink-0" />}
                             </div>
@@ -2234,12 +2517,12 @@ END:VCALENDAR`;
                     </div>
                   ) : resolvedSourceClass ? (
                 <div className="p-3 rounded-2xl border-2 border-zinc-100 bg-zinc-50 text-slate-800">
-                  <p className="text-sm font-black uppercase tracking-tight">{resolvedSourceClass.subject || 'Clase'} · {getDayName(resolvedSourceClass.dayOfWeek)} {resolvedSourceClass.time || ''}h</p>
-                  <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{resolvedSourceClass.sede || 'Sede'}{resolvedSourceClass.sala ? ` · ${resolvedSourceClass.sala}` : ''}{resolvedSourceClass.teacher ? ` · Prof. ${resolvedSourceClass.teacher}` : ''}</p>
+                  <p className="text-sm font-black uppercase tracking-tight">{resolvedSourceClass.subject || 'Clase'} Â· {getDayName(resolvedSourceClass.dayOfWeek)} {resolvedSourceClass.time || ''}h</p>
+                  <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{resolvedSourceClass.sede || 'Sede'}{resolvedSourceClass.sala ? ` Â· ${resolvedSourceClass.sala}` : ''}{resolvedSourceClass.teacher ? ` Â· Prof. ${resolvedSourceClass.teacher}` : ''}</p>
                 </div>
                   ) : (
                     <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100">
-                      <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">No hay plazas fijas disponibles para este trámite.</p>
+                      <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">No hay plazas fijas disponibles para este trÃ¡mite.</p>
                     </div>
                   )}
                 </>
@@ -2275,7 +2558,7 @@ END:VCALENDAR`;
                           <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{option.monthLabel}</p>
                         </div>
                         <div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shrink-0 ${selected ? 'bg-amber-500 text-white' : 'bg-zinc-100 text-zinc-500'}`}>
-                          {option.fee}€
+                          {option.fee}â‚¬
                         </div>
                       </div>
                     </button>
@@ -2326,7 +2609,7 @@ END:VCALENDAR`;
 
               {isTicketRedemption && selectedNewClass && (
                 <div className="mt-6 pt-4 border-t border-zinc-100 animate-in fade-in zoom-in-95">
-                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">2. Elige el día exacto de recuperación</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">2. Elige el dÃ­a exacto de recuperaciÃ³n</p>
                   <div className="space-y-2">
                     {getValidRecoveryDates(selectedNewClass.dayOfWeek).map(d => (
                       <div 
@@ -2385,16 +2668,16 @@ END:VCALENDAR`;
           </div>
 
           <div className={`p-4 rounded-2xl border mb-4 ${accentClasses.box}`}>
-            <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Condiciones económicas</p>
+            <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Condiciones econÃ³micas</p>
             <div className="space-y-2 text-sm font-bold leading-relaxed">
               <p>Cuota mensual: <strong>{formatEuro(serviceConfig.monthlyFee)}</strong> / mes.</p>
-              <p>Se te pasará la parte proporcional del mes corriente.</p>
+              <p>Se te pasarÃ¡ la parte proporcional del mes corriente.</p>
             </div>
           </div>
 
           <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5 text-xs font-bold text-zinc-600 leading-relaxed space-y-2">
-            <p>Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.</p>
-            <p className="text-slate-800 font-black">El acceso no es inmediato: quedará pendiente de revisión administrativa.</p>
+            <p>CoordinaciÃ³n activarÃ¡ el servicio manualmente y prepararÃ¡ la domiciliaciÃ³n correspondiente.</p>
+            <p className="text-slate-800 font-black">El acceso no es inmediato: quedarÃ¡ pendiente de revisiÃ³n administrativa.</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -2404,6 +2687,78 @@ END:VCALENDAR`;
             <button onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup} className={`${accentClasses.button} text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors shadow-md flex items-center justify-center gap-2 disabled:opacity-50`}>
               {isSendingExtraSignup ? 'Enviando...' : <><Send className="w-4 h-4"/> Aceptar alta</>}
             </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderWorkshopModal = () => {
+    if (!workshopModal) return null;
+    const workshop = workshops.find(item => item.id === workshopModal.id) || workshopModal;
+    const registration = getWorkshopRegistration(workshop.id);
+    const activeRegistration = registration && ['confirmed', 'pending', 'waitlist'].includes(registration.status) ? registration : null;
+    const registrationOpen = isWorkshopRegistrationOpen(workshop);
+    const freeSeats = getWorkshopFreeSeats(workshop);
+    const isFull = !workshop.unlimitedCapacity && freeSeats === 0;
+    const canCancel = activeRegistration
+      && workshop.cancellationMode === 'allowed_until'
+      && workshop.cancellationDeadline
+      && workshop.cancellationDeadline > getLocalDateTimeString();
+    const safeResourceUrl = getSafeAnnouncementUrl(workshop.resourceUrl || '');
+
+    return (
+      <div className="fixed inset-0 bg-black/90 z-[120] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
+          <button onClick={closeWorkshopModal} disabled={isSendingWorkshopRegistration} className="absolute top-4 right-4 z-20 text-zinc-500 hover:text-black bg-white/90 p-2 rounded-full shadow-md disabled:opacity-50"><X className="w-5 h-5"/></button>
+
+          {getSafeAnnouncementUrl(workshop.imageUrl || '') ? (
+            <div className="h-52 sm:h-64 bg-zinc-900 overflow-hidden rounded-t-3xl"><img src={getSafeAnnouncementUrl(workshop.imageUrl)} alt="" className="w-full h-full object-cover"/></div>
+          ) : (
+            <div className="h-40 sm:h-48 bg-gradient-to-br from-violet-700 via-indigo-800 to-zinc-950 rounded-t-3xl flex items-center justify-center relative overflow-hidden"><Music className="w-24 h-24 text-white/20"/><Sparkles className="w-20 h-20 text-white/10 absolute -right-2 -bottom-2"/></div>
+          )}
+
+          <div className="p-5 sm:p-8">
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              {workshop.featured && <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline mr-1"/> Destacado</span>}
+              {activeRegistration && <span className={`px-3 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}>{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</span>}
+              {workshop.status === 'cancelled' && <span className="px-3 py-1 rounded-full bg-red-100 text-red-800 border border-red-200 text-[9px] font-black uppercase tracking-widest">Taller cancelado</span>}
+              {workshop.status === 'completed' && <span className="px-3 py-1 rounded-full bg-zinc-100 text-zinc-600 border border-zinc-200 text-[9px] font-black uppercase tracking-widest">Finalizado</span>}
+            </div>
+
+            <h2 className="text-2xl sm:text-3xl font-black uppercase tracking-tight text-slate-900 leading-tight">{workshop.title}</h2>
+            <p className="text-sm font-bold text-zinc-500 mt-2 leading-relaxed">{workshop.shortDescription}</p>
+
+            <div className="grid sm:grid-cols-2 gap-3 mt-6">
+              <div className="bg-violet-50 border border-violet-100 p-4 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-violet-500 block mb-1">Lugar</span><span className="font-black text-sm text-violet-950 flex items-center gap-2"><MapPin className="w-4 h-4 shrink-0"/>{getWorkshopLocationLabel(workshop)}</span></div>
+              <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Precio</span><span className="font-black text-sm text-slate-900">{workshop.priceType === 'free' ? 'Gratuito' : formatEuro(workshop.price)}</span>{workshop.priceNote && <span className="block text-[10px] font-bold text-zinc-500 mt-1">{workshop.priceNote}</span>}</div>
+            </div>
+
+            <div className="mt-6">
+              <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-3">Fechas y horarios</h3>
+              <div className="space-y-2">{(workshop.sessions || []).map((session, index) => <div key={session.id || index} className="flex items-center justify-between gap-3 bg-zinc-50 border border-zinc-100 rounded-xl p-3"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-white border border-zinc-200 flex items-center justify-center text-violet-600 shrink-0"><Calendar className="w-4 h-4"/></div><div><p className="font-black text-sm text-slate-800 capitalize">{formatWorkshopDate(session.date)}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">SesiÃ³n {index + 1}</p></div></div><span className="font-black text-xs text-slate-700 whitespace-nowrap">{session.startTime}â€“{session.endTime}h</span></div>)}</div>
+            </div>
+
+            <div className="mt-6 text-sm text-zinc-600 font-medium leading-relaxed whitespace-pre-wrap">{workshop.description}</div>
+
+            {(workshop.instructor || workshop.whatToBring || workshop.importantNotes || workshop.ageMin || workshop.ageMax || workshop.level) && <div className="mt-6 grid sm:grid-cols-2 gap-3">
+              {workshop.instructor && <div className="p-4 border border-zinc-200 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Profesor o responsable</span><span className="text-sm font-black text-slate-800">{workshop.instructor}</span></div>}
+              {workshop.level && <div className="p-4 border border-zinc-200 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Nivel</span><span className="text-sm font-black text-slate-800">{getWorkshopLevelLabel(workshop)}</span></div>}
+              {(workshop.ageMin || workshop.ageMax) && <div className="p-4 border border-zinc-200 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Edad orientativa</span><span className="text-sm font-black text-slate-800">{workshop.ageMin && workshop.ageMax ? `${workshop.ageMin}â€“${workshop.ageMax} aÃ±os` : workshop.ageMin ? `Desde ${workshop.ageMin} aÃ±os` : `Hasta ${workshop.ageMax} aÃ±os`}</span></div>}
+              {workshop.whatToBring && <div className="p-4 border border-zinc-200 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">QuÃ© debes traer</span><span className="text-sm font-bold text-slate-700 whitespace-pre-wrap">{workshop.whatToBring}</span></div>}
+              {workshop.importantNotes && <div className="sm:col-span-2 p-4 bg-amber-50 border border-amber-100 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-amber-600 block mb-1">InformaciÃ³n importante</span><span className="text-sm font-bold text-amber-950 whitespace-pre-wrap">{workshop.importantNotes}</span></div>}
+            </div>}
+
+            {safeResourceUrl && <a href={safeResourceUrl} target="_blank" rel="noopener noreferrer" className="mt-4 w-full bg-zinc-100 hover:bg-zinc-200 text-slate-800 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2"><FileText className="w-4 h-4"/> Abrir material o informaciÃ³n adicional</a>}
+
+            {!activeRegistration && registration?.status === 'rejected' && <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-2xl text-sm font-bold text-red-800">AdministraciÃ³n ha rechazado esta solicitud. Si necesitas revisarla, contacta con la escuela.</div>}
+            {!activeRegistration && registration?.status === 'cancelled' && <div className="mt-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl text-sm font-bold text-zinc-600">Cancelaste tu inscripciÃ³n. Puedes volver a apuntarte mientras la inscripciÃ³n siga abierta.</div>}
+
+            {!activeRegistration && registrationOpen && registration?.status !== 'rejected' && (workshop.questions || []).length > 0 && <div className="mt-7 border-t border-zinc-100 pt-6"><h3 className="text-xs font-black uppercase tracking-widest text-slate-800 mb-4">Antes de apuntarte</h3><div className="space-y-4">{workshop.questions.map(question => <div key={question.id}><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1.5">{question.label}{question.required ? ' *' : ''}</label>{question.type === 'choice' ? <select value={workshopAnswers[question.id] || ''} onChange={e => setWorkshopAnswers({ ...workshopAnswers, [question.id]: e.target.value })} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm focus:border-violet-500"><option value="">Selecciona...</option>{(question.options || []).map(option => <option key={option} value={option}>{option}</option>)}</select> : <textarea value={workshopAnswers[question.id] || ''} onChange={e => setWorkshopAnswers({ ...workshopAnswers, [question.id]: e.target.value })} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-medium text-sm min-h-[90px] resize-y focus:border-violet-500"/>}</div>)}</div></div>}
+
+            <div className="mt-7 border-t border-zinc-100 pt-6">
+              {activeRegistration ? <div className="space-y-3"><div className={`p-4 rounded-2xl border ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}><p className="font-black uppercase tracking-widest text-xs">{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</p><p className="text-xs font-bold mt-1 opacity-80">{activeRegistration.status === 'confirmed' ? 'Tu plaza estÃ¡ reservada.' : activeRegistration.status === 'pending' ? 'AdministraciÃ³n revisarÃ¡ tu solicitud.' : 'Te avisaremos si queda una plaza disponible.'}</p></div>{canCancel && <button onClick={() => cancelWorkshopRegistration(workshop)} disabled={isSendingWorkshopRegistration} className="w-full bg-zinc-100 text-zinc-600 hover:bg-red-50 hover:text-red-700 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-50">Cancelar inscripciÃ³n</button>}{!canCancel && workshop.cancellationMode === 'contact_admin' && <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`InscripciÃ³n taller: ${workshop.title}`)}`} className="w-full bg-zinc-100 text-zinc-700 hover:bg-zinc-200 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Consultar cambios con AdministraciÃ³n</a>}</div> : registration?.status === 'rejected' ? <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`Solicitud taller: ${workshop.title}`)}`} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Contactar con AdministraciÃ³n</a> : registrationOpen ? <><div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4"><div><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block">InscripciÃ³n abierta hasta</span><span className="text-sm font-black text-slate-800">{formatWorkshopDeadline(workshop.registrationDeadline)}</span></div><span className={`text-[10px] font-black uppercase tracking-widest ${isFull ? 'text-blue-700' : 'text-emerald-700'}`}>{workshop.unlimitedCapacity ? 'Plazas sin lÃ­mite' : isFull && workshop.waitlistEnabled ? 'Lista de espera disponible' : `${freeSeats} ${freeSeats === 1 ? 'plaza libre' : 'plazas libres'}`}</span></div>{workshop.priceType === 'paid' && <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3 mb-4 text-xs font-bold text-zinc-600">{workshop.paymentMethod === 'next_debit' ? 'El importe se incluirÃ¡ en la prÃ³xima domiciliaciÃ³n.' : workshop.paymentMethod === 'manual_admin' ? 'AdministraciÃ³n gestionarÃ¡ el cobro despuÃ©s de la inscripciÃ³n.' : 'El pago se realizarÃ¡ mediante el sistema externo indicado por la escuela.'}</div>}<button onClick={sendWorkshopRegistration} disabled={isSendingWorkshopRegistration || (isFull && !workshop.waitlistEnabled)} className="w-full bg-violet-600 hover:bg-violet-700 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSendingWorkshopRegistration ? 'Procesando...' : isFull && workshop.waitlistEnabled ? <><Clock className="w-4 h-4"/> Apuntarme a la lista de espera</> : workshop.registrationMode === 'manual_review' ? <><Send className="w-4 h-4"/> Enviar solicitud</> : <><CheckCircle className="w-4 h-4"/> Apuntarme al taller</>}</button></> : <div className="p-4 bg-zinc-100 border border-zinc-200 rounded-2xl text-center"><p className="font-black uppercase tracking-widest text-xs text-zinc-600">InscripciÃ³n cerrada</p>{workshop.registrationDeadline && <p className="text-[10px] font-bold text-zinc-400 mt-1">FinalizÃ³ el {formatWorkshopDeadline(workshop.registrationDeadline)}</p>}</div>}
+            </div>
           </div>
         </div>
       </div>
@@ -2469,7 +2824,7 @@ END:VCALENDAR`;
 
           <div className="space-y-4 mb-6">
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">1. ¿Qué instrumento tocarás?</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">1. Â¿QuÃ© instrumento tocarÃ¡s?</label>
               <select value={mboxInst} onChange={e => setMboxInst(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
                 <option value="">Selecciona Instrumento...</option>
                 {INSTRUMENTOS.map(i => <option key={i} value={i}>{i}</option>)}
@@ -2477,7 +2832,7 @@ END:VCALENDAR`;
             </div>
 
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">2. Fecha (Mín. 24h vista)</label>
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">2. Fecha (MÃ­n. 24h vista)</label>
               <input type="date" min={tomorrowStr} value={mboxDate} onChange={e => {setMboxDate(e.target.value); setMboxSelectedSlot(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800" />
             </div>
 
@@ -2580,26 +2935,26 @@ END:VCALENDAR`;
 
           {triviaResult?.status === 'win' && (
             <div className="mt-6 text-center animate-in slide-in-from-bottom-2">
-              <p className="text-emerald-600 font-black uppercase tracking-widest text-lg mb-3">¡Correcto!</p>
+              <p className="text-emerald-600 font-black uppercase tracking-widest text-lg mb-3">Â¡Correcto!</p>
               <div className="flex flex-wrap justify-center gap-2">
                 <span className="bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm">
                   +{currentDifficulty.points} {currentDifficulty.label}
                 </span>
                 {triviaResult.speed > 0 && (
                   <span className="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm">
-                    +{triviaResult.speed} Rápido
+                    +{triviaResult.speed} RÃ¡pido
                   </span>
                 )}
                 {triviaResult.streak > 0 && (
                   <span className="bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest shadow-sm">
-                    +{triviaResult.streak} Racha x{triviaResult.newStreakCount} 🔥
+                    +{triviaResult.streak} Racha x{triviaResult.newStreakCount} ðŸ”¥
                   </span>
                 )}
               </div>
             </div>
           )}
-          {triviaResult?.status === 'lose' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Incorrecto! Pierdes la racha.</p>}
-          {triviaResult?.status === 'timeout' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">¡Se acabó el tiempo!</p>}
+          {triviaResult?.status === 'lose' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">Â¡Incorrecto! Pierdes la racha.</p>}
+          {triviaResult?.status === 'timeout' && <p className="mt-6 text-rose-600 font-black uppercase tracking-widest text-sm">Â¡Se acabÃ³ el tiempo!</p>}
 
         </div>
       </div>
@@ -2616,15 +2971,15 @@ END:VCALENDAR`;
         </div>
         <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Acceso Denegado</h1>
         <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
-          Tu correo electrónico (<strong className="text-black">{user.email}</strong>) no está registrado como alumno de la escuela.
+          Tu correo electrÃ³nico (<strong className="text-black">{user.email}</strong>) no estÃ¡ registrado como alumno de la escuela.
         </p>
         <div className="bg-amber-50 border border-amber-200 p-6 rounded-2xl mb-8">
           <p className="text-sm text-amber-800 font-bold">
-            Si eres alumno de Los Mitos, asegúrate de haber iniciado sesión con el mismo correo que le diste a tu profesor.
+            Si eres alumno de Los Mitos, asegÃºrate de haber iniciado sesiÃ³n con el mismo correo que le diste a tu profesor.
           </p>
         </div>
         <button onClick={logout} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors">
-          Cerrar Sesión y probar con otro correo
+          Cerrar SesiÃ³n y probar con otro correo
         </button>
       </div>
     );
@@ -2638,11 +2993,11 @@ END:VCALENDAR`;
         </div>
         <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Cuenta Desactivada</h1>
         <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
-          Estás dado de baja de la Escuela Los Mitos. Ya no tienes acceso a la plataforma ni a los servicios premium.
+          EstÃ¡s dado de baja de la Escuela Los Mitos. Ya no tienes acceso a la plataforma ni a los servicios premium.
         </p>
         <div className="bg-white border-2 border-zinc-200 p-6 rounded-2xl mb-8 w-full shadow-sm">
           <p className="text-sm text-slate-700 font-bold mb-4 uppercase tracking-widest">
-            ¿Quieres volver a dar caña?
+            Â¿Quieres volver a dar caÃ±a?
           </p>
           <a 
             href="https://www.escuelalosmitos.com/plazas-libres-en-clases-de-musica-en-tarragona-y-reus/" 
@@ -2654,7 +3009,7 @@ END:VCALENDAR`;
           </a>
         </div>
         <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
-          Cerrar Sesión
+          Cerrar SesiÃ³n
         </button>
       </div>
     );
@@ -2672,17 +3027,17 @@ END:VCALENDAR`;
         </p>
         <div className="bg-white border-2 border-red-100 p-6 rounded-2xl mb-8 w-full shadow-sm text-left">
           <p className="text-sm text-slate-700 font-bold leading-relaxed mb-4">
-            Para regularizar la situación, deja fondos disponibles en la cuenta bancaria con la que realizaste el alta.
+            Para regularizar la situaciÃ³n, deja fondos disponibles en la cuenta bancaria con la que realizaste el alta.
           </p>
           <p className="text-sm text-slate-700 font-bold leading-relaxed">
-            Si tienes alguna duda o crees que se trata de un error, escríbenos a:
+            Si tienes alguna duda o crees que se trata de un error, escrÃ­benos a:
           </p>
           <a href="mailto:gestiones@escuelalosmitos.com" className="block mt-3 text-center bg-red-50 border border-red-100 text-red-700 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-red-100 transition-colors">
             gestiones@escuelalosmitos.com
           </a>
         </div>
         <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
-          Cerrar Sesión
+          Cerrar SesiÃ³n
         </button>
       </div>
     );
@@ -2697,23 +3052,23 @@ END:VCALENDAR`;
         <div className="bg-emerald-100 text-emerald-600 p-6 rounded-full mb-6">
           <Clock className="w-12 h-12" />
         </div>
-        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Tu plaza está reservada</h1>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Tu plaza estÃ¡ reservada</h1>
         <p className="text-zinc-500 font-medium mb-6 leading-relaxed">
-          Tus clases empiezan el día <strong className="text-black">{formatDateSpanish(portalStartDate)}</strong>.
+          Tus clases empiezan el dÃ­a <strong className="text-black">{formatDateSpanish(portalStartDate)}</strong>.
         </p>
         <div className="bg-white border-2 border-emerald-100 p-6 rounded-2xl mb-8 w-full shadow-sm text-left">
           <p className="text-sm text-slate-700 font-bold leading-relaxed mb-4">
-            Podrás acceder al Área del Alumno a partir de esa fecha. Mientras tanto, tu plaza ya está confirmada, pero las gestiones del portal todavía no estarán disponibles.
+            PodrÃ¡s acceder al Ãrea del Alumno a partir de esa fecha. Mientras tanto, tu plaza ya estÃ¡ confirmada, pero las gestiones del portal todavÃ­a no estarÃ¡n disponibles.
           </p>
           <p className="text-sm text-slate-700 font-bold leading-relaxed">
-            Si tienes cualquier duda, escríbenos a:
+            Si tienes cualquier duda, escrÃ­benos a:
           </p>
           <a href={`mailto:${SUPPORT_EMAIL}?subject=Consulta%20sobre%20inicio%20de%20clases`} className="block mt-3 text-center bg-emerald-50 border border-emerald-100 text-emerald-700 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-emerald-100 transition-colors">
             {SUPPORT_EMAIL}
           </a>
         </div>
         <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
-          Cerrar Sesión
+          Cerrar SesiÃ³n
         </button>
       </div>
     );
@@ -2732,7 +3087,7 @@ END:VCALENDAR`;
         </p>
         <div className="bg-white border-2 border-zinc-200 p-6 rounded-2xl mb-8 w-full shadow-sm">
           <p className="text-sm text-slate-700 font-bold mb-4 uppercase tracking-widest">
-            ¿Crees que es un error?
+            Â¿Crees que es un error?
           </p>
           <a 
             href="mailto:gestiones@escuelalosmitos.com?subject=Acceso%20al%20portal%20sin%20clase%20asignada" 
@@ -2742,7 +3097,7 @@ END:VCALENDAR`;
           </a>
         </div>
         <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
-          Cerrar Sesión
+          Cerrar SesiÃ³n
         </button>
       </div>
     );
@@ -2755,6 +3110,7 @@ END:VCALENDAR`;
       {renderGestionModal()}
       {renderMitoboxModal()}
       {renderExtraSignupModal()}
+      {renderWorkshopModal()}
       {renderContract()}
       {renderTriviaModal()}
 
@@ -2767,7 +3123,7 @@ END:VCALENDAR`;
             <div className="flex flex-col items-center text-center mb-6">
               <Megaphone className="w-12 h-12 text-black mb-3" />
               <h2 className="text-xl font-black uppercase tracking-tight text-slate-800">Redes de la Escuela</h2>
-              <p className="text-xs font-bold text-zinc-500 mt-2">Instagram, Facebook y YouTube reunidos en un solo botón.</p>
+              <p className="text-xs font-bold text-zinc-500 mt-2">Instagram, Facebook y YouTube reunidos en un solo botÃ³n.</p>
             </div>
             <div className="space-y-3">
               {SOCIAL_LINKS.map(({ id, label, url, Icon, hover, iconHover }) => (
@@ -2824,9 +3180,9 @@ END:VCALENDAR`;
 
             <div className="space-y-3 text-sm text-zinc-600 font-medium leading-relaxed mb-6">
               <p>Vas a entrar en un grupo compartido con otros miembros de tu clase.</p>
-              <p>El grupo se usa solo para coordinación, avisos, dudas y material relacionado con la escuela. Al entrar, tu nombre, número y foto de WhatsApp podrían ser visibles para otros participantes.</p>
-              <p>Si solicitas la baja o dejas esta clase, deberás abandonar el grupo para proteger tus datos.</p>
-              <p className="font-black text-slate-800">¿Quieres abrir WhatsApp?</p>
+              <p>El grupo se usa solo para coordinaciÃ³n, avisos, dudas y material relacionado con la escuela. Al entrar, tu nombre, nÃºmero y foto de WhatsApp podrÃ­an ser visibles para otros participantes.</p>
+              <p>Si solicitas la baja o dejas esta clase, deberÃ¡s abandonar el grupo para proteger tus datos.</p>
+              <p className="font-black text-slate-800">Â¿Quieres abrir WhatsApp?</p>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -2893,25 +3249,25 @@ END:VCALENDAR`;
                 <div className="relative z-10 p-6 flex flex-col sm:flex-row items-center justify-between gap-6">
                   <div>
                     <div className="flex items-center gap-2 mb-2">
-                       <h3 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2 text-white"><Trophy className="w-6 h-6 text-amber-200"/> Reto del Día</h3>
+                       <h3 className="text-2xl font-black uppercase tracking-tight flex items-center gap-2 text-white"><Trophy className="w-6 h-6 text-amber-200"/> Reto del DÃ­a</h3>
                        <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest border border-white/20 ${currentDifficulty.bg} ${currentDifficulty.color}`}>{currentDifficulty.label} ({currentDifficulty.points} pts)</span>
                     </div>
                     <p className="text-xs font-bold text-amber-100 uppercase tracking-widest flex items-center flex-wrap gap-2">
-                       {(profile.triviaStreak || 0) > 0 && <span className="bg-orange-600 px-2 py-1 rounded text-white shadow-sm">🔥 Racha x{profile.triviaStreak}</span>}
-                       ¡Responde rápido para bonus!
+                       {(profile.triviaStreak || 0) > 0 && <span className="bg-orange-600 px-2 py-1 rounded text-white shadow-sm">ðŸ”¥ Racha x{profile.triviaStreak}</span>}
+                       Â¡Responde rÃ¡pido para bonus!
                     </p>
                   </div>
                   <button className="w-full sm:w-auto bg-white text-orange-600 px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg flex items-center justify-center gap-2 pointer-events-none">
                     <Timer className="w-4 h-4"/> Jugar Ahora
                   </button>
                 </div>
-                <p className="relative z-10 text-[9px] font-bold text-center text-amber-100/70 pb-2 px-4 uppercase tracking-widest">Condición indispensable: Ser alumno activo y al corriente de pago para optar a premios.</p>
+                <p className="relative z-10 text-[9px] font-bold text-center text-amber-100/70 pb-2 px-4 uppercase tracking-widest">CondiciÃ³n indispensable: Ser alumno activo y al corriente de pago para optar a premios.</p>
               </div>
             ) : (
               <div className="bg-zinc-100 border-2 border-zinc-200 rounded-3xl p-6 text-center shadow-sm">
                 <CheckCircle className="w-8 h-8 text-zinc-300 mx-auto mb-2"/>
                 <p className="font-black text-slate-800 uppercase tracking-tight">Ya has jugado hoy</p>
-                <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mt-1">Vuelve mañana a por más puntos.</p>
+                <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mt-1">Vuelve maÃ±ana a por mÃ¡s puntos.</p>
               </div>
             )}
 
@@ -2920,7 +3276,7 @@ END:VCALENDAR`;
             {effectiveMyClasses.length === 0 ? (
               <div className="p-8 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
                 <Music className="w-12 h-12 text-zinc-200 mx-auto mb-3" />
-                <p className="font-bold text-zinc-400 uppercase tracking-widest text-sm">Todavía no tienes clases asignadas.</p>
+                <p className="font-bold text-zinc-400 uppercase tracking-widest text-sm">TodavÃ­a no tienes clases asignadas.</p>
               </div>
             ) : (
               effectiveMyClasses.map((clase, idx) => {
@@ -2941,10 +3297,10 @@ END:VCALENDAR`;
                     <div key={idx} className={`rounded-3xl p-6 shadow-md relative overflow-hidden mb-4 border-2 ${isFestivo ? 'bg-red-50 border-red-200' : 'bg-purple-50 border-purple-200'}`}>
                       <div className="flex items-center gap-3 mb-2">
                         {isFestivo ? <AlertCircle className="w-6 h-6 text-red-500"/> : <Sun className="w-6 h-6 text-purple-500"/>}
-                        <h2 className={`text-xl font-black uppercase tracking-tighter ${isFestivo ? 'text-red-900' : 'text-purple-900'}`}>{isFestivo ? 'Día Festivo' : 'Vacaciones'}</h2>
+                        <h2 className={`text-xl font-black uppercase tracking-tighter ${isFestivo ? 'text-red-900' : 'text-purple-900'}`}>{isFestivo ? 'DÃ­a Festivo' : 'Vacaciones'}</h2>
                       </div>
-                      <p className={`font-bold uppercase text-[10px] tracking-widest mb-4 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>{holidayMatch.title || 'Escuela Cerrada'} • {classInfo.dateStr}</p>
-                      <p className={`text-sm font-medium mb-4 ${isFestivo ? 'text-red-800' : 'text-purple-800'}`}>Tu próxima clase de {clase.subject} coincide con un día no lectivo oficial. La escuela permanecerá cerrada.</p>
+                      <p className={`font-bold uppercase text-[10px] tracking-widest mb-4 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>{holidayMatch.title || 'Escuela Cerrada'} â€¢ {classInfo.dateStr}</p>
+                      <p className={`text-sm font-medium mb-4 ${isFestivo ? 'text-red-800' : 'text-purple-800'}`}>Tu prÃ³xima clase de {clase.subject} coincide con un dÃ­a no lectivo oficial. La escuela permanecerÃ¡ cerrada.</p>
 
                       {renderClassTasksResources({
                         clase,
@@ -2973,7 +3329,7 @@ END:VCALENDAR`;
                       )}
                       
                       <div className={`flex flex-col sm:flex-row gap-3 text-sm font-medium mb-8 p-4 rounded-2xl border ${isCongelado ? 'bg-zinc-300/50 border-zinc-300 text-zinc-600' : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300'}`}>
-                        <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
+                        <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">â€¢</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
                       </div>
 
                       {renderClassTasksResources({
@@ -2992,7 +3348,7 @@ END:VCALENDAR`;
                         </div>
                       ) : isRecoveryClassForMe ? (
                         <div className="w-full bg-amber-100 text-amber-900 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-amber-200 text-center">
-                          <Ticket className="w-4 h-4 shrink-0" /> Clase de recuperación no recuperable
+                          <Ticket className="w-4 h-4 shrink-0" /> Clase de recuperaciÃ³n no recuperable
                         </div>
                       ) : hasNotifiedNext ? (
                         <div className="w-full bg-zinc-800/50 text-emerald-400 font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-emerald-900/50">
@@ -3000,7 +3356,7 @@ END:VCALENDAR`;
                         </div>
                       ) : (
                         <button onClick={() => openAbsenceModal(clase)} className="w-full bg-zinc-800 hover:bg-zinc-700 text-white font-black py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase text-xs tracking-widest border border-zinc-700 transition-all shadow-lg active:scale-95">
-                          <AlertCircle className="w-4 h-4 text-amber-400" /> No podré asistir
+                          <AlertCircle className="w-4 h-4 text-amber-400" /> No podrÃ© asistir
                         </button>
                       )}
                   </div>
@@ -3014,7 +3370,7 @@ END:VCALENDAR`;
                 <div className="flex flex-col items-end gap-1">
                   <span className="bg-amber-100 text-amber-800 px-3 py-1 rounded-lg text-xs font-black">{profile.activeTickets || 0} Tickets</span>
                   {profile.futureSummerTickets > 0 && (
-                    <span className="bg-sky-100 text-sky-700 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{profile.futureSummerTickets} verano · desde septiembre</span>
+                    <span className="bg-sky-100 text-sky-700 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{profile.futureSummerTickets} verano Â· desde septiembre</span>
                   )}
                 </div>
               </div>
@@ -3022,7 +3378,7 @@ END:VCALENDAR`;
                 disabled={isStudentFrozen || !profile.activeTickets || hasReachedRecoveryLimit} 
                 onClick={() => {
                   if (isStudentFrozen) {
-                    showToast('Tus tickets se conservan, pero no puedes canjearlos mientras tu plaza esté en mantenimiento.', 'error');
+                    showToast('Tus tickets se conservan, pero no puedes canjearlos mientras tu plaza estÃ© en mantenimiento.', 'error');
                     return;
                   }
                   if (hasReachedRecoveryLimit) {
@@ -3031,22 +3387,22 @@ END:VCALENDAR`;
                   }
                   setGestionModal({
                     type: 'recuperacion', title: 'Canjear Ticket', icon: Ticket, color: 'text-amber-500',
-                    desc: 'Elige el grupo en el que quieres gastar tu ticket. Si no encuentras disponibilidad, vuelve a mirar otro día.',
-                    placeholder: 'Añade observaciones para el profesor (Opcional)...'
+                    desc: 'Elige el grupo en el que quieres gastar tu ticket. Si no encuentras disponibilidad, vuelve a mirar otro dÃ­a.',
+                    placeholder: 'AÃ±ade observaciones para el profesor (Opcional)...'
                   });
                 }}
                 className={`w-full font-black py-4 rounded-xl shadow-sm uppercase text-xs tracking-widest transition-colors ${profile.activeTickets > 0 && !hasReachedRecoveryLimit && !isStudentFrozen ? 'bg-amber-400 text-amber-950 hover:bg-amber-300' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
               >
-                {isStudentFrozen ? 'Tickets conservados · mantenimiento' : profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
+                {isStudentFrozen ? 'Tickets conservados Â· mantenimiento' : profile.activeTickets > 0 ? (hasReachedRecoveryLimit ? 'Recuperaciones ya asignadas' : 'Canjear Ticket Libre') : 'No tienes tickets'}
               </button>
               <div className="mt-4 flex items-start gap-2 bg-zinc-50 border border-zinc-100 p-3 rounded-xl">
                 <Info className="w-4 h-4 text-zinc-400 shrink-0 mt-0.5" />
                 <p className="text-[11px] font-bold text-zinc-500 leading-relaxed uppercase tracking-wide">
                   {isStudentFrozen
-                    ? 'Tus tickets se mantienen guardados, pero no podrás gestionarlos ni recuperar clases hasta que termine tu periodo de mantenimiento.'
+                    ? 'Tus tickets se mantienen guardados, pero no podrÃ¡s gestionarlos ni recuperar clases hasta que termine tu periodo de mantenimiento.'
                     : profile.futureSummerTickets > 0
-                      ? 'Tienes tickets especiales de verano guardados. No se podrán gestionar hasta septiembre y estarán disponibles hasta diciembre.'
-                      : 'Los tickets de recuperación se verán reflejados aquí cuando haya pasado el día de la falta avisada.'}
+                      ? 'Tienes tickets especiales de verano guardados. No se podrÃ¡n gestionar hasta septiembre y estarÃ¡n disponibles hasta diciembre.'
+                      : 'Los tickets de recuperaciÃ³n se verÃ¡n reflejados aquÃ­ cuando haya pasado el dÃ­a de la falta avisada.'}
                 </p>
               </div>
             </div>
@@ -3054,7 +3410,7 @@ END:VCALENDAR`;
             {(pendingProcedures.length > 0 || pendingAbsences.length > 0) && (
               <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200 mt-6">
                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg mb-4 flex items-center gap-2">
-                  <Clock className="w-5 h-5 text-amber-500"/> En Trámite
+                  <Clock className="w-5 h-5 text-amber-500"/> En TrÃ¡mite
                 </h3>
                 <div className="space-y-3">
                   {pendingAbsences.map((abs, i) => (
@@ -3075,7 +3431,7 @@ END:VCALENDAR`;
                          <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">Solicitado el {new Date(proc.date).toLocaleDateString('es-ES')}</p>
                        </div>
                        <span className="text-[10px] font-black uppercase tracking-widest bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg">
-                         En revisión
+                         En revisiÃ³n
                        </span>
                     </div>
                   ))}
@@ -3084,18 +3440,18 @@ END:VCALENDAR`;
             )}
             
             <div className="text-center mt-4">
-              <button onClick={() => setShowContract(true)} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4">Ver contrato de prestación de servicios</button>
+              <button onClick={() => setShowContract(true)} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4">Ver contrato de prestaciÃ³n de servicios</button>
             </div>
           </div>
         )}
 
-        {/* --- PESTAÑA: CALENDARIO --- */}
+        {/* --- PESTAÃ‘A: CALENDARIO --- */}
         {activeTab === 'calendar' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
                 <h2 className="text-2xl font-black uppercase tracking-tight">Calendario</h2>
-                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Días no lectivos oficiales</p>
+                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">DÃ­as no lectivos oficiales</p>
               </div>
               <Calendar className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
@@ -3114,7 +3470,7 @@ END:VCALENDAR`;
                        <div key={i} className={`p-4 rounded-2xl border flex justify-between items-center ${isPast ? 'bg-zinc-50 border-zinc-100 opacity-60' : cal.type === 'festivo' ? 'bg-red-50 border-red-100 text-red-900' : 'bg-purple-50 border-purple-100 text-purple-900'}`}>
                          <div>
                            <span className="text-[10px] font-black uppercase tracking-widest opacity-60 block">{cal.type}</span>
-                           <span className="font-bold text-sm">{cal.title || 'Día no lectivo'}</span>
+                           <span className="font-bold text-sm">{cal.title || 'DÃ­a no lectivo'}</span>
                          </div>
                          <span className="font-black text-sm">{formatDateSpanish(cal.date)}</span>
                        </div>
@@ -3126,27 +3482,74 @@ END:VCALENDAR`;
           </div>
         )}
 
-        {/* --- PESTAÑA: EXTRAS --- */}
+        {/* --- PESTAÃ‘A: EXTRAS --- */}
         {activeTab === 'extras' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-gradient-to-r from-blue-600 to-indigo-900 text-white border-2 border-indigo-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
                 <h2 className="text-2xl font-black uppercase tracking-tight">Mitos+</h2>
-                <p className="text-blue-200 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
+                <p className="text-blue-200 font-bold text-xs uppercase tracking-widest mt-1">SÃ¡cale mÃ¡s partido a tu mÃºsica</p>
               </div>
               <Sparkles className="w-24 h-24 text-white/10 absolute -right-4 -bottom-4 pointer-events-none" />
             </div>
+
+            {workshopsLoaded && visibleWorkshops.length > 0 && (
+              <section className="space-y-4">
+                <div className="flex items-end justify-between gap-3 px-1">
+                  <div>
+                    <h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Talleres y actividades</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Propuestas especiales de duraciÃ³n limitada</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {visibleWorkshops.map(workshop => {
+                    const registration = getWorkshopRegistration(workshop.id);
+                    const activeRegistration = registration && ['confirmed', 'pending', 'waitlist'].includes(registration.status) ? registration : null;
+                    const firstSession = workshop.sessions?.[0];
+                    const registrationOpen = isWorkshopRegistrationOpen(workshop);
+                    const freeSeats = getWorkshopFreeSeats(workshop);
+                    const isFull = !workshop.unlimitedCapacity && freeSeats === 0;
+                    const safeImageUrl = getSafeAnnouncementUrl(workshop.imageUrl || '');
+                    return (
+                      <article key={workshop.id} className={`bg-white rounded-3xl shadow-sm border-2 overflow-hidden flex flex-col h-full transition-all ${workshop.featured ? 'border-amber-300 ring-2 ring-amber-100' : 'border-zinc-100 hover:border-violet-300'}`}>
+                        <button onClick={() => openWorkshopModal(workshop)} className="text-left flex flex-col h-full group">
+                          <div className="h-44 bg-gradient-to-br from-violet-700 to-zinc-950 relative overflow-hidden">
+                            {safeImageUrl ? <img src={safeImageUrl} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"/> : <div className="w-full h-full flex items-center justify-center"><Music className="w-20 h-20 text-white/20"/></div>}
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent"/>
+                            <div className="absolute top-3 left-3 flex flex-wrap gap-2">
+                              {workshop.featured && <span className="bg-amber-400 text-amber-950 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline mr-1"/> Destacado</span>}
+                              {activeRegistration && <span className={`px-2.5 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}>{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</span>}
+                            </div>
+                            {firstSession && <div className="absolute bottom-3 left-4 right-4 text-white"><span className="text-[9px] font-black uppercase tracking-widest text-white/70 block">PrÃ³xima sesiÃ³n</span><span className="font-black text-sm capitalize">{formatWorkshopDate(firstSession.date)} Â· {firstSession.startTime}h</span></div>}
+                          </div>
+                          <div className="p-5 flex flex-col flex-1">
+                            <h4 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">{workshop.title}</h4>
+                            <p className="text-sm text-zinc-500 font-medium mt-2 leading-relaxed flex-1">{workshop.shortDescription}</p>
+                            <div className="space-y-2 mt-5 pt-4 border-t border-zinc-100">
+                              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Lugar</span><span className="text-slate-700 text-right">{getWorkshopLocationLabel(workshop)}</span></div>
+                              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Ticket className="w-3.5 h-3.5"/> Precio</span><span className="text-slate-700">{workshop.priceType === 'free' ? 'Gratuito' : formatEuro(workshop.price)}</span></div>
+                              {!activeRegistration && <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Clock className="w-3.5 h-3.5"/> InscripciÃ³n</span><span className={registrationOpen ? 'text-emerald-700' : 'text-zinc-500'}>{registrationOpen ? isFull && workshop.waitlistEnabled ? 'Lista de espera' : workshop.unlimitedCapacity ? 'Abierta' : `${freeSeats} ${freeSeats === 1 ? 'plaza' : 'plazas'}` : 'Cerrada'}</span></div>}
+                            </div>
+                            <span className="mt-5 w-full bg-violet-600 group-hover:bg-violet-700 text-white font-black py-3.5 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2">{activeRegistration ? 'Ver mi inscripciÃ³n' : 'Ver taller'} <ArrowRight className="w-4 h-4"/></span>
+                          </div>
+                        </button>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
                 {profile?.hasMitoverso ? (
                   <div className="absolute top-4 right-4 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Star className="w-3 h-3"/> Suscripción Activa
+                    <Star className="w-3 h-3"/> SuscripciÃ³n Activa
                   </div>
                 ) : pendingMitoversoSignup && (
                   <div className="absolute top-4 right-4 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Clock className="w-3 h-3"/> En revisión
+                    <Clock className="w-3 h-3"/> En revisiÃ³n
                   </div>
                 )}
                 <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
@@ -3159,7 +3562,7 @@ END:VCALENDAR`;
                 {!profile?.hasMitoverso && (
                   <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
                     <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
-                    <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                    <span className="text-xl font-black text-slate-800">15â‚¬ <span className="text-sm text-zinc-500">/ mes</span></span>
                   </div>
                 )}
                 
@@ -3188,7 +3591,7 @@ END:VCALENDAR`;
                   </div>
                 ) : pendingMitoboxSignup && (
                   <div className="absolute top-4 right-4 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Clock className="w-3 h-3"/> En revisión
+                    <Clock className="w-3 h-3"/> En revisiÃ³n
                   </div>
                 )}
                 <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
@@ -3196,12 +3599,12 @@ END:VCALENDAR`;
                 </div>
                 <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
                 <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
+                  Â¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estÃ©n vacÃ­as para venir a practicar siempre que quieras.
                 </p>
                 {!profile?.hasMitobox && (
                   <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
                     <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
-                    <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                    <span className="text-xl font-black text-slate-800">35â‚¬ <span className="text-sm text-zinc-500">/ mes</span></span>
                   </div>
                 )}
                 
@@ -3227,19 +3630,19 @@ END:VCALENDAR`;
           </div>
         )}
 
-        {/* --- PESTAÑA: TABLÓN --- */}
+        {/* --- PESTAÃ‘A: TABLÃ“N --- */}
         {activeTab === 'news' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight">Tablón de Avisos</h2>
+                <h2 className="text-2xl font-black uppercase tracking-tight">TablÃ³n de Avisos</h2>
                 <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Novedades y Enlaces</p>
               </div>
               <Megaphone className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
             <div className="mb-5">
-              <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3 px-2 flex items-center gap-2"><LinkIcon className="w-4 h-4"/> Enlaces rápidos</h3>
+              <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3 px-2 flex items-center gap-2"><LinkIcon className="w-4 h-4"/> Enlaces rÃ¡pidos</h3>
               <div className={`grid ${classWhatsappLinks.length > 0 ? 'grid-cols-4' : 'grid-cols-3'} gap-2`}>
                 <a href="https://www.escuelalosmitos.com/" target="_blank" rel="noopener noreferrer" className="bg-white border border-zinc-200 px-2 py-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 shadow-sm hover:border-black transition-colors group min-h-[74px]">
                   <Globe className="w-5 h-5 text-zinc-400 group-hover:text-black"/>
@@ -3257,15 +3660,15 @@ END:VCALENDAR`;
                 </button>
                 <button onClick={handleReviewClick} className="bg-amber-50 border border-amber-200 px-2 py-3 rounded-2xl flex flex-col items-center justify-center gap-1.5 shadow-sm hover:bg-amber-100 transition-colors group min-h-[74px]">
                   <Star className="w-5 h-5 text-amber-500"/>
-                  <span className="text-[9px] font-black uppercase tracking-widest text-amber-900">Valóranos</span>
+                  <span className="text-[9px] font-black uppercase tracking-widest text-amber-900">ValÃ³ranos</span>
                 </button>
               </div>
             </div>
 
-            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Últimas Noticias</h3>
+            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Ãšltimas Noticias</h3>
             {visibleAnnouncements.length === 0 ? (
                <div className="p-10 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
-                <p className="font-black text-slate-800 uppercase tracking-widest text-sm">El tablón está vacío</p>
+                <p className="font-black text-slate-800 uppercase tracking-widest text-sm">El tablÃ³n estÃ¡ vacÃ­o</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -3283,7 +3686,7 @@ END:VCALENDAR`;
                 ))}
                 {visibleAnnouncementsCount < visibleAnnouncements.length && (
                   <button onClick={() => setVisibleAnnouncementsCount(c => c + 5)} className="w-full py-4 rounded-2xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
-                    Cargar más avisos
+                    Cargar mÃ¡s avisos
                   </button>
                 )}
               </div>
@@ -3291,13 +3694,13 @@ END:VCALENDAR`;
           </div>
         )}
 
-        {/* --- PESTAÑA: GESTIONES --- */}
+        {/* --- PESTAÃ‘A: GESTIONES --- */}
         {activeTab === 'contact' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-zinc-100 border-2 border-zinc-200 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-sm relative overflow-hidden">
               <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight text-slate-800">Trámites</h2>
-                <p className="text-zinc-500 font-bold text-xs uppercase tracking-widest mt-1">Gestión rápida de tu plaza</p>
+                <h2 className="text-2xl font-black uppercase tracking-tight text-slate-800">TrÃ¡mites</h2>
+                <p className="text-zinc-500 font-bold text-xs uppercase tracking-widest mt-1">GestiÃ³n rÃ¡pida de tu plaza</p>
               </div>
               <MessageSquare className="w-20 h-20 text-zinc-200 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
@@ -3307,11 +3710,11 @@ END:VCALENDAR`;
                 <AlertCircle className="w-4 h-4"/> Normativa Administrativa
               </strong>
               <ul className="list-disc pl-4 space-y-2 mt-2 text-amber-800/90">
-                <li>Todas las gestiones (bajas, cambios de horario, mantenimientos) deben solicitarse antes del <strong>día 20 de cada mes</strong>. Las enviadas del 21 en adelante, tendrán efecto en el mes siguiente.</li>
-                <li><strong>Como norma general, solo se puede hacer una gestión administrativa al mes</strong>, y el trámite no se puede rectificar una vez solicitado.</li>
-                {isMultiSeatStudent && <li>Si tienes varias plazas, los cambios de horario y bajas se gestionan por plaza: no podrás repetir gestión sobre la misma plaza mientras esté pendiente, pero sí gestionar otra plaza distinta.</li>}
-                <li>El mantenimiento es una excepción: afecta a todas las clases de la persona, aunque tenga más de una plaza.</li>
-                <li>Para cualquier duda, podéis recurrir al botón de <strong>"Dudas u otras gestiones"</strong> al final de esta página.</li>
+                <li>Todas las gestiones (bajas, cambios de horario, mantenimientos) deben solicitarse antes del <strong>dÃ­a 20 de cada mes</strong>. Las enviadas del 21 en adelante, tendrÃ¡n efecto en el mes siguiente.</li>
+                <li><strong>Como norma general, solo se puede hacer una gestiÃ³n administrativa al mes</strong>, y el trÃ¡mite no se puede rectificar una vez solicitado.</li>
+                {isMultiSeatStudent && <li>Si tienes varias plazas, los cambios de horario y bajas se gestionan por plaza: no podrÃ¡s repetir gestiÃ³n sobre la misma plaza mientras estÃ© pendiente, pero sÃ­ gestionar otra plaza distinta.</li>}
+                <li>El mantenimiento es una excepciÃ³n: afecta a todas las clases de la persona, aunque tenga mÃ¡s de una plaza.</li>
+                <li>Para cualquier duda, podÃ©is recurrir al botÃ³n de <strong>"Dudas u otras gestiones"</strong> al final de esta pÃ¡gina.</li>
               </ul>
             </div>
 
@@ -3320,7 +3723,7 @@ END:VCALENDAR`;
                 <strong className="font-black uppercase tracking-widest text-[11px] block mb-2 flex items-center gap-2">
                   <Snowflake className="w-4 h-4"/> Plaza en mantenimiento
                 </strong>
-                Mientras tu plaza esté en mantenimiento {maintenancePeriodText ? `(${maintenancePeriodText})` : ''} puedes consultar la app, leer avisos, jugar al trivial y conservar tus tickets, pero no puedes cambiar horario, ampliar clases ni canjear recuperaciones. Al terminar el periodo, la plataforma volverá a tratar tu plaza como activa automáticamente.
+                Mientras tu plaza estÃ© en mantenimiento {maintenancePeriodText ? `(${maintenancePeriodText})` : ''} puedes consultar la app, leer avisos, jugar al trivial y conservar tus tickets, pero no puedes cambiar horario, ampliar clases ni canjear recuperaciones. Al terminar el periodo, la plataforma volverÃ¡ a tratar tu plaza como activa automÃ¡ticamente.
               </div>
             )}
 
@@ -3336,15 +3739,15 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isChangeHorarioLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isChangeHorarioLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Solicita otro día u hora'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Solicita otro dÃ­a u hora'}</p>
               </button>
 
               <button 
                 disabled={isAcademicGestionLocked}
                 onClick={() => handleAdminGestionClick({
-                  type: 'ampliar_clases', title: 'Añadir Otra Clase', icon: PlusCircle, color: 'text-emerald-500',
-                  desc: 'Añade una hora extra o empieza con un nuevo instrumento grupal.',
-                  placeholder: 'Añade observaciones para Administración (Opcional)...'
+                  type: 'ampliar_clases', title: 'AÃ±adir Otra Clase', icon: PlusCircle, color: 'text-emerald-500',
+                  desc: 'AÃ±ade una hora extra o empieza con un nuevo instrumento grupal.',
+                  placeholder: 'AÃ±ade observaciones para AdministraciÃ³n (Opcional)...'
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isAcademicGestionLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
@@ -3358,7 +3761,7 @@ END:VCALENDAR`;
                 onClick={() => handleAdminGestionClick(isStudentFrozen ? {
                   type: 'reactivar_plaza', title: 'Finalizar Mantenimiento', icon: Snowflake, color: 'text-blue-500',
                   desc: 'Solicita terminar antes de tiempo tu periodo de mantenimiento y volver a la operativa normal de tu plaza.',
-                  placeholder: 'Indica desde cuándo quieres finalizar el mantenimiento o cualquier observación para Administración...'
+                  placeholder: 'Indica desde cuÃ¡ndo quieres finalizar el mantenimiento o cualquier observaciÃ³n para AdministraciÃ³n...'
                 } : {
                   type: 'mantenimiento', title: 'Pasar a mantenimiento', icon: Snowflake, color: 'text-amber-500',
                   desc: getGestionUiCopy('mantenimiento').description,
@@ -3368,7 +3771,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isMantenimientoLocked ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${isMantenimientoLocked ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Finalizar Mantenimiento' : 'Cuota Mantenimiento'}</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : isMultiSeatStudent ? 'Afecta a todas tus clases' : '15€/mes · máximo 2 meses'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : isMultiSeatStudent ? 'Afecta a todas tus clases' : '15â‚¬/mes Â· mÃ¡ximo 2 meses'}</p>
               </button>
 
               <button 
@@ -3391,7 +3794,7 @@ END:VCALENDAR`;
               >
                 <div>
                   <h3 className="font-black text-white uppercase tracking-tight text-lg">Dudas u otras gestiones</h3>
-                  <p className="text-xs font-medium text-zinc-400 mt-1">Vía Mail: Clases particulares, facturación, consultas...</p>
+                  <p className="text-xs font-medium text-zinc-400 mt-1">VÃ­a Mail: Clases particulares, facturaciÃ³n, consultas...</p>
                 </div>
                 <div className="bg-zinc-800 p-4 rounded-full group-hover:scale-110 transition-transform"><Mail className="w-6 h-6 text-white"/></div>
               </a>
@@ -3408,13 +3811,13 @@ END:VCALENDAR`;
             {id:'home', i:LayoutGrid, label:'Inicio'}, 
             {id:'calendar', i:Calendar, label:'Calendario'}, 
             {id:'extras', i:Sparkles, label:'Extras'},
-            {id:'news', i:Megaphone, label:'Tablón'}, 
+            {id:'news', i:Megaphone, label:'TablÃ³n'}, 
             {id:'contact', i:MessageSquare, label:'Gestiones'}
           ].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`relative p-3 rounded-xl flex flex-col items-center gap-1 transition-all flex-1 ${activeTab === t.id ? 'text-black' : 'text-zinc-400 hover:text-black'}`}>
               <div className="relative">
                 <t.i className="w-6 h-6"/>
-                {/* 👇 LA BOLITA ROJA (Aparece en el ícono de 'news' si hay avisos sin leer y no estás en la pestaña) */}
+                {/* ðŸ‘‡ LA BOLITA ROJA (Aparece en el Ã­cono de 'news' si hay avisos sin leer y no estÃ¡s en la pestaÃ±a) */}
                 {t.id === 'news' && hasUnreadNews && activeTab !== 'news' && (
                   <span className="absolute -top-1 -right-1 flex h-3 w-3">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>

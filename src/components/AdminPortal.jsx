@@ -57,6 +57,79 @@ const EXTRA_SERVICE_CONFIG_BY_TYPE = {
 const getExtraServiceConfigByType = (type = '') => EXTRA_SERVICE_CONFIG_BY_TYPE[type] || null;
 const isExtraServiceGestionType = (type = '') => EXTRA_SERVICE_GESTION_TYPES.has(type);
 
+const WORKSHOP_STATUS_OPTIONS = [
+  { value: 'draft', label: 'Borrador' },
+  { value: 'published', label: 'Publicado' },
+  { value: 'registration_closed', label: 'Inscripción cerrada' },
+  { value: 'completed', label: 'Finalizado' },
+  { value: 'cancelled', label: 'Cancelado' }
+];
+
+const WORKSHOP_STATUS_STYLE = {
+  draft: 'bg-zinc-100 text-zinc-600 border-zinc-200',
+  published: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  registration_closed: 'bg-amber-50 text-amber-700 border-amber-200',
+  completed: 'bg-blue-50 text-blue-700 border-blue-200',
+  cancelled: 'bg-red-50 text-red-700 border-red-200'
+};
+
+const WORKSHOP_REGISTRATION_STATUS_LABELS = {
+  pending: 'Pendiente',
+  confirmed: 'Confirmada',
+  waitlist: 'Lista de espera',
+  rejected: 'Rechazada',
+  cancelled: 'Cancelada'
+};
+
+const createWorkshopLocalId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+const getLocalDateTimeInputValue = (date = new Date()) => {
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - (offset * 60000)).toISOString().slice(0, 16);
+};
+
+const createEmptyWorkshop = () => ({
+  title: '',
+  shortDescription: '',
+  description: '',
+  imageUrl: '',
+  sessions: [{ id: createWorkshopLocalId(), date: '', startTime: '17:00', endTime: '18:00' }],
+  registrationDeadline: '',
+  publishAt: getLocalDateTimeInputValue(),
+  locationType: 'Tarragona',
+  room: '',
+  externalLocation: '',
+  instructor: '',
+  unlimitedCapacity: false,
+  capacity: 10,
+  minimumParticipants: '',
+  waitlistEnabled: true,
+  priceType: 'free',
+  price: '',
+  paymentMethod: 'next_debit',
+  priceNote: '',
+  audienceType: 'all',
+  audienceValue: '',
+  manualStudentIds: [],
+  ageMin: '',
+  ageMax: '',
+  level: 'all',
+  customLevel: '',
+  registrationMode: 'automatic',
+  cancellationMode: 'contact_admin',
+  cancellationDeadline: '',
+  questions: [],
+  whatToBring: '',
+  importantNotes: '',
+  contact: '',
+  resourceUrl: '',
+  status: 'draft',
+  featured: false,
+  cancellationMessage: ''
+});
+
+const getWorkshopStatusLabel = (status = 'draft') => WORKSHOP_STATUS_OPTIONS.find(option => option.value === status)?.label || status;
+
 const TEACHER_TASK_REQUEST_TYPES = [
   { value: 'clase_puntual', label: 'Crear clase puntual' },
   { value: 'material', label: 'Material o aula' },
@@ -868,6 +941,411 @@ const TemporaryRelocationModalOverlay = ({
         <button onClick={createRelocation} disabled={saving || assignedClasses.length === 0} className="w-full bg-violet-600 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-violet-700 transition-all shadow-md disabled:opacity-50">
           {saving ? 'Creando recolocación...' : 'Crear recolocación temporal'}
         </button>
+      </div>
+    </div>
+  );
+};
+
+const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses }) => {
+  const [workshops, setWorkshops] = useState([]);
+  const [registrations, setRegistrations] = useState([]);
+  const [loadingWorkshops, setLoadingWorkshops] = useState(true);
+  const [formOpen, setFormOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(createEmptyWorkshop());
+  const [saving, setSaving] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('active');
+  const [expandedWorkshopId, setExpandedWorkshopId] = useState(null);
+
+  useEffect(() => {
+    const unsubWorkshops = onSnapshot(
+      collection(db, 'artifacts', appId, 'workshops'),
+      snap => {
+        setWorkshops(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(a.sessions?.[0]?.date || '2999-12-31') - new Date(b.sessions?.[0]?.date || '2999-12-31')));
+        setLoadingWorkshops(false);
+      },
+      error => {
+        console.error('No se pudieron cargar los talleres:', error);
+        setLoadingWorkshops(false);
+      }
+    );
+    const unsubRegistrations = onSnapshot(
+      collection(db, 'artifacts', appId, 'workshopRegistrations'),
+      snap => setRegistrations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))),
+      error => console.error('No se pudieron cargar las inscripciones de talleres:', error)
+    );
+    return () => { unsubWorkshops(); unsubRegistrations(); };
+  }, [appId, db]);
+
+  const getWorkshopRegistrations = workshopId => registrations.filter(registration => registration.workshopId === workshopId);
+
+  const getRegistrationSummary = workshopId => {
+    const workshopRegistrations = getWorkshopRegistrations(workshopId);
+    return {
+      confirmed: workshopRegistrations.filter(item => item.status === 'confirmed').length,
+      pending: workshopRegistrations.filter(item => item.status === 'pending').length,
+      waitlist: workshopRegistrations.filter(item => item.status === 'waitlist').length,
+      total: workshopRegistrations.filter(item => !['cancelled', 'rejected'].includes(item.status)).length
+    };
+  };
+
+  const resetForm = () => {
+    setEditingId(null);
+    setForm(createEmptyWorkshop());
+    setAdvancedOpen(false);
+    setFormOpen(false);
+  };
+
+  const openNewWorkshop = () => {
+    setEditingId(null);
+    setForm(createEmptyWorkshop());
+    setAdvancedOpen(false);
+    setFormOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const editWorkshop = workshop => {
+    setEditingId(workshop.id);
+    setForm({
+      ...createEmptyWorkshop(),
+      ...workshop,
+      sessions: (workshop.sessions || []).map(session => ({ ...session, id: session.id || createWorkshopLocalId() })),
+      manualStudentIds: workshop.manualStudentIds || [],
+      questions: (workshop.questions || []).map(question => ({ ...question, id: question.id || createWorkshopLocalId(), optionsText: (question.options || []).join(', ') }))
+    });
+    setAdvancedOpen(Boolean(workshop.ageMin || workshop.ageMax || workshop.customLevel || workshop.questions?.length || workshop.whatToBring || workshop.importantNotes || workshop.contact || workshop.resourceUrl));
+    setFormOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const updateSession = (sessionId, field, value) => {
+    setForm(prev => ({ ...prev, sessions: prev.sessions.map(session => session.id === sessionId ? { ...session, [field]: value } : session) }));
+  };
+
+  const addSession = () => {
+    const previous = form.sessions[form.sessions.length - 1] || {};
+    setForm(prev => ({
+      ...prev,
+      sessions: [...prev.sessions, { id: createWorkshopLocalId(), date: previous.date || '', startTime: previous.startTime || '17:00', endTime: previous.endTime || '18:00' }]
+    }));
+  };
+
+  const removeSession = sessionId => {
+    if (form.sessions.length === 1) return;
+    setForm(prev => ({ ...prev, sessions: prev.sessions.filter(session => session.id !== sessionId) }));
+  };
+
+  const addQuestion = () => setForm(prev => ({
+    ...prev,
+    questions: [...prev.questions, { id: createWorkshopLocalId(), label: '', type: 'text', required: false, optionsText: '' }]
+  }));
+
+  const updateQuestion = (questionId, field, value) => setForm(prev => ({
+    ...prev,
+    questions: prev.questions.map(question => question.id === questionId ? { ...question, [field]: value } : question)
+  }));
+
+  const toggleManualStudent = studentId => setForm(prev => ({
+    ...prev,
+    manualStudentIds: prev.manualStudentIds.includes(studentId)
+      ? prev.manualStudentIds.filter(id => id !== studentId)
+      : [...prev.manualStudentIds, studentId]
+  }));
+
+  const validateWorkshop = (workshopData = form, targetStatus = workshopData.status) => {
+    if (!String(workshopData.title || '').trim()) return 'Escribe el nombre del taller.';
+    if (targetStatus === 'draft') return '';
+    if (!String(workshopData.shortDescription || '').trim()) return 'Escribe una descripción breve para la tarjeta de Extras.';
+    if (!String(workshopData.description || '').trim()) return 'Escribe la descripción completa del taller.';
+    if (!workshopData.sessions?.length || workshopData.sessions.some(session => !session.date || !session.startTime || !session.endTime)) return 'Completa la fecha y el horario de todas las sesiones.';
+    if (workshopData.sessions.some(session => session.endTime <= session.startTime)) return 'La hora de finalización debe ser posterior a la de inicio.';
+    if (!workshopData.registrationDeadline) return 'Indica la fecha límite de inscripción.';
+    const firstSessionStart = [...workshopData.sessions].sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`))[0];
+    if (firstSessionStart && workshopData.registrationDeadline >= `${firstSessionStart.date}T${firstSessionStart.startTime}`) return 'La inscripción debe cerrarse antes de que empiece la primera sesión.';
+    if (!workshopData.unlimitedCapacity && (!Number.isFinite(Number(workshopData.capacity)) || Number(workshopData.capacity) < 1)) return 'Indica un número de plazas válido.';
+    if (workshopData.minimumParticipants && Number(workshopData.minimumParticipants) < 1) return 'El mínimo de participantes debe ser mayor que cero.';
+    if (!workshopData.unlimitedCapacity && workshopData.minimumParticipants && Number(workshopData.minimumParticipants) > Number(workshopData.capacity)) return 'El mínimo de participantes no puede superar el número de plazas.';
+    if (workshopData.priceType === 'paid' && (!Number.isFinite(Number(workshopData.price)) || Number(workshopData.price) < 0)) return 'Indica un precio válido.';
+    if (['sede', 'instrument', 'teacher', 'class'].includes(workshopData.audienceType) && !workshopData.audienceValue) return 'Completa a qué alumnos va dirigido el taller.';
+    if (workshopData.audienceType === 'manual' && !(workshopData.manualStudentIds || []).length) return 'Selecciona al menos un alumno.';
+    if (workshopData.cancellationMode === 'allowed_until' && !workshopData.cancellationDeadline) return 'Indica hasta cuándo puede cancelar el alumno.';
+    if (workshopData.imageUrl && !/^https?:\/\//i.test(String(workshopData.imageUrl).trim())) return 'La imagen debe ser una URL que empiece por http:// o https://.';
+    if (workshopData.resourceUrl && !/^https?:\/\//i.test(String(workshopData.resourceUrl).trim())) return 'El enlace adjunto debe empezar por http:// o https://.';
+    if ((workshopData.questions || []).some(question => !String(question.label || '').trim())) return 'Todas las preguntas adicionales deben tener texto.';
+    if ((workshopData.questions || []).some(question => question.type === 'choice' && !String(question.optionsText || '').trim() && !(question.options || []).length)) return 'Añade las opciones de respuesta de las preguntas de selección.';
+    return '';
+  };
+
+  const saveWorkshop = async () => {
+    const validationError = validateWorkshop(form, form.status);
+    if (validationError) return alert(validationError);
+    setSaving(true);
+    try {
+      const now = new Date().toISOString();
+      const sessions = [...form.sessions]
+        .map(session => ({ id: session.id || createWorkshopLocalId(), date: session.date, startTime: session.startTime, endTime: session.endTime }))
+        .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`));
+      const questions = form.questions.map(question => ({
+        id: question.id || createWorkshopLocalId(),
+        label: question.label.trim(),
+        type: question.type,
+        required: Boolean(question.required),
+        options: question.type === 'choice' ? question.optionsText.split(',').map(option => option.trim()).filter(Boolean) : []
+      }));
+      const payload = {
+        ...form,
+        title: form.title.trim(),
+        shortDescription: form.shortDescription.trim(),
+        description: form.description.trim(),
+        imageUrl: form.imageUrl.trim(),
+        instructor: form.instructor.trim(),
+        room: form.room.trim(),
+        externalLocation: form.externalLocation.trim(),
+        capacity: form.unlimitedCapacity ? null : Number(form.capacity),
+        minimumParticipants: form.minimumParticipants ? Number(form.minimumParticipants) : null,
+        price: form.priceType === 'free' ? 0 : Number(form.price),
+        ageMin: form.ageMin ? Number(form.ageMin) : null,
+        ageMax: form.ageMax ? Number(form.ageMax) : null,
+        sessions,
+        questions,
+        audienceLabel: form.audienceType === 'all'
+          ? 'Todos los alumnos'
+          : form.audienceType === 'manual'
+            ? `${form.manualStudentIds.length} alumnos seleccionados`
+            : form.audienceType === 'class'
+              ? audienceOptions.find(option => option.value === form.audienceValue)?.label || form.audienceValue
+              : form.audienceValue,
+        updatedAt: now,
+        updatedBy: user?.email || user?.uid || 'admin'
+      };
+      delete payload.optionsText;
+      if (editingId) {
+        const previous = workshops.find(workshop => workshop.id === editingId);
+        if (payload.status === 'published' && !previous?.publishedAt) payload.publishedAt = now;
+        await updateDoc(doc(db, 'artifacts', appId, 'workshops', editingId), payload);
+      } else {
+        const workshopRef = doc(collection(db, 'artifacts', appId, 'workshops'));
+        await setDoc(workshopRef, {
+          ...payload,
+          createdAt: now,
+          createdBy: user?.email || user?.uid || 'admin',
+          publishedAt: payload.status === 'published' ? now : null
+        });
+      }
+      resetForm();
+    } catch (error) {
+      console.error(error);
+      alert('No se ha podido guardar el taller. Revisa la conexión y los permisos de Firestore.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeWorkshopStatus = async (workshop, status) => {
+    const validationError = validateWorkshop(workshop, status);
+    if (validationError) {
+      alert(`${validationError} Edita y completa el taller antes de publicarlo.`);
+      return;
+    }
+    try {
+      const update = { status, updatedAt: new Date().toISOString(), updatedBy: user?.email || user?.uid || 'admin' };
+      if (status === 'published' && !workshop.publishedAt) update.publishedAt = new Date().toISOString();
+      await updateDoc(doc(db, 'artifacts', appId, 'workshops', workshop.id), update);
+    } catch (error) {
+      console.error(error);
+      alert('No se ha podido cambiar el estado del taller.');
+    }
+  };
+
+  const deleteWorkshop = async workshop => {
+    const linkedRegistrations = getWorkshopRegistrations(workshop.id);
+    if (linkedRegistrations.length > 0) return alert('Este taller ya tiene inscripciones. Cancélalo para conservar el historial; no puede eliminarse.');
+    if (!window.confirm(`¿Eliminar definitivamente el taller “${workshop.title}”?`)) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'workshops', workshop.id));
+    } catch (error) {
+      console.error(error);
+      alert('No se ha podido eliminar el taller.');
+    }
+  };
+
+  const updateRegistrationStatus = async (registration, status) => {
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id), {
+        status,
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: user?.email || user?.uid || 'admin',
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error(error);
+      alert('No se ha podido actualizar la inscripción.');
+    }
+  };
+
+  const audienceOptions = useMemo(() => {
+    if (form.audienceType === 'sede') return SEDES;
+    if (form.audienceType === 'instrument') return settings.instrumentos || defaultInstrumentos;
+    if (form.audienceType === 'teacher') return settings.teachersList || [];
+    if (form.audienceType === 'class') return allClasses
+      .filter(clase => !isPunctualClass(clase))
+      .map(clase => ({ value: clase.id, label: `${clase.sede || ''} · ${clase.subject || clase.instrument || 'Clase'} · ${clase.teacher || ''} · ${clase.time || ''}` }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return [];
+  }, [allClasses, form.audienceType, settings.instrumentos, settings.teachersList]);
+
+  const getAudienceLabel = workshop => {
+    if (workshop.audienceType === 'all') return 'Todos los alumnos';
+    if (workshop.audienceType === 'manual') return `${workshop.manualStudentIds?.length || 0} alumnos seleccionados`;
+    if (workshop.audienceType === 'class' && workshop.audienceLabel) return `Clase: ${workshop.audienceLabel}`;
+    const labels = { sede: 'Sede', instrument: 'Instrumento', teacher: 'Profesor', class: 'Clase' };
+    return `${labels[workshop.audienceType] || 'Destinatarios'}: ${workshop.audienceValue || '—'}`;
+  };
+
+  const filteredWorkshops = useMemo(() => workshops.filter(workshop => {
+    const search = searchTerm.trim().toLowerCase();
+    const matchesSearch = !search || `${workshop.title || ''} ${workshop.shortDescription || ''} ${workshop.instructor || ''}`.toLowerCase().includes(search);
+    const matchesStatus = statusFilter === 'all'
+      || (statusFilter === 'active' && ['draft', 'published', 'registration_closed'].includes(workshop.status || 'draft'))
+      || workshop.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  }), [searchTerm, statusFilter, workshops]);
+
+  const fieldClass = 'w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500';
+  const labelClass = 'text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5 block';
+
+  if (loadingWorkshops) return <div className="bg-white border border-zinc-200 rounded-2xl p-10 text-center font-black uppercase tracking-widest text-zinc-400">Cargando talleres...</div>;
+
+  return (
+    <div className="space-y-6 animate-in fade-in">
+      <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Talleres</h2>
+          <p className="text-zinc-500 font-medium text-sm">Crea talleres de duración determinada y controla sus inscripciones.</p>
+        </div>
+        <button onClick={openNewWorkshop} className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center gap-2 shadow-md">
+          <PlusCircle className="w-4 h-4"/> Nuevo taller
+        </button>
+      </header>
+
+      {formOpen && (
+        <div className="bg-white rounded-3xl border border-violet-200 shadow-sm overflow-hidden">
+          <div className="bg-violet-50 border-b border-violet-100 p-5 flex items-start justify-between gap-4">
+            <div>
+              <h3 className="font-black text-violet-950 uppercase tracking-tight">{editingId ? 'Editar taller' : 'Crear nuevo taller'}</h3>
+              <p className="text-xs font-semibold text-violet-700 mt-1">Los campos marcados con * son necesarios para publicarlo en Extras.</p>
+            </div>
+            <button onClick={resetForm} className="p-2 rounded-lg bg-white text-zinc-500 hover:text-red-600"><X className="w-4 h-4"/></button>
+          </div>
+
+          <div className="p-5 md:p-7 space-y-7">
+            <section>
+              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><FileText className="w-4 h-4 text-violet-600"/> Información principal</h4>
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="md:col-span-2"><label className={labelClass}>Nombre del taller *</label><input className={fieldClass} value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Ej. Iniciación a la improvisación" /></div>
+                <div className="md:col-span-2"><label className={labelClass}>Descripción breve para la tarjeta *</label><input className={fieldClass} maxLength={180} value={form.shortDescription} onChange={e => setForm({ ...form, shortDescription: e.target.value })} placeholder="Una o dos frases que verá el alumno en Extras"/><p className="text-[10px] text-zinc-400 font-bold mt-1 text-right">{form.shortDescription.length}/180</p></div>
+                <div className="md:col-span-2"><label className={labelClass}>Descripción completa *</label><textarea className={`${fieldClass} min-h-[130px] resize-y`} value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Objetivos, contenido y dinámica del taller"/></div>
+                <div className="md:col-span-2"><label className={labelClass}>URL de imagen de portada</label><input type="url" className={fieldClass} value={form.imageUrl} onChange={e => setForm({ ...form, imageUrl: e.target.value })} placeholder="https://..."/></div>
+              </div>
+            </section>
+
+            <section className="border-t border-zinc-100 pt-6">
+              <div className="flex items-center justify-between gap-3 mb-4"><h4 className="font-black uppercase tracking-widest text-xs text-slate-800 flex items-center gap-2"><Calendar className="w-4 h-4 text-violet-600"/> Sesiones *</h4><button onClick={addSession} className="text-[10px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 px-3 py-2 rounded-lg hover:bg-violet-100"><Plus className="w-3 h-3 inline mr-1"/> Añadir sesión</button></div>
+              <div className="space-y-3">
+                {form.sessions.map((session, index) => (
+                  <div key={session.id} className="grid grid-cols-1 sm:grid-cols-[auto_1fr_1fr_1fr_auto] gap-3 items-end bg-zinc-50 border border-zinc-200 p-4 rounded-2xl">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-violet-700 sm:pb-3">{index + 1}</span>
+                    <div><label className={labelClass}>Fecha</label><input type="date" className={fieldClass} value={session.date} onChange={e => updateSession(session.id, 'date', e.target.value)}/></div>
+                    <div><label className={labelClass}>Inicio</label><input type="time" className={fieldClass} value={session.startTime} onChange={e => updateSession(session.id, 'startTime', e.target.value)}/></div>
+                    <div><label className={labelClass}>Finalización</label><input type="time" className={fieldClass} value={session.endTime} onChange={e => updateSession(session.id, 'endTime', e.target.value)}/></div>
+                    <button onClick={() => removeSession(session.id)} disabled={form.sessions.length === 1} className="p-3 bg-white text-red-500 rounded-xl border border-zinc-200 disabled:opacity-25"><Trash2 className="w-4 h-4"/></button>
+                  </div>
+                ))}
+              </div>
+              <div className="grid md:grid-cols-2 gap-4 mt-4">
+                <div><label className={labelClass}>Fecha y hora límite de inscripción *</label><input type="datetime-local" className={fieldClass} value={form.registrationDeadline} onChange={e => setForm({ ...form, registrationDeadline: e.target.value })}/></div>
+                <div><label className={labelClass}>Mostrar en Extras desde</label><input type="datetime-local" className={fieldClass} value={form.publishAt} onChange={e => setForm({ ...form, publishAt: e.target.value })}/></div>
+              </div>
+            </section>
+
+            <section className="border-t border-zinc-100 pt-6">
+              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><MapPin className="w-4 h-4 text-violet-600"/> Lugar e impartición</h4>
+              <div className="grid md:grid-cols-3 gap-4">
+                <div><label className={labelClass}>Lugar *</label><select className={fieldClass} value={form.locationType} onChange={e => setForm({ ...form, locationType: e.target.value, room: '', externalLocation: '' })}><option value="Tarragona">Tarragona</option><option value="Reus">Reus</option><option value="both">Ambas sedes</option><option value="online">Online</option><option value="other">Otro lugar</option></select></div>
+                {['Tarragona', 'Reus'].includes(form.locationType) && <div><label className={labelClass}>Aula o espacio</label><select className={fieldClass} value={form.room} onChange={e => setForm({ ...form, room: e.target.value })}><option value="">Por determinar</option>{SALAS.map(room => <option key={room} value={room}>{room}</option>)}</select></div>}
+                {form.locationType === 'other' && <div><label className={labelClass}>Dirección o lugar</label><input className={fieldClass} value={form.externalLocation} onChange={e => setForm({ ...form, externalLocation: e.target.value })}/></div>}
+                <div><label className={labelClass}>Profesor o responsable</label><input list="workshop-teachers" className={fieldClass} value={form.instructor} onChange={e => setForm({ ...form, instructor: e.target.value })} placeholder="Profesor interno o externo"/><datalist id="workshop-teachers">{(settings.teachersList || []).map(teacher => <option key={teacher} value={teacher}/>)}</datalist></div>
+              </div>
+            </section>
+
+            <section className="border-t border-zinc-100 pt-6 grid lg:grid-cols-2 gap-7">
+              <div>
+                <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><Users className="w-4 h-4 text-violet-600"/> Plazas</h4>
+                <label className="flex items-center gap-3 bg-zinc-50 border border-zinc-200 p-3 rounded-xl mb-3 cursor-pointer"><input type="checkbox" checked={form.unlimitedCapacity} onChange={e => setForm({ ...form, unlimitedCapacity: e.target.checked })} className="accent-violet-600"/><span className="text-xs font-black uppercase tracking-wider">Sin límite de plazas</span></label>
+                <div className="grid grid-cols-2 gap-3"><div><label className={labelClass}>Plazas máximas</label><input type="number" min="1" disabled={form.unlimitedCapacity} className={fieldClass} value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })}/></div><div><label className={labelClass}>Mínimo para realizarlo</label><input type="number" min="1" className={fieldClass} value={form.minimumParticipants} onChange={e => setForm({ ...form, minimumParticipants: e.target.value })} placeholder="Opcional"/></div></div>
+                <label className="flex items-center gap-3 mt-3 cursor-pointer"><input type="checkbox" checked={form.waitlistEnabled} onChange={e => setForm({ ...form, waitlistEnabled: e.target.checked })} className="accent-violet-600"/><span className="text-xs font-bold text-zinc-700">Permitir lista de espera cuando se llene</span></label>
+              </div>
+              <div>
+                <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><DollarSign className="w-4 h-4 text-violet-600"/> Precio y cobro</h4>
+                <div className="grid grid-cols-2 gap-3"><div><label className={labelClass}>Tipo</label><select className={fieldClass} value={form.priceType} onChange={e => setForm({ ...form, priceType: e.target.value })}><option value="free">Gratuito</option><option value="paid">De pago</option></select></div>{form.priceType === 'paid' && <div><label className={labelClass}>Importe (€)</label><input type="number" min="0" step="0.01" className={fieldClass} value={form.price} onChange={e => setForm({ ...form, price: e.target.value })}/></div>}</div>
+                {form.priceType === 'paid' && <div className="mt-3"><label className={labelClass}>Forma de cobro</label><select className={fieldClass} value={form.paymentMethod} onChange={e => setForm({ ...form, paymentMethod: e.target.value })}><option value="next_debit">Incluir en la próxima domiciliación</option><option value="manual_admin">Cobro manual por Administración</option><option value="external_payment">Pago externo</option></select></div>}
+                <div className="mt-3"><label className={labelClass}>Nota sobre el precio</label><input className={fieldClass} value={form.priceNote} onChange={e => setForm({ ...form, priceNote: e.target.value })} placeholder="Ej. Material incluido"/></div>
+              </div>
+            </section>
+
+            <section className="border-t border-zinc-100 pt-6">
+              <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><Target className="w-4 h-4 text-violet-600"/> Destinatarios e inscripción</h4>
+              <div className="grid md:grid-cols-3 gap-4">
+                <div><label className={labelClass}>¿A quién se ofrece?</label><select className={fieldClass} value={form.audienceType} onChange={e => setForm({ ...form, audienceType: e.target.value, audienceValue: '', manualStudentIds: [] })}><option value="all">Todos los alumnos</option><option value="sede">Solo una sede</option><option value="instrument">Solo un instrumento</option><option value="teacher">Alumnos de un profesor</option><option value="class">Una clase concreta</option><option value="manual">Selección manual</option></select></div>
+                {['sede', 'instrument', 'teacher', 'class'].includes(form.audienceType) && <div className="md:col-span-2"><label className={labelClass}>Selección *</label><select className={fieldClass} value={form.audienceValue} onChange={e => setForm({ ...form, audienceValue: e.target.value })}><option value="">Selecciona...</option>{audienceOptions.map(option => typeof option === 'string' ? <option key={option} value={option}>{option}</option> : <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>}
+                <div><label className={labelClass}>Confirmación</label><select className={fieldClass} value={form.registrationMode} onChange={e => setForm({ ...form, registrationMode: e.target.value })}><option value="automatic">Automática si hay plaza</option><option value="manual_review">Pendiente de revisión</option></select></div>
+                <div><label className={labelClass}>Cancelación del alumno</label><select className={fieldClass} value={form.cancellationMode} onChange={e => setForm({ ...form, cancellationMode: e.target.value })}><option value="contact_admin">Debe contactar con Administración</option><option value="allowed_until">Puede cancelar hasta una fecha</option><option value="not_allowed">No puede cancelar desde Student</option></select></div>
+                {form.cancellationMode === 'allowed_until' && <div><label className={labelClass}>Límite de cancelación</label><input type="datetime-local" className={fieldClass} value={form.cancellationDeadline} onChange={e => setForm({ ...form, cancellationDeadline: e.target.value })}/></div>}
+              </div>
+              {form.audienceType === 'manual' && <div className="mt-4 bg-zinc-50 border border-zinc-200 rounded-2xl p-4"><p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Selecciona alumnos ({form.manualStudentIds.length})</p><div className="max-h-56 overflow-y-auto grid sm:grid-cols-2 lg:grid-cols-3 gap-2 pr-1">{students.map(student => <label key={student.id} className="flex items-center gap-2 bg-white border border-zinc-200 rounded-xl p-3 cursor-pointer"><input type="checkbox" checked={form.manualStudentIds.includes(student.id)} onChange={() => toggleManualStudent(student.id)} className="accent-violet-600"/><span className="text-xs font-bold text-slate-700 truncate">{student.name}</span></label>)}</div></div>}
+            </section>
+
+            <button onClick={() => setAdvancedOpen(!advancedOpen)} className="w-full flex items-center justify-between p-4 bg-zinc-50 border border-zinc-200 rounded-2xl text-xs font-black uppercase tracking-widest text-zinc-600 hover:bg-zinc-100"><span>Opciones avanzadas</span>{advancedOpen ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button>
+
+            {advancedOpen && <section className="space-y-6">
+              <div className="grid md:grid-cols-4 gap-4"><div><label className={labelClass}>Edad mínima</label><input type="number" min="0" className={fieldClass} value={form.ageMin} onChange={e => setForm({ ...form, ageMin: e.target.value })}/></div><div><label className={labelClass}>Edad máxima</label><input type="number" min="0" className={fieldClass} value={form.ageMax} onChange={e => setForm({ ...form, ageMax: e.target.value })}/></div><div><label className={labelClass}>Nivel</label><select className={fieldClass} value={form.level} onChange={e => setForm({ ...form, level: e.target.value })}><option value="all">Todos los niveles</option><option value="beginner">Iniciación</option><option value="intermediate">Intermedio</option><option value="advanced">Avanzado</option><option value="custom">Personalizado</option></select></div>{form.level === 'custom' && <div><label className={labelClass}>Nivel personalizado</label><input className={fieldClass} value={form.customLevel} onChange={e => setForm({ ...form, customLevel: e.target.value })}/></div>}</div>
+              <div><div className="flex items-center justify-between mb-3"><label className={labelClass}>Preguntas adicionales</label><button onClick={addQuestion} className="text-[10px] font-black uppercase tracking-widest text-violet-700"><Plus className="w-3 h-3 inline"/> Añadir pregunta</button></div><div className="space-y-3">{form.questions.map(question => <div key={question.id} className="grid md:grid-cols-[1fr_150px_auto_auto] gap-3 items-center bg-zinc-50 border border-zinc-200 p-3 rounded-xl"><input className={fieldClass} value={question.label} onChange={e => updateQuestion(question.id, 'label', e.target.value)} placeholder="Pregunta para el alumno"/><select className={fieldClass} value={question.type} onChange={e => updateQuestion(question.id, 'type', e.target.value)}><option value="text">Texto libre</option><option value="choice">Selección</option></select><label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={question.required} onChange={e => updateQuestion(question.id, 'required', e.target.checked)} className="accent-violet-600"/> Obligatoria</label><button onClick={() => setForm(prev => ({ ...prev, questions: prev.questions.filter(item => item.id !== question.id) }))} className="p-3 text-red-500"><Trash2 className="w-4 h-4"/></button>{question.type === 'choice' && <input className={`${fieldClass} md:col-span-4`} value={question.optionsText || ''} onChange={e => updateQuestion(question.id, 'optionsText', e.target.value)} placeholder="Opciones separadas por comas"/>}</div>)}</div></div>
+              <div className="grid md:grid-cols-2 gap-4"><div><label className={labelClass}>Qué debe traer el alumno</label><textarea className={`${fieldClass} min-h-[90px]`} value={form.whatToBring} onChange={e => setForm({ ...form, whatToBring: e.target.value })}/></div><div><label className={labelClass}>Observaciones importantes</label><textarea className={`${fieldClass} min-h-[90px]`} value={form.importantNotes} onChange={e => setForm({ ...form, importantNotes: e.target.value })}/></div><div><label className={labelClass}>Contacto</label><input className={fieldClass} value={form.contact} onChange={e => setForm({ ...form, contact: e.target.value })} placeholder="Correo o persona responsable"/></div><div><label className={labelClass}>Documento o enlace adjunto</label><input type="url" className={fieldClass} value={form.resourceUrl} onChange={e => setForm({ ...form, resourceUrl: e.target.value })} placeholder="https://..."/></div></div>
+            </section>}
+
+            <section className="border-t border-zinc-100 pt-6">
+              <div className="grid md:grid-cols-2 gap-4"><div><label className={labelClass}>Estado inicial</label><select className={fieldClass} value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div><label className="flex items-center gap-3 md:mt-6 bg-amber-50 border border-amber-200 p-3 rounded-xl cursor-pointer"><input type="checkbox" checked={form.featured} onChange={e => setForm({ ...form, featured: e.target.checked })} className="accent-amber-500"/><span className="text-xs font-black uppercase tracking-wider text-amber-900">Destacar en Extras</span></label></div>
+              {form.status === 'cancelled' && <div className="mt-4"><label className={labelClass}>Mensaje de cancelación</label><textarea className={fieldClass} value={form.cancellationMessage} onChange={e => setForm({ ...form, cancellationMessage: e.target.value })}/></div>}
+            </section>
+
+            <div className="flex flex-col sm:flex-row justify-end gap-3 border-t border-zinc-100 pt-6"><button onClick={resetForm} className="px-5 py-3 bg-zinc-100 text-zinc-600 rounded-xl font-black uppercase tracking-widest text-[10px]">Cancelar</button><button onClick={saveWorkshop} disabled={saving} className="px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 disabled:opacity-50"><Save className="w-4 h-4"/>{saving ? 'Guardando...' : editingId ? 'Guardar cambios' : 'Crear taller'}</button></div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white border border-zinc-200 rounded-2xl p-4 flex flex-col sm:flex-row gap-3"><div className="relative flex-1"><Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400"/><input className="w-full pl-10 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Buscar taller..."/></div><select className="px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-black text-[10px] uppercase tracking-widest" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="active">En gestión</option><option value="all">Todos</option>{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+
+      <div className="space-y-4">
+        {filteredWorkshops.length === 0 && <div className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-10 text-center"><PartyPopper className="w-9 h-9 text-zinc-300 mx-auto mb-3"/><p className="font-black uppercase tracking-widest text-xs text-zinc-400">No hay talleres en esta vista</p></div>}
+        {filteredWorkshops.map(workshop => {
+          const summary = getRegistrationSummary(workshop.id);
+          const workshopRegistrations = getWorkshopRegistrations(workshop.id);
+          const firstSession = workshop.sessions?.[0];
+          const isExpanded = expandedWorkshopId === workshop.id;
+          return <article key={workshop.id} className={`bg-white border rounded-2xl shadow-sm overflow-hidden ${workshop.featured ? 'border-amber-300 ring-1 ring-amber-100' : 'border-zinc-200'}`}>
+            <div className="p-5">
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2 mb-2"><span className={`px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_STATUS_STYLE[workshop.status || 'draft']}`}>{getWorkshopStatusLabel(workshop.status)}</span>{workshop.featured && <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline"/> Destacado</span>}</div><h3 className="font-black text-lg text-slate-900 leading-tight">{workshop.title}</h3><p className="text-sm text-zinc-500 mt-1">{workshop.shortDescription}</p><div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 text-[10px] font-black uppercase tracking-wider text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5 text-violet-600"/>{firstSession ? `${formatDateSpanish(firstSession.date)} · ${firstSession.startTime}` : 'Sin sesión'}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-violet-600"/>{workshop.locationType === 'both' ? 'Ambas sedes' : workshop.locationType === 'online' ? 'Online' : workshop.locationType === 'other' ? workshop.externalLocation : `${workshop.locationType}${workshop.room ? ` · ${workshop.room}` : ''}`}</span><span className="flex items-center gap-1"><Target className="w-3.5 h-3.5 text-violet-600"/>{getAudienceLabel(workshop)}</span><span className="flex items-center gap-1"><DollarSign className="w-3.5 h-3.5 text-violet-600"/>{workshop.priceType === 'free' ? 'Gratuito' : `${Number(workshop.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`}</span></div></div>
+                <div className="flex flex-wrap lg:justify-end gap-2 shrink-0"><select value={workshop.status || 'draft'} onChange={e => changeWorkshopStatus(workshop, e.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-[9px] font-black uppercase tracking-widest">{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><button onClick={() => editWorkshop(workshop)} className="p-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg" title="Editar"><Pencil className="w-4 h-4"/></button><button onClick={() => deleteWorkshop(workshop)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg" title="Eliminar"><Trash2 className="w-4 h-4"/></button></div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-5"><div className="bg-emerald-50 p-3 rounded-xl"><span className="block text-xl font-black text-emerald-700">{summary.confirmed}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Confirmadas</span></div><div className="bg-amber-50 p-3 rounded-xl"><span className="block text-xl font-black text-amber-700">{summary.pending}</span><span className="text-[9px] font-black uppercase tracking-widest text-amber-600">Pendientes</span></div><div className="bg-blue-50 p-3 rounded-xl"><span className="block text-xl font-black text-blue-700">{summary.waitlist}</span><span className="text-[9px] font-black uppercase tracking-widest text-blue-600">En espera</span></div><div className="bg-zinc-50 p-3 rounded-xl"><span className="block text-xl font-black text-slate-800">{workshop.unlimitedCapacity ? '∞' : Math.max(0, Number(workshop.capacity || 0) - summary.confirmed)}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Plazas libres</span></div></div>
+              <button onClick={() => setExpandedWorkshopId(isExpanded ? null : workshop.id)} className="w-full mt-4 py-2.5 border-t border-zinc-100 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-violet-700 flex items-center justify-center gap-2">Inscripciones ({workshopRegistrations.length}) {isExpanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button>
+            </div>
+            {isExpanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{workshopRegistrations.length === 0 ? <p className="text-center text-xs font-bold text-zinc-400 py-4">Todavía no hay inscripciones.</p> : workshopRegistrations.map(registration => <div key={registration.id} className="bg-white border border-zinc-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm text-slate-800">{registration.studentName || students.find(student => student.id === registration.studentId)?.name || 'Alumno'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status] || registration.status} · {registration.createdAt ? formatDateSpanish(registration.createdAt) : 'Sin fecha'}</p></div><div className="flex gap-2">{registration.status !== 'confirmed' && <button onClick={() => updateRegistrationStatus(registration, 'confirmed')} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600 hover:text-white"><Check className="w-3 h-3 inline"/> Confirmar</button>}{!['rejected', 'cancelled'].includes(registration.status) && <button onClick={() => updateRegistrationStatus(registration, 'rejected')} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white"><X className="w-3 h-3 inline"/> Rechazar</button>}</div></div>)}</div>}
+          </article>;
+        })}
       </div>
     </div>
   );
@@ -7314,6 +7792,7 @@ ${startDateWarning}
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
             { id: 'announcements', icon: Megaphone, label: 'Tablón' },
+            { id: 'workshops', icon: PartyPopper, label: 'Talleres' },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
             { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
             { id: 'settings', icon: Settings, label: 'Configuración' }
@@ -9359,7 +9838,19 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 8. GAMIFICACIÓN (Rankings en Cascada) --- */}
+        {/* --- 8. TALLERES --- */}
+        {activeTab === 'workshops' && (
+          <WorkshopAdminSection
+            db={db}
+            appId={appId}
+            user={user}
+            settings={settings}
+            students={students}
+            allClasses={allClasses}
+          />
+        )}
+
+        {/* --- 9. GAMIFICACIÓN (Rankings en Cascada) --- */}
         {activeTab === 'gamification' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -9442,7 +9933,7 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 9. CONFIGURACIÓN COMPLETA (TARIFA, FIJOS E INSTRUMENTOS) --- */}
+        {/* --- 10. CONFIGURACIÓN COMPLETA (TARIFA, FIJOS E INSTRUMENTOS) --- */}
         {activeTab === 'settings' && (
           <div className="space-y-6 animate-in fade-in">
              <header className="mb-6">

@@ -2472,7 +2472,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const uniqueEmails = new Set();
 
     students
-      .filter(student => getStudentOperationalStatus(student) === 'activo')
+      .filter(student => ['activo', 'mantenimiento'].includes(getStudentOperationalStatus(student)))
       .forEach(student => {
         const email = normalizeEmail(student.email);
         if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) uniqueEmails.add(email);
@@ -2484,11 +2484,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const copyActiveStudentEmails = async () => {
     const emails = getActiveStudentEmails();
     if (emails.length === 0) {
-      alert('No hay alumnos activos con un correo electrónico válido.');
+      alert('No hay alumnos activos o en mantenimiento con un correo electrónico válido.');
       return;
     }
 
-    const textToCopy = emails.join(', ');
+    const textToCopy = emails.map(email => `${email},`).join('\n');
 
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API no disponible');
@@ -2509,7 +2509,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
     }
 
-    alert(`${emails.length} correo(s) de alumnos activos copiado(s) al portapapeles.`);
+    alert(`${emails.length} correo(s) de alumnos activos o en mantenimiento copiado(s) al portapapeles.`);
   };
 
   const cleanEmailSubject = (subject) => String(subject || '')
@@ -8920,10 +8920,10 @@ ${startDateWarning}
                   type="button"
                   onClick={copyActiveStudentEmails}
                   className="mt-3 inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors"
-                  title="Copia, separados por una coma y un espacio, los correos únicos y válidos de la pestaña Activos"
+                  title="Copia los correos únicos y válidos de alumnos activos o en mantenimiento, uno por línea y seguido de una coma"
                 >
                   <ClipboardList className="w-4 h-4" />
-                  Copiar emails activos ({getActiveStudentEmails().length})
+                  Copiar emails activos + mantenimiento ({getActiveStudentEmails().length})
                 </button>
               </div>
 

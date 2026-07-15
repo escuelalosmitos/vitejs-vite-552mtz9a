@@ -2488,7 +2488,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       return;
     }
 
-    const textToCopy = emails.join(' ');
+    const textToCopy = emails.join(', ');
 
     try {
       if (!navigator.clipboard?.writeText) throw new Error('Clipboard API no disponible');
@@ -8920,7 +8920,7 @@ ${startDateWarning}
                   type="button"
                   onClick={copyActiveStudentEmails}
                   className="mt-3 inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors"
-                  title="Copia, separados por un espacio, los correos únicos y válidos de la pestaña Activos"
+                  title="Copia, separados por una coma y un espacio, los correos únicos y válidos de la pestaña Activos"
                 >
                   <ClipboardList className="w-4 h-4" />
                   Copiar emails activos ({getActiveStudentEmails().length})

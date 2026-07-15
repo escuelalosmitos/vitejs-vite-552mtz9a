@@ -402,7 +402,11 @@ const getClassStartDateWarning = (classStartDate, classDayOfWeek, todayStr = get
 };
 
 const downloadTextFile = (filename, content, mimeType = 'text/plain;charset=utf-8') => {
-  const blob = new Blob([content], { type: mimeType });
+  // El BOM hace que Excel, Bloc de notas y otros programas de Windows
+  // detecten UTF-8 correctamente (tildes, ñ, €, símbolos y emojis).
+  const normalizedContent = String(content ?? '').replace(/^\uFEFF/, '').normalize('NFC');
+  const utf8Content = `\uFEFF${normalizedContent}`;
+  const blob = new Blob([utf8Content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -2463,6 +2467,50 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
 
   const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+
+  const getActiveStudentEmails = () => {
+    const uniqueEmails = new Set();
+
+    students
+      .filter(student => getStudentOperationalStatus(student) === 'activo')
+      .forEach(student => {
+        const email = normalizeEmail(student.email);
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) uniqueEmails.add(email);
+      });
+
+    return [...uniqueEmails].sort((a, b) => a.localeCompare(b, 'es'));
+  };
+
+  const copyActiveStudentEmails = async () => {
+    const emails = getActiveStudentEmails();
+    if (emails.length === 0) {
+      alert('No hay alumnos activos con un correo electrónico válido.');
+      return;
+    }
+
+    const textToCopy = emails.join(' ');
+
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API no disponible');
+      await navigator.clipboard.writeText(textToCopy);
+    } catch (error) {
+      const textarea = document.createElement('textarea');
+      textarea.value = textToCopy;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!copied) {
+        alert('El navegador no ha permitido copiar los correos. Revisa los permisos del portapapeles.');
+        return;
+      }
+    }
+
+    alert(`${emails.length} correo(s) de alumnos activos copiado(s) al portapapeles.`);
+  };
 
   const cleanEmailSubject = (subject) => String(subject || '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
@@ -7640,7 +7688,7 @@ ${startDateWarning}
     const handleAddStudent = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
       if (isFull) {
-        if (!window.confirm(`⚠️ AVISO MODO DIOS:\n\nEl aforo de esta clase está completo (${currentCount}/${maxCap}).\n¿Quieres forzar la matriculación saltándote el límite?`)) return;
+        if (!window.confirm(`⚠️ AVISO MODO ADMIN:\n\nEl aforo de esta clase está completo (${currentCount}/${maxCap}).\n¿Quieres forzar la matriculación saltándote el límite?`)) return;
       }
       setSaving(true);
       try {
@@ -7908,7 +7956,7 @@ ${startDateWarning}
     );
   };
 
-  if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Dios...</div>;
+  if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Admin...</div>;
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
@@ -7955,7 +8003,7 @@ ${startDateWarning}
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
           <div>
-            <div className="flex items-center gap-3 text-white mb-1"><ShieldAlert className="w-6 h-6 text-red-500" /><h1 className="text-xl font-black uppercase tracking-tight">Modo Dios</h1></div>
+            <div className="flex items-center gap-3 text-white mb-1"><ShieldAlert className="w-6 h-6 text-red-500" /><h1 className="text-xl font-black uppercase tracking-tight">Modo Admin</h1></div>
             <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 hidden md:block">Panel de Administración</p>
           </div>
           <button onClick={switchToTeacher} className="md:hidden bg-zinc-800 text-white p-2 rounded-lg"><ArrowRightLeft className="w-5 h-5"/></button>
@@ -8868,6 +8916,15 @@ ${startDateWarning}
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Directorio Alumnos</h2>
                 <p className="text-zinc-500 font-medium text-sm">Gestiona estados, notas y cambios manuales.</p>
+                <button
+                  type="button"
+                  onClick={copyActiveStudentEmails}
+                  className="mt-3 inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors"
+                  title="Copia, separados por un espacio, los correos únicos y válidos de la pestaña Activos"
+                >
+                  <ClipboardList className="w-4 h-4" />
+                  Copiar emails activos ({getActiveStudentEmails().length})
+                </button>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
@@ -8907,7 +8964,7 @@ ${startDateWarning}
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                       <th className="p-4 font-black w-[30%]">Alumno</th>
                       <th className="p-4 font-black text-center w-[20%]">Extras / Tickets</th>
-                      <th className="p-4 font-black text-center w-[20%]">Acciones Dios</th>
+                      <th className="p-4 font-black text-center w-[20%]">Acciones Admin</th>
                       <th className="p-4 font-black text-right w-[30%]">Estado</th>
                     </tr>
                   </thead>

@@ -519,6 +519,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
+  const [teacherNotifications, setTeacherNotifications] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
   
   const [lastReportSentDate, setLastReportSentDate] = useState('');
@@ -601,6 +602,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const temporaryRelocationsRef = collection(db, 'artifacts', appId, 'temporaryRelocations');
     const maintenancePeriodsRef = collection(db, 'artifacts', appId, 'maintenancePeriods');
     const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
+    const teacherNotificationsRef = collection(db, 'artifacts', appId, 'teacherNotifications');
     const teacherTasksRef = collection(db, 'artifacts', appId, 'teacherTasks');
     const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
@@ -616,12 +618,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let temporaryRelocationsLoaded = false;
     let maintenancePeriodsLoaded = false;
     let announcementsLoaded = false;
+    let teacherNotificationsLoaded = false;
     let teacherTasksLoaded = false;
     let availLoaded = false;
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && maintenancePeriodsLoaded && announcementsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && maintenancePeriodsLoaded && announcementsLoaded && teacherNotificationsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
@@ -722,6 +725,19 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
+    const unsubTeacherNotifications = onSnapshot(teacherNotificationsRef, (snapshot) => {
+      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+      data.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      setTeacherNotifications(data);
+      teacherNotificationsLoaded = true;
+      checkLoading();
+    }, (error) => {
+      console.error('No se pudieron cargar los avisos internos del profesor:', error);
+      setTeacherNotifications([]);
+      teacherNotificationsLoaded = true;
+      checkLoading();
+    });
+
     const unsubTeacherTasks = onSnapshot(teacherTasksRef, (snapshot) => {
       const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
       data.sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
@@ -753,6 +769,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubTemporaryRelocations();
       unsubMaintenancePeriods();
       unsubAnnouncements();
+      unsubTeacherNotifications();
       unsubTeacherTasks();
       unsubAvail();
       unsubUserDoc();
@@ -912,6 +929,33 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     return visibleGestiones.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
   }, [gestiones, recurringClasses, teacherClassIds, isAdmin, user]);
+
+  const visibleInternalTeacherNotifications = useMemo(() => {
+    const teacherName = getTeacherName().trim().toLowerCase();
+    const teacherEmail = String(user?.email || '').trim().toLowerCase();
+    const assignedTeacherNames = new Set(recurringClasses.map(clase => String(clase.teacher || '').trim().toLowerCase()).filter(Boolean));
+
+    return teacherNotifications.filter(notification => {
+      const targetName = String(notification.teacherNameNormalized || notification.teacherName || '').trim().toLowerCase();
+      const targetEmail = String(notification.teacherEmail || '').trim().toLowerCase();
+      const targetUid = String(notification.teacherUid || '').trim();
+      return Boolean(
+        (targetUid && targetUid === user?.uid) ||
+        (targetEmail && targetEmail === teacherEmail) ||
+        (targetName && (targetName === teacherName || assignedTeacherNames.has(targetName)))
+      );
+    });
+  }, [teacherNotifications, recurringClasses, user?.uid, user?.email]);
+
+  const pendingInternalTeacherNotifications = useMemo(() => (
+    visibleInternalTeacherNotifications.filter(notification => notification.status !== 'read' && !notification.readAt)
+  ), [visibleInternalTeacherNotifications]);
+
+  const readInternalTeacherNotifications = useMemo(() => (
+    visibleInternalTeacherNotifications
+      .filter(notification => notification.status === 'read' || notification.readAt)
+      .sort((a, b) => new Date(b.readAt || b.createdAt || 0) - new Date(a.readAt || a.createdAt || 0))
+  ), [visibleInternalTeacherNotifications]);
 
 
 
@@ -1214,6 +1258,23 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const showNotification = (msg) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3000);
+  };
+
+  const markInternalTeacherNotificationRead = async (notificationItem) => {
+    if (!notificationItem?.id) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'teacherNotifications', notificationItem.id), {
+        status: 'read',
+        readAt: new Date().toISOString(),
+        readByUid: user?.uid || '',
+        readByEmail: user?.email || '',
+        readByName: getTeacherName()
+      });
+      showNotification({ type: 'success', text: 'Aviso marcado como enterado.' });
+    } catch (error) {
+      console.error('Error al marcar el aviso interno como leído:', error);
+      showNotification({ type: 'error', text: 'No se pudo marcar el aviso como leído.' });
+    }
   };
 
   const dismissNotification = async (id) => {
@@ -2257,6 +2318,126 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
     }
   };
 
+  const createRepeatedAbsenceAlerts = async (savedRecord) => {
+    if (!savedRecord?.classId || isPunctualClass(currentSession)) return;
+
+    const recordsBySession = new Map();
+    [...records, savedRecord]
+      .filter(record => record.classId === savedRecord.classId)
+      .forEach(record => {
+        const sessionKey = `${record.classId}|${record.date || ''}|${record.time || ''}`;
+        recordsBySession.set(sessionKey, record);
+      });
+
+    const classRecords = [...recordsBySession.values()]
+      .sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
+
+    const candidates = (savedRecord.students || []).filter(student =>
+      student.status === 'absent' &&
+      !student.isRecovery &&
+      !student.isMaintenance &&
+      !student.isPaused
+    );
+
+    for (const student of candidates) {
+      const streakRecords = [];
+
+      for (const record of classRecords) {
+        const attendance = (record.students || []).find(entry => entry.id === student.id);
+        if (!attendance) break;
+        if (
+          attendance.status !== 'absent' ||
+          attendance.isRecovery ||
+          attendance.isMaintenance ||
+          attendance.isPaused
+        ) break;
+        streakRecords.push(record);
+      }
+
+      if (streakRecords.length < 4) continue;
+
+      const streakStartDate = streakRecords[streakRecords.length - 1]?.date || savedRecord.date;
+      const absenceDates = streakRecords.map(record => record.date).filter(Boolean).reverse();
+      const safeAlertId = `falta-reiterada-${savedRecord.classId}-${student.id}-${streakStartDate}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const teacherName = currentSession.teacher || getTeacherName();
+      const teacherEmail = String(user?.email || '').trim().toLowerCase();
+      const studentInfo = globalStudents.find(item => item.id === student.id) || {};
+      const now = new Date().toISOString();
+      const classLine = `${savedRecord.subject || 'Clase'} · ${getDayName(currentSession.dayOfWeek)} · ${savedRecord.time || ''}h · ${savedRecord.sede || 'Tarragona'}${savedRecord.sala ? ` · ${savedRecord.sala}` : ''}`;
+      const details = `${student.name} acumula ${streakRecords.length} clases consecutivas sin asistir ni avisar.\n\nClase: ${classLine}\nFechas de la racha: ${absenceDates.map(formatDateSpanish).join(', ')}\n\nAviso informativo para valorar si conviene ponerse en contacto con el alumno o la familia.`;
+      const teacherNotificationRef = doc(db, 'artifacts', appId, 'teacherNotifications', safeAlertId);
+      const adminGestionRef = doc(db, 'artifacts', appId, 'gestiones', safeAlertId);
+
+      await runTransaction(db, async transaction => {
+        const [teacherNotificationSnap, adminGestionSnap] = await Promise.all([
+          transaction.get(teacherNotificationRef),
+          transaction.get(adminGestionRef)
+        ]);
+
+        if (!teacherNotificationSnap.exists()) {
+          transaction.set(teacherNotificationRef, {
+            teacherName,
+            teacherNameNormalized: String(teacherName || '').trim().toLowerCase(),
+            teacherEmail,
+            title: `4 faltas sin avisar: ${student.name}`,
+            body: details,
+            type: 'falta_reiterada',
+            status: 'unread',
+            studentId: student.id,
+            studentName: student.name,
+            classId: savedRecord.classId,
+            classLine,
+            streakStartDate,
+            streakCount: streakRecords.length,
+            absenceDates,
+            createdAt: now,
+            createdBy: user?.email || teacherName,
+            source: 'attendance_system'
+          });
+        } else {
+          transaction.set(teacherNotificationRef, {
+            streakCount: streakRecords.length,
+            absenceDates,
+            lastAbsenceDate: savedRecord.date,
+            updatedAt: now
+          }, { merge: true });
+        }
+
+        if (!adminGestionSnap.exists()) {
+          transaction.set(adminGestionRef, {
+            type: 'falta_reiterada',
+            status: 'pendiente',
+            title: `4 faltas sin avisar: ${student.name}`,
+            details,
+            informational: true,
+            requiresAction: false,
+            keepUntilAdminAcknowledges: true,
+            studentId: student.id,
+            studentName: student.name,
+            studentEmail: studentInfo.email || student.email || '',
+            requestedClass: savedRecord.classId,
+            requestedClassLine: classLine,
+            requestedTeacher: teacherName,
+            streakStartDate,
+            streakCount: streakRecords.length,
+            absenceDates,
+            date: now,
+            source: 'attendance_system',
+            createdAt: now,
+            createdBy: user?.email || teacherName
+          });
+        } else {
+          transaction.set(adminGestionRef, {
+            streakCount: streakRecords.length,
+            absenceDates,
+            lastAbsenceDate: savedRecord.date,
+            updatedAt: now
+          }, { merge: true });
+        }
+      });
+    }
+  };
+
   const executeSaveRecord = async (deadHourNote = null, isRenounced = false, options = {}) => {
     try {
       const recordId = Date.now().toString();
@@ -2323,7 +2504,8 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       });
       await Promise.all(ticketPromises);
 
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), {
+      const savedRecord = {
+        id: recordId,
         classId: currentSession.classId,
         date,
         time: currentSession.time,
@@ -2346,7 +2528,9 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         deadHourNote: !isRenounced && deadHourNote ? deadHourNote : '',
         isDeadHourWorked: Boolean(!isRenounced && deadHourNote),
         students: currentSession.students.map(s => ({ ...s }))
-      });
+      };
+
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), savedRecord);
 
       const templateStudents = getTemplateStudentsForSave(currentSession);
 
@@ -2368,6 +2552,12 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         students: templateStudents,
         exceptions: currentSession.exceptions || {}
       }, { merge: true });
+
+      try {
+        await createRepeatedAbsenceAlerts(savedRecord);
+      } catch (alertError) {
+        console.error('La asistencia se guardó, pero no se pudo crear el aviso de faltas reiteradas:', alertError);
+      }
 
       showNotification({ type: 'success', text: isRenounced ? 'Renuncia registrada con éxito.' : 'Lista guardada correctamente.' });
       setCurrentSession(null);
@@ -3306,7 +3496,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
           <div className="flex items-center gap-4">
             {isAdmin && (
               <button onClick={switchToAdmin} className="hidden sm:flex items-center gap-2 bg-red-600 hover:bg-red-700 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-colors">
-                <ShieldAlert className="w-4 h-4"/> Modo Dios
+                <ShieldAlert className="w-4 h-4"/> Modo Admin
               </button>
             )}
             <span className="text-zinc-300 text-sm flex items-center gap-2 bg-zinc-800 px-4 py-2 rounded-xl font-medium">
@@ -3342,7 +3532,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
           ].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`relative flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold uppercase text-xs tracking-wider transition-all whitespace-nowrap ${activeTab === tab.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
               <tab.icon className="w-4 h-4"/> {tab.label}
-              {tab.id === 'notifications' && (notifications.length > 0 || hasUnreadTeacherTablon) && (
+              {tab.id === 'notifications' && (notifications.length > 0 || pendingInternalTeacherNotifications.length > 0 || hasUnreadTeacherTablon) && (
                 <span className="bg-red-500 w-2 h-2 rounded-full absolute top-2 right-2 animate-pulse"></span>
               )}
               {tab.id === 'tasks' && openTeacherTasksCount > 0 && (
@@ -3837,8 +4027,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                 <p className="text-sm font-medium text-zinc-500 mt-1">Notificaciones operativas y tablón general de la escuela.</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${notifications.length > 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
-                  {notifications.length} Notificaciones
+                <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${(notifications.length + pendingInternalTeacherNotifications.length) > 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
+                  {notifications.length + pendingInternalTeacherNotifications.length} Notificaciones
                 </span>
                 <span className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${hasUnreadTeacherTablon ? 'bg-amber-400 text-amber-950 animate-pulse' : 'bg-zinc-200 text-zinc-500'}`}>
                   {visibleTeacherAnnouncements.length} Anuncios
@@ -3846,10 +4036,14 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
               </div>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-2 grid grid-cols-2 gap-2">
+            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-2 grid grid-cols-3 gap-2">
               <button onClick={() => setNotificationsView('notifications')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${notificationsView === 'notifications' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
                 <Bell className="w-4 h-4" /> Notificaciones
-                {notifications.length > 0 && <span className="bg-red-500 text-white rounded-full px-2 py-0.5 text-[9px]">{notifications.length}</span>}
+                {(notifications.length + pendingInternalTeacherNotifications.length) > 0 && <span className="bg-red-500 text-white rounded-full px-2 py-0.5 text-[9px]">{notifications.length + pendingInternalTeacherNotifications.length}</span>}
+              </button>
+              <button onClick={() => setNotificationsView('read')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${notificationsView === 'read' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+                <History className="w-4 h-4" /> Leídos
+                {readInternalTeacherNotifications.length > 0 && <span className="bg-zinc-200 text-zinc-700 rounded-full px-2 py-0.5 text-[9px]">{readInternalTeacherNotifications.length}</span>}
               </button>
               <button onClick={() => setNotificationsView('tablon')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${notificationsView === 'tablon' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
                 <Megaphone className="w-4 h-4" /> Tablón
@@ -3859,13 +4053,31 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
 
             {notificationsView === 'notifications' && (
               <>
-                {notifications.length === 0 ? (
+                {notifications.length === 0 && pendingInternalTeacherNotifications.length === 0 ? (
                   <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
                     <CheckCircle className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
                     <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay avisos pendientes</h3>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {pendingInternalTeacherNotifications.map(notificationItem => (
+                      <div key={notificationItem.id} className="bg-white border-2 border-blue-100 p-6 rounded-3xl shadow-sm flex items-start gap-4">
+                        <div className={`p-3 rounded-2xl shrink-0 ${notificationItem.type === 'falta_reiterada' ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
+                          {notificationItem.type === 'falta_reiterada' ? <AlertCircle className="w-6 h-6"/> : <Bell className="w-6 h-6"/>}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">{notificationItem.type === 'falta_reiterada' ? 'Seguimiento de asistencia' : 'Aviso de coordinación'}</p>
+                          <h3 className="font-black text-lg uppercase tracking-tight text-slate-900">{notificationItem.title || 'Aviso para el profesor'}</h3>
+                          <p className="text-sm font-medium text-zinc-600 whitespace-pre-wrap leading-relaxed mt-3">{notificationItem.body || 'Sin detalles adicionales.'}</p>
+                          {notificationItem.createdAt && <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-3">{new Date(notificationItem.createdAt).toLocaleString('es-ES')}</p>}
+                          <div className="mt-4 pt-4 border-t border-zinc-100">
+                            <button onClick={() => markInternalTeacherNotificationRead(notificationItem)} className="w-full sm:w-auto text-[10px] font-black uppercase tracking-widest bg-blue-600 hover:bg-blue-700 text-white px-4 py-3 rounded-xl transition-colors flex items-center justify-center gap-2">
+                              <Check className="w-4 h-4"/> Enterado
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                     {notifications.map(n => {
                       const isRecoveryRequest = n.type === 'recuperacion';
                       const isPlanningRequest = PLANNING_GESTION_TYPES.has(n.type);
@@ -3959,6 +4171,31 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                   </div>
                 )}
               </>
+            )}
+
+            {notificationsView === 'read' && (
+              readInternalTeacherNotifications.length === 0 ? (
+                <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
+                  <History className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
+                  <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay avisos leídos</h3>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {readInternalTeacherNotifications.map(notificationItem => (
+                    <div key={notificationItem.id} className="bg-white border border-zinc-200 p-6 rounded-3xl shadow-sm opacity-80">
+                      <div className="flex items-start gap-3">
+                        <div className="p-3 rounded-2xl bg-emerald-50 text-emerald-600 shrink-0"><CheckCircle className="w-5 h-5"/></div>
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Enterado</p>
+                          <h3 className="font-black text-base uppercase tracking-tight text-slate-800 mt-1">{notificationItem.title || 'Aviso para el profesor'}</h3>
+                          <p className="text-sm font-medium text-zinc-500 whitespace-pre-wrap leading-relaxed mt-3">{notificationItem.body || 'Sin detalles adicionales.'}</p>
+                          <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-3">Leído: {notificationItem.readAt ? new Date(notificationItem.readAt).toLocaleString('es-ES') : 'Sin fecha'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
 
             {notificationsView === 'tablon' && (
@@ -4223,7 +4460,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
           {[{id:'attendance', i:ClipboardList}, {id:'availability', i:Clock}, {id:'notifications', i:Bell}, {id:'tasks', i:CheckCircle}, {id:'daily', i:MessageSquare}, {id:'reports', i:BarChart3}].map(t => (
             <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-4 rounded-xl transition-all relative ${activeTab === t.id ? 'bg-black text-white shadow-lg' : 'text-zinc-400'}`}>
               <t.i className="w-6 h-6"/>
-              {t.id === 'notifications' && (notifications.length > 0 || hasUnreadTeacherTablon) && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+              {t.id === 'notifications' && (notifications.length > 0 || pendingInternalTeacherNotifications.length > 0 || hasUnreadTeacherTablon) && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
               {t.id === 'tasks' && openTeacherTasksCount > 0 && <span className="bg-amber-400 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
             </button>
           ))}
@@ -4235,7 +4472,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
         {[{id:'attendance', i:ClipboardList, t:'Listas'}, {id:'availability', i:Clock, t:'Horario'}, {id:'notifications', i:Bell, t:'Avisos'}, {id:'tasks', i:CheckCircle, t:'Tareas'}, {id:'daily', i:MessageSquare, t:'Diario'}, {id:'history', i:History, t:'Historial'}, {id:'reports', i:BarChart3, t:'Nómina'}].map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)} className={`p-5 rounded-2xl shadow-sm flex items-center justify-center transition-all relative ${activeTab === t.id ? 'bg-black text-white scale-110 shadow-xl' : 'bg-white text-zinc-400 hover:text-black border-2'}`} title={t.t}>
             <t.i/>
-            {t.id === 'notifications' && (notifications.length > 0 || hasUnreadTeacherTablon) && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
+            {t.id === 'notifications' && (notifications.length > 0 || pendingInternalTeacherNotifications.length > 0 || hasUnreadTeacherTablon) && <span className="bg-red-500 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
             {t.id === 'tasks' && openTeacherTasksCount > 0 && <span className="bg-amber-400 w-3 h-3 rounded-full absolute top-2 right-2 animate-pulse border-2 border-white"></span>}
           </button>
         ))}

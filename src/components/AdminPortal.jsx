@@ -2664,9 +2664,45 @@ La inscripción ya está registrada en AdminPortal > Talleres y aparece a títul
     return () => { cancelled = true; };
   }, [workshopRegistrations, db, appId, user?.email, user?.uid]);
 
-  const sendTeacherNotification = async ({ teacherName, subject, body }) => {
+  const sendTeacherNotification = async ({ teacherName, subject, body, type = 'cambio_administrativo', ...metadata }) => {
     const to = getTeacherEmail(teacherName);
-    await sendNotificationEmail({ to, subject, body, type: 'notificacion_profesor' });
+    const now = new Date().toISOString();
+    const notificationRef = doc(collection(db, 'artifacts', appId, 'teacherNotifications'));
+    let internalNotificationCreated = false;
+
+    try {
+      await setDoc(notificationRef, {
+        teacherName: teacherName || 'Profesor',
+        teacherNameNormalized: String(teacherName || '').trim().toLowerCase(),
+        teacherEmail: to,
+        title: subject,
+        body,
+        type,
+        status: 'unread',
+        createdAt: now,
+        createdBy: user?.email || 'admin',
+        source: 'admin_portal',
+        ...metadata
+      });
+      internalNotificationCreated = true;
+    } catch (error) {
+      console.error('No se pudo crear el aviso interno para el profesor:', error);
+    }
+
+    const emailSent = await sendNotificationEmail({ to, subject, body, type: 'notificacion_profesor' });
+
+    if (internalNotificationCreated && emailSent) {
+      try {
+        await updateDoc(notificationRef, {
+          emailSentAt: new Date().toISOString(),
+          emailRecipient: to
+        });
+      } catch (error) {
+        console.error('No se pudo marcar el correo del aviso interno como enviado:', error);
+      }
+    }
+
+    return internalNotificationCreated || emailSent;
   };
 
   const sendStudentNotification = async ({ studentEmail, subject, body }) => {
@@ -2844,6 +2880,7 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     alta_mitoverso: 'Alta Mitoverso',
     alta_mitobox: 'Alta Mitobox',
     aviso_ausencia: 'Aviso de ausencia',
+    falta_reiterada: '4 faltas sin avisar',
     reserva_mitobox: 'Reserva Mitobox',
     tarea_manual: 'Tarea manual'
   }[type] || String(type || 'tarea_manual').replace(/_/g, ' '));
@@ -2858,6 +2895,7 @@ También puedes consultar los avisos publicados accediendo a tu portal.`;
     const type = String(gestion?.type || '');
     if (type.includes('mitobox')) return 'bg-blue-100 text-blue-800 border-blue-200';
     if (type.includes('baja')) return 'bg-red-100 text-red-800 border-red-200';
+    if (type.includes('falta') || type.includes('ausencia')) return 'bg-orange-100 text-orange-800 border-orange-200';
     if (type.includes('mantenimiento') || type.includes('reactivar')) return 'bg-amber-100 text-amber-800 border-amber-200';
     if (type.includes('recuperacion')) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
     if (type.includes('manual') || gestion?.source === 'manual_admin') return 'bg-purple-100 text-purple-800 border-purple-200';
@@ -3266,7 +3304,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     }
   };
 
-  const gestionRequiresTadosi = (gestion = {}) => TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
+  const gestionRequiresTadosi = (gestion = {}) => !gestion?.skipTadosi && TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
   const isGestionTadosiDone = (gestion = {}) => Boolean(gestion?.tadosiDone || gestion?.tadosiDoneAt || gestion?.workflowStatus === 'tadosi_hecho' || gestion?.workflowStatus === 'listo_ejecucion');
   const isGestionReadyForExecution = (gestion = {}) => !gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion);
 
@@ -4381,6 +4419,67 @@ Coordinación Los Mitos.`
     }
   };
 
+  const createManualScheduledBajaForStudent = async (studentId, studentName) => {
+    const studentInfo = students.find(s => s.id === studentId);
+    if (!studentInfo) {
+      alert('No se ha encontrado la ficha del alumno.');
+      return;
+    }
+
+    if (studentInfo.scheduledBaja && studentInfo.scheduledBajaEffectiveDate && studentInfo.scheduledBajaEffectiveDate > todayStr) {
+      alert(`${studentName} ya tiene una baja programada.\n\nÚltimo día activo: ${formatDateSpanish(studentInfo.scheduledBajaClassEndDate)}.\nFecha efectiva: ${formatDateSpanish(studentInfo.scheduledBajaEffectiveDate)}.`);
+      return;
+    }
+
+    const fixedClasses = getFixedStudentClasses(studentId);
+    if (fixedClasses.length === 0) {
+      alert(`${studentName} no tiene ninguna plaza fija activa que pueda programarse para baja.`);
+      return;
+    }
+
+    const classPreview = fixedClasses.map(c => `· ${formatClassLine(c)}`).join('\n');
+    const confirmed = window.confirm(`¿Programar la BAJA TOTAL de ${studentName}?\n\nEl alumno seguirá activo y aparecerá en las listas hasta la fecha de fin que indicarás a continuación. Desde el día siguiente dejará de aparecer y la baja quedará preparada para su consolidación definitiva.\n\nClases afectadas:\n${classPreview}`);
+    if (!confirmed) return;
+
+    const now = new Date().toISOString();
+    const gestionId = `baja-manual-${studentId}-${Date.now()}`;
+    const gestionData = {
+      id: gestionId,
+      type: 'baja',
+      status: 'pendiente',
+      title: 'Baja total programada desde Alumnos CRM',
+      details: 'Baja total creada manualmente desde Alumnos CRM. El alumno permanece activo hasta la fecha de fin seleccionada.',
+      studentId,
+      studentName,
+      studentEmail: studentInfo.email || '',
+      date: now,
+      source: 'manual_admin',
+      bajaScope: 'total',
+      bajaTotal: true,
+      isTotalBaja: true,
+      requestedTeacher: [...new Set(fixedClasses.map(c => c.teacher).filter(Boolean))].join(', '),
+      affectedClassIds: fixedClasses.map(c => c.id),
+      affectedClassLines: fixedClasses.map(c => formatClassLine(c)),
+      skipTadosi: true,
+      manualExecution: true,
+      workflowStatus: 'programacion_manual',
+      createdAt: now,
+      createdBy: user?.email || 'admin'
+    };
+
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), gestionData);
+      const result = await updateGestionStatus(gestionId, 'completado', gestionData, { skipConfirm: true });
+
+      if (result?.cancelled) {
+        await deleteDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId));
+      }
+    } catch (error) {
+      console.error('Error al programar la baja manual:', error);
+      alert('No se pudo programar la baja: ' + error.message);
+    }
+  };
+
   const handleUpdateStudentStatus = async (studentId, studentName, newStatus) => {
     if (newStatus === 'mantenimiento') {
       await createManualMaintenanceForStudent(studentId, studentName);
@@ -4388,8 +4487,8 @@ Coordinación Los Mitos.`
     }
 
     if (newStatus === 'baja') {
-      const confirmBaja = window.confirm(`⚠️ ACCIÓN DEFINITIVA: ¿Quieres dar de BAJA a ${studentName}?\n\nSe eliminará de todas las listas de los profesores y perderá el acceso al portal.`);
-      if (!confirmBaja) return;
+      await createManualScheduledBajaForStudent(studentId, studentName);
+      return;
     }
     if (newStatus === 'impago') {
       const confirmImpago = window.confirm(`¿Marcar a ${studentName} como IMPAGO?\n\nMantendrá su plaza y seguirá apareciendo en las clases, pero perderá temporalmente el acceso al Área del Alumno hasta que lo reactives.`);
@@ -4399,32 +4498,7 @@ Coordinación Los Mitos.`
       const studentInfo = students.find(s => s.id === studentId);
       const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
-      if (newStatus === 'baja') {
-        await resetStudentTrivia(studentId);
-        const ticketsAnulados = await voidStudentTickets(studentId, 'baja');
-        const classesWithThisStudent = allClasses.filter(c => c.students && c.students.some(s => s.id === studentId));
-        const groupedTeachers = groupClassesByTeacher(classesWithThisStudent);
-        const updatePromises = classesWithThisStudent.map(c => {
-          const updatedList = c.students.filter(s => s.id !== studentId);
-          if (c.refPath) return updateDoc(doc(db, c.refPath), { students: updatedList });
-          return Promise.resolve();
-        });
-        await Promise.all(updatePromises);
-
-        await sendGroupedTeacherSummary({
-          groupedClasses: groupedTeachers,
-          subjectBuilder: (group) => `Baja de alumno: ${displayName}`,
-          bodyBuilder: (group) => `Hola ${group.teacherName},\n\nDesde coordinación te informamos que ${displayName} ha sido dado de baja y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa ha sido eliminado de tu lista de asistencia en la App. No debes esperarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
-
-        await sendStudentNotification({
-          studentEmail: studentInfo?.email || '',
-          subject: `Confirmación de baja - Escuela Los Mitos`,
-          body: `Hola ${studentName},\n\nTe confirmamos que tu baja ha sido tramitada correctamente.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
-
-        alert(`✅ ${studentName} ha sido procesado como BAJA y eliminado de sus clases. Profesores y alumno avisados por correo. Tickets anulados: ${ticketsAnulados}. Puntos del trivial a cero.`);
-      } else if (newStatus === 'activo') {
+      if (newStatus === 'activo') {
         const activeOrFutureMaintenance = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
         for (let period of activeOrFutureMaintenance) {
           await updateDoc(doc(db, 'artifacts', appId, 'maintenancePeriods', period.id), {
@@ -5780,6 +5854,7 @@ Coordinación Los Mitos.`
 
   const shouldAutoArchiveAbsenceGestion = (gestion = {}) => {
     if (gestion.status !== 'pendiente' || !isAbsenceGestion(gestion)) return false;
+    if (gestion.type === 'falta_reiterada' || gestion.keepUntilAdminAcknowledges) return false;
     if (gestion.autoArchivedAt || gestion.archivedAt) return false;
     const absenceDate = getAbsenceGestionDate(gestion);
     if (!absenceDate) return false;
@@ -9124,7 +9199,7 @@ ${startDateWarning}
                               <option value="activo">Activo</option>
                               <option value="mantenimiento">Mantenimiento temporal</option>
                               <option value="impago">Impago</option>
-                              <option value="baja">Dar de Baja</option>
+                              <option value="baja">Programar baja</option>
                             </select>
                           </td>
                         </tr>

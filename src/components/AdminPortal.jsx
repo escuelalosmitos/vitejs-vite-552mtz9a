@@ -223,6 +223,47 @@ const formatDateSpanish = (dateString) => {
   return date.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
+const getLocalDayOfWeek = (dateString) => {
+  if (!dateString) return null;
+  const date = new Date(`${dateString}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date.getDay();
+};
+
+const formatPublicContestantName = (studentOrName = {}) => {
+  const student = typeof studentOrName === 'string' ? { name: studentOrName } : (studentOrName || {});
+  const explicitFirstName = String(student.firstName || student.nombre || '').trim();
+  const explicitSurnames = String(student.lastName || student.surnames || student.apellidos || '').trim();
+
+  if (explicitFirstName && explicitSurnames) {
+    const initials = explicitSurnames.split(/\s+/).filter(Boolean).map(part => `${part.charAt(0).toUpperCase()}.`).join(' ');
+    return `${explicitFirstName} ${initials}`.trim();
+  }
+
+  const parts = String(student.name || student.displayName || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return parts[0] || 'Alumno/a';
+  return `${parts[0]} ${parts.slice(1).map(part => `${part.charAt(0).toUpperCase()}.`).join(' ')}`;
+};
+
+const buildTriviaPodium = (students = [], scoreGetter = () => 0) => {
+  const ranked = students
+    .map(student => ({ student, score: Number(scoreGetter(student)) || 0 }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || String(a.student.name || '').localeCompare(String(b.student.name || ''), 'es'));
+
+  const scoreLevels = [...new Set(ranked.map(item => item.score))].slice(0, 3);
+  return scoreLevels.map((score, index) => ({
+    position: index + 1,
+    score,
+    students: ranked.filter(item => item.score === score).map(item => item.student)
+  }));
+};
+
+const formatTriviaPodium = (label, podium = []) => {
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = podium.map(group => `${medals[group.position - 1] || `${group.position}.`} ${group.students.map(formatPublicContestantName).join(', ')} — ${group.score} puntos`);
+  return `${label}:\n${lines.join('\n')}`;
+};
+
 const normalizeStudentClassStartDate = (value) => String(value || '').trim();
 
 const getStudentClassStartDate = (studentEntry = {}, studentInfo = {}) => normalizeStudentClassStartDate(
@@ -1440,7 +1481,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
     hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 },
-    generalTasks: [], prizes: { trimestral: '', anual: '' }, teachersList: [], teacherColors: {},
+    generalTasks: [], prizes: { mensual: '', trimestral: '', anual: '' }, teachersList: [], teacherColors: {},
     roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos
   });
 
@@ -3821,7 +3862,7 @@ Coordinación Los Mitos.`
       }
       else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
         const maintenanceCheckDate = type === 'recuperacion' ? (recoveryDate || todayStr) : todayStr;
-        if (isStudentInMaintenance(studentId, maintenanceCheckDate)) {
+        if (type !== 'cambio_horario' && isStudentInMaintenance(studentId, maintenanceCheckDate)) {
           const activeMaintenance = getActiveStudentMaintenancePeriod(studentId, maintenanceCheckDate);
           return fail(`⚠️ No se puede ejecutar este trámite.
 
@@ -3863,6 +3904,11 @@ Tickets libres: ${recoveryTicketStats.free}`);
             return { ok: false, cancelled: true, message: 'Fecha efectiva no seleccionada.' };
           }
           const scheduledStartDate = getScheduledClassStartAfterEndDate(scheduledEndDate);
+
+          if (isStudentInMaintenance(studentId, scheduledStartDate)) {
+            const activeMaintenance = getActiveStudentMaintenancePeriod(studentId, scheduledStartDate);
+            return fail(`⚠️ No se puede programar el cambio para esa fecha.\n\n${displayName} seguirá en mantenimiento ${formatMaintenancePeriodLine(activeMaintenance)}. Elige como fecha de inicio un día posterior al mantenimiento o finalízalo anticipadamente.`);
+          }
 
           if (hasScopedChange && !sourceClass?.refPath) {
             return fail(`⚠️ No se puede programar el cambio de horario por plaza.
@@ -4136,6 +4182,72 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     });
   };
 
+  const cancelStudentStatesForFinalBaja = async (studentId, currentGestionId = '', effectiveDate = todayStr) => {
+    const now = new Date().toISOString();
+    const closedRelocationStatuses = new Set(['cancelled', 'cancelada', 'expired', 'finalizada']);
+
+    const periodsToCancel = maintenancePeriods.filter(period =>
+      period.studentId === studentId &&
+      String(period.status || 'active').toLowerCase() !== 'cancelled' &&
+      (!period.until || period.until >= effectiveDate)
+    );
+
+    for (const period of periodsToCancel) {
+      await updateDoc(doc(db, 'artifacts', appId, 'maintenancePeriods', period.id), {
+        status: 'cancelled',
+        cancelledAt: now,
+        cancelledBy: user?.email || 'admin',
+        cancelReason: `Cancelación automática por baja definitiva efectiva el ${effectiveDate}`
+      });
+    }
+
+    const relocationsToCancel = temporaryRelocations.filter(relocation =>
+      relocation.studentId === studentId &&
+      !closedRelocationStatuses.has(String(relocation.status || 'active').toLowerCase()) &&
+      (!relocation.until || relocation.until >= effectiveDate)
+    );
+
+    for (const relocation of relocationsToCancel) {
+      await updateDoc(doc(db, 'artifacts', appId, 'temporaryRelocations', relocation.id), {
+        status: 'cancelled',
+        cancelledAt: now,
+        cancelledBy: user?.email || 'admin',
+        cancelReason: `Cancelación automática por baja definitiva efectiva el ${effectiveDate}`
+      });
+    }
+
+    const gestionesToCancel = gestiones.filter(otherGestion => {
+      if (otherGestion.studentId !== studentId || otherGestion.id === currentGestionId) return false;
+      if (otherGestion.status === 'pendiente') return true;
+      if (otherGestion.status !== 'completado' || otherGestion.workflowStatus === 'consolidado' || otherGestion.consolidatedAt) return false;
+
+      const workflowStatus = String(otherGestion.workflowStatus || '').toLowerCase();
+      const executionMode = String(otherGestion.executionMode || '').toLowerCase();
+      const isScheduledAction = ['baja', 'cambio_horario'].includes(otherGestion.type) && Boolean(
+        workflowStatus === 'programado' ||
+        executionMode.includes('scheduled') ||
+        (getScheduledGestionEndDate(otherGestion) && getScheduledGestionEffectiveDate(otherGestion))
+      );
+      return isScheduledAction;
+    });
+
+    for (const otherGestion of gestionesToCancel) {
+      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', otherGestion.id), {
+        status: 'cancelado',
+        workflowStatus: 'cancelado_por_baja',
+        cancelledAt: now,
+        cancelledBy: user?.email || 'admin',
+        cancelReason: `Cancelación automática por baja definitiva efectiva el ${effectiveDate}`
+      });
+    }
+
+    return {
+      maintenancePeriods: periodsToCancel.length,
+      temporaryRelocations: relocationsToCancel.length,
+      gestiones: gestionesToCancel.length
+    };
+  };
+
   const consolidateScheduledBajaGestion = async (gestion = {}) => {
     const studentId = gestion.studentId;
     if (!studentId) return { ok: false, message: 'Gestión de baja sin alumno asociado.' };
@@ -4182,13 +4294,19 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const hasRemainingSeat = hasRemainingCommittedFixedSeat(studentId, studentInfo, localClassUpdates);
     const shouldFinalizeGlobalBaja = isTotalBaja || !hasRemainingSeat;
     let ticketsVoided = 0;
+    let cancelledStates = { maintenancePeriods: 0, temporaryRelocations: 0, gestiones: 0 };
 
     if (shouldFinalizeGlobalBaja) {
       await resetStudentTrivia(studentId);
       ticketsVoided = await voidStudentTickets(studentId, 'baja_programada_consolidada');
+      cancelledStates = await cancelStudentStatesForFinalBaja(studentId, gestion.id || '', effectiveDate || todayStr);
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
         globalStatus: 'baja',
         classes: [],
+        hasMitoverso: false,
+        hasMitobox: false,
+        extrasDisabledByBajaAt: new Date().toISOString(),
+        extrasDisabledByBajaBy: user?.email || 'admin',
         scheduledBaja: false,
         scheduledBajaConsolidatedAt: new Date().toISOString(),
         scheduledBajaConsolidatedBy: user?.email || 'admin',
@@ -4212,7 +4330,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
 
     const summary = shouldFinalizeGlobalBaja
-      ? `Baja definitiva consolidada para ${displayName}. Clases eliminadas: ${removedClassLines.length}. Tickets anulados: ${ticketsVoided}.`
+      ? `Baja definitiva consolidada para ${displayName}. Clases eliminadas: ${removedClassLines.length}. Tickets anulados: ${ticketsVoided}. Extras desactivados. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Otras gestiones canceladas: ${cancelledStates.gestiones}.`
       : `Baja parcial consolidada para ${displayName}. Plaza eliminada: ${removedClassLines.length}. Conserva otras plazas activas.`;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), buildConsolidatedGestionUpdate(gestion, summary, {
@@ -4220,10 +4338,14 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       consolidatedRemovedClassLines: removedClassLines,
       consolidatedRemovedClassCount: removedClassLines.length,
       consolidatedTicketsVoided: ticketsVoided,
+      consolidatedMaintenancePeriodsCancelled: cancelledStates.maintenancePeriods,
+      consolidatedTemporaryRelocationsCancelled: cancelledStates.temporaryRelocations,
+      consolidatedOtherGestionesCancelled: cancelledStates.gestiones,
+      consolidatedExtrasDisabled: shouldFinalizeGlobalBaja,
       consolidatedKeepsActiveSeats: !shouldFinalizeGlobalBaja
     }));
 
-    return { ok: true, message: summary };
+    return { ok: true, message: summary, finalizedGlobalBaja: shouldFinalizeGlobalBaja };
   };
 
   const consolidateScheduledChangeGestion = async (gestion = {}) => {
@@ -4336,13 +4458,19 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
     setBulkConsolidatingGestiones(true);
     const results = [];
+    const studentsWithFinalBaja = new Set();
 
     try {
       for (const gestion of expiredGestiones) {
+        if (studentsWithFinalBaja.has(gestion.studentId)) {
+          results.push({ gestion, result: { ok: true, skipped: true, message: 'Omitida porque una baja definitiva del mismo alumno ya se consolidó en este lote.' } });
+          continue;
+        }
         try {
           const result = gestion.type === 'baja'
             ? await consolidateScheduledBajaGestion(gestion)
             : await consolidateScheduledChangeGestion(gestion);
+          if (result?.finalizedGlobalBaja) studentsWithFinalBaja.add(gestion.studentId);
           results.push({ gestion, result });
         } catch (error) {
           results.push({ gestion, result: { ok: false, message: error.message || String(error) } });
@@ -4584,61 +4712,82 @@ Coordinación Los Mitos.`
     }
   };
 
-  const executeDirectClassChange = async (student, targetClass) => {
-    if (!window.confirm(`¿Inscribir a ${student.name} en la clase de ${targetClass.subject} (${getDayName(targetClass.dayOfWeek)} a las ${targetClass.time}h)?\nSe le borrará de cualquier otra clase del mismo instrumento.`)) return;
+  const createManualScheduledClassChange = async (student, targetClass) => {
+    if (!student?.id || !targetClass?.id) return;
+    if (student.globalStatus === 'baja') {
+      alert(`${student.name} está dado de baja. No se puede programar un cambio de clase.`);
+      return;
+    }
+
+    const oldClasses = recurringClassesOnly.filter(c =>
+      c.id !== targetClass.id &&
+      c.subject === targetClass.subject &&
+      (c.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, todayStr))
+    );
+
+    if (oldClasses.length === 0) {
+      alert(`${student.name} no tiene una plaza activa de ${targetClass.subject} que pueda cambiarse a este grupo.`);
+      return;
+    }
+
+    const existingScheduledChange = gestiones.find(gestion =>
+      gestion.studentId === student.id &&
+      gestion.type === 'cambio_horario' &&
+      gestion.workflowStatus !== 'consolidado' &&
+      !gestion.consolidatedAt &&
+      (gestion.status === 'pendiente' || gestion.status === 'completado')
+    );
+
+    if (existingScheduledChange) {
+      alert(`${student.name} ya tiene un cambio de clase pendiente o programado. Revísalo en Bandeja antes de crear otro.`);
+      return;
+    }
+
+    const sourceLines = oldClasses.map(c => `· ${formatClassLine(c)}`).join('\n');
+    if (!window.confirm(`¿Programar el cambio de clase de ${student.name}?\n\nHorario actual:\n${sourceLines}\n\nNuevo horario:\n· ${formatClassLine(targetClass)}\n\nA continuación indicarás el último día en el horario actual. El nuevo horario comenzará al día siguiente.`)) return;
+
+    const now = new Date().toISOString();
+    const gestionId = `cambio-manual-${student.id}-${Date.now()}`;
+    const singleSourceClass = oldClasses.length === 1 ? oldClasses[0] : null;
+    const gestionData = {
+      id: gestionId,
+      type: 'cambio_horario',
+      status: 'pendiente',
+      title: 'Cambio de clase programado desde Alumnos CRM',
+      details: 'Cambio creado manualmente desde Alumnos CRM. El alumno conserva el horario actual hasta la fecha de fin seleccionada.',
+      studentId: student.id,
+      studentName: student.name,
+      studentEmail: student.email || '',
+      requestedClass: targetClass.id,
+      requestedClassLine: formatClassLine(targetClass),
+      requestedTeacher: targetClass.teacher || '',
+      affectedClassIds: oldClasses.map(c => c.id),
+      affectedClassLines: oldClasses.map(c => formatClassLine(c)),
+      ...(singleSourceClass ? {
+        sourceClassId: singleSourceClass.id,
+        sourceClassLine: formatClassLine(singleSourceClass),
+        sourceClassRefPath: singleSourceClass.refPath || ''
+      } : {}),
+      date: now,
+      source: 'manual_admin',
+      skipTadosi: true,
+      manualExecution: true,
+      workflowStatus: 'programacion_manual',
+      createdAt: now,
+      createdBy: user?.email || 'admin'
+    };
+
     try {
-      const oldClasses = recurringClassesOnly.filter(c => c.id !== targetClass.id && c.students && c.students.some(s => s.id === student.id) && c.subject === targetClass.subject);
-      const displayName = student.useAlias && student.alias ? student.alias : student.name;
-      const oldGroups = groupClassesByTeacher(oldClasses);
-
-      for (let c of oldClasses) {
-        const updatedList = c.students.filter(s => s.id !== student.id);
-        if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
+      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), gestionData);
+      const result = await updateGestionStatus(gestionId, 'completado', gestionData, { skipConfirm: true });
+      if (result?.cancelled) {
+        await deleteDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId));
+        return;
       }
-
-      const newStudentPayload = {
-        id: student.id,
-        name: displayName,
-        email: student.email || '',
-        classStartDate: student.classStartDate || '',
-        isPaused: false,
-        status: 'present',
-        isRecovery: false
-      };
-      const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== student.id), newStudentPayload];
-      await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
-
-      const targetEmail = getTeacherEmail(targetClass.teacher);
-      const targetOldGroup = oldGroups.find(g => g.email === targetEmail);
-      const otherOldGroups = oldGroups.filter(g => g.email !== targetEmail);
-      const targetIsPunctual = isPunctualClass(targetClass);
-
-      await sendGroupedTeacherSummary({
-        groupedClasses: otherOldGroups,
-        subjectBuilder: (group) => `Cambio manual: ${displayName} deja tu clase`,
-        bodyBuilder: (group) => `Hola ${group.teacherName},\n\nTe informamos que ${displayName} ha sido cambiado manualmente de grupo y ya no asistirá a ${group.classes.length === 1 ? 'esta clase' : 'estas clases'}:\n\n${group.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
-      });
-
-      if (targetOldGroup) {
-        await sendTeacherNotification({
-          teacherName: targetClass.teacher,
-          subject: `Cambio manual interno: ${displayName}`,
-          body: `Hola ${targetClass.teacher},\n\nTe informamos que ${displayName} ha cambiado de horario dentro de tus clases.\n\nDeja de asistir a:\n${targetOldGroup.classes.map(c => `· ${formatClassLine(c)}`).join('\n')}\n\nY pasa a asistir a:\n· ${formatClassLine(targetClass)}\n\nYa hemos actualizado tus listas.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
-      } else if (!targetIsPunctual) {
-        await sendTeacherNotification({
-          teacherName: targetClass.teacher,
-          subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
-          body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos incorporado a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
-        });
-      }
-
-      alert(targetIsPunctual
-        ? `✅ ${student.name} añadido a una clase puntual de ${targetClass.teacher}. No se han enviado correos de alumno fijo.`
-        : `✅ ${student.name} transferido con éxito a la clase de ${targetClass.teacher}. Profesor avisado si correspondía. No se ha enviado email al alumno porque no es alta inicial.`);
-      setChangeClassModal(null);
+      if (result?.ok) setChangeClassModal(null);
     } catch (error) {
-      alert(`❌ Error al cambiar de clase: ${error.message}`);
+      console.error('Error al programar el cambio manual:', error);
+      alert(`❌ Error al programar el cambio de clase: ${error.message}`);
     }
   };
 
@@ -5683,86 +5832,133 @@ Coordinación Los Mitos.`
     setSocialModalText(t);
   };
 
+  const getTriviaPrize = period => String(settings.prizes?.[period] || '').trim();
+
+  const ensureTriviaPrizes = periods => {
+    const missing = periods.filter(period => !getTriviaPrize(period));
+    if (missing.length === 0) return true;
+    const labels = { mensual: 'mensual', trimestral: 'trimestral', anual: 'anual' };
+    alert(`Antes de cerrar el reto, define y guarda el premio ${missing.map(period => labels[period]).join(', ')} en esta misma pestaña.`);
+    return false;
+  };
+
+  const buildTriviaResultSection = (periodLabel, podium, prize) => {
+    const winners = podium[0]?.students || [];
+    const winningScore = podium[0]?.score || 0;
+    return `${periodLabel.toUpperCase()}\nGanador${winners.length === 1 ? '/a' : 'es'}: ${winners.map(formatPublicContestantName).join(', ')} — ${winningScore} puntos\nPremio: ${prize}\n\n${formatTriviaPodium(`Podio ${periodLabel.toLowerCase()}`, podium)}`;
+  };
+
+  const publishTriviaClosure = async (title, content, closureType) => {
+    const id = `trivia-${closureType}-${Date.now()}`;
+    await setDoc(doc(db, 'artifacts', appId, 'announcements', id), {
+      title,
+      content,
+      date: getTodayLocalString(),
+      type: 'notice',
+      targetType: 'all',
+      targetValue: '',
+      triviaClosureType: closureType,
+      createdAt: new Date().toISOString()
+    });
+  };
+
   const handleCerrarRetoMensual = async () => {
-    const players = students.filter(s => s.triviaPoints > 0).sort((a,b) => b.triviaPoints - a.triviaPoints);
-    if(players.length === 0) return alert("Nadie ha jugado este mes.");
-    const maxScore = players[0].triviaPoints;
-    const winners = players.filter(s => s.triviaPoints === maxScore);
-    if(!window.confirm(`¿Confirmas el cierre del MES?\n\nLos puntos pasarán al acumulado del Trimestre y del Año, y el mes quedará a cero.\n\nHay ${winners.length} ganadores este mes con ${maxScore} puntos.`)) return;
+    const monthlyPodium = buildTriviaPodium(students, student => student.triviaPoints);
+    if (monthlyPodium.length === 0) return alert('Nadie ha jugado este mes.');
+    if (!ensureTriviaPrizes(['mensual'])) return;
+
+    const winners = monthlyPodium[0].students;
+    const maxScore = monthlyPodium[0].score;
+    if (!window.confirm(`¿Confirmas el cierre del MES?\n\nSe publicarán el ganador, el premio mensual y el podio. Los puntos pasarán al acumulado del trimestre y del año.\n\nGanador(es): ${winners.length} · ${maxScore} puntos.`)) return;
+
     setLoading(true);
     try {
-      const winnerNames = winners.map(w => w.name);
-      const updatePromises = players.map(p => {
-        const docRef = doc(db, 'artifacts', appId, 'students', p.id);
-        return updateDoc(docRef, { 
-          triviaPointsQuarterly: (p.triviaPointsQuarterly || 0) + p.triviaPoints,
-          triviaPointsAnnual: (p.triviaPointsAnnual || 0) + p.triviaPoints,
-          triviaPoints: 0
-        });
-      });
-      await Promise.all(updatePromises);
-      const msg = `¡Felicidades a ${winnerNames.join(', ')} por conseguir la victoria del mes con ${maxScore} puntos!\n\nEl contador mensual vuelve a cero, pero vuestros puntos se acumulan para el Ranking Trimestral y Anual. ¡A por todas!`;
-      const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "🏆 ¡Ganadores del Mes!", content: msg, date: new Date().toISOString().split('T')[0] });
-      alert("Mes cerrado con éxito. Puntos volcados a los rankings superiores.");
-    } catch (e) { 
-      alert("Error al cerrar el mes: " + e.message); 
+      const players = students.filter(student => Number(student.triviaPoints || 0) > 0);
+      await Promise.all(players.map(player => updateDoc(doc(db, 'artifacts', appId, 'students', player.id), {
+        triviaPointsQuarterly: Number(player.triviaPointsQuarterly || 0) + Number(player.triviaPoints || 0),
+        triviaPointsAnnual: Number(player.triviaPointsAnnual || 0) + Number(player.triviaPoints || 0),
+        triviaPoints: 0
+      })));
+
+      const content = `${buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual'))}\n\nLos puntos mensuales pasan ahora a los rankings trimestral y anual.`;
+      await publishTriviaClosure('🏆 Ganador y podio del mes', content, 'mensual');
+      alert('Mes cerrado. Se ha publicado el premio y el podio con nombres abreviados.');
+    } catch (e) {
+      alert('Error al cerrar el mes: ' + e.message);
     } finally {
       setLoading(false);
     }
   };
 
   const handleCerrarRetoTrimestral = async () => {
-    const players = students.filter(s => (s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0) > 0)
-      .sort((a,b) => ((b.triviaPointsQuarterly || 0) + (b.triviaPoints || 0)) - ((a.triviaPointsQuarterly || 0) + (a.triviaPoints || 0)));
-    if(players.length === 0) return alert("Nadie ha acumulado puntos en el trimestre.");
-    const maxScore = (players[0].triviaPointsQuarterly || 0) + (players[0].triviaPoints || 0);
-    const winners = players.filter(s => ((s.triviaPointsQuarterly || 0) + (s.triviaPoints || 0)) === maxScore);
-    if(!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nLos puntos trimestrales se pondrán a cero (los anuales seguirán intactos).\n\nHay ${winners.length} ganadores con ${maxScore} puntos.`)) return;
+    const monthlyPodium = buildTriviaPodium(students, student => student.triviaPoints);
+    const quarterlyPodium = buildTriviaPodium(students, student => Number(student.triviaPointsQuarterly || 0) + Number(student.triviaPoints || 0));
+    if (monthlyPodium.length === 0) return alert('No hay puntos del mes actual. En el cierre trimestral se publican conjuntamente el resultado mensual y el trimestral.');
+    if (quarterlyPodium.length === 0) return alert('Nadie ha acumulado puntos en el trimestre.');
+    if (!ensureTriviaPrizes(['mensual', 'trimestral'])) return;
+
+    if (!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nSe publicarán conjuntamente:\n· Ganador, premio y podio mensual.\n· Ganador, premio y podio trimestral.\n\nEl mes y el trimestre quedarán a cero; el ranking anual conservará sus puntos.`)) return;
+
     setLoading(true);
     try {
-      const winnerNames = winners.map(w => w.name);
-      const updatePromises = players.map(p => {
-        return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
-          triviaPointsQuarterly: 0
-        });
-      });
-      await Promise.all(updatePromises);
-      const msg = `¡Felicidades a ${winnerNames.join(', ')} por coronarse como los campeones del Trimestre con ${maxScore} puntos!\n\nPasaros por coordinación a recoger vuestro premio. El contador trimestral se reinicia, ¡pero la carrera por el Gran Premio Anual sigue activa!`;
-      const id = Date.now().toString();
-      await setDoc(doc(db, 'artifacts', appId, 'announcements', id), { title: "👑 ¡Campeones del Trimestre!", content: msg, date: new Date().toISOString().split('T')[0] });
-      alert("Trimestre cerrado con éxito. Puedes proceder a dar los premios.");
-    } catch (e) { 
-      alert("Error al cerrar el trimestre: " + e.message); 
+      const players = students.filter(student => Number(student.triviaPoints || 0) > 0 || Number(student.triviaPointsQuarterly || 0) > 0);
+      await Promise.all(players.map(player => updateDoc(doc(db, 'artifacts', appId, 'students', player.id), {
+        triviaPoints: 0,
+        triviaPointsQuarterly: 0,
+        triviaPointsAnnual: Number(player.triviaPointsAnnual || 0) + Number(player.triviaPoints || 0)
+      })));
+
+      const content = [
+        buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual')),
+        buildTriviaResultSection('Resultado trimestral', quarterlyPodium, getTriviaPrize('trimestral')),
+        'El ranking anual continúa en marcha.'
+      ].join('\n\n────────────────\n\n');
+      await publishTriviaClosure('👑 Ganadores mensual y trimestral', content, 'trimestral');
+      alert('Trimestre cerrado. Se han publicado los dos premios y ambos podios.');
+    } catch (e) {
+      alert('Error al cerrar el trimestre: ' + e.message);
     } finally {
       setLoading(false);
     }
   };
 
   const handleCerrarRetoAnual = async () => {
-    if(!window.confirm(`⚠️ PELIGRO: REINICIO TOTAL\n\n¿Seguro que quieres CERRAR LA TEMPORADA?\n\nEsto pondrá a CERO ABSOLUTO los contadores de todos los alumnos (Mes, Trimestre, Año, Rachas y Victorias). Úsalo solo para empezar un nuevo curso o terminar el periodo de pruebas.`)) return;
+    const monthlyPodium = buildTriviaPodium(students, student => student.triviaPoints);
+    const quarterlyPodium = buildTriviaPodium(students, student => Number(student.triviaPointsQuarterly || 0) + Number(student.triviaPoints || 0));
+    const annualPodium = buildTriviaPodium(students, student => Number(student.triviaPointsAnnual || 0) + Number(student.triviaPoints || 0));
+    if (monthlyPodium.length === 0) return alert('No hay puntos del mes actual. En el cierre anual se publican conjuntamente los resultados mensual, trimestral y anual.');
+    if (quarterlyPodium.length === 0 || annualPodium.length === 0) return alert('No hay puntos suficientes para cerrar conjuntamente el trimestre y el año.');
+    if (!ensureTriviaPrizes(['mensual', 'trimestral', 'anual'])) return;
+
+    if (!window.confirm(`⚠️ CIERRE ANUAL\n\nSe publicarán conjuntamente los ganadores, premios y podios mensual, trimestral y anual. Después se pondrán a cero todos los contadores del Trivial, incluidas rachas y victorias.\n\n¿Confirmas el cierre de temporada?`)) return;
+
     setLoading(true);
     try {
-      const players = students.filter(s => 
-        (s.triviaPointsAnnual || 0) > 0 || 
-        (s.triviaPointsQuarterly || 0) > 0 || 
-        (s.triviaPoints || 0) > 0 || 
-        (s.triviaStreak || 0) > 0 || 
-        (s.triviaVictories || 0) > 0
+      const players = students.filter(student =>
+        Number(student.triviaPointsAnnual || 0) > 0 ||
+        Number(student.triviaPointsQuarterly || 0) > 0 ||
+        Number(student.triviaPoints || 0) > 0 ||
+        Number(student.triviaStreak || 0) > 0 ||
+        Number(student.triviaVictories || 0) > 0
       );
-      const updatePromises = players.map(p => {
-        return updateDoc(doc(db, 'artifacts', appId, 'students', p.id), { 
-          triviaPoints: 0,
-          triviaPointsQuarterly: 0,
-          triviaPointsAnnual: 0,
-          triviaStreak: 0,
-          triviaVictories: 0
-        });
-      });
-      await Promise.all(updatePromises);
-      alert("🧹 ¡Limpieza profunda completada! El sistema está a cero y listo para una nueva temporada.");
-    } catch (e) { 
-      alert("Error al cerrar el año: " + e.message); 
+      await Promise.all(players.map(player => updateDoc(doc(db, 'artifacts', appId, 'students', player.id), {
+        triviaPoints: 0,
+        triviaPointsQuarterly: 0,
+        triviaPointsAnnual: 0,
+        triviaStreak: 0,
+        triviaVictories: 0
+      })));
+
+      const content = [
+        buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual')),
+        buildTriviaResultSection('Resultado trimestral', quarterlyPodium, getTriviaPrize('trimestral')),
+        buildTriviaResultSection('Resultado anual', annualPodium, getTriviaPrize('anual')),
+        '¡Enhorabuena a todos los participantes! Comienza una nueva temporada del Trivial.'
+      ].join('\n\n────────────────\n\n');
+      await publishTriviaClosure('🌟 Ganadores de cierre de temporada', content, 'anual');
+      alert('Año cerrado. Se han publicado los tres premios y los tres podios; el Trivial queda reiniciado.');
+    } catch (e) {
+      alert('Error al cerrar el año: ' + e.message);
     } finally {
       setLoading(false);
     }
@@ -6778,11 +6974,13 @@ Coordinación Los Mitos.`
     const targetMonth = selectedPayrollMonth;
     const thisMonthRecords = allRecords.filter(r => (r.date || '').startsWith(targetMonth) && !r.isRenounced);
     const thisMonthAdjustments = payrollAdjustments.filter(a => a.month === targetMonth);
+    const thisMonthVacationDates = (settings.vacaciones || []).filter(date => String(date || '').startsWith(targetMonth));
     const payroll = {};
+    const studentById = new Map(students.map(student => [student.id, student]));
 
     const ensureTeacher = (name) => {
       const teacherName = name || 'Desconocido';
-      if (!payroll[teacherName]) payroll[teacherName] = { realHours: 0, adjustmentHours: 0, adjustments: [] };
+      if (!payroll[teacherName]) payroll[teacherName] = { realHours: 0, vacationHours: 0, adjustmentHours: 0, adjustments: [] };
       return teacherName;
     };
 
@@ -6801,11 +6999,35 @@ Coordinación Los Mitos.`
       payroll[tName].adjustments.push(a);
     });
 
+    thisMonthVacationDates.forEach(vacationDate => {
+      const vacationDay = getLocalDayOfWeek(vacationDate);
+      if (vacationDay === null) return;
+
+      recurringClassesOnly.forEach(classData => {
+        if (Number(classData.dayOfWeek) !== vacationDay || !classData.teacher) return;
+
+        const hasActiveStudentThatDate = (classData.students || []).some(studentEntry => {
+          const studentInfo = studentById.get(studentEntry.id) || {};
+          if (!isFixedClassStudent(studentEntry) || studentInfo.globalStatus === 'baja') return false;
+          if (!isStudentClassActiveOnDate(studentEntry, studentInfo, vacationDate)) return false;
+          if (isStudentInMaintenance(studentEntry.id, vacationDate)) return false;
+          return !getActiveStudentTemporaryRelocations(studentEntry.id, vacationDate)
+            .some(relocation => relocation.sourceClassId === classData.id);
+        });
+
+        if (!hasActiveStudentThatDate) return;
+        const tName = ensureTeacher(classData.teacher);
+        const duration = Number(String(classData.duration || 60).replace(',', '.')) || 60;
+        payroll[tName].vacationHours += (duration / 60);
+      });
+    });
+
     return Object.entries(payroll).map(([name, data]) => {
-      const totalHours = data.realHours + data.adjustmentHours;
+      const totalHours = data.realHours + data.vacationHours + data.adjustmentHours;
       return {
         name,
         realHours: data.realHours,
+        vacationHours: data.vacationHours,
         adjustmentHours: data.adjustmentHours,
         totalHours,
         adjustments: data.adjustments,
@@ -6813,7 +7035,50 @@ Coordinación Los Mitos.`
       };
     }).filter(t => t.realHours !== 0 || t.adjustmentHours !== 0 || (settings.teachersList || []).includes(t.name))
       .sort((a, b) => b.totalHours - a.totalHours);
-  }, [allRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, selectedPayrollMonth]);
+  }, [allRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, settings.vacaciones, selectedPayrollMonth, recurringClassesOnly, students, maintenancePeriods, temporaryRelocations]);
+
+  const copyPayrollReport = async () => {
+    if (teachersPayroll.length === 0) {
+      alert('No hay profesores ni horas para copiar en este mes.');
+      return;
+    }
+
+    const [year, month] = String(selectedPayrollMonth || '').split('-').map(Number);
+    const monthLabel = Number.isFinite(year) && Number.isFinite(month)
+      ? new Date(year, month - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }).toUpperCase()
+      : selectedPayrollMonth;
+    const formatHours = value => Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const formatSalary = value => Number(String(value || 0).replace(',', '.')).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const blocks = teachersPayroll.map(teacher => [
+      `Profesor/a: ${teacher.name}`,
+      `Horas totales liquidables: ${formatHours(teacher.totalHours)} h`,
+      ...(teacher.vacationHours > 0 ? [`Horas de vacaciones (incluidas en el total): ${formatHours(teacher.vacationHours)} h`] : []),
+      `Salario: ${formatSalary(teacher.earnings)} €`
+    ].join('\n'));
+    const textToCopy = `INFORME DE HORAS Y NÓMINAS · ${monthLabel}\n\n${blocks.join('\n\n')}`;
+
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API no disponible');
+      await navigator.clipboard.writeText(textToCopy);
+    } catch (error) {
+      const textarea = document.createElement('textarea');
+      textarea.value = textToCopy;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!copied) {
+        alert('El navegador no ha permitido copiar el informe. Revisa los permisos del portapapeles.');
+        return;
+      }
+    }
+
+    alert(`Informe de ${teachersPayroll.length} profesor(es) copiado al portapapeles.`);
+  };
 
   const getEvaluationTeacherName = (evaluation = {}) => String(
     evaluation.teacherName || evaluation.teacher || evaluation.teacherDisplayName || evaluation.profesor || 'Sin profesor'
@@ -7727,8 +7992,9 @@ ${valueOrDash(comments.privateNote)}`,
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
           <button onClick={() => setChangeClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
-          <div className="flex items-center gap-3 mb-6"><ArrowRightLeft className="w-8 h-8 text-blue-600"/><h2 className="text-xl font-black uppercase">Cambiar de Grupo</h2></div>
+          <div className="flex items-center gap-3 mb-6"><ArrowRightLeft className="w-8 h-8 text-blue-600"/><h2 className="text-xl font-black uppercase">Programar cambio</h2></div>
           <p className="text-xs text-zinc-500 font-bold mb-4 uppercase tracking-widest">Alumno: <span className="text-black">{student.name}</span></p>
+          <p className="text-xs text-blue-800 font-bold mb-4 bg-blue-50 border border-blue-100 rounded-xl p-3 leading-relaxed">El alumno seguirá en su horario actual hasta la fecha que indiques. El nuevo horario empezará al día siguiente.</p>
           <select value={selectedInstForChange} onChange={e => setSelectedInstForChange(e.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 rounded-xl font-bold text-sm">
             <option value="">Selecciona Instrumento...</option>
             {(settings.instrumentos || defaultInstrumentos).map(i => <option key={i} value={i}>{i}</option>)}
@@ -7738,7 +8004,7 @@ ${valueOrDash(comments.privateNote)}`,
               <p className="text-center text-xs text-zinc-400 font-bold p-4 border-2 border-dashed rounded-xl">No hay grupos libres para este instrumento.</p>
             ) : (
               availableClasses.map(c => (
-                <div key={c.id} onClick={() => executeDirectClassChange(student, c)} className="p-3 rounded-xl border-2 border-zinc-100 hover:border-blue-500 cursor-pointer transition-colors">
+                <div key={c.id} onClick={() => createManualScheduledClassChange(student, c)} className="p-3 rounded-xl border-2 border-zinc-100 hover:border-blue-500 cursor-pointer transition-colors">
                   <div className="flex justify-between font-black text-sm uppercase"><span>{getDayName(c.dayOfWeek)}</span><span>{c.time}h</span></div>
                   <div className="text-xs text-zinc-500 mt-1 flex justify-between"><span>Prof: {c.teacher}</span> <span className="text-blue-600 font-bold">{getCommercialFreeSpots(c)} plazas libres fijas</span></div>
                 </div>
@@ -9387,7 +9653,7 @@ ${startDateWarning}
                               <button onClick={() => setEditStudentModal(student)} className="p-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
                                 <Pencil className="w-4 h-4"/>
                               </button>
-                              <button onClick={() => setChangeClassModal(student)} className="p-2.5 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors" title="Cambiar a otra clase manualmente">
+                              <button onClick={() => setChangeClassModal(student)} className="p-2.5 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors" title="Programar cambio de clase">
                                 <ArrowRightLeft className="w-4 h-4"/>
                               </button>
                               <button onClick={() => setTemporaryRelocationModal(student)} className="p-2.5 bg-violet-100 text-violet-700 rounded-lg hover:bg-violet-600 hover:text-white transition-colors" title="Recolocar temporalmente sin liberar su plaza formal">
@@ -10260,17 +10526,21 @@ ${startDateWarning}
 
             {teacherPanelTab === 'payroll' && (
               <div className="space-y-6">
-                <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed">
-                  Los ajustes manuales no alteran los registros de asistencia. Sirven para cotejar con las hojas firmadas físicamente o corregir errores del sistema.
+                <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <p>Las vacaciones se calculan automáticamente a partir de las clases habituales que coinciden con las fechas marcadas como vacaciones y se suman al total liquidable. Los ajustes manuales no alteran los registros de asistencia.</p>
+                  <button onClick={copyPayrollReport} className="bg-black text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 flex items-center justify-center gap-2 shadow-md shrink-0">
+                    <ClipboardList className="w-4 h-4"/> Copiar informe para el despacho
+                  </button>
                 </div>
 
                 <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse min-w-[850px]">
+                    <table className="w-full text-left border-collapse min-w-[950px]">
                       <thead>
                         <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
                           <th className="p-4 font-black">Profesor</th>
                           <th className="p-4 font-black text-right">Horas Reales</th>
+                          <th className="p-4 font-black text-right">Vacaciones</th>
                           <th className="p-4 font-black text-right">Ajustes</th>
                           <th className="p-4 font-black text-right">Total Liquidable</th>
                           <th className="p-4 font-black text-right">Acumulado (€)</th>
@@ -10279,7 +10549,7 @@ ${startDateWarning}
                       </thead>
                       <tbody className="text-sm font-medium text-slate-700">
                         {teachersPayroll.length === 0 ? (
-                          <tr><td colSpan="6" className="p-8 text-center text-zinc-400 italic">No hay profesores, registros ni ajustes para este mes.</td></tr>
+                          <tr><td colSpan="7" className="p-8 text-center text-zinc-400 italic">No hay profesores, registros, vacaciones ni ajustes para este mes.</td></tr>
                         ) : (
                           teachersPayroll.map((t, idx) => (
                             <tr key={idx} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
@@ -10298,6 +10568,7 @@ ${startDateWarning}
                                 )}
                               </td>
                               <td className="p-4 text-right font-black">{t.realHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
+                              <td className={`p-4 text-right font-black ${t.vacationHours > 0 ? 'text-purple-700' : 'text-zinc-400'}`}>{t.vacationHours.toFixed(2)} <span className="text-[10px] uppercase">h</span></td>
                               <td className={`p-4 text-right font-black ${t.adjustmentHours > 0 ? 'text-emerald-600' : t.adjustmentHours < 0 ? 'text-rose-600' : 'text-zinc-400'}`}>{t.adjustmentHours > 0 ? '+' : ''}{t.adjustmentHours.toFixed(2)} <span className="text-[10px] uppercase">h</span></td>
                               <td className="p-4 text-right font-black text-slate-900">{t.totalHours.toFixed(2)} <span className="text-[10px] text-zinc-400 uppercase">h</span></td>
                               <td className="p-4 text-right font-black text-emerald-600">{t.earnings} <span className="text-[10px] text-emerald-400 uppercase">€</span></td>
@@ -10656,14 +10927,16 @@ ${startDateWarning}
               </div>
             </div>
 
-            {/* PREMIOS INTERNOS */}
+            {/* PREMIOS EN JUEGO */}
             <div className="bg-white p-6 rounded-2xl border border-zinc-200 shadow-sm mt-6">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-400 mb-4 flex items-center gap-2"><Gift className="w-4 h-4"/> Premios Internos</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-700 mb-2 flex items-center gap-2"><Gift className="w-4 h-4"/> Premios en juego</h3>
+              <p className="text-xs font-bold text-zinc-400 mb-4">Estos premios se harán públicos automáticamente en el Tablón cuando cierres el periodo correspondiente.</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <textarea value={settings.prizes?.mensual || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, mensual: e.target.value}})} placeholder="Premio mensual..." className="w-full p-3 bg-emerald-50 border border-emerald-200 rounded-xl focus:border-emerald-500 outline-none text-xs font-medium resize-y" />
                 <textarea value={settings.prizes?.trimestral || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, trimestral: e.target.value}})} placeholder="Premio Trimestral..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none text-xs font-medium resize-y" />
                 <textarea value={settings.prizes?.anual || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, anual: e.target.value}})} placeholder="Gran Premio Anual..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none text-xs font-medium resize-y" />
               </div>
-              <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-100 hover:bg-zinc-200 text-zinc-800 px-4 py-2 rounded-lg font-black uppercase tracking-widest text-[10px] transition-colors">Guardar Notas</button>
+              <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-900 hover:bg-black text-white px-4 py-2 rounded-lg font-black uppercase tracking-widest text-[10px] transition-colors">Guardar premios</button>
             </div>
           </div>
         )}

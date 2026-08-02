@@ -6978,10 +6978,42 @@ Coordinación Los Mitos.`
     const payroll = {};
     const studentById = new Map(students.map(student => [student.id, student]));
 
+    const normalizeTeacherKey = (name) => String(name || 'Desconocido')
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .toLocaleLowerCase('es-ES');
+
+    const officialTeacherNames = new Map();
+    (settings.teachersList || []).forEach(name => {
+      const cleanName = String(name || '').trim().replace(/\s+/g, ' ');
+      if (!cleanName) return;
+      const teacherKey = normalizeTeacherKey(cleanName);
+      if (!officialTeacherNames.has(teacherKey)) officialTeacherNames.set(teacherKey, cleanName);
+    });
+    recurringClassesOnly.forEach(classData => {
+      const cleanName = String(classData.teacher || '').trim().replace(/\s+/g, ' ');
+      if (!cleanName) return;
+      const teacherKey = normalizeTeacherKey(cleanName);
+      if (!officialTeacherNames.has(teacherKey)) officialTeacherNames.set(teacherKey, cleanName);
+    });
+    const configuredTeacherKeys = new Set((settings.teachersList || [])
+      .map(normalizeTeacherKey)
+      .filter(Boolean));
+
     const ensureTeacher = (name) => {
-      const teacherName = name || 'Desconocido';
-      if (!payroll[teacherName]) payroll[teacherName] = { realHours: 0, vacationHours: 0, adjustmentHours: 0, adjustments: [] };
-      return teacherName;
+      const cleanName = String(name || 'Desconocido').trim().replace(/\s+/g, ' ') || 'Desconocido';
+      const teacherKey = normalizeTeacherKey(cleanName);
+      if (!officialTeacherNames.has(teacherKey)) officialTeacherNames.set(teacherKey, cleanName);
+      if (!payroll[teacherKey]) payroll[teacherKey] = {
+        name: officialTeacherNames.get(teacherKey),
+        realHours: 0,
+        vacationHours: 0,
+        adjustmentHours: 0,
+        adjustments: []
+      };
+      return teacherKey;
     };
 
     (settings.teachersList || []).forEach(t => ensureTeacher(t));
@@ -7022,10 +7054,11 @@ Coordinación Los Mitos.`
       });
     });
 
-    return Object.entries(payroll).map(([name, data]) => {
+    return Object.entries(payroll).map(([teacherKey, data]) => {
       const totalHours = data.realHours + data.vacationHours + data.adjustmentHours;
       return {
-        name,
+        name: data.name,
+        teacherKey,
         realHours: data.realHours,
         vacationHours: data.vacationHours,
         adjustmentHours: data.adjustmentHours,
@@ -7033,7 +7066,7 @@ Coordinación Los Mitos.`
         adjustments: data.adjustments,
         earnings: (totalHours * (settings.hourlyRate || 17.33)).toFixed(2)
       };
-    }).filter(t => t.realHours !== 0 || t.adjustmentHours !== 0 || (settings.teachersList || []).includes(t.name))
+    }).filter(t => t.realHours !== 0 || t.vacationHours !== 0 || t.adjustmentHours !== 0 || configuredTeacherKeys.has(t.teacherKey))
       .sort((a, b) => b.totalHours - a.totalHours);
   }, [allRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, settings.vacaciones, selectedPayrollMonth, recurringClassesOnly, students, maintenancePeriods, temporaryRelocations]);
 

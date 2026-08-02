@@ -346,6 +346,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [] });
   const [announcements, setAnnouncements] = useState([]); 
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
+  const [myPollResponses, setMyPollResponses] = useState([]);
+  const [pollDrafts, setPollDrafts] = useState({});
+  const [savingPollId, setSavingPollId] = useState(null);
+  const [pollClock, setPollClock] = useState(Date.now());
   const [myGestiones, setMyGestiones] = useState([]); 
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
@@ -401,6 +405,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
   const [whatsappConfirmModal, setWhatsappConfirmModal] = useState(null);
   const [expandedClassTasks, setExpandedClassTasks] = useState({});
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setPollClock(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const timeRules = getMonthNames();
   const dToday = new Date();
@@ -1184,6 +1193,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const audienceType = ann.audienceType || 'all';
     const audienceValue = String(ann.audienceValue || '').trim();
 
+    if (ann.type === 'poll' && ann.pollStatus === 'archived') return false;
+
     // Los avisos dirigidos a profesores se leen solo desde TeacherPortal.
     // StudentPortal debe ignorarlos aunque estén en la misma colección announcements.
     if (audienceType === 'teachers') return false;
@@ -1333,6 +1344,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => console.error('Error al cargar inscripciones de talleres', error)
     );
 
+    const pollResponsesQuery = query(
+      collection(db, 'artifacts', appId, 'pollResponses'),
+      where('studentId', '==', profile.id)
+    );
+    const unsubPollResponses = onSnapshot(
+      pollResponsesQuery,
+      (snapshot) => setMyPollResponses(snapshot.docs.map(responseDoc => ({ id: responseDoc.id, ...responseDoc.data() }))),
+      (error) => console.error('Error al cargar respuestas de encuestas', error)
+    );
+
     const ticketsQuery = collectionGroup(db, 'tickets');
     const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
       let validTicketsCount = 0;
@@ -1370,6 +1391,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubMaintenancePeriods();
       unsubWorkshops();
       unsubWorkshopRegistrations();
+      unsubPollResponses();
       unsubTickets(); 
     };
   }, [profile?.id, db, appId]);
@@ -1389,6 +1411,121 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const showToast = (msg, type = 'success') => {
     setNotification({ text: msg, type });
     setTimeout(() => setNotification(null), 4000);
+  };
+
+  const getMyPollResponse = (pollId) => myPollResponses.find(response => response.pollId === pollId) || null;
+
+  const isStudentPollClosed = (poll = {}) => {
+    if (['closed', 'archived'].includes(poll.pollStatus)) return true;
+    if (!poll.pollDeadline) return false;
+    return new Date(poll.pollDeadline).getTime() <= pollClock;
+  };
+
+  const getPollDraft = (poll) => {
+    if (pollDrafts[poll.id]) return pollDrafts[poll.id];
+    const response = getMyPollResponse(poll.id);
+    return {
+      selectedOptionIds: response?.selectedOptionIds || [],
+      textAnswer: response?.textAnswer || ''
+    };
+  };
+
+  const updatePollDraft = (pollId, changes) => {
+    const response = getMyPollResponse(pollId);
+    setPollDrafts(prev => ({
+      ...prev,
+      [pollId]: {
+        selectedOptionIds: response?.selectedOptionIds || [],
+        textAnswer: response?.textAnswer || '',
+        ...(prev[pollId] || {}),
+        ...changes
+      }
+    }));
+  };
+
+  const togglePollOption = (poll, optionId) => {
+    const draft = getPollDraft(poll);
+    if (poll.pollAnswerType === 'single') {
+      updatePollDraft(poll.id, { selectedOptionIds: [optionId] });
+      return;
+    }
+    const current = new Set(draft.selectedOptionIds || []);
+    if (current.has(optionId)) current.delete(optionId);
+    else current.add(optionId);
+    updatePollDraft(poll.id, { selectedOptionIds: [...current] });
+  };
+
+  const shouldShowPollResults = (poll, response) => {
+    if (poll.pollResultsVisibility === 'after_response') return Boolean(response);
+    if (poll.pollResultsVisibility === 'after_close') return isStudentPollClosed(poll);
+    return false;
+  };
+
+  const submitPollResponse = async (poll) => {
+    if (!profile?.id || savingPollId) return;
+    const draft = getPollDraft(poll);
+    const selectedOptionIds = [...new Set(draft.selectedOptionIds || [])];
+    const textAnswer = String(draft.textAnswer || '').trim();
+    if (poll.pollAnswerType === 'text' ? !textAnswer : selectedOptionIds.length === 0) {
+      showToast('Selecciona o escribe una respuesta antes de enviarla.', 'error');
+      return;
+    }
+    if (poll.pollAnswerType === 'single' && selectedOptionIds.length !== 1) {
+      showToast('Selecciona una sola opción.', 'error');
+      return;
+    }
+
+    setSavingPollId(poll.id);
+    const pollRef = doc(db, 'artifacts', appId, 'announcements', poll.id);
+    const responseRef = doc(db, 'artifacts', appId, 'pollResponses', `${poll.id}_${profile.id}`);
+    const nowIso = new Date().toISOString();
+    try {
+      await runTransaction(db, async transaction => {
+        const pollSnap = await transaction.get(pollRef);
+        const responseSnap = await transaction.get(responseRef);
+        if (!pollSnap.exists()) throw new Error('POLL_NOT_FOUND');
+        const currentPoll = pollSnap.data();
+        if (currentPoll.type !== 'poll' || ['closed', 'archived'].includes(currentPoll.pollStatus) || (currentPoll.pollDeadline && new Date(currentPoll.pollDeadline).getTime() <= Date.now())) {
+          throw new Error('POLL_CLOSED');
+        }
+        if (responseSnap.exists() && currentPoll.pollAllowEdit === false) throw new Error('EDIT_NOT_ALLOWED');
+
+        const previous = responseSnap.exists() ? responseSnap.data() : null;
+        const counts = { ...(currentPoll.pollVoteCounts || {}) };
+        if (currentPoll.pollAnswerType !== 'text') {
+          (previous?.selectedOptionIds || []).forEach(optionId => { counts[optionId] = Math.max(0, Number(counts[optionId] || 0) - 1); });
+          selectedOptionIds.forEach(optionId => { counts[optionId] = Number(counts[optionId] || 0) + 1; });
+        }
+
+        transaction.set(responseRef, {
+          pollId: poll.id,
+          studentId: profile.id,
+          studentName: profile.useAlias && profile.alias ? profile.alias : (profile.name || ''),
+          studentEmail: profile.email || user.email || '',
+          answerType: currentPoll.pollAnswerType || 'single',
+          selectedOptionIds: currentPoll.pollAnswerType === 'text' ? [] : selectedOptionIds,
+          textAnswer: currentPoll.pollAnswerType === 'text' ? textAnswer : '',
+          createdAt: previous?.createdAt || nowIso,
+          updatedAt: nowIso
+        });
+        transaction.update(pollRef, {
+          pollVoteCounts: counts,
+          pollResponseCount: Number(currentPoll.pollResponseCount || 0) + (previous ? 0 : 1),
+          pollLastResponseAt: nowIso
+        });
+      });
+      showToast(getMyPollResponse(poll.id) ? 'Respuesta actualizada.' : 'Respuesta registrada.');
+    } catch (error) {
+      console.error('Error al guardar la respuesta de la encuesta', error);
+      const message = error?.message === 'POLL_CLOSED'
+        ? 'La encuesta ya está cerrada.'
+        : error?.message === 'EDIT_NOT_ALLOWED'
+          ? 'Esta encuesta no permite modificar la respuesta.'
+          : 'No se ha podido guardar la respuesta.';
+      showToast(message, 'error');
+    } finally {
+      setSavingPollId(null);
+    }
   };
 
   const getWorkshopRegistration = (workshopId = '') => workshopRegistrationsByWorkshop.get(workshopId) || null;
@@ -3672,18 +3809,98 @@ END:VCALENDAR`;
               </div>
             ) : (
               <div className="space-y-4">
-                {visibleAnnouncements.slice(0, visibleAnnouncementsCount).map(ann => (
-                  <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
-                    <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
-                    <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
-                    <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap">{ann.content}</p>
-                    {getSafeAnnouncementUrl(ann.url) && (
-                      <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
-                        <LinkIcon className="w-4 h-4"/> Abrir enlace
-                      </a>
-                    )}
-                  </div>
-                ))}
+                {visibleAnnouncements.slice(0, visibleAnnouncementsCount).map(ann => {
+                  if (ann.type !== 'poll') {
+                    return (
+                      <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
+                        <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
+                        <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
+                        <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap">{ann.content}</p>
+                        {getSafeAnnouncementUrl(ann.url) && (
+                          <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
+                            <LinkIcon className="w-4 h-4"/> Abrir enlace
+                          </a>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  const response = getMyPollResponse(ann.id);
+                  const draft = getPollDraft(ann);
+                  const closed = isStudentPollClosed(ann);
+                  const canEdit = !closed && (!response || ann.pollAllowEdit !== false);
+                  const showResults = shouldShowPollResults(ann, response);
+                  const totalResponses = Number(ann.pollResponseCount || 0);
+                  return (
+                    <div key={ann.id} className="bg-white rounded-3xl shadow-sm border-2 border-violet-200 overflow-hidden">
+                      <div className="bg-violet-50 px-6 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-violet-100">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-violet-700">Encuesta</span>
+                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${closed ? 'bg-zinc-200 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{closed ? 'Finalizada' : `Abierta hasta ${ann.pollDeadline ? new Date(ann.pollDeadline).toLocaleString('es-ES') : 'nuevo aviso'}`}</span>
+                      </div>
+                      <div className="p-6">
+                        <h3 className="font-black text-slate-800 tracking-tight text-xl leading-tight mb-2">{ann.title}</h3>
+                        <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">Publicada el {formatDateSpanish(ann.date)}</p>
+                        {ann.content && <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap mb-5">{ann.content}</p>}
+
+                        <div className="space-y-3">
+                          {ann.pollAnswerType === 'text' ? (
+                            <textarea
+                              value={draft.textAnswer || ''}
+                              onChange={e => updatePollDraft(ann.id, { textAnswer: e.target.value })}
+                              disabled={!canEdit}
+                              placeholder="Escribe tu respuesta..."
+                              className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-violet-500 outline-none min-h-[110px] resize-y text-sm font-medium disabled:opacity-60"
+                            />
+                          ) : (ann.pollOptions || []).map(option => {
+                            const selected = (draft.selectedOptionIds || []).includes(option.id);
+                            return (
+                              <label key={option.id} className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-colors ${selected ? 'border-violet-500 bg-violet-50' : 'border-zinc-200 bg-zinc-50'} ${canEdit ? 'cursor-pointer' : 'opacity-70'}`}>
+                                <input type={ann.pollAnswerType === 'multiple' ? 'checkbox' : 'radio'} name={`poll-${ann.id}`} checked={selected} onChange={() => togglePollOption(ann, option.id)} disabled={!canEdit} className="w-4 h-4 accent-violet-600" />
+                                <span className="text-sm font-bold text-slate-700">{option.label}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+
+                        <p className="mt-4 text-[10px] font-bold text-zinc-500 leading-relaxed">
+                          {ann.pollPrivacy === 'confidential'
+                            ? 'Respuesta confidencial: Administración puede comprobar quién ha participado, pero los resultados no vinculan tu nombre con lo que has respondido.'
+                            : 'Respuesta identificada: Administración podrá ver tu nombre junto a tu respuesta.'}
+                        </p>
+
+                        {response && <div className="mt-4 flex items-center gap-2 text-xs font-black text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-xl p-3"><CheckCircle className="w-4 h-4"/> Respuesta registrada{canEdit ? ' · Puedes modificarla hasta el cierre.' : ''}</div>}
+
+                        {canEdit && (
+                          <button onClick={() => submitPollResponse(ann)} disabled={savingPollId === ann.id} className="w-full mt-4 bg-violet-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-violet-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
+                            {savingPollId === ann.id ? 'Guardando...' : <><Send className="w-4 h-4"/> {response ? 'Actualizar respuesta' : 'Enviar respuesta'}</>}
+                          </button>
+                        )}
+
+                        {closed && !response && <div className="mt-4 text-xs font-bold text-zinc-500 bg-zinc-100 rounded-xl p-3">La encuesta ha finalizado sin que conste una respuesta tuya.</div>}
+
+                        {showResults && (
+                          <div className="mt-6 pt-5 border-t border-violet-100 space-y-3">
+                            <div className="flex items-center justify-between gap-3"><h4 className="text-[10px] font-black uppercase tracking-widest text-violet-700">Resultados</h4><span className="text-[10px] font-black text-zinc-500">{totalResponses} respuesta(s)</span></div>
+                            {ann.pollAnswerType === 'text' ? (
+                              <p className="text-xs font-medium text-zinc-500">Las respuestas escritas solo son visibles para Administración.</p>
+                            ) : (ann.pollOptions || []).map(option => {
+                              const count = Number(ann.pollVoteCounts?.[option.id] || 0);
+                              const percentage = totalResponses ? (count / totalResponses) * 100 : 0;
+                              return <div key={option.id}><div className="flex justify-between gap-3 text-xs font-bold text-slate-700"><span>{option.label}</span><span>{count} · {percentage.toFixed(1)}%</span></div><div className="h-2 bg-zinc-100 rounded-full mt-2 overflow-hidden"><div className="h-full bg-violet-600 rounded-full" style={{ width: `${Math.min(100, percentage)}%` }}/></div></div>;
+                            })}
+                            {ann.pollAnswerType === 'multiple' && <p className="text-[10px] font-bold text-zinc-400">Los porcentajes pueden sumar más del 100% porque se permiten varias opciones.</p>}
+                          </div>
+                        )}
+
+                        {getSafeAnnouncementUrl(ann.url) && (
+                          <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
+                            <LinkIcon className="w-4 h-4"/> Abrir enlace
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
                 {visibleAnnouncementsCount < visibleAnnouncements.length && (
                   <button onClick={() => setVisibleAnnouncementsCount(c => c + 5)} className="w-full py-4 rounded-2xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
                     Cargar más avisos

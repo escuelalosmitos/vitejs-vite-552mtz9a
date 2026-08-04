@@ -387,6 +387,13 @@ const getClassEndTime = (time, duration = 60) => {
   return range ? formatMinutesToTime(range.end) : '';
 };
 
+const doClassTimeRangesOverlap = (left = {}, right = {}) => {
+  const leftRange = getClassTimeRange(left.time, left.duration);
+  const rightRange = getClassTimeRange(right.time, right.duration);
+  if (!leftRange || !rightRange) return false;
+  return leftRange.start < rightRange.end && rightRange.start < leftRange.end;
+};
+
 const getDayName = (dayIndex) => ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][dayIndex];
 
 const parseLocalDateString = (dateString) => {
@@ -518,8 +525,29 @@ const buildTeacherColorTheme = (hex = DEFAULT_TEACHER_COLOR) => {
   };
 };
 
+const dateRangeContainsWeekday = (from, until, dayOfWeek) => {
+  const start = parseLocalDateString(from);
+  const end = parseLocalDateString(until);
+  const targetDay = Number(dayOfWeek);
+  if (!start || !end || !Number.isFinite(targetDay) || start > end) return false;
+  const cursor = new Date(start);
+  cursor.setDate(cursor.getDate() + ((targetDay - cursor.getDay() + 7) % 7));
+  return cursor <= end;
+};
+
+const cleanTeacherDisplayName = (name = '') => String(name || '')
+  .trim()
+  .replace(/\s+/g, ' ');
+
+const normalizeTeacherKey = (name = '') => cleanTeacherDisplayName(name)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase('es-ES');
+
+const isSameTeacher = (left, right) => Boolean(normalizeTeacherKey(left)) && normalizeTeacherKey(left) === normalizeTeacherKey(right);
+
 const getFallbackTeacherColor = (teacherName = 'Sin Asignar') => {
-  const cleanName = String(teacherName || 'Sin Asignar').trim();
+  const cleanName = cleanTeacherDisplayName(teacherName || 'Sin Asignar');
   if (!cleanName || cleanName === 'Sin Asignar') return DEFAULT_TEACHER_COLOR;
   let hash = 0;
   for (let i = 0; i < cleanName.length; i++) {
@@ -529,8 +557,9 @@ const getFallbackTeacherColor = (teacherName = 'Sin Asignar') => {
 };
 
 const getTeacherColorTheme = (teacherName = 'Sin Asignar', settings = {}) => {
-  const cleanName = String(teacherName || 'Sin Asignar').trim();
-  const configuredColor = settings?.teacherColors?.[cleanName];
+  const cleanName = cleanTeacherDisplayName(teacherName || 'Sin Asignar');
+  const matchingConfiguredName = Object.keys(settings?.teacherColors || {}).find(name => isSameTeacher(name, cleanName));
+  const configuredColor = matchingConfiguredName ? settings.teacherColors[matchingConfiguredName] : undefined;
   return buildTeacherColorTheme(isValidHexColor(configuredColor) ? configuredColor : getFallbackTeacherColor(cleanName));
 };
 
@@ -581,10 +610,17 @@ const StableModalRenderer = ({ render }) => {
 
 
 const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly, getTeacherEmail, db, appId, user }) => {
-  const teacherOptions = useMemo(() => [...new Set([
-    ...(settings?.teachersList || []),
-    ...(recurringClassesOnly || []).map(c => c.teacher).filter(Boolean)
-  ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')), [settings?.teachersList, recurringClassesOnly]);
+  const teacherOptions = useMemo(() => {
+    const officialNames = new Map();
+    [...(settings?.teachersList || []), ...(recurringClassesOnly || []).map(c => c.teacher)]
+      .filter(Boolean)
+      .forEach(name => {
+        const cleanName = cleanTeacherDisplayName(name);
+        const key = normalizeTeacherKey(cleanName);
+        if (key && !officialNames.has(key)) officialNames.set(key, cleanName);
+      });
+    return [...officialNames.values()].sort((a, b) => a.localeCompare(b, 'es'));
+  }, [settings?.teachersList, recurringClassesOnly]);
 
   const buildInitialForm = () => ({
     title: '',
@@ -1471,6 +1507,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [allTickets, setAllTickets] = useState([]);
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [temporaryClassChanges, setTemporaryClassChanges] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
   const [teacherEvaluations, setTeacherEvaluations] = useState([]);
@@ -1527,6 +1564,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [editWebModal, setEditWebModal] = useState(null); 
   const [editClassModal, setEditClassModal] = useState(null);
   const [editClassData, setEditClassData] = useState(null);
+  const [editClassMode, setEditClassMode] = useState('permanent');
+  const [temporaryClassData, setTemporaryClassData] = useState(null);
   const [socialModalText, setSocialModalText] = useState(''); 
   const [photosModalOpen, setPhotosModalOpen] = useState(false);
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
@@ -1542,6 +1581,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
   const [teacherPanelTab, setTeacherPanelTab] = useState('evaluations');
+  const [selectedAvailabilityTeacher, setSelectedAvailabilityTeacher] = useState('');
   const [teacherEvaluationPeriod, setTeacherEvaluationPeriod] = useState('all');
   const [expandedEvaluationTeacher, setExpandedEvaluationTeacher] = useState(null);
   const [expandedEvaluationIndividualsTeacher, setExpandedEvaluationIndividualsTeacher] = useState(null);
@@ -1553,7 +1593,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 15) setLoading(false); };
+    const checkLoad = () => { loaded++; if(loaded === 16) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -1592,7 +1632,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     const unsubAvail = onSnapshot(collection(db, 'artifacts', appId, 'availability'), (snap) => {
       const av = {};
-      snap.forEach(d => { av[d.id] = d.data().slots || {}; });
+      snap.forEach(d => {
+        const key = normalizeTeacherKey(d.id);
+        if (!key) return;
+        const incomingSlots = d.data().slots || {};
+        const mergedSlots = { ...(av[key] || {}) };
+        Object.entries(incomingSlots).forEach(([day, slots]) => {
+          const uniqueSlots = [...(mergedSlots[day] || []), ...(Array.isArray(slots) ? slots : [])]
+            .filter(slot => slot?.start && slot?.end)
+            .filter((slot, index, list) => list.findIndex(item => item.start === slot.start && item.end === slot.end) === index)
+            .sort((a, b) => a.start.localeCompare(b.start));
+          mergedSlots[day] = uniqueSlots;
+        });
+        av[key] = mergedSlots;
+      });
       setAvailabilities(av);
       checkLoad();
     });
@@ -1611,6 +1664,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       setTemporaryRelocations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
       checkLoad();
     });
+
+    const unsubTemporaryClassChanges = onSnapshot(
+      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+      (snap) => {
+        setTemporaryClassChanges(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+        checkLoad();
+      },
+      (error) => {
+        console.error('No se pudieron cargar los cambios temporales de clase:', error);
+        setTemporaryClassChanges([]);
+        checkLoad();
+      }
+    );
 
     const unsubMaintenancePeriods = onSnapshot(collection(db, 'artifacts', appId, 'maintenancePeriods'), (snap) => {
       setMaintenancePeriods(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
@@ -1651,7 +1717,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
     );
 
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubMaintenancePeriods(); unsubTeacherTasks(); unsubTeacherEvaluations(); unsubWorkshopRegistrations(); unsubPollResponses(); };
+    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubTemporaryClassChanges(); unsubMaintenancePeriods(); unsubTeacherTasks(); unsubTeacherEvaluations(); unsubWorkshopRegistrations(); unsubPollResponses(); };
   }, [appId, db]);
 
   useEffect(() => {
@@ -1689,6 +1755,91 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const recurringClassesOnly = useMemo(() => {
     return allClasses.filter(c => !isPunctualClass(c));
   }, [allClasses]);
+
+  const officialTeacherNameMap = useMemo(() => {
+    const names = new Map();
+    const register = (value, prefer = false) => {
+      const cleanName = cleanTeacherDisplayName(value);
+      const key = normalizeTeacherKey(cleanName);
+      if (!key) return;
+      if (prefer || !names.has(key)) names.set(key, cleanName);
+    };
+
+    (settings.teachersList || []).forEach(name => register(name));
+    allClasses.forEach(classData => register(classData.teacher));
+    allRecords.forEach(record => register(record.teacher));
+    payrollAdjustments.forEach(adjustment => register(adjustment.teacher));
+    teacherEvaluations.forEach(evaluation => register(evaluation.teacherName || evaluation.teacher || evaluation.teacherDisplayName || evaluation.profesor));
+    Object.keys(availabilities || {}).forEach(key => register(key));
+    return names;
+  }, [settings.teachersList, allClasses, allRecords, payrollAdjustments, teacherEvaluations, availabilities]);
+
+  const getOfficialTeacherName = (name, fallback = 'Sin Asignar') => {
+    const cleanName = cleanTeacherDisplayName(name);
+    if (!cleanName) return fallback;
+    return officialTeacherNameMap.get(normalizeTeacherKey(cleanName)) || cleanName;
+  };
+
+  const allOfficialTeacherNames = useMemo(() => [...officialTeacherNameMap.values()]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'es')), [officialTeacherNameMap]);
+
+  const configuredTeacherNames = useMemo(() => {
+    const names = new Map();
+    (settings.teachersList || []).forEach(name => {
+      const cleanName = cleanTeacherDisplayName(name);
+      const key = normalizeTeacherKey(cleanName);
+      if (key && !names.has(key)) names.set(key, cleanName);
+    });
+    return [...names.values()];
+  }, [settings.teachersList]);
+
+  const getTeacherAvailability = (teacherName) => availabilities[normalizeTeacherKey(teacherName)] || {};
+
+  useEffect(() => {
+    if (selectedAvailabilityTeacher && allOfficialTeacherNames.some(name => isSameTeacher(name, selectedAvailabilityTeacher))) return;
+    setSelectedAvailabilityTeacher(allOfficialTeacherNames[0] || '');
+  }, [allOfficialTeacherNames, selectedAvailabilityTeacher]);
+
+  const isTemporaryClassChangeActiveForDate = (change = {}, dateStr = todayStr) => {
+    if (!change || ['cancelled', 'cancelada', 'finalizada'].includes(change.status)) return false;
+    return Boolean(change.from && change.until && change.from <= dateStr && change.until >= dateStr);
+  };
+
+  const getClassTemporaryChanges = (classId) => temporaryClassChanges
+    .filter(change => change.classId === classId && !['cancelled', 'cancelada', 'finalizada', 'expired'].includes(change.status))
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+  const getActiveClassTemporaryChange = (classId, dateStr = todayStr) => getClassTemporaryChanges(classId)
+    .find(change => isTemporaryClassChangeActiveForDate(change, dateStr)) || null;
+
+  const getEffectiveClassForDate = (classData, dateStr = todayStr) => {
+    if (!classData) return classData;
+    const temporaryChange = getActiveClassTemporaryChange(classData.id, dateStr);
+    if (!temporaryChange) return classData;
+    return {
+      ...classData,
+      dayOfWeek: Number(temporaryChange.dayOfWeek),
+      time: temporaryChange.time || classData.time,
+      sede: temporaryChange.sede || classData.sede,
+      sala: temporaryChange.sala || classData.sala,
+      duration: Number(temporaryChange.duration) || Number(classData.duration) || 60,
+      teacher: getOfficialTeacherName(temporaryChange.teacher || classData.teacher),
+      temporaryClassChange: temporaryChange,
+      officialSchedule: {
+        dayOfWeek: classData.dayOfWeek,
+        time: classData.time,
+        sede: classData.sede,
+        sala: classData.sala,
+        duration: classData.duration,
+        teacher: getOfficialTeacherName(classData.teacher)
+      }
+    };
+  };
+
+  const effectiveOperationalClasses = useMemo(() => operationalClasses.map(classData => (
+    isPunctualClass(classData) ? classData : getEffectiveClassForDate(classData, todayStr)
+  )), [operationalClasses, temporaryClassChanges, todayStr, officialTeacherNameMap]);
 
   const isFixedClassStudent = (studentEntry = {}) => {
     return !(
@@ -2458,9 +2609,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const studentInfo = students.find(student => student.id === s.id) || {};
         return s.id === studentId && isStudentClassCommittedOnDate(s, studentInfo, dateStr);
       }))
-      .map(c => c.teacher)
+      .map(c => getOfficialTeacherName(c.teacher, ''))
       .filter(Boolean);
-    return [...new Set(teacherNames)];
+    const unique = new Map();
+    teacherNames.forEach(name => unique.set(normalizeTeacherKey(name), name));
+    return [...unique.values()];
   };
 
   const getStudentAssignedClasses = (studentId, dateStr = todayStr) => {
@@ -2487,7 +2640,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const getTeacherEmail = (teacherName) => {
     if (!teacherName) return '';
-    return `${teacherName.toLowerCase().trim().replace(/\s+/g, '.')}@escuelalosmitos.com`;
+    const officialName = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
+    return `${officialName.toLocaleLowerCase('es-ES').trim().replace(/\s+/g, '.')}@escuelalosmitos.com`;
   };
 
   const formatClassLine = (clase) => {
@@ -2607,11 +2761,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const groupClassesByTeacher = (classes = []) => {
     const grouped = {};
     classes.filter(Boolean).forEach(c => {
-      const teacherName = c.teacher || 'Profesor';
+      const teacherName = getOfficialTeacherName(c.teacher, 'Profesor');
       const email = getTeacherEmail(teacherName);
       if (!email) return;
-      if (!grouped[email]) grouped[email] = { teacherName, email, classes: [] };
-      grouped[email].classes.push(c);
+      const teacherKey = normalizeTeacherKey(teacherName);
+      if (!grouped[teacherKey]) grouped[teacherKey] = { teacherName, email, classes: [] };
+      grouped[teacherKey].classes.push(c);
     });
     return Object.values(grouped);
   };
@@ -2816,10 +2971,7 @@ ${body}`,
       ])].sort((a, b) => a.localeCompare(b));
     }
     if (targetType === 'profesor') {
-      return [...new Set([
-        ...(settings.teachersList || []),
-        ...recurringClassesOnly.map(c => c.teacher).filter(Boolean)
-      ])].sort((a, b) => a.localeCompare(b));
+      return allOfficialTeacherNames;
     }
     return [];
   };
@@ -2827,11 +2979,7 @@ ${body}`,
   const getAnnouncementTeacherTargets = () => {
     const byEmail = new Map();
 
-    [...new Set([
-      ...(settings.teachersList || []),
-      ...recurringClassesOnly.map(c => c.teacher).filter(Boolean)
-    ])]
-      .filter(Boolean)
+    allOfficialTeacherNames
       .forEach(teacherName => {
         const email = normalizeEmail(getTeacherEmail(teacherName));
         if (!email) return;
@@ -2840,7 +2988,7 @@ ${body}`,
             email,
             name: teacherName,
             teacherName,
-            classes: recurringClassesOnly.filter(c => c.teacher === teacherName).map(c => c.id)
+            classes: recurringClassesOnly.filter(c => isSameTeacher(c.teacher, teacherName)).map(c => c.id)
           });
         }
       });
@@ -2856,7 +3004,7 @@ ${body}`,
     if (!targetValue) return false;
     if (targetType === 'sede') return (clase.sede || 'Tarragona') === targetValue;
     if (targetType === 'instrumento') return (clase.subject || '') === targetValue;
-    if (targetType === 'profesor') return (clase.teacher || '') === targetValue;
+    if (targetType === 'profesor') return isSameTeacher(clase.teacher, targetValue);
     return false;
   };
 
@@ -3388,7 +3536,17 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
   const handleDeleteClassGlobal = async (clase) => {
     if (!window.confirm(`⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR DEFINITIVAMENTE esta clase de ${clase.subject} de ${clase.teacher}?\n\nEsta acción eliminará el grupo para siempre.`)) return;
     try {
-      await deleteDoc(doc(db, clase.refPath));
+      const batch = writeBatch(db);
+      batch.delete(doc(db, clase.refPath));
+      getClassTemporaryChanges(clase.id).forEach(change => {
+        batch.update(doc(db, 'artifacts', appId, 'temporaryClassChanges', change.id), {
+          status: 'cancelled',
+          cancelledAt: new Date().toISOString(),
+          cancelledBy: user?.email || 'admin',
+          cancellationReason: 'class_deleted'
+        });
+      });
+      await batch.commit();
       if (viewClassModal && viewClassModal.id === clase.id) {
         setViewClassModal(null);
       }
@@ -5977,9 +6135,9 @@ Coordinación Los Mitos.`
   };
 
   const getTargetUidForTeacher = (teacherName, classIdToIgnore = null) => {
-    const cleanTeacher = String(teacherName || '').trim();
+    const cleanTeacher = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
     const existingClass = allClasses.find(c =>
-      c.teacher === cleanTeacher &&
+      isSameTeacher(c.teacher, cleanTeacher) &&
       c.refPath &&
       (!classIdToIgnore || c.id !== classIdToIgnore)
     );
@@ -5992,31 +6150,185 @@ Coordinación Los Mitos.`
 
   const openEditClassModal = (clase) => {
     if (!clase) return;
+    const officialClass = allClasses.find(classData => classData.id === clase.id) || clase;
+    const existingTemporaryChange = getClassTemporaryChanges(officialClass.id)
+      .find(change => change.until >= todayStr) || null;
 
-    setEditClassModal(clase);
+    setEditClassMode('permanent');
+    setEditClassModal(officialClass);
     setEditClassData({
-      isRecurring: !isPunctualClass(clase),
-      specificDate: clase.date || clase.specificDate || new Date().toISOString().split('T')[0],
-      dayOfWeek: String(clase.dayOfWeek ?? '1'),
-      time: clase.time || '17:00',
-      sede: clase.sede || 'Tarragona',
-      sala: clase.sala || 'Sala 1',
-      teacher: clase.teacher || '',
-      subject: clase.subject || '',
-      capacity: clase.capacity ?? '',
-      duration: clase.duration ?? 60,
-      cuotaBase: clase.cuotaBase ?? 0,
-      notes: clase.notes || ''
+      isRecurring: !isPunctualClass(officialClass),
+      specificDate: officialClass.date || officialClass.specificDate || new Date().toISOString().split('T')[0],
+      dayOfWeek: String(officialClass.dayOfWeek ?? '1'),
+      time: officialClass.time || '17:00',
+      sede: officialClass.sede || 'Tarragona',
+      sala: officialClass.sala || 'Sala 1',
+      teacher: getOfficialTeacherName(officialClass.teacher, ''),
+      subject: officialClass.subject || '',
+      capacity: officialClass.capacity ?? '',
+      duration: officialClass.duration ?? 60,
+      cuotaBase: officialClass.cuotaBase ?? 0,
+      notes: officialClass.notes || ''
+    });
+    setTemporaryClassData({
+      id: existingTemporaryChange?.id || '',
+      from: existingTemporaryChange?.from || todayStr,
+      until: existingTemporaryChange?.until || nextMonthEndStr,
+      dayOfWeek: String(existingTemporaryChange?.dayOfWeek ?? officialClass.dayOfWeek ?? '1'),
+      time: existingTemporaryChange?.time || officialClass.time || '17:00',
+      sede: existingTemporaryChange?.sede || officialClass.sede || 'Tarragona',
+      sala: existingTemporaryChange?.sala || officialClass.sala || 'Sala 1',
+      teacher: getOfficialTeacherName(existingTemporaryChange?.teacher || officialClass.teacher, ''),
+      duration: existingTemporaryChange?.duration ?? officialClass.duration ?? 60,
+      notes: existingTemporaryChange?.notes || ''
     });
   };
 
   const closeEditClassModal = () => {
     setEditClassModal(null);
     setEditClassData(null);
+    setEditClassMode('permanent');
+    setTemporaryClassData(null);
+  };
+
+  const cancelTemporaryClassChange = async (change) => {
+    if (!change?.id) return;
+    if (!window.confirm(`¿Cancelar el cambio temporal de esta clase del ${formatDateSpanish(change.from)} al ${formatDateSpanish(change.until)}?\n\nLa clase conservará o recuperará su horario oficial.`)) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'temporaryClassChanges', change.id), {
+        status: 'cancelled',
+        cancelledAt: new Date().toISOString(),
+        cancelledBy: user?.email || 'admin'
+      });
+      if (temporaryClassData?.id === change.id) {
+        setTemporaryClassData(prev => ({ ...prev, id: '' }));
+      }
+      alert('Cambio temporal cancelado. La clase usa de nuevo su horario oficial.');
+    } catch (error) {
+      alert('No se pudo cancelar el cambio temporal: ' + error.message);
+    }
+  };
+
+  const handleSaveTemporaryClassChange = async () => {
+    if (!editClassModal || !temporaryClassData) return;
+    if (isPunctualClass(editClassModal)) return alert('Los cambios temporales están pensados para clases recurrentes. Edita directamente esta clase puntual.');
+
+    const cleanTeacher = getOfficialTeacherName(temporaryClassData.teacher, cleanTeacherDisplayName(temporaryClassData.teacher));
+    const payload = {
+      ...temporaryClassData,
+      teacher: cleanTeacher,
+      dayOfWeek: Number(temporaryClassData.dayOfWeek),
+      duration: Number(temporaryClassData.duration) || 60
+    };
+
+    if (!payload.from || !payload.until || !payload.time || !payload.sede || !payload.sala || !payload.teacher) {
+      return alert('Completa las fechas, el profesor y todos los datos del horario temporal.');
+    }
+    if (payload.from > payload.until) return alert('La fecha de regreso debe ser posterior o igual a la fecha de inicio.');
+    if (!dateRangeContainsWeekday(payload.from, payload.until, payload.dayOfWeek)) {
+      return alert(`Entre esas fechas no hay ningún ${getDayName(payload.dayOfWeek)}. Revisa el periodo o el día temporal.`);
+    }
+
+    const overlappingOwnChange = getClassTemporaryChanges(editClassModal.id).find(change =>
+      change.id !== payload.id &&
+      doDateRangesOverlap(change.from, change.until, payload.from, payload.until)
+    );
+    if (overlappingOwnChange) {
+      return alert(`Esta clase ya tiene otro cambio temporal entre el ${formatDateSpanish(overlappingOwnChange.from)} y el ${formatDateSpanish(overlappingOwnChange.until)}. Cancélalo o utiliza un periodo que no se solape.`);
+    }
+
+    const teacherSlots = getTeacherAvailability(cleanTeacher)?.[String(payload.dayOfWeek)] || [];
+    const isCovered = teacherSlots.some(slot => isClassFullyCoveredBySlot(payload, slot));
+    if (!isCovered) {
+      const forceAvailability = window.confirm(`AVISO DE DISPONIBILIDAD:\n\n${cleanTeacher} no ha marcado disponibilidad completa el ${getDayName(payload.dayOfWeek)} de ${payload.time}h a ${getClassEndTime(payload.time, payload.duration)}h.\n\n¿Quieres programar el cambio temporal igualmente?`);
+      if (!forceAvailability) return;
+    }
+
+    const physicalClashes = recurringClassesOnly.filter(classData => {
+      if (classData.id === editClassModal.id) return false;
+      if ((classData.sede || 'Tarragona') !== payload.sede || (classData.sala || 'Sala 1') !== payload.sala) return false;
+
+      const directOfficialClash = Number(classData.dayOfWeek) === Number(payload.dayOfWeek) &&
+        dateRangeContainsWeekday(payload.from, payload.until, payload.dayOfWeek) &&
+        doClassTimeRangesOverlap(classData, payload);
+
+      const temporaryClash = getClassTemporaryChanges(classData.id).some(change =>
+        doDateRangesOverlap(change.from, change.until, payload.from, payload.until) &&
+        Number(change.dayOfWeek) === Number(payload.dayOfWeek) &&
+        (change.sede || classData.sede || 'Tarragona') === payload.sede &&
+        (change.sala || classData.sala || 'Sala 1') === payload.sala &&
+        doClassTimeRangesOverlap(change, payload)
+      );
+      return directOfficialClash || temporaryClash;
+    });
+
+    if (physicalClashes.length > 0) {
+      const clash = physicalClashes[0];
+      const forceRoom = window.confirm(`ADVERTENCIA DE SALA:\n\nLa ${payload.sala} de ${payload.sede} puede coincidir durante ese periodo con ${clash.subject} · ${getOfficialTeacherName(clash.teacher)} · ${getDayName(payload.dayOfWeek)} ${clash.time}h.\n\n¿Quieres guardar igualmente el cambio temporal?`);
+      if (!forceRoom) return;
+    }
+
+    const teacherClashes = recurringClassesOnly.filter(classData => {
+      if (classData.id === editClassModal.id) return false;
+      const officialClash = isSameTeacher(classData.teacher, cleanTeacher) &&
+        Number(classData.dayOfWeek) === Number(payload.dayOfWeek) &&
+        doClassTimeRangesOverlap(classData, payload);
+      const temporaryClash = getClassTemporaryChanges(classData.id).some(change =>
+        doDateRangesOverlap(change.from, change.until, payload.from, payload.until) &&
+        isSameTeacher(change.teacher || classData.teacher, cleanTeacher) &&
+        Number(change.dayOfWeek) === Number(payload.dayOfWeek) &&
+        doClassTimeRangesOverlap(change, payload)
+      );
+      return officialClash || temporaryClash;
+    });
+    if (teacherClashes.length > 0) {
+      const clash = teacherClashes[0];
+      const forceTeacher = window.confirm(`ADVERTENCIA DE PROFESOR:\n\n${cleanTeacher} ya tiene ${clash.subject} el ${getDayName(payload.dayOfWeek)} a las ${clash.time}h.\n\n¿Quieres guardar igualmente el cambio temporal?`);
+      if (!forceTeacher) return;
+    }
+
+    const changeId = payload.id || `class-change-${editClassModal.id}-${Date.now()}`;
+    const changeRef = doc(db, 'artifacts', appId, 'temporaryClassChanges', changeId);
+    const officialTeacher = getOfficialTeacherName(editClassModal.teacher);
+    const savedPayload = {
+      classId: editClassModal.id,
+      classRefPath: editClassModal.refPath || '',
+      classSubject: editClassModal.subject || 'Clase',
+      officialSchedule: {
+        dayOfWeek: Number(editClassModal.dayOfWeek),
+        time: editClassModal.time || '',
+        sede: editClassModal.sede || 'Tarragona',
+        sala: editClassModal.sala || 'Sala 1',
+        teacher: officialTeacher,
+        duration: Number(editClassModal.duration) || 60
+      },
+      from: payload.from,
+      until: payload.until,
+      dayOfWeek: payload.dayOfWeek,
+      time: payload.time,
+      sede: payload.sede,
+      sala: payload.sala,
+      teacher: cleanTeacher,
+      duration: payload.duration,
+      notes: payload.notes || '',
+      status: 'scheduled',
+      updatedAt: new Date().toISOString(),
+      updatedBy: user?.email || 'admin',
+      ...(!payload.id ? { createdAt: new Date().toISOString(), createdBy: user?.email || 'admin' } : {})
+    };
+
+    try {
+      await setDoc(changeRef, savedPayload, { merge: true });
+      closeEditClassModal();
+      alert(`Cambio temporal programado del ${formatDateSpanish(payload.from)} al ${formatDateSpanish(payload.until)}. Después la clase regresará automáticamente a ${getDayName(editClassModal.dayOfWeek)} ${editClassModal.time}h. El horario oficial y la oferta web no se han modificado.`);
+    } catch (error) {
+      alert('No se pudo guardar el cambio temporal: ' + error.message);
+    }
   };
 
   const handleSaveEditedClass = async () => {
     if (!editClassModal || !editClassData) return;
+    if (editClassMode === 'temporary') return handleSaveTemporaryClassChange();
     if (!editClassData.teacher || !editClassData.subject || !editClassData.capacity) {
       return alert("El profesor, el instrumento y el aforo son obligatorios.");
     }
@@ -6024,15 +6336,14 @@ Coordinación Los Mitos.`
       return alert("Para una clase puntual, debes elegir una fecha.");
     }
 
-    const cleanTeacher = String(editClassData.teacher || '').trim();
+    const cleanTeacher = getOfficialTeacherName(editClassData.teacher, cleanTeacherDisplayName(editClassData.teacher));
     const dayKey = editClassData.isRecurring
       ? parseInt(editClassData.dayOfWeek)
       : new Date(editClassData.specificDate).getDay();
 
     const classTime = editClassData.time;
     const classEndTime = getClassEndTime(classTime, editClassData.duration);
-    const teacherKey = cleanTeacher.toLowerCase();
-    const teacherSlots = availabilities[teacherKey]?.[String(dayKey)] || [];
+    const teacherSlots = getTeacherAvailability(cleanTeacher)?.[String(dayKey)] || [];
 
     const isCovered = teacherSlots.some(slot => isClassFullyCoveredBySlot(editClassData, slot));
     if (!isCovered) {
@@ -6044,13 +6355,13 @@ Coordinación Los Mitos.`
       if (c.id === editClassModal.id) return false;
       if (c.sede !== editClassData.sede) return false;
       if (c.sala !== editClassData.sala) return false;
-      if (c.time !== editClassData.time) return false;
+      if (!doClassTimeRangesOverlap(c, editClassData)) return false;
 
       if (editClassData.isRecurring) {
-        if (!isPunctualClass(c) && c.dayOfWeek === dayKey) return true;
+        if (!isPunctualClass(c) && Number(c.dayOfWeek) === Number(dayKey)) return true;
         if (isPunctualClass(c) && c.date && new Date(`${c.date}T00:00:00`).getDay() === dayKey) return true;
       } else {
-        if (!isPunctualClass(c) && c.dayOfWeek === dayKey) return true;
+        if (!isPunctualClass(c) && Number(c.dayOfWeek) === Number(dayKey)) return true;
         if (isPunctualClass(c) && c.date === editClassData.specificDate) return true;
       }
       return false;
@@ -6103,7 +6414,7 @@ Coordinación Los Mitos.`
 
       closeEditClassModal();
 
-      alert(previousTeacher !== cleanTeacher
+      alert(!isSameTeacher(previousTeacher, cleanTeacher)
         ? `Clase editada y trasladada de ${previousTeacher || 'Sin profesor'} a ${cleanTeacher}.`
         : "Clase editada correctamente.");
     } catch (e) {
@@ -6119,16 +6430,16 @@ Coordinación Los Mitos.`
       return alert("Para una clase puntual, debes elegir una fecha.");
     }
 
-    const teacherKey = newClassData.teacher.toLowerCase();
+    const officialTeacherName = getOfficialTeacherName(newClassData.teacher, cleanTeacherDisplayName(newClassData.teacher));
     const dayKey = newClassData.isRecurring ? parseInt(newClassData.dayOfWeek) : new Date(newClassData.specificDate).getDay();
     const classTime = newClassData.time;
     const classEndTime = getClassEndTime(classTime, newClassData.duration);
     
     // --- 1. Aviso de Disponibilidad del Profesor ---
-    const teacherSlots = availabilities[teacherKey]?.[dayKey.toString()] || [];
+    const teacherSlots = getTeacherAvailability(officialTeacherName)?.[dayKey.toString()] || [];
     const isCovered = teacherSlots.some(slot => isClassFullyCoveredBySlot(newClassData, slot));
     if (!isCovered) {
-      const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${newClassData.teacher} NO ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
+      const confirmForce = window.confirm(`⚠️ AVISO DE DISPONIBILIDAD:\n\nEl profesor ${officialTeacherName} NO ha marcado estar disponible el ${getDayName(dayKey)} de ${classTime}h a ${classEndTime || 'la hora de fin'}h.\n\nLa clase debe caber completa dentro de una franja de disponibilidad.\n\n¿Quieres FORZAR la creación de la clase de todos modos?`);
       if (!confirmForce) return; 
     }
 
@@ -6136,13 +6447,13 @@ Coordinación Los Mitos.`
     const collidingClasses = operationalClasses.filter(c => {
       if (c.sede !== newClassData.sede) return false;
       if (c.sala !== newClassData.sala) return false;
-      if (c.time !== newClassData.time) return false;
+      if (!doClassTimeRangesOverlap(c, newClassData)) return false;
 
       if (newClassData.isRecurring) {
-        if (!isPunctualClass(c) && c.dayOfWeek === dayKey) return true;
+        if (!isPunctualClass(c) && Number(c.dayOfWeek) === Number(dayKey)) return true;
         if (isPunctualClass(c) && c.date && new Date(`${c.date}T00:00:00`).getDay() === dayKey) return true; 
       } else {
-        if (!isPunctualClass(c) && c.dayOfWeek === dayKey) return true;
+        if (!isPunctualClass(c) && Number(c.dayOfWeek) === Number(dayKey)) return true;
         if (isPunctualClass(c) && c.date === newClassData.specificDate) return true;
       }
       return false;
@@ -6154,8 +6465,8 @@ Coordinación Los Mitos.`
       if (!confirmForceRoom) return;
     }
     
-    const teacherEmail = `${newClassData.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`;
-    const existingClass = allClasses.find(c => c.teacher === newClassData.teacher);
+    const teacherEmail = getTeacherEmail(officialTeacherName);
+    const existingClass = allClasses.find(c => isSameTeacher(c.teacher, officialTeacherName));
     let targetUid = 'admin_generated'; 
     if (existingClass && existingClass.refPath) {
       targetUid = existingClass.refPath.split('/')[3]; 
@@ -6177,6 +6488,7 @@ Coordinación Los Mitos.`
 
       await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
         ...newClassData,
+        teacher: officialTeacherName,
         ...baseWebConfig,
         cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
         id: classId,
@@ -6186,7 +6498,7 @@ Coordinación Los Mitos.`
         dayOfWeek: dayKey,
         date: newClassData.isRecurring ? null : newClassData.specificDate
       });
-      alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${newClassData.teacher} correctamente.`);
+      alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${officialTeacherName} correctamente.`);
 
       setCreateClassModal(false);
       setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: '' });
@@ -6414,17 +6726,17 @@ Coordinación Los Mitos.`
   const rankAnnual = students.filter(s => (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) > 0).map(s => ({ ...s, liveAnnual: (s.triviaPointsAnnual || 0) + (s.triviaPoints || 0) })).sort((a,b) => b.liveAnnual - a.liveAnnual).slice(0,10);
 
   const classesByTeacher = useMemo(() => {
-    const grouped = {};
-    operationalClasses.forEach(c => {
-      const teacherName = c.teacher || 'Sin Asignar';
-      if (!grouped[teacherName]) grouped[teacherName] = [];
-      grouped[teacherName].push(c);
+    const grouped = new Map();
+    effectiveOperationalClasses.forEach(classData => {
+      const teacherName = getOfficialTeacherName(classData.teacher);
+      const teacherKey = normalizeTeacherKey(teacherName) || 'sin-asignar';
+      if (!grouped.has(teacherKey)) grouped.set(teacherKey, { teacherName, classes: [] });
+      grouped.get(teacherKey).classes.push({ ...classData, teacher: teacherName });
     });
-    Object.keys(grouped).forEach(t => {
-      grouped[t].sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
-    });
-    return grouped;
-  }, [operationalClasses]);
+    return Object.fromEntries([...grouped.values()]
+      .sort((a, b) => a.teacherName.localeCompare(b.teacherName, 'es'))
+      .map(group => [group.teacherName, group.classes.sort((a, b) => Number(a.dayOfWeek) - Number(b.dayOfWeek) || String(a.time || '').localeCompare(String(b.time || '')))]));
+  }, [effectiveOperationalClasses, officialTeacherNameMap]);
 
   const architectSelectedDay = useMemo(() => {
     const dayIndex = getDateDayIndex(archDate);
@@ -6872,14 +7184,18 @@ Coordinación Los Mitos.`
 
   const architectClasses = useMemo(() => {
     const baseClasses = archProjectionMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly;
-    const byId = new Map((baseClasses || []).map(clase => [clase.id, clase]));
+    const effectiveDate = archDate || todayStr;
+    const byId = new Map((baseClasses || []).map(clase => {
+      const effectiveClass = isPunctualClass(clase) ? clase : getEffectiveClassForDate(clase, effectiveDate);
+      return [effectiveClass.id, effectiveClass];
+    }));
 
     punctualClassesForArchitectDate.forEach(clase => {
       byId.set(clase.id, clase);
     });
 
     return [...byId.values()];
-  }, [archProjectionMode, projectedPlanningClasses, recurringClassesOnly, punctualClassesForArchitectDate]);
+  }, [archProjectionMode, projectedPlanningClasses, recurringClassesOnly, punctualClassesForArchitectDate, temporaryClassChanges, archDate, todayStr, officialTeacherNameMap]);
 
   const isArchitectProjection = archProjectionMode === 'proyeccion';
 
@@ -7186,11 +7502,18 @@ Coordinación Los Mitos.`
     return [...byPeriod.keys()].sort((a, b) => b.localeCompare(a));
   }, [teacherEvaluations]);
 
-  const allTeacherNamesForPanel = useMemo(() => [...new Set([
-    ...(settings.teachersList || []),
-    ...recurringClassesOnly.map(c => c.teacher).filter(Boolean),
-    ...teacherEvaluations.map(getEvaluationTeacherName).filter(Boolean)
-  ])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es')), [settings.teachersList, recurringClassesOnly, teacherEvaluations]);
+  const allTeacherNamesForPanel = useMemo(() => {
+    const names = new Map();
+    [
+      ...(settings.teachersList || []),
+      ...recurringClassesOnly.map(c => c.teacher),
+      ...teacherEvaluations.map(getEvaluationTeacherName)
+    ].filter(Boolean).forEach(name => {
+      const officialName = getOfficialTeacherName(name);
+      names.set(normalizeTeacherKey(officialName), officialName);
+    });
+    return [...names.values()].sort((a, b) => a.localeCompare(b, 'es'));
+  }, [settings.teachersList, recurringClassesOnly, teacherEvaluations, officialTeacherNameMap]);
 
   const filteredTeacherEvaluations = useMemo(() => {
     return teacherEvaluations.filter(evaluation => (
@@ -7202,14 +7525,15 @@ Coordinación Los Mitos.`
     const grouped = new Map();
 
     const ensureTeacherGroup = (teacherName) => {
-      const cleanName = teacherName || 'Sin profesor';
-      if (!grouped.has(cleanName)) {
-        grouped.set(cleanName, {
+      const cleanName = getOfficialTeacherName(teacherName, 'Sin profesor');
+      const teacherKey = normalizeTeacherKey(cleanName) || 'sin-profesor';
+      if (!grouped.has(teacherKey)) {
+        grouped.set(teacherKey, {
           name: cleanName,
           evaluations: []
         });
       }
-      return grouped.get(cleanName);
+      return grouped.get(teacherKey);
     };
 
     allTeacherNamesForPanel.forEach(ensureTeacherGroup);
@@ -7249,7 +7573,7 @@ Coordinación Los Mitos.`
       });
 
       const lowSignalCount = group.evaluations.filter(hasLowEvaluationSignal).length;
-      const teacherClasses = recurringClassesOnly.filter(c => (c.teacher || '') === group.name);
+      const teacherClasses = recurringClassesOnly.filter(c => isSameTeacher(c.teacher, group.name));
       const activeClassCount = teacherClasses.length;
       const activeStudentIds = new Set();
       teacherClasses.forEach(clase => {
@@ -7299,6 +7623,152 @@ Coordinación Los Mitos.`
       questionAverages
     };
   }, [filteredTeacherEvaluations, teacherEvaluationStats]);
+
+  const teacherAvailabilityPanel = useMemo(() => {
+    const teacherName = getOfficialTeacherName(selectedAvailabilityTeacher, '');
+    if (!teacherName) return { rows: [], outsideRows: [], summary: { offeredHours: 0, activeClasses: 0, inactiveClasses: 0, freeHours: 0 } };
+
+    const declared = getTeacherAvailability(teacherName);
+    const segmentMap = new Map();
+    let offeredMinutes = 0;
+
+    [1, 2, 3, 4, 5, 6].forEach(day => {
+      (declared[String(day)] || []).forEach((slot, slotIndex) => {
+        const slotStart = parseTimeToMinutes(slot.start);
+        const slotEnd = parseTimeToMinutes(slot.end);
+        if (slotStart === null || slotEnd === null || slotEnd <= slotStart) return;
+        offeredMinutes += slotEnd - slotStart;
+        for (let cursor = slotStart; cursor < slotEnd; cursor += 60) {
+          const segmentEnd = Math.min(cursor + 60, slotEnd);
+          const key = `${day}-${cursor}-${segmentEnd}`;
+          if (!segmentMap.has(key)) {
+            segmentMap.set(key, {
+              dayOfWeek: day,
+              time: formatMinutesToTime(cursor),
+              endTime: formatMinutesToTime(segmentEnd),
+              duration: segmentEnd - cursor,
+              sourceSlotIndex: slotIndex
+            });
+          }
+        }
+      });
+    });
+
+    const segments = [...segmentMap.values()].sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.time.localeCompare(b.time));
+    offeredMinutes = segments.reduce((sum, segment) => sum + segment.duration, 0);
+    const rows = [];
+    const distinctActiveClasses = new Set();
+    const distinctInactiveClasses = new Set();
+    let freeMinutes = 0;
+
+    segments.forEach(segment => {
+      const segmentRange = { time: segment.time, duration: segment.duration };
+      const entries = [];
+
+      recurringClassesOnly
+        .filter(classData => isSameTeacher(classData.teacher, teacherName) && Number(classData.dayOfWeek) === segment.dayOfWeek && doClassTimeRangesOverlap(classData, segmentRange))
+        .forEach(classData => {
+          const activeChange = getActiveClassTemporaryChange(classData.id, todayStr);
+          const effectiveClass = activeChange ? getEffectiveClassForDate(classData, todayStr) : classData;
+          const movedToAnotherSlot = Boolean(activeChange) && (
+            Number(effectiveClass.dayOfWeek) !== Number(classData.dayOfWeek) ||
+            effectiveClass.time !== classData.time ||
+            !isSameTeacher(effectiveClass.teacher, classData.teacher)
+          );
+          const activeCount = getActiveClassStudentCount(classData, false);
+          const status = movedToAnotherSlot ? 'reserved' : activeCount > 0 ? (activeChange ? 'temporary_active' : 'active') : (activeChange ? 'temporary_inactive' : 'inactive');
+          const displayClass = activeChange && !movedToAnotherSlot ? effectiveClass : classData;
+          entries.push({
+            ...segment,
+            key: `official-${classData.id}-${segment.dayOfWeek}-${segment.time}`,
+            status,
+            classData: displayClass,
+            officialClass: classData,
+            activeCount,
+            temporaryChange: activeChange,
+            detail: movedToAnotherSlot ? `Reservada hasta el regreso · ahora ${getDayName(effectiveClass.dayOfWeek)} ${effectiveClass.time}h` : ''
+          });
+          if (status === 'active' || status === 'temporary_active') distinctActiveClasses.add(classData.id);
+          else distinctInactiveClasses.add(classData.id);
+        });
+
+      effectiveOperationalClasses
+        .filter(classData => classData.temporaryClassChange && isSameTeacher(classData.teacher, teacherName) && Number(classData.dayOfWeek) === segment.dayOfWeek && doClassTimeRangesOverlap(classData, segmentRange))
+        .filter(classData => !entries.some(entry => entry.officialClass.id === classData.id && entry.status !== 'reserved'))
+        .forEach(classData => {
+          const officialClass = recurringClassesOnly.find(item => item.id === classData.id) || classData;
+          const activeCount = getActiveClassStudentCount(officialClass, false);
+          entries.push({
+            ...segment,
+            key: `temporary-${classData.id}-${segment.dayOfWeek}-${segment.time}`,
+            status: activeCount > 0 ? 'temporary_active' : 'temporary_inactive',
+            classData,
+            officialClass,
+            activeCount,
+            temporaryChange: classData.temporaryClassChange,
+            detail: `Temporal hasta ${formatDateSpanish(classData.temporaryClassChange.until)}`
+          });
+          if (activeCount > 0) distinctActiveClasses.add(classData.id);
+          else distinctInactiveClasses.add(classData.id);
+        });
+
+      if (entries.length === 0) {
+        freeMinutes += segment.duration;
+        rows.push({ ...segment, key: `free-${segment.dayOfWeek}-${segment.time}`, status: 'free', classData: null, activeCount: 0, detail: '' });
+      } else {
+        rows.push(...entries);
+      }
+    });
+
+    const scheduleRoles = [];
+    recurringClassesOnly.filter(classData => isSameTeacher(classData.teacher, teacherName)).forEach(classData => {
+      scheduleRoles.push({ classData, officialClass: classData, role: 'official' });
+    });
+    effectiveOperationalClasses
+      .filter(classData => classData.temporaryClassChange && isSameTeacher(classData.teacher, teacherName))
+      .filter(classData => {
+        const officialClass = recurringClassesOnly.find(item => item.id === classData.id);
+        return !officialClass || !isSameTeacher(officialClass.teacher, teacherName) || Number(officialClass.dayOfWeek) !== Number(classData.dayOfWeek) || officialClass.time !== classData.time;
+      })
+      .forEach(classData => scheduleRoles.push({ classData, officialClass: recurringClassesOnly.find(item => item.id === classData.id) || classData, role: 'temporary' }));
+
+    const outsideRows = scheduleRoles
+      .filter((role, index, list) => list.findIndex(item => item.role === role.role && item.classData.id === role.classData.id) === index)
+      .filter(role => !(declared[String(role.classData.dayOfWeek)] || []).some(slot => isClassFullyCoveredBySlot(role.classData, slot)))
+      .map(role => {
+        const activeCount = getActiveClassStudentCount(role.officialClass, false);
+        return {
+          ...role,
+          key: `outside-${role.role}-${role.classData.id}`,
+          status: role.role === 'temporary' ? (activeCount > 0 ? 'temporary_active' : 'temporary_inactive') : (activeCount > 0 ? 'active' : 'inactive'),
+          activeCount
+        };
+      })
+      .sort((a, b) => Number(a.classData.dayOfWeek) - Number(b.classData.dayOfWeek) || String(a.classData.time || '').localeCompare(String(b.classData.time || '')));
+
+    return {
+      rows,
+      outsideRows,
+      summary: {
+        offeredHours: offeredMinutes / 60,
+        activeClasses: distinctActiveClasses.size,
+        inactiveClasses: distinctInactiveClasses.size,
+        freeHours: freeMinutes / 60
+      }
+    };
+  }, [selectedAvailabilityTeacher, availabilities, recurringClassesOnly, effectiveOperationalClasses, temporaryClassChanges, students, maintenancePeriods, temporaryRelocations, todayStr, officialTeacherNameMap]);
+
+  const openCreateClassFromAvailability = (row) => {
+    setNewClassData(prev => ({
+      ...prev,
+      isRecurring: true,
+      dayOfWeek: String(row.dayOfWeek),
+      time: row.time,
+      duration: Number(row.duration) || 60,
+      teacher: getOfficialTeacherName(selectedAvailabilityTeacher, selectedAvailabilityTeacher)
+    }));
+    setCreateClassModal(true);
+  };
 
   const handleDownloadTeacherEvaluationReport = () => {
     if (filteredTeacherEvaluations.length === 0) {
@@ -7801,7 +8271,7 @@ ${valueOrDash(comments.privateNote)}`,
   const EditClassModalOverlay = () => {
     if (!editClassModal || !editClassData) return null;
 
-    const isTeacherChanged = String(editClassData.teacher || '').trim() !== String(editClassModal.teacher || '').trim();
+    const isTeacherChanged = !isSameTeacher(editClassData.teacher, editClassModal.teacher);
 
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
@@ -7811,6 +8281,18 @@ ${valueOrDash(comments.privateNote)}`,
           <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-6">
             {editClassModal.subject} · {editClassModal.teacher} · {getDayName(editClassModal.dayOfWeek)} {editClassModal.time}h
           </p>
+
+          <div className="grid grid-cols-2 gap-2 bg-zinc-100 border border-zinc-200 rounded-2xl p-1.5 mb-6">
+            <button type="button" onClick={() => setEditClassMode('permanent')} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${editClassMode === 'permanent' ? 'bg-black text-white shadow-md' : 'bg-transparent text-zinc-500 hover:text-black'}`}>
+              Editar definitivamente
+            </button>
+            <button type="button" onClick={() => setEditClassMode('temporary')} disabled={isPunctualClass(editClassModal)} className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40 ${editClassMode === 'temporary' ? 'bg-violet-600 text-white shadow-md' : 'bg-transparent text-zinc-500 hover:text-violet-700'}`}>
+              Cambio temporal
+            </button>
+          </div>
+
+          {editClassMode === 'permanent' ? (
+          <>
 
           {isTeacherChanged && (
             <div className="mb-5 p-4 bg-amber-50 border-2 border-amber-200 rounded-2xl text-amber-900">
@@ -7826,7 +8308,7 @@ ${valueOrDash(comments.privateNote)}`,
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor asignado *</label>
               <select value={editClassData.teacher} onChange={e => setEditClassData({...editClassData, teacher: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
                 <option value="">Seleccionar...</option>
-                {(settings.teachersList || []).map(t => <option key={t} value={t}>{t}</option>)}
+                {allOfficialTeacherNames.map(t => <option key={normalizeTeacherKey(t)} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
@@ -7903,20 +8385,100 @@ ${valueOrDash(comments.privateNote)}`,
                   Horas libres de {editClassData.teacher} el {getDayName(editClassData.isRecurring ? editClassData.dayOfWeek : new Date(editClassData.specificDate).getDay().toString())}:
                 </span>
                 <span className="font-black text-sm">
-                  {availabilities[editClassData.teacher.toLowerCase()]?.[editClassData.isRecurring ? editClassData.dayOfWeek : new Date(editClassData.specificDate).getDay().toString()]?.length > 0 
-                    ? availabilities[editClassData.teacher.toLowerCase()][editClassData.isRecurring ? editClassData.dayOfWeek : new Date(editClassData.specificDate).getDay().toString()].map(s => `${s.start}h a ${s.end}h`).join(' | ')
+                  {getTeacherAvailability(editClassData.teacher)?.[editClassData.isRecurring ? editClassData.dayOfWeek : new Date(editClassData.specificDate).getDay().toString()]?.length > 0 
+                    ? getTeacherAvailability(editClassData.teacher)[editClassData.isRecurring ? editClassData.dayOfWeek : new Date(editClassData.specificDate).getDay().toString()].map(s => `${s.start}h a ${s.end}h`).join(' | ')
                     : 'Ninguna franja registrada.'}
                 </span>
              </p>
            </div>
           )}
 
+          </>
+          ) : temporaryClassData ? (
+          <div className="space-y-4 mb-6">
+            <div className="bg-violet-50 border-2 border-violet-100 rounded-2xl p-4 text-violet-950">
+              <p className="text-[10px] font-black uppercase tracking-widest mb-1 flex items-center gap-2"><Clock className="w-4 h-4"/> Horario oficial protegido</p>
+              <p className="text-xs font-bold leading-relaxed">La clase seguirá ofertándose como {getDayName(editClassModal.dayOfWeek)} a las {editClassModal.time}h en {editClassModal.sede} · {editClassModal.sala}. El cambio solo se aplicará dentro del periodo indicado.</p>
+            </div>
+
+            {temporaryClassData.id && (() => {
+              const currentChange = temporaryClassChanges.find(change => change.id === temporaryClassData.id);
+              return currentChange ? (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-800">Cambio temporal ya programado</p>
+                    <p className="text-xs font-bold text-amber-950 mt-1">{formatDateSpanish(currentChange.from)} – {formatDateSpanish(currentChange.until)}</p>
+                  </div>
+                  <button type="button" onClick={() => cancelTemporaryClassChange(currentChange)} className="px-3 py-2 bg-white border border-red-200 text-red-700 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white">Cancelar cambio</button>
+                </div>
+              ) : null;
+            })()}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Aplicar desde *</label>
+                <input type="date" value={temporaryClassData.from} onChange={e => setTemporaryClassData({...temporaryClassData, from: e.target.value})} className="w-full p-3 bg-white border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Aplicar hasta *</label>
+                <input type="date" value={temporaryClassData.until} onChange={e => setTemporaryClassData({...temporaryClassData, until: e.target.value})} className="w-full p-3 bg-white border-2 border-violet-100 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+                <p className="text-[9px] font-bold text-zinc-400 mt-1">Después de esta fecha vuelve automáticamente al horario oficial.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nuevo día *</label>
+                <select value={temporaryClassData.dayOfWeek} onChange={e => setTemporaryClassData({...temporaryClassData, dayOfWeek: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                  {[1,2,3,4,5,6].map(day => <option key={day} value={day}>{getDayName(day)}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Nueva hora *</label>
+                <input type="time" value={temporaryClassData.time} onChange={e => setTemporaryClassData({...temporaryClassData, time: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Duración min.</label>
+                <input type="number" min="15" step="15" value={temporaryClassData.duration} onChange={e => setTemporaryClassData({...temporaryClassData, duration: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede *</label>
+                <select value={temporaryClassData.sede} onChange={e => setTemporaryClassData({...temporaryClassData, sede: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">{SEDES.map(sede => <option key={sede} value={sede}>{sede}</option>)}</select>
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sala *</label>
+                <select value={temporaryClassData.sala} onChange={e => setTemporaryClassData({...temporaryClassData, sala: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">{SALAS.map(sala => <option key={sala} value={sala}>{sala}</option>)}</select>
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor durante el cambio *</label>
+                <select value={temporaryClassData.teacher} onChange={e => setTemporaryClassData({...temporaryClassData, teacher: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                  <option value="">Seleccionar...</option>
+                  {allOfficialTeacherNames.map(name => <option key={normalizeTeacherKey(name)} value={name}>{name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-blue-800">Disponibilidad declarada</p>
+              <p className="text-sm font-black text-blue-950 mt-1">{(getTeacherAvailability(temporaryClassData.teacher)?.[temporaryClassData.dayOfWeek] || []).map(slot => `${slot.start}h–${slot.end}h`).join(' | ') || 'Ninguna franja registrada para ese día.'}</p>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Motivo o nota interna</label>
+              <textarea value={temporaryClassData.notes} onChange={e => setTemporaryClassData({...temporaryClassData, notes: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px]" placeholder="Ej.: obras en la sala, sustitución temporal..." />
+            </div>
+          </div>
+          ) : null}
+
           <div className="flex gap-3">
             <button onClick={closeEditClassModal} className="flex-1 bg-zinc-100 text-zinc-600 py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-zinc-200 transition-colors">
               Cancelar
             </button>
             <button onClick={handleSaveEditedClass} className="flex-[2] bg-black text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-zinc-800 transition-colors">
-              Guardar Cambios
+              {editClassMode === 'temporary' ? 'Programar cambio temporal' : 'Guardar cambios definitivos'}
             </button>
           </div>
         </div>
@@ -7936,7 +8498,7 @@ ${valueOrDash(comments.privateNote)}`,
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor asignado *</label>
               <select value={newClassData.teacher} onChange={e => setNewClassData({...newClassData, teacher: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
                 <option value="">Seleccionar...</option>
-                {(settings.teachersList || []).map(t => <option key={t} value={t}>{t}</option>)}
+                {allOfficialTeacherNames.map(t => <option key={normalizeTeacherKey(t)} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
@@ -8001,8 +8563,8 @@ ${valueOrDash(comments.privateNote)}`,
                   Horas libres de {newClassData.teacher} el {getDayName(newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString())}:
                 </span>
                 <span className="font-black text-sm">
-                  {availabilities[newClassData.teacher.toLowerCase()]?.[newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString()]?.length > 0 
-                    ? availabilities[newClassData.teacher.toLowerCase()][newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString()].map(s => `${s.start}h a ${s.end}h`).join(' | ')
+                  {getTeacherAvailability(newClassData.teacher)?.[newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString()]?.length > 0 
+                    ? getTeacherAvailability(newClassData.teacher)[newClassData.isRecurring ? newClassData.dayOfWeek : new Date(newClassData.specificDate).getDay().toString()].map(s => `${s.start}h a ${s.end}h`).join(' | ')
                     : 'Ninguna franja registrada.'}
                 </span>
              </p>
@@ -8275,6 +8837,9 @@ ${startDateWarning}
     const classStartDateWarningForAdd = showClassStartDateForAdd
       ? getClassStartDateWarning(classStartDateInput, c.dayOfWeek, todayStr)
       : '';
+    const visibleTemporaryChanges = getClassTemporaryChanges(c.id)
+      .filter(change => change.until >= todayStr)
+      .sort((a, b) => String(a.from || '').localeCompare(String(b.from || '')));
 
     const handleAddStudent = async () => {
       if (!searchName.trim()) return alert("Debes escribir el nombre del alumno.");
@@ -8413,6 +8978,22 @@ ${startDateWarning}
               <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{c.subject} • {c.teacher} • {getDayName(c.dayOfWeek)} {c.time}h</p>
             </div>
           </div>
+          <div className="mb-4 flex flex-col sm:flex-row gap-2 shrink-0">
+            <button type="button" onClick={() => openEditClassModal(c)} className="flex-1 bg-amber-100 text-amber-800 hover:bg-amber-200 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"><Pencil className="w-4 h-4"/> Editar clase</button>
+            {visibleTemporaryChanges.length > 0 && <span className="flex-1 bg-violet-50 border border-violet-100 text-violet-800 px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"><Clock className="w-4 h-4"/> {visibleTemporaryChanges.length} cambio(s) temporal(es)</span>}
+          </div>
+          {visibleTemporaryChanges.map(change => (
+            <div key={change.id} className="mb-4 p-4 bg-violet-50 border border-violet-100 rounded-2xl shrink-0">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-violet-800">{isTemporaryClassChangeActiveForDate(change, todayStr) ? 'Cambio temporal activo' : 'Cambio temporal programado'}</p>
+                  <p className="text-sm font-black text-violet-950 mt-1">{getDayName(change.dayOfWeek)} {change.time}h · {change.sede} ({change.sala}) · {getOfficialTeacherName(change.teacher)}</p>
+                  <p className="text-[10px] font-bold text-violet-700 mt-1">Del {formatDateSpanish(change.from)} al {formatDateSpanish(change.until)}. Después vuelve a {getDayName(c.dayOfWeek)} {c.time}h.</p>
+                </div>
+                <button type="button" onClick={() => cancelTemporaryClassChange(change)} className="shrink-0 p-2 bg-white text-red-600 border border-red-100 rounded-lg hover:bg-red-600 hover:text-white" title="Cancelar cambio temporal"><X className="w-4 h-4"/></button>
+              </div>
+            </div>
+          ))}
           <div className="mb-6 p-4 bg-zinc-50 border border-zinc-200 rounded-2xl shrink-0">
             <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-3">Añadir Alumno al Grupo</h3>
             <div className="flex flex-col sm:flex-row gap-2 relative">
@@ -9651,9 +10232,9 @@ ${startDateWarning}
                                   const classStartDate = getStudentClassStartDate(studentInClass, student);
                                   const startsLater = classStartDate && classStartDate > todayStr;
                                   return (
-                                    <span key={c.id} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap ${isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-zinc-100 border-zinc-200 text-zinc-500'}`} title={`Profesor: ${c.teacher}${isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
+                                    <button type="button" key={c.id} onClick={() => setViewClassModal(c)} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 ${isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600 hover:bg-blue-100' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100' : 'bg-zinc-100 border-zinc-200 text-zinc-500 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200'}`} title={`Abrir clase · Profesor: ${getOfficialTeacherName(c.teacher)}${isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
                                       <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isMaintenanceNow ? ' · Mantenimiento' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
-                                    </span>
+                                    </button>
                                   );
                                 })}
                               </div>
@@ -10058,8 +10639,14 @@ ${startDateWarning}
                                     <span>{getDayName(c.dayOfWeek)}</span>
                                     <span className="bg-zinc-100 p-1 rounded">{c.time}</span>
                                     {isPunctualClass(c) && <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Puntual {formatDateSpanish(c.date)}</span>}
+                                    {c.temporaryClassChange && <span className="bg-violet-100 text-violet-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Temporal hasta {formatDateSpanish(c.temporaryClassChange.until)}</span>}
                                   </div>
                                   <div className="text-xs font-bold uppercase mt-1" style={{ color: teacherTheme.text }}>{c.subject} • {c.sede} ({c.sala})</div>
+                                  {c.temporaryClassChange && c.officialSchedule && (
+                                    <div className="mt-1 text-[9px] font-bold text-violet-700 normal-case leading-snug">
+                                      Oficial: {getDayName(c.officialSchedule.dayOfWeek)} {c.officialSchedule.time}h · {c.officialSchedule.sede} ({c.officialSchedule.sala}) · {c.officialSchedule.teacher}
+                                    </div>
+                                  )}
                                   <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} activos`}</div>
                                   {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
                                     <div className="text-right text-[9px] font-black uppercase tracking-widest mt-1" style={{ color: teacherTheme.text }}>
@@ -10383,7 +10970,7 @@ ${startDateWarning}
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Profesores</h2>
-                <p className="text-zinc-500 font-medium text-sm">Seguimiento docente, horas reales, ajustes administrativos y nómina orientativa.</p>
+                <p className="text-zinc-500 font-medium text-sm">Evaluaciones, horas, nóminas y disponibilidad real para abrir nuevas clases.</p>
               </div>
               {teacherPanelTab === 'payroll' && (
                 <select 
@@ -10398,7 +10985,7 @@ ${startDateWarning}
               )}
             </header>
 
-            <div className="bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 onClick={() => setTeacherPanelTab('evaluations')}
                 className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'evaluations' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
@@ -10410,6 +10997,12 @@ ${startDateWarning}
                 className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'payroll' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
               >
                 <Calculator className="w-4 h-4"/> Horas y nóminas
+              </button>
+              <button
+                onClick={() => setTeacherPanelTab('availability')}
+                className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'availability' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
+              >
+                <Clock className="w-4 h-4"/> Disponibilidad
               </button>
             </div>
 
@@ -10618,6 +11211,88 @@ ${startDateWarning}
                     </table>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {teacherPanelTab === 'availability' && (
+              <div className="space-y-6">
+                <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-blue-800 mb-1">Disponibilidad declarada por el profesor</p>
+                    <p className="text-xs font-bold text-blue-950 leading-relaxed">Cruza las franjas ofrecidas con las clases oficiales y temporales. Una clase hibernada o desplazada temporalmente sigue reservando su horario oficial.</p>
+                  </div>
+                  <select value={selectedAvailabilityTeacher} onChange={e => setSelectedAvailabilityTeacher(e.target.value)} className="w-full lg:w-72 bg-white border-2 border-blue-200 px-4 py-3 rounded-xl text-sm font-black uppercase tracking-widest text-slate-800 outline-none">
+                    <option value="">Selecciona profesor...</option>
+                    {allOfficialTeacherNames.map(name => <option key={normalizeTeacherKey(name)} value={name}>{name}</option>)}
+                  </select>
+                </div>
+
+                {selectedAvailabilityTeacher && (
+                  <>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="bg-white border border-zinc-200 rounded-2xl p-4"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Horas ofrecidas</p><p className="text-2xl font-black text-slate-900 mt-1">{teacherAvailabilityPanel.summary.offeredHours.toLocaleString('es-ES', { maximumFractionDigits: 2 })} h</p></div>
+                      <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4"><p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Clases activas</p><p className="text-2xl font-black text-emerald-950 mt-1">{teacherAvailabilityPanel.summary.activeClasses}</p></div>
+                      <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4"><p className="text-[9px] font-black uppercase tracking-widest text-amber-700">Reservadas / inactivas</p><p className="text-2xl font-black text-amber-950 mt-1">{teacherAvailabilityPanel.summary.inactiveClasses}</p></div>
+                      <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4"><p className="text-[9px] font-black uppercase tracking-widest text-indigo-700">Horas libres</p><p className="text-2xl font-black text-indigo-950 mt-1">{teacherAvailabilityPanel.summary.freeHours.toLocaleString('es-ES', { maximumFractionDigits: 2 })} h</p></div>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden">
+                      <div className="p-4 border-b border-zinc-100">
+                        <h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Franjas ofrecidas</h3>
+                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">Filas de una hora o del tramo restante si la franja termina antes.</p>
+                      </div>
+                      {teacherAvailabilityPanel.rows.length === 0 ? (
+                        <div className="p-10 text-center text-zinc-400 font-bold text-xs uppercase tracking-widest">Este profesor no ha registrado disponibilidad.</div>
+                      ) : (
+                        <div className="divide-y divide-zinc-100">
+                          {teacherAvailabilityPanel.rows.map(row => {
+                            const statusConfig = {
+                              free: { label: 'Libre', style: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+                              active: { label: 'Ocupada activa', style: 'bg-slate-900 text-white border-slate-900' },
+                              inactive: { label: 'Ocupada inactiva', style: 'bg-zinc-100 text-zinc-600 border-zinc-200' },
+                              reserved: { label: 'Reservada hasta regreso', style: 'bg-amber-50 text-amber-800 border-amber-200' },
+                              temporary_active: { label: 'Ocupada temporal', style: 'bg-violet-100 text-violet-800 border-violet-200' },
+                              temporary_inactive: { label: 'Temporal inactiva', style: 'bg-violet-50 text-violet-600 border-violet-100' }
+                            }[row.status];
+                            const classData = row.classData;
+                            return (
+                              <div key={row.key} className="p-3 md:p-4 grid grid-cols-1 md:grid-cols-[150px_190px_1fr_auto] gap-3 md:items-center hover:bg-zinc-50 transition-colors">
+                                <div><p className="font-black text-sm text-slate-900">{getDayName(row.dayOfWeek)}</p><p className="text-xs font-bold text-zinc-400">{row.time}–{row.endTime}h</p></div>
+                                <div><span className={`inline-flex px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${statusConfig.style}`}>{statusConfig.label}</span></div>
+                                <div className="min-w-0">
+                                  {classData ? (
+                                    <><p className="text-sm font-black text-slate-900 truncate">{classData.subject || 'Clase'} · {classData.sede || 'Tarragona'} · {classData.sala || 'Sala 1'}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">{row.activeCount}/{classData.capacity || '—'} activos{row.detail ? ` · ${row.detail}` : ''}</p></>
+                                  ) : <p className="text-xs font-bold text-zinc-400">Disponible para abrir una clase.</p>}
+                                </div>
+                                <div>
+                                  {classData ? (
+                                    <button type="button" onClick={() => setViewClassModal(row.officialClass || classData)} className="w-full md:w-auto px-3 py-2 bg-zinc-100 text-zinc-700 hover:bg-black hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Abrir</button>
+                                  ) : (
+                                    <button type="button" onClick={() => openCreateClassFromAvailability(row)} className="w-full md:w-auto px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-1"><Plus className="w-3 h-3"/> Crear clase</button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {teacherAvailabilityPanel.outsideRows.length > 0 && (
+                      <div className="bg-rose-50 border border-rose-100 rounded-2xl overflow-hidden">
+                        <div className="p-4 border-b border-rose-100"><h3 className="text-sm font-black uppercase tracking-widest text-rose-900 flex items-center gap-2"><AlertTriangle className="w-4 h-4"/> Clases fuera de la disponibilidad declarada</h3></div>
+                        <div className="divide-y divide-rose-100">
+                          {teacherAvailabilityPanel.outsideRows.map(row => (
+                            <div key={row.key} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div><p className="text-sm font-black text-rose-950">{getDayName(row.classData.dayOfWeek)} {row.classData.time}h · {row.classData.subject} · {row.classData.sede} ({row.classData.sala})</p><p className="text-[10px] font-bold text-rose-700 mt-1">{row.role === 'temporary' ? 'Horario temporal no cubierto por sus franjas.' : 'Horario oficial no cubierto por sus franjas.'}</p></div>
+                              <button type="button" onClick={() => setViewClassModal(row.officialClass)} className="px-3 py-2 bg-white border border-rose-200 text-rose-800 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-rose-700 hover:text-white">Abrir clase</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -11153,13 +11828,14 @@ ${startDateWarning}
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
               <div className="flex gap-2 mb-4">
                 <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
-                <button onClick={() => { const val = document.getElementById('adminTeacherInput').value.trim(); if(val) { const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; setSettings(s); saveGlobalSettings(s); document.getElementById('adminTeacherInput').value = ''; } }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
+                <button onClick={() => { const input = document.getElementById('adminTeacherInput'); const val = cleanTeacherDisplayName(input?.value); if (!val) return; if ((settings.teachersList || []).some(name => isSameTeacher(name, val))) { alert(`${getOfficialTeacherName(val, val)} ya figura en la plantilla. No se añadirá otra variante del mismo nombre.`); return; } const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; setSettings(s); saveGlobalSettings(s); if (input) input.value = ''; }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
               </div>
               <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
-                {(settings.teachersList || []).map((t, i) => {
-                  const currentColor = settings.teacherColors?.[t] || getFallbackTeacherColor(t);
+                {configuredTeacherNames.map((t) => {
+                  const matchingColorKey = Object.keys(settings.teacherColors || {}).find(name => isSameTeacher(name, t));
+                  const currentColor = (matchingColorKey && settings.teacherColors?.[matchingColorKey]) || getFallbackTeacherColor(t);
                   return (
-                    <div key={i} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
+                    <div key={normalizeTeacherKey(t)} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
                       <div className="flex items-center gap-3 min-w-0">
                         <span className="w-4 h-4 rounded-full border border-white shadow-sm shrink-0" style={{ background: currentColor }} />
                         <span className="font-black uppercase tracking-widest text-slate-700 truncate">{t}</span>
@@ -11170,9 +11846,12 @@ ${startDateWarning}
                           type="color"
                           value={currentColor}
                           onChange={(e) => {
+                            const nextColors = { ...(settings.teacherColors || {}) };
+                            Object.keys(nextColors).filter(name => isSameTeacher(name, t)).forEach(name => delete nextColors[name]);
+                            nextColors[t] = e.target.value;
                             const s = {
                               ...settings,
-                              teacherColors: { ...(settings.teacherColors || {}), [t]: e.target.value }
+                              teacherColors: nextColors
                             };
                             setSettings(s);
                           }}
@@ -11181,7 +11860,7 @@ ${startDateWarning}
                         />
                         <button onClick={() => {
                           const nextColors = { ...(settings.teacherColors || {}) };
-                          delete nextColors[t];
+                          Object.keys(nextColors).filter(name => isSameTeacher(name, t)).forEach(name => delete nextColors[name]);
                           const s = { ...settings, teacherColors: nextColors };
                           setSettings(s);
                         }} className="text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 p-1.5 rounded transition-colors" title="Restaurar color automático">
@@ -11189,10 +11868,10 @@ ${startDateWarning}
                         </button>
                         <button onClick={() => {
                           const nextColors = { ...(settings.teacherColors || {}) };
-                          delete nextColors[t];
+                          Object.keys(nextColors).filter(name => isSameTeacher(name, t)).forEach(name => delete nextColors[name]);
                           const s = {
                             ...settings,
-                            teachersList: settings.teachersList.filter((_, idx) => idx !== i),
+                            teachersList: settings.teachersList.filter(name => !isSameTeacher(name, t)),
                             teacherColors: nextColors
                           };
                           setSettings(s);
@@ -11205,7 +11884,7 @@ ${startDateWarning}
               </div>
               <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
                 <p className="text-[11px] text-zinc-500 font-medium leading-relaxed">Estos colores se usan en Clases Globales, Vista Arquitecto y Cuadrante Completo.</p>
-                <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-900 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-2"><Save className="w-4 h-4"/> Guardar colores</button>
+                <button onClick={() => { const cleanedSettings = { ...settings, teachersList: configuredTeacherNames }; setSettings(cleanedSettings); saveGlobalSettings(cleanedSettings); }} className="bg-zinc-900 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-2"><Save className="w-4 h-4"/> Guardar colores</button>
               </div>
             </div>
 

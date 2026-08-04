@@ -234,6 +234,44 @@ const getClassEndTime = (time, duration = 60) => {
   return range ? formatMinutesToTime(range.end) : '';
 };
 
+const cleanTeacherDisplayName = (name = '') => String(name || '')
+  .trim()
+  .replace(/\s+/g, ' ');
+
+const normalizeTeacherKey = (name = '') => cleanTeacherDisplayName(name)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase('es-ES');
+
+const isSameTeacher = (left, right) => Boolean(normalizeTeacherKey(left)) && normalizeTeacherKey(left) === normalizeTeacherKey(right);
+
+const TEMPORARY_CLASS_CHANGE_FINAL_STATUSES = new Set([
+  'cancelled',
+  'cancelada',
+  'finalizada',
+  'expired'
+]);
+
+const isTemporaryClassChangeActiveForDate = (change = {}, targetDate = '') => {
+  if (!change || TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)) return false;
+  return Boolean(change.from && change.until && change.from <= targetDate && change.until >= targetDate);
+};
+
+const doClassTimeRangesOverlap = (left = {}, right = {}) => {
+  const leftRange = getClassTimeRange(left.time, left.duration);
+  const rightRange = getClassTimeRange(right.time, right.duration);
+  if (!leftRange || !rightRange) return false;
+  return leftRange.start < rightRange.end && rightRange.start < leftRange.end;
+};
+
+const getTodayLocalString = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const isSummerRecoveryDate = (dateString) => {
   if (!dateString) return false;
   const month = Number(dateString.split('-')[1]);
@@ -509,6 +547,7 @@ const NotesModalComponent = ({ notesModal, onClose, globalStudents, db, appId, s
 export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL, switchToAdmin }) {
   const [loadingData, setLoadingData] = useState(true);
   const [recurringClasses, setRecurringClasses] = useState([]);
+  const [allRecurringClasses, setAllRecurringClasses] = useState([]);
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
@@ -517,6 +556,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [gestiones, setGestiones] = useState([]); 
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [temporaryClassChanges, setTemporaryClassChanges] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [teacherNotifications, setTeacherNotifications] = useState([]);
@@ -528,6 +568,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
+  const [scheduleView, setScheduleView] = useState('schedule');
 
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
@@ -581,7 +622,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   
   const getTeacherName = () => {
     if (!user || !user.email) return 'Profesor';
-    return user.email.split('@')[0];
+    return cleanTeacherDisplayName(user.email.split('@')[0]);
+  };
+
+  const getOfficialTeacherName = (name = getTeacherName()) => {
+    const cleanName = cleanTeacherDisplayName(name);
+    const configuredName = (settings.teachersList || []).find(teacherName => isSameTeacher(teacherName, cleanName));
+    return configuredName || cleanName || 'Profesor';
   };
 
   useEffect(() => {
@@ -600,11 +647,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
     const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
     const temporaryRelocationsRef = collection(db, 'artifacts', appId, 'temporaryRelocations');
+    const temporaryClassChangesRef = collection(db, 'artifacts', appId, 'temporaryClassChanges');
     const maintenancePeriodsRef = collection(db, 'artifacts', appId, 'maintenancePeriods');
     const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
     const teacherNotificationsRef = collection(db, 'artifacts', appId, 'teacherNotifications');
     const teacherTasksRef = collection(db, 'artifacts', appId, 'teacherTasks');
-    const availRef = doc(db, 'artifacts', appId, 'availability', myName.toLowerCase());
+    const availRef = doc(db, 'artifacts', appId, 'availability', normalizeTeacherKey(myName));
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
     let recordsLoaded = false;
@@ -616,6 +664,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let gestionesLoaded = false;
     let payrollAdjustmentsLoaded = false;
     let temporaryRelocationsLoaded = false;
+    let temporaryClassChangesLoaded = false;
     let maintenancePeriodsLoaded = false;
     let announcementsLoaded = false;
     let teacherNotificationsLoaded = false;
@@ -624,7 +673,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && maintenancePeriodsLoaded && announcementsLoaded && teacherNotificationsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && temporaryClassChangesLoaded && maintenancePeriodsLoaded && announcementsLoaded && teacherNotificationsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
@@ -638,13 +687,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
+      const allClasses = [];
       const myClasses = [];
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
-        if ((data.teacher || '').toLowerCase() === myName.toLowerCase() || data.originalTeacherUid === user.uid) { 
-            myClasses.push({ id: docSnap.id, refPath: docSnap.ref.path, ...data });
+        const classData = { id: docSnap.id, refPath: docSnap.ref.path, ...data };
+        allClasses.push(classData);
+        if (isSameTeacher(data.teacher, myName) || data.originalTeacherUid === user.uid) { 
+            myClasses.push(classData);
         }
       });
+      setAllRecurringClasses(allClasses);
       setRecurringClasses(myClasses);
       recurringLoaded = true;
       checkLoading();
@@ -654,7 +707,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       const recs = [];
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
-        if ((data.teacher || '').toLowerCase() === myName.toLowerCase()) recs.push({ id: docSnap.id, ...data });
+        if (isSameTeacher(data.teacher, myName)) recs.push({ id: docSnap.id, ...data });
       });
       recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);
@@ -708,6 +761,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const unsubTemporaryRelocations = onSnapshot(temporaryRelocationsRef, (snapshot) => {
       setTemporaryRelocations(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       temporaryRelocationsLoaded = true;
+      checkLoading();
+    });
+
+    const unsubTemporaryClassChanges = onSnapshot(temporaryClassChangesRef, (snapshot) => {
+      setTemporaryClassChanges(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
+      temporaryClassChangesLoaded = true;
+      checkLoading();
+    }, (error) => {
+      console.error('No se pudieron cargar los cambios temporales de clase:', error);
+      setTemporaryClassChanges([]);
+      temporaryClassChangesLoaded = true;
       checkLoading();
     });
 
@@ -767,6 +831,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubGestiones();
       unsubPayrollAdjustments();
       unsubTemporaryRelocations();
+      unsubTemporaryClassChanges();
       unsubMaintenancePeriods();
       unsubAnnouncements();
       unsubTeacherNotifications();
@@ -806,7 +871,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     updatedSlots[day].sort((a,b) => a.start.localeCompare(b.start));
 
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'availability', getTeacherName().toLowerCase()), { slots: updatedSlots }, { merge: true });
+      await setDoc(doc(db, 'artifacts', appId, 'availability', normalizeTeacherKey(getTeacherName())), { slots: updatedSlots }, { merge: true });
       setNewSlot({ day: null, start: '', end: '' });
       showNotification({type:'success', text: 'Franja añadida a tu horario disponible para el centro.'});
     } catch(e) {
@@ -819,11 +884,58 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const updatedSlots = { ...availability, [day]: updatedDaySlots };
 
     try {
-      await setDoc(doc(db, 'artifacts', appId, 'availability', getTeacherName().toLowerCase()), { slots: updatedSlots }, { merge: true });
+      await setDoc(doc(db, 'artifacts', appId, 'availability', normalizeTeacherKey(getTeacherName())), { slots: updatedSlots }, { merge: true });
       showNotification({type:'success', text: 'Franja eliminada de tu disponibilidad declarada. Las clases ya asignadas no se modifican.'});
     } catch(e) {
       showNotification({type:'error', text: 'Error al eliminar.'});
     }
+  };
+
+  const getClassTemporaryChanges = (classId = '') => temporaryClassChanges
+    .filter(change =>
+      String(change.classId || '') === String(classId || '') &&
+      !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)
+    )
+    .sort((a, b) => {
+      const dateComparison = String(a.from || '').localeCompare(String(b.from || ''));
+      if (dateComparison !== 0) return dateComparison;
+      return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    });
+
+  const getActiveClassTemporaryChange = (classId = '', targetDate = getTodayLocalString()) => (
+    getClassTemporaryChanges(classId).find(change => isTemporaryClassChangeActiveForDate(change, targetDate)) || null
+  );
+
+  const getUpcomingClassTemporaryChange = (classId = '', targetDate = getTodayLocalString()) => (
+    getClassTemporaryChanges(classId)
+      .find(change => change.from && change.until && change.from > targetDate && change.until >= targetDate) || null
+  );
+
+  const getEffectiveClassForDate = (classData = {}, targetDate = getTodayLocalString()) => {
+    if (!classData || isPunctualClass(classData)) return classData;
+    const temporaryChange = getActiveClassTemporaryChange(classData.id, targetDate);
+    if (!temporaryChange) return classData;
+
+    const officialSchedule = temporaryChange.officialSchedule || {
+      dayOfWeek: classData.dayOfWeek,
+      time: classData.time,
+      sede: classData.sede,
+      sala: classData.sala,
+      teacher: classData.teacher,
+      duration: classData.duration
+    };
+
+    return {
+      ...classData,
+      dayOfWeek: Number(temporaryChange.dayOfWeek),
+      time: temporaryChange.time || classData.time,
+      sede: temporaryChange.sede || classData.sede,
+      sala: temporaryChange.sala || classData.sala,
+      teacher: getOfficialTeacherName(temporaryChange.teacher || classData.teacher),
+      duration: Number(temporaryChange.duration) || Number(classData.duration) || 60,
+      temporaryClassChange: temporaryChange,
+      officialSchedule
+    };
   };
 
   const teacherClassIds = useMemo(() => new Set(recurringClasses.map(c => c.id)), [recurringClasses]);
@@ -844,13 +956,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const pendingPlanningGestiones = useMemo(() => {
-    const teacherName = getTeacherName().toLowerCase();
+    const teacherName = normalizeTeacherKey(getTeacherName());
 
     return gestiones
       .filter(g => g.status === 'pendiente' && PLANNING_GESTION_TYPES.has(g.type))
       .filter(g => {
         if (g.requestedClass && teacherClassIds.has(g.requestedClass)) return true;
-        if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === teacherName) return true;
+        if (g.requestedTeacher && normalizeTeacherKey(g.requestedTeacher) === teacherName) return true;
         return recurringClasses.some(c => isPlanningGestionRelevantForClass(g, c));
       })
       .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
@@ -907,7 +1019,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
       if (PLANNING_GESTION_TYPES.has(g.type)) {
         if (g.requestedClass && teacherClassIds.has(g.requestedClass)) return true;
-        if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === getTeacherName().toLowerCase()) return true;
+        if (g.requestedTeacher && isSameTeacher(g.requestedTeacher, getTeacherName())) return true;
         return recurringClasses.some(c => isPlanningGestionRelevantForClass(g, c));
       }
 
@@ -917,7 +1029,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
       if (g.type === 'recuperacion') {
         if (g.requestedClass && teacherClassIds.has(g.requestedClass)) return true;
-        if (g.requestedTeacher && String(g.requestedTeacher).toLowerCase() === getTeacherName().toLowerCase()) return true;
+        if (g.requestedTeacher && isSameTeacher(g.requestedTeacher, getTeacherName())) return true;
       }
 
       return false;
@@ -931,12 +1043,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   }, [gestiones, recurringClasses, teacherClassIds, isAdmin, user]);
 
   const visibleInternalTeacherNotifications = useMemo(() => {
-    const teacherName = getTeacherName().trim().toLowerCase();
+    const teacherName = normalizeTeacherKey(getTeacherName());
     const teacherEmail = String(user?.email || '').trim().toLowerCase();
-    const assignedTeacherNames = new Set(recurringClasses.map(clase => String(clase.teacher || '').trim().toLowerCase()).filter(Boolean));
+    const assignedTeacherNames = new Set(recurringClasses.map(clase => normalizeTeacherKey(clase.teacher)).filter(Boolean));
 
     return teacherNotifications.filter(notification => {
-      const targetName = String(notification.teacherNameNormalized || notification.teacherName || '').trim().toLowerCase();
+      const targetName = normalizeTeacherKey(notification.teacherNameNormalized || notification.teacherName || '');
       const targetEmail = String(notification.teacherEmail || '').trim().toLowerCase();
       const targetUid = String(notification.teacherUid || '').trim();
       return Boolean(
@@ -971,12 +1083,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     if (!audienceValue) return false;
 
-    const teacherName = getTeacherName().toLowerCase();
+    const teacherName = normalizeTeacherKey(getTeacherName());
     const teacherEmail = String(user?.email || '').toLowerCase();
-    const valueLower = audienceValue.toLowerCase();
+    const valueLower = normalizeTeacherKey(audienceValue);
 
     if (audienceType === 'profesor') {
-      return valueLower === teacherName || valueLower === teacherEmail;
+      return valueLower === teacherName || audienceValue.toLowerCase() === teacherEmail;
     }
     if (audienceType === 'sede') {
       return recurringClasses.some(c => (c.sede || 'Tarragona') === audienceValue);
@@ -1045,7 +1157,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       requestType: taskForm.type === 'admin_request' ? (taskForm.requestType || 'otro') : '',
       teacherUid: user.uid,
       teacherEmail: user.email,
-      teacherName: getTeacherName(),
+      teacherName: getOfficialTeacherName(),
       title: taskForm.title.trim(),
       description: taskForm.description.trim(),
       priority: taskForm.priority || 'normal',
@@ -1083,14 +1195,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       status,
       updatedAt: now,
       updatedBy: user?.email || '',
-      updatedByName: getTeacherName()
+      updatedByName: getOfficialTeacherName()
     };
 
     if (isAdminAssignmentTask(task)) {
       if (status === 'en_curso') {
         payload.startedAt = task.startedAt || now;
         payload.startedBy = user?.email || '';
-        payload.startedByName = getTeacherName();
+        payload.startedByName = getOfficialTeacherName();
       }
 
       if (status === 'completada') {
@@ -1098,7 +1210,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         if (response === null) return;
         payload.completedAt = now;
         payload.completedBy = user?.email || '';
-        payload.completedByName = getTeacherName();
+        payload.completedByName = getOfficialTeacherName();
         payload.teacherResponse = String(response || '').trim();
         payload.completionNote = String(response || '').trim();
       }
@@ -1113,14 +1225,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         }
         payload.rejectedAt = now;
         payload.rejectedBy = user?.email || '';
-        payload.rejectedByName = getTeacherName();
+        payload.rejectedByName = getOfficialTeacherName();
         payload.rejectionReason = cleanReason;
         payload.teacherResponse = cleanReason;
       }
     } else if (status === 'completada' || status === 'resuelta') {
       payload.completedAt = now;
       payload.completedBy = user?.email || '';
-      payload.completedByName = getTeacherName();
+      payload.completedByName = getOfficialTeacherName();
     }
 
     try {
@@ -1146,13 +1258,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const visibleTeacherTasks = useMemo(() => {
-    const teacherName = getTeacherName().toLowerCase();
+    const teacherName = normalizeTeacherKey(getTeacherName());
     const teacherEmail = String(user?.email || '').toLowerCase();
     return teacherTasks.filter(task => {
       if (isAdmin) return true;
       if (task.teacherUid && task.teacherUid === user?.uid) return true;
       if (task.teacherEmail && String(task.teacherEmail).toLowerCase() === teacherEmail) return true;
-      return task.teacherName && String(task.teacherName).toLowerCase() === teacherName;
+      return task.teacherName && normalizeTeacherKey(task.teacherName) === teacherName;
     });
   }, [teacherTasks, user, isAdmin]);
 
@@ -1175,7 +1287,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const monthlyPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth; 
     const prevMonth = getPreviousMonthStr(targetMonth);
-    const teacherKey = getTeacherName().toLowerCase();
+    const teacherKey = normalizeTeacherKey(getTeacherName());
 
     const currentRecords = records.filter(r => r.date && r.date.startsWith(targetMonth) && !r.isRenounced);
     const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
@@ -1193,7 +1305,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const adjustmentItems = payrollAdjustments
       .filter(a => 
         a.month === targetMonth && 
-        String(a.teacher || '').toLowerCase() === teacherKey
+        normalizeTeacherKey(a.teacher) === teacherKey
       )
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
@@ -1219,19 +1331,21 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const selectedDayOfWeek = getDayOfWeek(date);
     const items = [];
     const recordsToday = records.filter(r => r.date === date);
-    
-    const scheduledToday = recurringClasses.filter(rc => {
-      if (rc.date) {
-        if (rc.date !== date) return false;
-      } 
-      else {
-        if (rc.dayOfWeek !== selectedDayOfWeek) return false;
-      }
-      
-      if (rc.cancelledDates && rc.cancelledDates.includes(date)) return false;
-      
-      return true;
-    });
+
+    const scheduledToday = allRecurringClasses
+      .map(classData => getEffectiveClassForDate(classData, date))
+      .filter(classData => isSameTeacher(classData.teacher, getTeacherName()))
+      .filter(classData => {
+        if (isPunctualClass(classData)) {
+          const punctualDate = classData.date || classData.specificDate;
+          if (punctualDate !== date) return false;
+        } else if (Number(classData.dayOfWeek) !== Number(selectedDayOfWeek)) {
+          return false;
+        }
+
+        if (classData.cancelledDates && classData.cancelledDates.includes(date)) return false;
+        return true;
+      });
 
     scheduledToday.forEach(rc => {
       const recordExists = recordsToday.find(r => r.classId === rc.id);
@@ -1245,7 +1359,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
-  }, [date, records, recurringClasses, globalStudents, temporaryRelocations, maintenancePeriods]);
+  }, [date, records, allRecurringClasses, temporaryClassChanges, settings.teachersList]);
 
   const isExpiredDate = useMemo(() => {
     const classDate = new Date(date);
@@ -1268,7 +1382,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         readAt: new Date().toISOString(),
         readByUid: user?.uid || '',
         readByEmail: user?.email || '',
-        readByName: getTeacherName()
+        readByName: getOfficialTeacherName()
       });
       showNotification({ type: 'success', text: 'Aviso marcado como enterado.' });
     } catch (error) {
@@ -1449,6 +1563,180 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
   };
 
+  const teacherScheduleModel = useMemo(() => {
+    const todayStr = getTodayLocalString();
+    const teacherName = getTeacherName();
+    const classRows = [];
+
+    const buildClassRow = ({ classData, officialClass, status, role, temporaryChange = null, upcomingChange = null, detail = '' }) => {
+      const activeCount = getEffectiveActiveStudentsForClass(officialClass || classData, todayStr).length;
+      const dayOfWeek = Number(classData.dayOfWeek);
+      const duration = Number(classData.duration) || 60;
+      const declaredSlots = availability[String(dayOfWeek)] || availability[dayOfWeek] || [];
+      return {
+        key: `${role}-${classData.id}`,
+        classId: classData.id,
+        dayOfWeek,
+        time: classData.time || '00:00',
+        endTime: getClassEndTime(classData.time || '00:00', duration),
+        duration,
+        status,
+        role,
+        classData,
+        officialClass: officialClass || classData,
+        activeCount,
+        temporaryChange,
+        upcomingChange,
+        detail,
+        outsideAvailability: !declaredSlots.some(slot => isClassFullyCoveredBySlot(classData, slot))
+      };
+    };
+
+    allRecurringClasses.filter(classData => !isPunctualClass(classData)).forEach(officialClass => {
+      const officialMatches = isSameTeacher(officialClass.teacher, teacherName);
+      const activeChange = getActiveClassTemporaryChange(officialClass.id, todayStr);
+      const upcomingChange = getUpcomingClassTemporaryChange(officialClass.id, todayStr);
+
+      if (!activeChange) {
+        if (!officialMatches) return;
+        const activeCount = getEffectiveActiveStudentsForClass(officialClass, todayStr).length;
+        classRows.push(buildClassRow({
+          classData: officialClass,
+          officialClass,
+          status: activeCount > 0 ? 'active' : 'inactive',
+          role: 'official',
+          upcomingChange
+        }));
+        return;
+      }
+
+      const effectiveClass = getEffectiveClassForDate(officialClass, todayStr);
+      const effectiveMatches = isSameTeacher(effectiveClass.teacher, teacherName);
+      const movedFromOfficialSlot = (
+        Number(effectiveClass.dayOfWeek) !== Number(officialClass.dayOfWeek) ||
+        effectiveClass.time !== officialClass.time ||
+        !isSameTeacher(effectiveClass.teacher, officialClass.teacher)
+      );
+
+      if (officialMatches && movedFromOfficialSlot) {
+        classRows.push(buildClassRow({
+          classData: officialClass,
+          officialClass,
+          status: 'reserved',
+          role: 'reserved',
+          temporaryChange: activeChange,
+          detail: `Ahora: ${getDayName(effectiveClass.dayOfWeek)} ${effectiveClass.time}h · ${effectiveClass.sede || 'Tarragona'} · ${effectiveClass.sala || 'Sala 1'}${!isSameTeacher(effectiveClass.teacher, officialClass.teacher) ? ` · ${getOfficialTeacherName(effectiveClass.teacher)}` : ''}`
+        }));
+      }
+
+      if (effectiveMatches) {
+        const activeCount = getEffectiveActiveStudentsForClass(officialClass, todayStr).length;
+        classRows.push(buildClassRow({
+          classData: effectiveClass,
+          officialClass,
+          status: activeCount > 0 ? 'temporary_active' : 'temporary_inactive',
+          role: 'temporary',
+          temporaryChange: activeChange,
+          detail: `Temporal hasta ${formatDateSpanish(activeChange.until)}`
+        }));
+      }
+    });
+
+    const offeredSegments = [];
+    [1, 2, 3, 4, 5, 6].forEach(day => {
+      (availability[String(day)] || availability[day] || []).forEach(slot => {
+        const slotStart = parseTimeToMinutes(slot.start);
+        const slotEnd = parseTimeToMinutes(slot.end);
+        if (slotStart === null || slotEnd === null || slotEnd <= slotStart) return;
+        for (let cursor = slotStart; cursor < slotEnd; cursor += 60) {
+          const segmentEnd = Math.min(cursor + 60, slotEnd);
+          const key = `${day}-${cursor}-${segmentEnd}`;
+          if (offeredSegments.some(segment => segment.key === key)) continue;
+          offeredSegments.push({
+            key,
+            dayOfWeek: day,
+            time: formatMinutesToTime(cursor),
+            endTime: formatMinutesToTime(segmentEnd),
+            duration: segmentEnd - cursor
+          });
+        }
+      });
+    });
+
+    const freeRows = offeredSegments
+      .filter(segment => !classRows.some(row =>
+        Number(row.dayOfWeek) === Number(segment.dayOfWeek) &&
+        doClassTimeRangesOverlap(row, segment)
+      ))
+      .map(segment => ({
+        ...segment,
+        key: `free-${segment.key}`,
+        status: 'free',
+        role: 'free',
+        classData: null,
+        officialClass: null,
+        activeCount: 0,
+        detail: '',
+        outsideAvailability: false
+      }));
+
+    const statusOrder = { active: 0, temporary_active: 0, inactive: 1, temporary_inactive: 1, reserved: 2, free: 3 };
+    const weeklyRows = [...classRows, ...freeRows].sort((a, b) =>
+      Number(a.dayOfWeek) - Number(b.dayOfWeek) ||
+      String(a.time || '').localeCompare(String(b.time || '')) ||
+      (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
+    );
+
+    const punctualRows = allRecurringClasses
+      .filter(isPunctualClass)
+      .filter(classData => isSameTeacher(classData.teacher, teacherName))
+      .filter(classData => (classData.date || classData.specificDate || '') >= todayStr)
+      .map(classData => {
+        const punctualDate = classData.date || classData.specificDate;
+        return {
+          ...buildClassRow({
+            classData,
+            officialClass: classData,
+            status: getEffectiveActiveStudentsForClass(classData, punctualDate).length > 0 ? 'punctual' : 'punctual_inactive',
+            role: 'punctual'
+          }),
+          date: punctualDate
+        };
+      })
+      .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time)));
+
+    const upcomingChanges = temporaryClassChanges
+      .filter(change => !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status))
+      .filter(change => change.from && change.from > todayStr)
+      .map(change => ({
+        change,
+        officialClass: allRecurringClasses.find(classData => String(classData.id) === String(change.classId))
+      }))
+      .filter(item => item.officialClass && (
+        isSameTeacher(item.officialClass.teacher, teacherName) ||
+        isSameTeacher(item.change.teacher, teacherName)
+      ))
+      .sort((a, b) => String(a.change.from).localeCompare(String(b.change.from)));
+
+    const uniqueIdsForStatus = status => new Set(classRows.filter(row => status.includes(row.status)).map(row => row.classId)).size;
+    const offeredMinutes = offeredSegments.reduce((sum, segment) => sum + segment.duration, 0);
+    const freeMinutes = freeRows.reduce((sum, segment) => sum + segment.duration, 0);
+
+    return {
+      weeklyRows,
+      punctualRows,
+      upcomingChanges,
+      outsideRows: classRows.filter(row => row.outsideAvailability),
+      summary: {
+        activeClasses: uniqueIdsForStatus(['active', 'temporary_active']),
+        inactiveClasses: uniqueIdsForStatus(['inactive', 'temporary_inactive']),
+        reservedClasses: uniqueIdsForStatus(['reserved']),
+        offeredHours: offeredMinutes / 60,
+        freeHours: freeMinutes / 60
+      }
+    };
+  }, [allRecurringClasses, temporaryClassChanges, availability, globalStudents, maintenancePeriods, temporaryRelocations, settings.teachersList]);
+
   const sanitizeTemplateStudentForSave = (student = {}) => {
     const studentInfo = globalStudents.find(g => g.id === student.id) || {};
     const keepLegacyPaused = student.isPaused === true && studentInfo?.globalStatus === 'congelado';
@@ -1532,11 +1820,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const isOwnSubstitution = (sub = {}) => {
-    const teacherName = getTeacherName().toLowerCase();
+    const teacherName = normalizeTeacherKey(getTeacherName());
     return Boolean(
       (sub.originalTeacherUid && sub.originalTeacherUid === user?.uid) ||
       (sub.originalTeacherEmail && String(sub.originalTeacherEmail).toLowerCase() === String(user?.email || '').toLowerCase()) ||
-      (sub.originalTeacherName && String(sub.originalTeacherName).toLowerCase() === teacherName)
+      (sub.originalTeacherName && normalizeTeacherKey(sub.originalTeacherName) === teacherName)
     );
   };
 
@@ -1826,7 +2114,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     const dailyComputableHours = getComputableHoursFromRecords(recordsForSelectedDate).toFixed(2);
 
     const payload = {
-      profesor: getTeacherName(),
+      profesor: getOfficialTeacherName(),
       profesorEmail: user.email,
       fecha: formatDateSpanish(date),
       horas: `${monthlyComputableHours}\nHoras declaradas del día: ${dailyComputableHours}`,
@@ -1994,6 +2282,8 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
       dayOfWeek: scheduledClass.dayOfWeek,
       date: scheduledClass.date || null,
       isRecurring: !scheduledClass.date,
+      temporaryClassChange: scheduledClass.temporaryClassChange || null,
+      officialSchedule: scheduledClass.officialSchedule || null,
       exceptions: scheduledClass.exceptions || {},
       students: visibleStudents,
       nonComputableStudents,
@@ -2074,7 +2364,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           time: latestSub.time,
           sede: latestSub.sede || 'Tarragona',
           sala: latestSub.sala || 'Sala 1',
-          teacher: getTeacherName(),
+          teacher: getOfficialTeacherName(),
           subject: latestSub.subject,
           capacity: latestSub.capacity || '',
           duration: latestSub.duration || 60,
@@ -2100,7 +2390,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           assumedAt: now,
           assumedByUid: user.uid,
           assumedByEmail: user.email || '',
-          assumedTeacherName: getTeacherName(),
+          assumedTeacherName: getOfficialTeacherName(),
           assumedClassId: newClassId,
           assumedClassRefPath
         });
@@ -2213,7 +2503,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       return;
     }
 
-    const dayToSave = currentSession.dayOfWeek;
+    const persistedSchedule = currentSession.officialSchedule || currentSession;
 
     try {
       const templateStudents = getTemplateStudentsForSave(currentSession);
@@ -2235,21 +2525,21 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const notesUpdatePayload = notesChanged ? {
         notesUpdatedAt: new Date().toISOString(),
         notesUpdatedBy: user.email,
-        notesUpdatedByName: getTeacherName()
+        notesUpdatedByName: getOfficialTeacherName()
       } : {};
 
       const targetPath = doc(db, currentSession.refPath); 
         
       await setDoc(targetPath, {
-        dayOfWeek: dayToSave,
+        dayOfWeek: persistedSchedule.dayOfWeek,
         date: currentSession.date || null, 
-        time: currentSession.time,
-        sede: currentSession.sede || 'Tarragona',
-        sala: currentSession.sala || 'Sala 1',
-        teacher: currentSession.teacher,
+        time: persistedSchedule.time,
+        sede: persistedSchedule.sede || 'Tarragona',
+        sala: persistedSchedule.sala || 'Sala 1',
+        teacher: persistedSchedule.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
-        duration: currentSession.duration || 60,
+        duration: persistedSchedule.duration || 60,
         notes: currentSession.notes,
         ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
@@ -2359,7 +2649,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const streakStartDate = streakRecords[streakRecords.length - 1]?.date || savedRecord.date;
       const absenceDates = streakRecords.map(record => record.date).filter(Boolean).reverse();
       const safeAlertId = `falta-reiterada-${savedRecord.classId}-${student.id}-${streakStartDate}`.replace(/[^a-zA-Z0-9_-]/g, '_');
-      const teacherName = currentSession.teacher || getTeacherName();
+      const teacherName = currentSession.teacher || getOfficialTeacherName();
       const teacherEmail = String(user?.email || '').trim().toLowerCase();
       const studentInfo = globalStudents.find(item => item.id === student.id) || {};
       const now = new Date().toISOString();
@@ -2454,7 +2744,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const notesUpdatePayload = notesChanged ? {
         notesUpdatedAt: new Date().toISOString(),
         notesUpdatedBy: user.email,
-        notesUpdatedByName: getTeacherName()
+        notesUpdatedByName: getOfficialTeacherName()
       } : {};
       const effectiveNotesUpdatedAt = notesUpdatePayload.notesUpdatedAt || currentSession.notesUpdatedAt || null;
       const effectiveNotesUpdatedBy = notesUpdatePayload.notesUpdatedBy || currentSession.notesUpdatedBy || '';
@@ -2535,17 +2825,18 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const templateStudents = getTemplateStudentsForSave(currentSession);
 
       const targetPath = doc(db, currentSession.refPath);
+      const persistedSchedule = currentSession.officialSchedule || currentSession;
         
       await setDoc(targetPath, {
-        dayOfWeek: currentSession.dayOfWeek,
+        dayOfWeek: persistedSchedule.dayOfWeek,
         date: currentSession.date || null,
-        time: currentSession.time,
-        sede: currentSession.sede || 'Tarragona',
-        sala: currentSession.sala || 'Sala 1',
-        teacher: currentSession.teacher,
+        time: persistedSchedule.time,
+        sede: persistedSchedule.sede || 'Tarragona',
+        sala: persistedSchedule.sala || 'Sala 1',
+        teacher: persistedSchedule.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
-        duration: currentSession.duration || 60,
+        duration: persistedSchedule.duration || 60,
         notes: currentSession.notes,
         ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
@@ -2626,17 +2917,14 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
         createdAt: new Date().toISOString(),
         createdByUid: user.uid,
         createdByEmail: user.email || '',
-        createdByName: getTeacherName()
+        createdByName: getOfficialTeacherName()
       });
 
       if (classData.date) {
         await deleteDoc(doc(db, classData.refPath));
       } else {
         const updatedCancelledDates = [...new Set([...(classData.cancelledDates || []), date])];
-        await setDoc(doc(db, classData.refPath), {
-          ...classData,
-          cancelledDates: updatedCancelledDates
-        });
+        await setDoc(doc(db, classData.refPath), { cancelledDates: updatedCancelledDates }, { merge: true });
       }
 
       showNotification({ type: 'success', text: 'Clase enviada a la Bolsa de Sustituciones.' });
@@ -2785,10 +3073,10 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
       notes: resourceForm.notes.trim(),
       createdAt: previousResource.createdAt || now,
       createdBy: previousResource.createdBy || user?.email || '',
-      createdByName: previousResource.createdByName || getTeacherName(),
+      createdByName: previousResource.createdByName || getOfficialTeacherName(),
       updatedAt: now,
       updatedBy: user?.email || '',
-      updatedByName: getTeacherName()
+      updatedByName: getOfficialTeacherName()
     };
 
     const nextResources = resourceForm.id
@@ -3666,6 +3954,12 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                                 </>
                               )}
                             </p>
+                            {item.data.temporaryClassChange && (
+                              <div className="mt-2 inline-flex flex-col gap-0.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-violet-800">Cambio temporal · hasta {formatDateSpanish(item.data.temporaryClassChange.until)}</span>
+                                <span className="text-[9px] font-bold text-violet-600">Después vuelve a {getDayName(item.data.officialSchedule?.dayOfWeek)} {item.data.officialSchedule?.time}h · {item.data.officialSchedule?.sede || 'Tarragona'} · {item.data.officialSchedule?.sala || 'Sala 1'}</span>
+                              </div>
+                            )}
                             {planningGestionesForClass.length > 0 && (
                               <div className="mt-2 flex flex-wrap gap-1.5">
                                 {planningGestionesForClass.slice(0, 3).map(g => renderPlanningBadge(g, item.data))}
@@ -3951,70 +4245,160 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
           </div>
         )}
 
-        {/* --- PESTAÑA 2: MI HORARIO (DISPONIBILIDAD) --- */}
+        {/* --- PESTAÑA 2: HORARIO Y DISPONIBILIDAD --- */}
         {activeTab === 'availability' && (
           <div className="space-y-6 animate-in fade-in">
-            <header className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
-                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Mi Disponibilidad</h2>
-                <p className="text-zinc-500 font-medium text-sm">Indica el horario total que pones a disposición del centro, incluyendo las franjas en las que ya tienes clases asignadas.</p>
+                <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Horario</h2>
+                <p className="text-zinc-500 font-medium text-sm">Consulta tu ocupación semanal o modifica las franjas que ofreces a la escuela.</p>
               </div>
             </header>
 
-            <div className="bg-blue-50 border-2 border-blue-100 text-blue-900 rounded-3xl p-5 md:p-6 shadow-sm">
-              <h3 className="text-sm font-black uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-5 h-5" /> Cómo usar esta sección</h3>
-              <p className="text-xs md:text-sm font-bold leading-relaxed">
-                Este no es el listado de huecos que te quedan libres. Es tu disponibilidad total para trabajar en la escuela. Si ya tienes una clase dentro de una franja, esa franja también debe figurar aquí. Coordinación cruzará esta disponibilidad con tu agenda real antes de asignarte nuevas clases.
-              </p>
-              <p className="text-[11px] font-black uppercase tracking-widest text-blue-700 mt-3">
-                Puedes borrar o reorganizar franjas sin que se eliminen ni se muevan tus clases ya asignadas.
-              </p>
+            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-2 grid grid-cols-2 gap-2">
+              <button onClick={() => setScheduleView('schedule')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${scheduleView === 'schedule' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+                <LayoutGrid className="w-4 h-4" /> Mi horario
+              </button>
+              <button onClick={() => setScheduleView('availability')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${scheduleView === 'availability' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+                <Clock className="w-4 h-4" /> Mi disponibilidad
+              </button>
             </div>
 
-            <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
-              <div className="p-6 md:p-8 space-y-8">
-                {[1, 2, 3, 4, 5, 6].map(day => (
-                  <div key={day} className="border-b border-zinc-100 pb-6 last:border-0 last:pb-0">
-                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                      <div className="w-full md:w-1/4">
-                        <h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{getDayName(day)}</h3>
-                        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">
-                           {(availability[day] || []).length} Franjas
-                        </p>
-                      </div>
+            {scheduleView === 'schedule' && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="bg-slate-900 text-white rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.activeClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Clases activas</p></div>
+                  <div className="bg-zinc-100 text-zinc-700 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.inactiveClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Inactivas</p></div>
+                  <div className="bg-emerald-50 text-emerald-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.freeHours.toLocaleString('es-ES', { maximumFractionDigits: 2 })}h</p><p className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Libres ofrecidas</p></div>
+                  <div className="bg-blue-50 text-blue-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.offeredHours.toLocaleString('es-ES', { maximumFractionDigits: 2 })}h</p><p className="text-[9px] font-black uppercase tracking-widest text-blue-600">Total ofrecido</p></div>
+                  <div className="col-span-2 md:col-span-1 bg-amber-50 text-amber-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.reservedClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-amber-600">Reservadas</p></div>
+                </div>
 
-                      <div className="w-full md:w-3/4 space-y-3">
-                        {(availability[day] || []).map((slot, idx) => (
-                           <div key={idx} className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
-                             <div className="flex items-center gap-3">
-                               <Clock className="w-5 h-5 text-zinc-400"/>
-                               <span className="font-black text-slate-700">{slot.start}h - {slot.end}h</span>
-                             </div>
-                             <button onClick={() => handleDeleteSlot(day, idx)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors" title="Eliminar franja">
-                               <Trash2 className="w-5 h-5" />
-                             </button>
-                           </div>
-                        ))}
-
-                        {newSlot.day === day ? (
-                          <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-2xl border border-blue-100 shadow-sm animate-in fade-in zoom-in-95">
-                            <input type="time" value={newSlot.start} onChange={e => setNewSlot({...newSlot, start: e.target.value})} className="p-2 rounded-xl border border-blue-200 text-sm font-bold outline-none text-slate-700 bg-white" />
-                            <span className="font-black text-blue-300">-</span>
-                            <input type="time" value={newSlot.end} onChange={e => setNewSlot({...newSlot, end: e.target.value})} className="p-2 rounded-xl border border-blue-200 text-sm font-bold outline-none text-slate-700 bg-white" />
-                            <button onClick={() => handleAddSlot(day)} className="ml-auto bg-blue-600 text-white p-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-md active:scale-95">Guardar</button>
-                            <button onClick={() => setNewSlot({day: null, start:'', end:''})} className="p-3 text-zinc-400 hover:text-black rounded-xl hover:bg-blue-100 transition-colors"><X className="w-5 h-5"/></button>
+                {teacherScheduleModel.upcomingChanges.length > 0 && (
+                  <div className="bg-violet-50 border border-violet-100 rounded-2xl overflow-hidden">
+                    <div className="p-4 border-b border-violet-100"><h3 className="text-xs font-black uppercase tracking-widest text-violet-900 flex items-center gap-2"><Calendar className="w-4 h-4"/> Cambios temporales programados</h3></div>
+                    <div className="divide-y divide-violet-100">
+                      {teacherScheduleModel.upcomingChanges.map(({ change, officialClass }) => {
+                        const isTemporaryTeacher = isSameTeacher(change.teacher, getTeacherName()) && !isSameTeacher(officialClass.teacher, getTeacherName());
+                        return (
+                          <div key={change.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-black text-violet-950">{officialClass.subject || change.classSubject || 'Clase'} · {formatDateSpanish(change.from)}–{formatDateSpanish(change.until)}</p>
+                              <p className="text-[10px] font-bold text-violet-700 mt-1">{getDayName(change.dayOfWeek)} {change.time}h · {change.sede || 'Tarragona'} · {change.sala || 'Sala 1'} · {getOfficialTeacherName(change.teacher)}</p>
+                            </div>
+                            <span className="px-2.5 py-1 rounded-lg bg-white border border-violet-200 text-violet-700 text-[9px] font-black uppercase tracking-widest">{isTemporaryTeacher ? 'La asumirás temporalmente' : 'Cambio programado'}</span>
                           </div>
-                        ) : (
-                          <button onClick={() => setNewSlot({day, start:'', end:''})} className="w-full p-4 border-2 border-dashed border-zinc-200 rounded-2xl text-zinc-400 hover:text-black hover:border-black hover:bg-zinc-50 font-bold text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2">
-                            <PlusCircle className="w-4 h-4" /> Añadir Franja Disponible
-                          </button>
-                        )}
-                      </div>
+                        );
+                      })}
                     </div>
                   </div>
-                ))}
+                )}
+
+                {teacherScheduleModel.outsideRows.length > 0 && (
+                  <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-rose-600 shrink-0"/>
+                    <div><p className="text-xs font-black uppercase tracking-widest text-rose-900">Hay {teacherScheduleModel.outsideRows.length} clase(s) fuera de tu disponibilidad declarada</p><p className="text-xs font-medium text-rose-700 mt-1">Las clases siguen vigentes. Revisa «Mi disponibilidad» si esas franjas también forman parte de tu horario ofrecido.</p></div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
+                  <div className="p-4 md:p-5 border-b border-zinc-100"><h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Semana habitual</h3><p className="text-xs text-zinc-500 mt-1">Las filas libres proceden de las horas que has ofrecido. No se muestran nombres de alumnos.</p></div>
+                  {teacherScheduleModel.weeklyRows.length === 0 ? (
+                    <div className="p-12 text-center text-zinc-400"><Clock className="w-10 h-10 mx-auto mb-3 text-zinc-200"/><p className="text-xs font-black uppercase tracking-widest">No hay clases ni disponibilidad registradas</p></div>
+                  ) : (
+                    <div className="divide-y divide-zinc-100">
+                      {teacherScheduleModel.weeklyRows.map(row => {
+                        const statusConfig = {
+                          free: { label: 'Libre ofrecida', style: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+                          active: { label: 'Activa', style: 'bg-slate-900 text-white border-slate-900' },
+                          inactive: { label: 'Inactiva', style: 'bg-zinc-100 text-zinc-600 border-zinc-200' },
+                          reserved: { label: 'Reservada hasta regreso', style: 'bg-amber-50 text-amber-800 border-amber-200' },
+                          temporary_active: { label: 'Cambio temporal', style: 'bg-violet-100 text-violet-800 border-violet-200' },
+                          temporary_inactive: { label: 'Temporal inactiva', style: 'bg-violet-50 text-violet-600 border-violet-100' }
+                        }[row.status];
+                        return (
+                          <div key={row.key} className="p-3 md:p-4 grid grid-cols-1 md:grid-cols-[150px_190px_1fr] gap-3 md:items-center hover:bg-zinc-50 transition-colors">
+                            <div><p className="font-black text-sm text-slate-900">{getDayName(row.dayOfWeek)}</p><p className="text-xs font-bold text-zinc-400">{row.time}–{row.endTime}h</p></div>
+                            <div><span className={`inline-flex px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${statusConfig.style}`}>{statusConfig.label}</span></div>
+                            <div className="min-w-0">
+                              {row.classData ? (
+                                <>
+                                  <p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {row.classData.sede || 'Tarragona'} · {row.classData.sala || 'Sala 1'}</p>
+                                  <p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'}{row.status !== 'reserved' ? ` · ${row.activeCount} activos` : ''}{row.outsideAvailability ? ' · Fuera de disponibilidad declarada' : ''}</p>
+                                  {row.detail && <p className="text-[10px] font-bold text-violet-700 mt-1">{row.detail}</p>}
+                                  {row.upcomingChange && <p className="text-[10px] font-bold text-violet-700 mt-1">Cambio programado del {formatDateSpanish(row.upcomingChange.from)} al {formatDateSpanish(row.upcomingChange.until)}</p>}
+                                </>
+                              ) : <p className="text-xs font-bold text-zinc-400">Disponible para que coordinación asigne una clase.</p>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {teacherScheduleModel.punctualRows.length > 0 && (
+                  <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
+                    <div className="p-4 md:p-5 border-b border-zinc-100"><h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Próximas clases puntuales</h3><p className="text-xs text-zinc-500 mt-1">No ocupan esa franja todas las semanas.</p></div>
+                    <div className="divide-y divide-zinc-100">
+                      {teacherScheduleModel.punctualRows.map(row => (
+                        <div key={row.key} className="p-3 md:p-4 grid grid-cols-1 md:grid-cols-[150px_190px_1fr] gap-3 md:items-center">
+                          <div><p className="font-black text-sm text-slate-900">{formatDateSpanish(row.date)}</p><p className="text-xs font-bold text-zinc-400">{row.time}–{row.endTime}h</p></div>
+                          <div><span className={`inline-flex px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${row.status === 'punctual' ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-zinc-100 text-zinc-500 border-zinc-200'}`}>Clase puntual</span></div>
+                          <div><p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {row.classData.sede || 'Tarragona'} · {row.classData.sala || 'Sala 1'}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'} · {row.activeCount} activos</p></div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
+
+            {scheduleView === 'availability' && (
+              <div className="space-y-6">
+                <div className="bg-blue-50 border-2 border-blue-100 text-blue-900 rounded-3xl p-5 md:p-6 shadow-sm">
+                  <h3 className="text-sm font-black uppercase tracking-widest mb-2 flex items-center gap-2"><Clock className="w-5 h-5" /> Mi disponibilidad total</h3>
+                  <p className="text-xs md:text-sm font-bold leading-relaxed">Este no es el listado de huecos que te quedan libres. Es tu disponibilidad total para trabajar en la escuela. Si ya tienes una clase dentro de una franja, esa franja también debe figurar aquí. Coordinación cruzará esta disponibilidad con tu agenda real antes de asignarte nuevas clases.</p>
+                  <p className="text-[11px] font-black uppercase tracking-widest text-blue-700 mt-3">Puedes borrar o reorganizar franjas sin que se eliminen ni se muevan tus clases ya asignadas.</p>
+                </div>
+
+                {teacherScheduleModel.outsideRows.length > 0 && (
+                  <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex items-start gap-3"><AlertCircle className="w-5 h-5 text-rose-600 shrink-0"/><p className="text-xs font-bold text-rose-800">Tienes clases asignadas fuera de estas franjas. Modificar la disponibilidad no elimina ninguna clase, pero conviene mantenerla actualizada.</p></div>
+                )}
+
+                <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
+                  <div className="p-6 md:p-8 space-y-8">
+                    {[1, 2, 3, 4, 5, 6].map(day => (
+                      <div key={day} className="border-b border-zinc-100 pb-6 last:border-0 last:pb-0">
+                        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                          <div className="w-full md:w-1/4"><h3 className="font-black text-lg uppercase tracking-tight text-slate-800">{getDayName(day)}</h3><p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mt-1">{(availability[day] || []).length} franjas</p></div>
+                          <div className="w-full md:w-3/4 space-y-3">
+                            {(availability[day] || []).map((slot, idx) => (
+                              <div key={`${slot.start}-${slot.end}-${idx}`} className="flex items-center justify-between p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
+                                <div className="flex items-center gap-3"><Clock className="w-5 h-5 text-zinc-400"/><span className="font-black text-slate-700">{slot.start}h - {slot.end}h</span></div>
+                                <button onClick={() => handleDeleteSlot(day, idx)} className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors" title="Eliminar franja"><Trash2 className="w-5 h-5" /></button>
+                              </div>
+                            ))}
+
+                            {newSlot.day === day ? (
+                              <div className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 bg-blue-50 rounded-2xl border border-blue-100 shadow-sm animate-in fade-in zoom-in-95">
+                                <input type="time" value={newSlot.start} onChange={e => setNewSlot({...newSlot, start: e.target.value})} className="p-2 rounded-xl border border-blue-200 text-sm font-bold outline-none text-slate-700 bg-white" />
+                                <span className="hidden sm:inline font-black text-blue-300">-</span>
+                                <input type="time" value={newSlot.end} onChange={e => setNewSlot({...newSlot, end: e.target.value})} className="p-2 rounded-xl border border-blue-200 text-sm font-bold outline-none text-slate-700 bg-white" />
+                                <button onClick={() => handleAddSlot(day)} className="sm:ml-auto bg-blue-600 text-white p-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-blue-700 transition-all shadow-md active:scale-95">Guardar</button>
+                                <button onClick={() => setNewSlot({day: null, start:'', end:''})} className="p-3 text-zinc-400 hover:text-black rounded-xl hover:bg-blue-100 transition-colors"><X className="w-5 h-5 mx-auto"/></button>
+                              </div>
+                            ) : (
+                              <button onClick={() => setNewSlot({day, start:'', end:''})} className="w-full p-4 border-2 border-dashed border-zinc-200 rounded-2xl text-zinc-400 hover:text-black hover:border-black hover:bg-zinc-50 font-bold text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2"><PlusCircle className="w-4 h-4" /> Añadir franja disponible</button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

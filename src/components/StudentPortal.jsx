@@ -249,6 +249,23 @@ const getTemporaryRelocationLabel = (relocation = {}) => {
   return `Clase temporal del ${formatDateSpanish(relocation.from)} al ${formatDateSpanish(relocation.until)}`;
 };
 
+const TEMPORARY_CLASS_CHANGE_FINAL_STATUSES = new Set([
+  'cancelled',
+  'cancelada',
+  'finalizada',
+  'expired'
+]);
+
+const isTemporaryClassChangeActiveForDate = (change = {}, dateStr = '') => {
+  if (!change || TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)) return false;
+  return Boolean(change.from && change.until && change.from <= dateStr && change.until >= dateStr);
+};
+
+const getTemporaryClassChangePeriodLabel = (change = {}) => {
+  if (!change.from || !change.until) return 'Periodo temporal pendiente de confirmar';
+  return `Del ${formatDateSpanish(change.from)} al ${formatDateSpanish(change.until)}`;
+};
+
 const formatLocalDateString = (date) => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -352,6 +369,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [pollClock, setPollClock] = useState(Date.now());
   const [myGestiones, setMyGestiones] = useState([]); 
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
+  const [temporaryClassChanges, setTemporaryClassChanges] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
@@ -481,9 +499,104 @@ export default function StudentPortal({ user, logout, db, appId }) {
     ).length
   );
 
+  const getClassTemporaryChanges = (classId = '') => temporaryClassChanges
+    .filter(change =>
+      String(change.classId || '') === String(classId || '') &&
+      !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)
+    )
+    .sort((a, b) => {
+      const dateComparison = String(a.from || '').localeCompare(String(b.from || ''));
+      if (dateComparison !== 0) return dateComparison;
+      return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    });
+
+  const getActiveClassTemporaryChange = (classId = '', dateStr = todayStr) => (
+    getClassTemporaryChanges(classId)
+      .find(change => isTemporaryClassChangeActiveForDate(change, dateStr)) || null
+  );
+
+  const getUpcomingClassTemporaryChange = (classId = '', dateStr = todayStr) => (
+    getClassTemporaryChanges(classId)
+      .find(change => change.from && change.until && change.until >= dateStr && change.from > dateStr) || null
+  );
+
+  const getEffectiveClassForDate = (clase = {}, dateStr = todayStr) => {
+    if (!clase || isPunctualClass(clase)) return clase;
+    const temporaryChange = getActiveClassTemporaryChange(clase.id, dateStr);
+    if (!temporaryChange) return clase;
+
+    const officialSchedule = temporaryChange.officialSchedule || {
+      dayOfWeek: clase.dayOfWeek,
+      time: clase.time,
+      sede: clase.sede,
+      sala: clase.sala,
+      teacher: clase.teacher,
+      duration: clase.duration
+    };
+
+    return {
+      ...clase,
+      dayOfWeek: Number(temporaryChange.dayOfWeek),
+      time: temporaryChange.time || clase.time,
+      sede: temporaryChange.sede || clase.sede,
+      sala: temporaryChange.sala || clase.sala,
+      teacher: temporaryChange.teacher || clase.teacher,
+      duration: Number(temporaryChange.duration) || Number(clase.duration) || 60,
+      temporaryClassChange: temporaryChange,
+      officialSchedule
+    };
+  };
+
+  const getNextClassScheduleInfo = (clase = {}) => {
+    if (!clase) return null;
+
+    if (isPunctualClass(clase) && (clase.date || clase.specificDate)) {
+      const dateStr = clase.date || clase.specificDate;
+      const [year, month, day] = String(dateStr).split('-').map(Number);
+      const [hours, minutes] = String(clase.time || '00:00').split(':').map(Number);
+      const date = new Date(year, month - 1, day, hours || 0, minutes || 0, 0, 0);
+      return { date, dateStr, diffHours: (date - new Date()) / (1000 * 60 * 60), clase };
+    }
+
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    for (let offset = 0; offset <= 550; offset++) {
+      const candidateDay = new Date(startDate);
+      candidateDay.setDate(startDate.getDate() + offset);
+      const dateStr = formatLocalDateString(candidateDay);
+      const effectiveClass = getEffectiveClassForDate(clase, dateStr);
+
+      if (Number(effectiveClass.dayOfWeek) !== candidateDay.getDay()) continue;
+
+      const [hours, minutes] = String(effectiveClass.time || '00:00').split(':').map(Number);
+      const date = new Date(
+        candidateDay.getFullYear(),
+        candidateDay.getMonth(),
+        candidateDay.getDate(),
+        hours || 0,
+        minutes || 0,
+        0,
+        0
+      );
+      if (date < now) continue;
+
+      return {
+        date,
+        dateStr,
+        diffHours: (date - now) / (1000 * 60 * 60),
+        clase: effectiveClass,
+        temporaryClassChange: effectiveClass.temporaryClassChange || null
+      };
+    }
+
+    const fallback = getNextClassInfo(clase.dayOfWeek, clase.time || '00:00');
+    return { ...fallback, clase, temporaryClassChange: null };
+  };
+
   const getClassReferenceDateForStudent = (clase = {}) => {
     if (isPunctualClass(clase)) return clase.date || todayStr;
-    return getNextClassInfo(clase.dayOfWeek, clase.time || '00:00').dateStr;
+    return getNextClassScheduleInfo(clase)?.dateStr || todayStr;
   };
 
   const isStudentClassVisibleForNextSession = (clase = {}) => {
@@ -550,7 +663,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     });
 
     return [...effectiveById.values()];
-  }, [myClasses, allClasses, temporaryRelocations, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBajaClassEndDate, todayStr]);
+  }, [myClasses, allClasses, temporaryRelocations, temporaryClassChanges, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBajaClassEndDate, todayStr]);
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
@@ -1257,6 +1370,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const misSedes = new Set();
     effectiveMyClasses.forEach(c => misSedes.add(c.sede || 'Tarragona'));
+    const myClassIds = new Set(effectiveMyClasses.map(c => String(c.id || '')).filter(Boolean));
+    temporaryClassChanges.forEach(change => {
+      if (
+        myClassIds.has(String(change.classId || '')) &&
+        !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status) &&
+        (!change.until || change.until >= todayStr) &&
+        change.sede
+      ) {
+        misSedes.add(change.sede);
+      }
+    });
 
     const newCal = [];
     
@@ -1277,7 +1401,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     setSchoolCalendar(newCal);
 
-  }, [globalSettings, effectiveMyClasses, profile]);
+  }, [globalSettings, effectiveMyClasses, temporaryClassChanges, profile, todayStr]);
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -1316,6 +1440,15 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const unsubTemporaryRelocations = onSnapshot(collection(db, 'artifacts', appId, 'temporaryRelocations'), (snapshot) => {
       setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
+
+    const unsubTemporaryClassChanges = onSnapshot(
+      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+      (snapshot) => setTemporaryClassChanges(snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))),
+      (error) => {
+        console.error('Error al cargar los cambios temporales de clase', error);
+        setTemporaryClassChanges([]);
+      }
+    );
 
     const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentId', '==', profile.id));
     const unsubMaintenancePeriods = onSnapshot(maintenanceQuery, (snapshot) => {
@@ -1388,6 +1521,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubClasses(); 
       unsubGestiones();
       unsubTemporaryRelocations();
+      unsubTemporaryClassChanges();
       unsubMaintenancePeriods();
       unsubWorkshops();
       unsubWorkshopRegistrations();
@@ -1719,7 +1853,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const openAbsenceModal = (clase) => {
-    const info = getNextClassInfo(clase.dayOfWeek, clase.time);
+    const scheduleInfo = clase.nextClassInfo || getNextClassScheduleInfo(clase) || getNextClassInfo(clase.dayOfWeek, clase.time);
+    const info = {
+      date: scheduleInfo.date,
+      dateStr: scheduleInfo.dateStr,
+      diffHours: scheduleInfo.diffHours
+    };
     setHealthCheck(false); 
     setAbsenceModal({ clase, ...info });
   };
@@ -3416,8 +3555,34 @@ END:VCALENDAR`;
                 <p className="font-bold text-zinc-400 uppercase tracking-widest text-sm">Todavía no tienes clases asignadas.</p>
               </div>
             ) : (
-              effectiveMyClasses.map((clase, idx) => {
-                const classInfo = getNextClassInfo(clase.dayOfWeek, clase.time);
+              effectiveMyClasses.map((assignedClass, idx) => {
+                const scheduleInfo = getNextClassScheduleInfo(assignedClass) || {
+                  ...getNextClassInfo(assignedClass.dayOfWeek, assignedClass.time),
+                  clase: assignedClass,
+                  temporaryClassChange: null
+                };
+                const clase = {
+                  ...(scheduleInfo.clase || assignedClass),
+                  nextClassInfo: {
+                    date: scheduleInfo.date,
+                    dateStr: scheduleInfo.dateStr,
+                    diffHours: scheduleInfo.diffHours
+                  }
+                };
+                const classInfo = clase.nextClassInfo;
+                const sessionTemporaryClassChange = scheduleInfo.temporaryClassChange || clase.temporaryClassChange || null;
+                const upcomingTemporaryClassChange = sessionTemporaryClassChange
+                  ? null
+                  : getUpcomingClassTemporaryChange(assignedClass.id, todayStr);
+                const announcedTemporaryClassChange = sessionTemporaryClassChange || upcomingTemporaryClassChange;
+                const officialSchedule = announcedTemporaryClassChange?.officialSchedule || {
+                  dayOfWeek: assignedClass.dayOfWeek,
+                  time: assignedClass.time,
+                  sede: assignedClass.sede,
+                  sala: assignedClass.sala,
+                  teacher: assignedClass.teacher,
+                  duration: assignedClass.duration
+                };
                 const holidayMatch = schoolCalendar.find(c => c.date === classInfo.dateStr);
                 const hasNotifiedNext = clase.exceptions?.[classInfo.dateStr]?.[profile.id];
                 const myStudentEntry = clase.students?.find(s => s.id === profile.id);
@@ -3439,6 +3604,24 @@ END:VCALENDAR`;
                       <p className={`font-bold uppercase text-[10px] tracking-widest mb-4 ${isFestivo ? 'text-red-600' : 'text-purple-600'}`}>{holidayMatch.title || 'Escuela Cerrada'} • {classInfo.dateStr}</p>
                       <p className={`text-sm font-medium mb-4 ${isFestivo ? 'text-red-800' : 'text-purple-800'}`}>Tu próxima clase de {clase.subject} coincide con un día no lectivo oficial. La escuela permanecerá cerrada.</p>
 
+                      {announcedTemporaryClassChange && (
+                        <div className="mb-5 rounded-2xl border border-violet-200 bg-violet-50 p-4 text-violet-900">
+                          <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2">
+                            <RefreshCcw className="w-4 h-4" />
+                            {sessionTemporaryClassChange ? 'Horario temporal' : 'Cambio temporal programado'}
+                          </p>
+                          <p className="text-xs font-black uppercase tracking-tight">{getTemporaryClassChangePeriodLabel(announcedTemporaryClassChange)}</p>
+                          {upcomingTemporaryClassChange && (
+                            <p className="text-xs font-bold mt-2 leading-relaxed">
+                              Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {upcomingTemporaryClassChange.sede || assignedClass.sede || 'Sede'}{upcomingTemporaryClassChange.sala ? ` (${upcomingTemporaryClassChange.sala})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}
+                            </p>
+                          )}
+                          <p className="text-[10px] font-bold text-violet-700 mt-3 leading-relaxed">
+                            Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {officialSchedule.sede || assignedClass.sede || 'Sede'}{officialSchedule.sala ? ` (${officialSchedule.sala})` : ''}.
+                          </p>
+                        </div>
+                      )}
+
                       {renderClassTasksResources({
                         clase,
                         resources: visibleClassResources,
@@ -3458,6 +3641,33 @@ END:VCALENDAR`;
                       <p className={`${isCongelado ? 'text-zinc-500' : 'text-zinc-400'} font-bold uppercase text-[10px] tracking-widest mb-1`}>Clase de {clase.subject}</p>
                       <h2 className={`text-3xl font-black uppercase tracking-tighter ${isCongelado ? 'text-zinc-400' : ''}`}>{getDayName(clase.dayOfWeek)}</h2>
                       <p className={`text-lg font-medium mb-6 ${isCongelado ? 'text-zinc-500' : 'text-zinc-300'}`}>{clase.time}h</p>
+                      {announcedTemporaryClassChange && (
+                        <div className={`mb-5 rounded-2xl border p-4 ${isCongelado ? 'bg-violet-100/60 border-violet-200 text-violet-900' : 'bg-violet-950/70 border-violet-700 text-violet-100'}`}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <RefreshCcw className="w-4 h-4 shrink-0" />
+                            <p className="text-[10px] font-black uppercase tracking-widest">
+                              {sessionTemporaryClassChange
+                                ? (isTemporaryClassChangeActiveForDate(sessionTemporaryClassChange, todayStr) ? 'Cambio temporal activo' : 'Próxima clase en horario temporal')
+                                : 'Cambio temporal programado'}
+                            </p>
+                          </div>
+                          <p className="text-xs font-black uppercase tracking-tight">
+                            {getTemporaryClassChangePeriodLabel(announcedTemporaryClassChange)}
+                          </p>
+                          {upcomingTemporaryClassChange && (
+                            <p className="text-xs font-bold mt-2 leading-relaxed">
+                              Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {upcomingTemporaryClassChange.sede || assignedClass.sede || 'Sede'}{upcomingTemporaryClassChange.sala ? ` (${upcomingTemporaryClassChange.sala})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}
+                              {Number(upcomingTemporaryClassChange.duration) && Number(upcomingTemporaryClassChange.duration) !== Number(officialSchedule.duration || 60) ? ` · ${Number(upcomingTemporaryClassChange.duration)} min` : ''}
+                            </p>
+                          )}
+                          {sessionTemporaryClassChange && Number(clase.duration) && Number(clase.duration) !== Number(officialSchedule.duration || 60) && (
+                            <p className="text-xs font-bold mt-2">Duración temporal: {Number(clase.duration)} min</p>
+                          )}
+                          <p className={`text-[10px] font-bold mt-3 leading-relaxed ${isCongelado ? 'text-violet-700' : 'text-violet-300'}`}>
+                            Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {officialSchedule.sede || assignedClass.sede || 'Sede'}{officialSchedule.sala ? ` (${officialSchedule.sala})` : ''}{officialSchedule.teacher ? ` · Prof. ${officialSchedule.teacher}` : ''}.
+                          </p>
+                        </div>
+                      )}
                       {isTemporaryRelocationClassForMe && (
                         <div className="mb-5 inline-flex items-center gap-2 bg-violet-100 text-violet-800 border border-violet-200 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-widest">
                           <Clock className="w-4 h-4" />

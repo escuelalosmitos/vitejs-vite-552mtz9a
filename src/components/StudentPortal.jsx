@@ -256,14 +256,41 @@ const TEMPORARY_CLASS_CHANGE_FINAL_STATUSES = new Set([
   'expired'
 ]);
 
+const normalizeTemporaryClassChangeDate = (value = '') => {
+  if (!value) return '';
+  const dateValue = typeof value?.toDate === 'function'
+    ? value.toDate()
+    : (value instanceof Date ? value : null);
+
+  if (dateValue && !Number.isNaN(dateValue.getTime())) {
+    const year = dateValue.getFullYear();
+    const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+    const day = String(dateValue.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  const cleanValue = String(value || '').trim();
+  const isoMatch = cleanValue.match(/^\d{4}-\d{2}-\d{2}/);
+  return isoMatch ? isoMatch[0] : cleanValue.slice(0, 10);
+};
+
+const isTemporaryClassChangeClosed = (change = {}) => (
+  TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(String(change.status || '').toLowerCase())
+);
+
 const isTemporaryClassChangeActiveForDate = (change = {}, dateStr = '') => {
-  if (!change || TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)) return false;
-  return Boolean(change.from && change.until && change.from <= dateStr && change.until >= dateStr);
+  if (!change || isTemporaryClassChangeClosed(change)) return false;
+  const from = normalizeTemporaryClassChangeDate(change.from);
+  const until = normalizeTemporaryClassChangeDate(change.until);
+  const referenceDate = normalizeTemporaryClassChangeDate(dateStr);
+  return Boolean(from && until && referenceDate && from <= referenceDate && until >= referenceDate);
 };
 
 const getTemporaryClassChangePeriodLabel = (change = {}) => {
-  if (!change.from || !change.until) return 'Periodo temporal pendiente de confirmar';
-  return `Del ${formatDateSpanish(change.from)} al ${formatDateSpanish(change.until)}`;
+  const from = normalizeTemporaryClassChangeDate(change.from);
+  const until = normalizeTemporaryClassChangeDate(change.until);
+  if (!from || !until) return 'Periodo temporal pendiente de confirmar';
+  return `Del ${formatDateSpanish(from)} al ${formatDateSpanish(until)}`;
 };
 
 const formatLocalDateString = (date) => {
@@ -499,30 +526,47 @@ export default function StudentPortal({ user, logout, db, appId }) {
     ).length
   );
 
-  const getClassTemporaryChanges = (classId = '') => temporaryClassChanges
+  const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
+    const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
+    const classId = classData?.id ?? classDataOrId;
+    const sameId = Boolean(String(change.classId ?? '')) && String(change.classId) === String(classId ?? '');
+    if (sameId) return true;
+    return Boolean(
+      classData?.refPath &&
+      change.classRefPath &&
+      String(change.classRefPath) === String(classData.refPath)
+    );
+  };
+
+  const getClassTemporaryChanges = (classDataOrId = '') => temporaryClassChanges
     .filter(change =>
-      String(change.classId || '') === String(classId || '') &&
-      !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)
+      doesTemporaryChangeBelongToClass(change, classDataOrId) &&
+      !isTemporaryClassChangeClosed(change)
     )
     .sort((a, b) => {
-      const dateComparison = String(a.from || '').localeCompare(String(b.from || ''));
+      const dateComparison = normalizeTemporaryClassChangeDate(a.from).localeCompare(normalizeTemporaryClassChangeDate(b.from));
       if (dateComparison !== 0) return dateComparison;
       return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
     });
 
-  const getActiveClassTemporaryChange = (classId = '', dateStr = todayStr) => (
-    getClassTemporaryChanges(classId)
+  const getActiveClassTemporaryChange = (classDataOrId = '', dateStr = todayStr) => (
+    getClassTemporaryChanges(classDataOrId)
       .find(change => isTemporaryClassChangeActiveForDate(change, dateStr)) || null
   );
 
-  const getUpcomingClassTemporaryChange = (classId = '', dateStr = todayStr) => (
-    getClassTemporaryChanges(classId)
-      .find(change => change.from && change.until && change.until >= dateStr && change.from > dateStr) || null
-  );
+  const getUpcomingClassTemporaryChange = (classDataOrId = '', dateStr = todayStr) => {
+    const referenceDate = normalizeTemporaryClassChangeDate(dateStr);
+    return getClassTemporaryChanges(classDataOrId)
+      .find(change => {
+        const from = normalizeTemporaryClassChangeDate(change.from);
+        const until = normalizeTemporaryClassChangeDate(change.until);
+        return Boolean(from && until && referenceDate && until >= referenceDate && from > referenceDate);
+      }) || null;
+  };
 
   const getEffectiveClassForDate = (clase = {}, dateStr = todayStr) => {
     if (!clase || isPunctualClass(clase)) return clase;
-    const temporaryChange = getActiveClassTemporaryChange(clase.id, dateStr);
+    const temporaryChange = getActiveClassTemporaryChange(clase, dateStr);
     if (!temporaryChange) return clase;
 
     const officialSchedule = temporaryChange.officialSchedule || {
@@ -1370,12 +1414,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const misSedes = new Set();
     effectiveMyClasses.forEach(c => misSedes.add(c.sede || 'Tarragona'));
-    const myClassIds = new Set(effectiveMyClasses.map(c => String(c.id || '')).filter(Boolean));
     temporaryClassChanges.forEach(change => {
       if (
-        myClassIds.has(String(change.classId || '')) &&
-        !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status) &&
-        (!change.until || change.until >= todayStr) &&
+        effectiveMyClasses.some(classData => doesTemporaryChangeBelongToClass(change, classData)) &&
+        !isTemporaryClassChangeClosed(change) &&
+        (!normalizeTemporaryClassChangeDate(change.until) || normalizeTemporaryClassChangeDate(change.until) >= todayStr) &&
         change.sede
       ) {
         misSedes.add(change.sede);
@@ -3573,7 +3616,7 @@ END:VCALENDAR`;
                 const sessionTemporaryClassChange = scheduleInfo.temporaryClassChange || clase.temporaryClassChange || null;
                 const upcomingTemporaryClassChange = sessionTemporaryClassChange
                   ? null
-                  : getUpcomingClassTemporaryChange(assignedClass.id, todayStr);
+                  : getUpcomingClassTemporaryChange(assignedClass, todayStr);
                 const announcedTemporaryClassChange = sessionTemporaryClassChange || upcomingTemporaryClassChange;
                 const officialSchedule = announcedTemporaryClassChange?.officialSchedule || {
                   dayOfWeek: assignedClass.dayOfWeek,

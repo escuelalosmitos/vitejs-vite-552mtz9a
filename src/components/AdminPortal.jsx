@@ -1551,6 +1551,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [classesViewMode, setClassesViewMode] = useState('profesores'); // 'profesores', 'salas' o 'hibernadas'
   const [archProjectionMode, setArchProjectionMode] = useState('actual'); // 'actual' o 'proyeccion'
   const [archDate, setArchDate] = useState(getTodayLocalString());
+  const [classesReferenceDate, setClassesReferenceDate] = useState(getTodayLocalString());
   const [archDay, setArchDay] = useState('1'); // Compatibilidad interna para creación de clases
   const [archTime, setArchTime] = useState('17:00');
   const [archSede, setArchSede] = useState('Tarragona');
@@ -1801,21 +1802,49 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     setSelectedAvailabilityTeacher(allOfficialTeacherNames[0] || '');
   }, [allOfficialTeacherNames, selectedAvailabilityTeacher]);
 
-  const isTemporaryClassChangeActiveForDate = (change = {}, dateStr = todayStr) => {
-    if (!change || ['cancelled', 'cancelada', 'finalizada'].includes(change.status)) return false;
-    return Boolean(change.from && change.until && change.from <= dateStr && change.until >= dateStr);
+  const normalizeTemporaryClassChangeDate = (value = '') => {
+    if (!value) return '';
+    if (typeof value?.toDate === 'function') {
+      const date = value.toDate();
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    const cleanValue = String(value || '').trim();
+    return normalizeGestionDateString(cleanValue) || cleanValue.slice(0, 10);
   };
 
-  const getClassTemporaryChanges = (classId) => temporaryClassChanges
-    .filter(change => change.classId === classId && !['cancelled', 'cancelada', 'finalizada', 'expired'].includes(change.status))
+  const isTemporaryClassChangeClosed = (change = {}) => (
+    ['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(change.status || '').toLowerCase())
+  );
+
+  const isTemporaryClassChangeActiveForDate = (change = {}, dateStr = todayStr) => {
+    if (!change || isTemporaryClassChangeClosed(change)) return false;
+    const from = normalizeTemporaryClassChangeDate(change.from);
+    const until = normalizeTemporaryClassChangeDate(change.until);
+    const referenceDate = normalizeTemporaryClassChangeDate(dateStr);
+    return Boolean(from && until && referenceDate && from <= referenceDate && until >= referenceDate);
+  };
+
+  const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
+    const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
+    const classId = classData?.id ?? classDataOrId;
+    const sameId = String(change.classId ?? '') && String(change.classId) === String(classId ?? '');
+    if (sameId) return true;
+    return Boolean(classData?.refPath && change.classRefPath && String(change.classRefPath) === String(classData.refPath));
+  };
+
+  const getClassTemporaryChanges = (classDataOrId) => temporaryClassChanges
+    .filter(change => doesTemporaryChangeBelongToClass(change, classDataOrId) && !isTemporaryClassChangeClosed(change))
     .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 
-  const getActiveClassTemporaryChange = (classId, dateStr = todayStr) => getClassTemporaryChanges(classId)
+  const getActiveClassTemporaryChange = (classDataOrId, dateStr = todayStr) => getClassTemporaryChanges(classDataOrId)
     .find(change => isTemporaryClassChangeActiveForDate(change, dateStr)) || null;
 
   const getEffectiveClassForDate = (classData, dateStr = todayStr) => {
     if (!classData) return classData;
-    const temporaryChange = getActiveClassTemporaryChange(classData.id, dateStr);
+    const temporaryChange = getActiveClassTemporaryChange(classData, dateStr);
     if (!temporaryChange) return classData;
     return {
       ...classData,
@@ -1840,6 +1869,21 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const effectiveOperationalClasses = useMemo(() => operationalClasses.map(classData => (
     isPunctualClass(classData) ? classData : getEffectiveClassForDate(classData, todayStr)
   )), [operationalClasses, temporaryClassChanges, todayStr, officialTeacherNameMap]);
+
+  const globalClassesForReferenceDate = useMemo(() => operationalClasses.map(classData => {
+    if (isPunctualClass(classData)) return classData;
+    const referenceDate = classesReferenceDate || todayStr;
+    const effectiveClass = getEffectiveClassForDate(classData, referenceDate);
+    if (effectiveClass.temporaryClassChange) return effectiveClass;
+
+    const upcomingTemporaryClassChange = getClassTemporaryChanges(classData)
+      .filter(change => normalizeTemporaryClassChangeDate(change.until) >= referenceDate)
+      .sort((a, b) => normalizeTemporaryClassChangeDate(a.from).localeCompare(normalizeTemporaryClassChangeDate(b.from)))[0] || null;
+
+    return upcomingTemporaryClassChange
+      ? { ...effectiveClass, upcomingTemporaryClassChange }
+      : effectiveClass;
+  }), [operationalClasses, temporaryClassChanges, classesReferenceDate, todayStr, officialTeacherNameMap]);
 
   const isFixedClassStudent = (studentEntry = {}) => {
     return !(
@@ -3538,7 +3582,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     try {
       const batch = writeBatch(db);
       batch.delete(doc(db, clase.refPath));
-      getClassTemporaryChanges(clase.id).forEach(change => {
+      getClassTemporaryChanges(clase).forEach(change => {
         batch.update(doc(db, 'artifacts', appId, 'temporaryClassChanges', change.id), {
           status: 'cancelled',
           cancelledAt: new Date().toISOString(),
@@ -6150,8 +6194,8 @@ Coordinación Los Mitos.`
 
   const openEditClassModal = (clase) => {
     if (!clase) return;
-    const officialClass = allClasses.find(classData => classData.id === clase.id) || clase;
-    const existingTemporaryChange = getClassTemporaryChanges(officialClass.id)
+    const officialClass = allClasses.find(classData => String(classData.id) === String(clase.id) || (classData.refPath && classData.refPath === clase.refPath)) || clase;
+    const existingTemporaryChange = getClassTemporaryChanges(officialClass)
       .find(change => change.until >= todayStr) || null;
 
     setEditClassMode('permanent');
@@ -6229,7 +6273,7 @@ Coordinación Los Mitos.`
       return alert(`Entre esas fechas no hay ningún ${getDayName(payload.dayOfWeek)}. Revisa el periodo o el día temporal.`);
     }
 
-    const overlappingOwnChange = getClassTemporaryChanges(editClassModal.id).find(change =>
+    const overlappingOwnChange = getClassTemporaryChanges(editClassModal).find(change =>
       change.id !== payload.id &&
       doDateRangesOverlap(change.from, change.until, payload.from, payload.until)
     );
@@ -6252,7 +6296,7 @@ Coordinación Los Mitos.`
         dateRangeContainsWeekday(payload.from, payload.until, payload.dayOfWeek) &&
         doClassTimeRangesOverlap(classData, payload);
 
-      const temporaryClash = getClassTemporaryChanges(classData.id).some(change =>
+      const temporaryClash = getClassTemporaryChanges(classData).some(change =>
         doDateRangesOverlap(change.from, change.until, payload.from, payload.until) &&
         Number(change.dayOfWeek) === Number(payload.dayOfWeek) &&
         (change.sede || classData.sede || 'Tarragona') === payload.sede &&
@@ -6273,7 +6317,7 @@ Coordinación Los Mitos.`
       const officialClash = isSameTeacher(classData.teacher, cleanTeacher) &&
         Number(classData.dayOfWeek) === Number(payload.dayOfWeek) &&
         doClassTimeRangesOverlap(classData, payload);
-      const temporaryClash = getClassTemporaryChanges(classData.id).some(change =>
+      const temporaryClash = getClassTemporaryChanges(classData).some(change =>
         doDateRangesOverlap(change.from, change.until, payload.from, payload.until) &&
         isSameTeacher(change.teacher || classData.teacher, cleanTeacher) &&
         Number(change.dayOfWeek) === Number(payload.dayOfWeek) &&
@@ -6727,7 +6771,7 @@ Coordinación Los Mitos.`
 
   const classesByTeacher = useMemo(() => {
     const grouped = new Map();
-    effectiveOperationalClasses.forEach(classData => {
+    globalClassesForReferenceDate.forEach(classData => {
       const teacherName = getOfficialTeacherName(classData.teacher);
       const teacherKey = normalizeTeacherKey(teacherName) || 'sin-asignar';
       if (!grouped.has(teacherKey)) grouped.set(teacherKey, { teacherName, classes: [] });
@@ -6736,7 +6780,7 @@ Coordinación Los Mitos.`
     return Object.fromEntries([...grouped.values()]
       .sort((a, b) => a.teacherName.localeCompare(b.teacherName, 'es'))
       .map(group => [group.teacherName, group.classes.sort((a, b) => Number(a.dayOfWeek) - Number(b.dayOfWeek) || String(a.time || '').localeCompare(String(b.time || '')))]));
-  }, [effectiveOperationalClasses, officialTeacherNameMap]);
+  }, [globalClassesForReferenceDate, officialTeacherNameMap]);
 
   const architectSelectedDay = useMemo(() => {
     const dayIndex = getDateDayIndex(archDate);
@@ -7196,6 +7240,22 @@ Coordinación Los Mitos.`
 
     return [...byId.values()];
   }, [archProjectionMode, projectedPlanningClasses, recurringClassesOnly, punctualClassesForArchitectDate, temporaryClassChanges, archDate, todayStr, officialTeacherNameMap]);
+
+  const architectScheduleHours = useMemo(() => {
+    const selectedDate = archDate || todayStr;
+    const classTimesForSelectedDate = architectClasses
+      .filter(classData => {
+        const isClassForSelectedDate = isPunctualClass(classData)
+          ? classData.date === selectedDate
+          : Number(classData.dayOfWeek) === Number(architectSelectedDay);
+        return (classData.sede || 'Tarragona') === archSede && isClassForSelectedDate;
+      })
+      .map(classData => classData.time)
+      .filter(Boolean);
+
+    return [...new Set([...SCHEDULE_HOURS, ...classTimesForSelectedDate])]
+      .sort((a, b) => (parseTimeToMinutes(a) ?? Number.MAX_SAFE_INTEGER) - (parseTimeToMinutes(b) ?? Number.MAX_SAFE_INTEGER));
+  }, [architectClasses, architectSelectedDay, archDate, archSede, todayStr]);
 
   const isArchitectProjection = archProjectionMode === 'proyeccion';
 
@@ -7668,7 +7728,7 @@ Coordinación Los Mitos.`
       recurringClassesOnly
         .filter(classData => isSameTeacher(classData.teacher, teacherName) && Number(classData.dayOfWeek) === segment.dayOfWeek && doClassTimeRangesOverlap(classData, segmentRange))
         .forEach(classData => {
-          const activeChange = getActiveClassTemporaryChange(classData.id, todayStr);
+          const activeChange = getActiveClassTemporaryChange(classData, todayStr);
           const effectiveClass = activeChange ? getEffectiveClassForDate(classData, todayStr) : classData;
           const movedToAnotherSlot = Boolean(activeChange) && (
             Number(effectiveClass.dayOfWeek) !== Number(classData.dayOfWeek) ||
@@ -8837,7 +8897,7 @@ ${startDateWarning}
     const classStartDateWarningForAdd = showClassStartDateForAdd
       ? getClassStartDateWarning(classStartDateInput, c.dayOfWeek, todayStr)
       : '';
-    const visibleTemporaryChanges = getClassTemporaryChanges(c.id)
+    const visibleTemporaryChanges = getClassTemporaryChanges(c)
       .filter(change => change.until >= todayStr)
       .sort((a, b) => String(a.from || '').localeCompare(String(b.from || '')));
 
@@ -10391,6 +10451,19 @@ ${startDateWarning}
               </div>
             </header>
 
+            {classesViewMode === 'profesores' && (
+              <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-violet-700 flex items-center gap-2"><Clock className="w-4 h-4"/> Horario operativo por fecha</p>
+                  <p className="text-xs font-bold text-zinc-500 mt-1">Las tarjetas aplican los cambios temporales vigentes en la fecha elegida. Los cambios futuros se anuncian dentro de su clase oficial.</p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+                  <input type="date" value={classesReferenceDate} onChange={e => setClassesReferenceDate(e.target.value || todayStr)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest rounded-xl" />
+                  <button type="button" onClick={() => setClassesReferenceDate(todayStr)} className="px-4 py-3 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl text-[10px] font-black uppercase tracking-widest">Hoy</button>
+                </div>
+              </div>
+            )}
+
             {/* VISTA ARQUITECTO (POR SALAS EN BLANCO/OCUPADO + CUADRANTE) */}
             {classesViewMode === 'salas' && (
                <div className="space-y-6 animate-in fade-in">
@@ -10450,18 +10523,17 @@ ${startDateWarning}
                               </tr>
                            </thead>
                            <tbody>
-                              {SCHEDULE_HOURS.map(time => (
+                              {architectScheduleHours.map(time => (
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
                                     {SALAS.map(sala => {
-                                       const slotHour = time.split(':')[0];
                                        const classesInSlot = architectClasses.filter(c => {
                                          const classSede = c.sede || 'Tarragona';
                                          const isClassForSelectedDate = isPunctualClass(c)
                                            ? c.date === (archDate || todayStr)
                                            : Number(c.dayOfWeek) === Number(architectSelectedDay);
 
-                                         return classSede === archSede && isClassForSelectedDate && c.sala === sala && (c.time || '').startsWith(slotHour);
+                                         return classSede === archSede && isClassForSelectedDate && c.sala === sala && c.time === time;
                                        });
                                        const openCreateFromSlot = () => {
                                          if (isArchitectProjection) return;
@@ -10472,7 +10544,7 @@ ${startDateWarning}
                                           <td key={sala} className="p-2 border-r border-zinc-100 align-top h-28 relative hover:bg-zinc-50 transition-colors group" onClick={(e) => { if(isArchitectProjection || e.target.closest('button') || classesInSlot.length > 0) return; openCreateFromSlot(); }}>
                                              {classesInSlot.length > 0 ? (
                                                 classesInSlot.map(c => {
-                                                   const realClass = recurringClassesOnly.find(real => real.id === c.id) || c;
+                                                   const realClass = recurringClassesOnly.find(real => String(real.id) === String(c.id) || (real.refPath && real.refPath === c.refPath)) || c;
                                                    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection, archDate || todayStr);
                                                    const activeStudents = planningStudents.filter(student => student.isActive);
                                                    const fixedActiveStudents = activeStudents
@@ -10512,6 +10584,11 @@ ${startDateWarning}
                                                            <div className="min-w-0">
                                                              <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
                                                              <div className="text-[10px] font-bold truncate mt-1" style={mutedTextStyle}>Prof: {c.teacher}</div>
+                                                             {c.temporaryClassChange && (
+                                                               <div className={`mt-1 text-[9px] font-black uppercase tracking-widest ${isHibernatedCard ? 'text-violet-700' : 'text-white'}`}>
+                                                                 Cambio temporal · hasta {formatDateSpanish(normalizeTemporaryClassChangeDate(c.temporaryClassChange.until))}
+                                                               </div>
+                                                             )}
                                                            </div>
                                                            <span className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${isHibernatedCard ? 'bg-slate-200 text-slate-700' : 'bg-white/20 text-white'}`} title="Plazas comprometidas / aforo">{capacityLabel}</span>
                                                          </div>
@@ -10538,6 +10615,12 @@ ${startDateWarning}
                                                             <div className={`mt-1 text-[8px] font-black uppercase tracking-widest ${isHibernatedCard ? 'text-slate-500' : ''}`} style={isHibernatedCard ? undefined : { color: 'rgba(255,255,255,.68)' }}>
                                                                Activos {activeCapacityLabel}{maintenanceCount > 0 ? ` · ${maintenanceCount} mant.` : ''}{futureStartCount > 0 ? ` · ${futureStartCount} futuro` : ''}{relocatedCount > 0 ? ` · ${relocatedCount} recol. aquí` : ''}{relocatedOutCount > 0 ? ` · ${relocatedOutCount} recol. fuera` : ''}
                                                             </div>
+                                                         )}
+
+                                                         {c.temporaryClassChange && c.officialSchedule && (
+                                                           <div className="mt-2 pt-2 border-t text-[8px] font-bold leading-snug normal-case tracking-normal" style={{ ...dividerStyle, color: isHibernatedCard ? '#6d28d9' : 'rgba(255,255,255,.78)' }}>
+                                                             Horario oficial: {getDayName(c.officialSchedule.dayOfWeek)} {c.officialSchedule.time}h · {c.officialSchedule.sede} ({c.officialSchedule.sala})
+                                                           </div>
                                                          )}
 
                                                          <div className="mt-3 pt-2 border-t flex flex-wrap gap-1.5" style={isHibernatedCard ? { borderColor: 'rgba(100,116,139,.25)' } : { borderColor: 'rgba(255,255,255,.18)' }}>
@@ -10639,12 +10722,18 @@ ${startDateWarning}
                                     <span>{getDayName(c.dayOfWeek)}</span>
                                     <span className="bg-zinc-100 p-1 rounded">{c.time}</span>
                                     {isPunctualClass(c) && <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Puntual {formatDateSpanish(c.date)}</span>}
-                                    {c.temporaryClassChange && <span className="bg-violet-100 text-violet-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Temporal hasta {formatDateSpanish(c.temporaryClassChange.until)}</span>}
+                                    {c.temporaryClassChange && <span className="bg-violet-100 text-violet-700 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Temporal activo hasta {formatDateSpanish(normalizeTemporaryClassChangeDate(c.temporaryClassChange.until))}</span>}
+                                    {!c.temporaryClassChange && c.upcomingTemporaryClassChange && <span className="bg-violet-50 text-violet-700 border border-violet-200 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest">Cambio programado {formatDateSpanish(normalizeTemporaryClassChangeDate(c.upcomingTemporaryClassChange.from))}</span>}
                                   </div>
                                   <div className="text-xs font-bold uppercase mt-1" style={{ color: teacherTheme.text }}>{c.subject} • {c.sede} ({c.sala})</div>
                                   {c.temporaryClassChange && c.officialSchedule && (
                                     <div className="mt-1 text-[9px] font-bold text-violet-700 normal-case leading-snug">
                                       Oficial: {getDayName(c.officialSchedule.dayOfWeek)} {c.officialSchedule.time}h · {c.officialSchedule.sede} ({c.officialSchedule.sala}) · {c.officialSchedule.teacher}
+                                    </div>
+                                  )}
+                                  {!c.temporaryClassChange && c.upcomingTemporaryClassChange && (
+                                    <div className="mt-2 p-2 bg-violet-50 border border-violet-100 rounded-lg text-[9px] font-bold text-violet-800 normal-case leading-snug">
+                                      Del {formatDateSpanish(normalizeTemporaryClassChangeDate(c.upcomingTemporaryClassChange.from))} al {formatDateSpanish(normalizeTemporaryClassChangeDate(c.upcomingTemporaryClassChange.until))}: {getDayName(Number(c.upcomingTemporaryClassChange.dayOfWeek))} {c.upcomingTemporaryClassChange.time}h · {c.upcomingTemporaryClassChange.sede} ({c.upcomingTemporaryClassChange.sala}) · {getOfficialTeacherName(c.upcomingTemporaryClassChange.teacher)}
                                     </div>
                                   )}
                                   <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} activos`}</div>

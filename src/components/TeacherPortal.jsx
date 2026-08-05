@@ -252,9 +252,34 @@ const TEMPORARY_CLASS_CHANGE_FINAL_STATUSES = new Set([
   'expired'
 ]);
 
+const normalizeTemporaryClassChangeDate = (value = '') => {
+  if (!value) return '';
+  const dateValue = typeof value?.toDate === 'function'
+    ? value.toDate()
+    : (value instanceof Date ? value : null);
+
+  if (dateValue && !Number.isNaN(dateValue.getTime())) {
+    const year = dateValue.getFullYear();
+    const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+    const day = String(dateValue.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  const cleanValue = String(value || '').trim();
+  const isoMatch = cleanValue.match(/^\d{4}-\d{2}-\d{2}/);
+  return isoMatch ? isoMatch[0] : cleanValue.slice(0, 10);
+};
+
+const isTemporaryClassChangeClosed = (change = {}) => (
+  TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(String(change.status || '').toLowerCase())
+);
+
 const isTemporaryClassChangeActiveForDate = (change = {}, targetDate = '') => {
-  if (!change || TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)) return false;
-  return Boolean(change.from && change.until && change.from <= targetDate && change.until >= targetDate);
+  if (!change || isTemporaryClassChangeClosed(change)) return false;
+  const from = normalizeTemporaryClassChangeDate(change.from);
+  const until = normalizeTemporaryClassChangeDate(change.until);
+  const referenceDate = normalizeTemporaryClassChangeDate(targetDate);
+  return Boolean(from && until && referenceDate && from <= referenceDate && until >= referenceDate);
 };
 
 const doClassTimeRangesOverlap = (left = {}, right = {}) => {
@@ -891,29 +916,46 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
   };
 
-  const getClassTemporaryChanges = (classId = '') => temporaryClassChanges
+  const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
+    const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
+    const classId = classData?.id ?? classDataOrId;
+    const sameId = Boolean(String(change.classId ?? '')) && String(change.classId) === String(classId ?? '');
+    if (sameId) return true;
+    return Boolean(
+      classData?.refPath &&
+      change.classRefPath &&
+      String(change.classRefPath) === String(classData.refPath)
+    );
+  };
+
+  const getClassTemporaryChanges = (classDataOrId = '') => temporaryClassChanges
     .filter(change =>
-      String(change.classId || '') === String(classId || '') &&
-      !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status)
+      doesTemporaryChangeBelongToClass(change, classDataOrId) &&
+      !isTemporaryClassChangeClosed(change)
     )
     .sort((a, b) => {
-      const dateComparison = String(a.from || '').localeCompare(String(b.from || ''));
+      const dateComparison = normalizeTemporaryClassChangeDate(a.from).localeCompare(normalizeTemporaryClassChangeDate(b.from));
       if (dateComparison !== 0) return dateComparison;
       return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
     });
 
-  const getActiveClassTemporaryChange = (classId = '', targetDate = getTodayLocalString()) => (
-    getClassTemporaryChanges(classId).find(change => isTemporaryClassChangeActiveForDate(change, targetDate)) || null
+  const getActiveClassTemporaryChange = (classDataOrId = '', targetDate = getTodayLocalString()) => (
+    getClassTemporaryChanges(classDataOrId).find(change => isTemporaryClassChangeActiveForDate(change, targetDate)) || null
   );
 
-  const getUpcomingClassTemporaryChange = (classId = '', targetDate = getTodayLocalString()) => (
-    getClassTemporaryChanges(classId)
-      .find(change => change.from && change.until && change.from > targetDate && change.until >= targetDate) || null
-  );
+  const getUpcomingClassTemporaryChange = (classDataOrId = '', targetDate = getTodayLocalString()) => {
+    const referenceDate = normalizeTemporaryClassChangeDate(targetDate);
+    return getClassTemporaryChanges(classDataOrId)
+      .find(change => {
+        const from = normalizeTemporaryClassChangeDate(change.from);
+        const until = normalizeTemporaryClassChangeDate(change.until);
+        return Boolean(from && until && referenceDate && from > referenceDate && until >= referenceDate);
+      }) || null;
+  };
 
   const getEffectiveClassForDate = (classData = {}, targetDate = getTodayLocalString()) => {
     if (!classData || isPunctualClass(classData)) return classData;
-    const temporaryChange = getActiveClassTemporaryChange(classData.id, targetDate);
+    const temporaryChange = getActiveClassTemporaryChange(classData, targetDate);
     if (!temporaryChange) return classData;
 
     const officialSchedule = temporaryChange.officialSchedule || {
@@ -1594,8 +1636,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     allRecurringClasses.filter(classData => !isPunctualClass(classData)).forEach(officialClass => {
       const officialMatches = isSameTeacher(officialClass.teacher, teacherName);
-      const activeChange = getActiveClassTemporaryChange(officialClass.id, todayStr);
-      const upcomingChange = getUpcomingClassTemporaryChange(officialClass.id, todayStr);
+      const activeChange = getActiveClassTemporaryChange(officialClass, todayStr);
+      const upcomingChange = getUpcomingClassTemporaryChange(officialClass, todayStr);
 
       if (!activeChange) {
         if (!officialMatches) return;
@@ -1637,7 +1679,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
           status: activeCount > 0 ? 'temporary_active' : 'temporary_inactive',
           role: 'temporary',
           temporaryChange: activeChange,
-          detail: `Temporal hasta ${formatDateSpanish(activeChange.until)}`
+          detail: `Temporal hasta ${formatDateSpanish(normalizeTemporaryClassChangeDate(activeChange.until))}`
         }));
       }
     });
@@ -1706,17 +1748,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time)));
 
     const upcomingChanges = temporaryClassChanges
-      .filter(change => !TEMPORARY_CLASS_CHANGE_FINAL_STATUSES.has(change.status))
-      .filter(change => change.from && change.from > todayStr)
+      .filter(change => !isTemporaryClassChangeClosed(change))
+      .filter(change => normalizeTemporaryClassChangeDate(change.from) > todayStr)
       .map(change => ({
         change,
-        officialClass: allRecurringClasses.find(classData => String(classData.id) === String(change.classId))
+        officialClass: allRecurringClasses.find(classData => doesTemporaryChangeBelongToClass(change, classData))
       }))
       .filter(item => item.officialClass && (
         isSameTeacher(item.officialClass.teacher, teacherName) ||
         isSameTeacher(item.change.teacher, teacherName)
       ))
-      .sort((a, b) => String(a.change.from).localeCompare(String(b.change.from)));
+      .sort((a, b) => normalizeTemporaryClassChangeDate(a.change.from).localeCompare(normalizeTemporaryClassChangeDate(b.change.from)));
 
     const uniqueIdsForStatus = status => new Set(classRows.filter(row => status.includes(row.status)).map(row => row.classId)).size;
     const offeredMinutes = offeredSegments.reduce((sum, segment) => sum + segment.duration, 0);
@@ -2805,6 +2847,8 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         subject: currentSession.subject,
         capacity: currentSession.capacity,
         duration: currentSession.duration || 60,
+        temporaryClassChangeId: currentSession.temporaryClassChange?.id || '',
+        officialSchedule: currentSession.officialSchedule || null,
         notes: finalNotes,
         classNotes: currentSession.notes || '',
         classNotesUpdatedAt: effectiveNotesUpdatedAt,
@@ -3956,7 +4000,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                             </p>
                             {item.data.temporaryClassChange && (
                               <div className="mt-2 inline-flex flex-col gap-0.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2">
-                                <span className="text-[9px] font-black uppercase tracking-widest text-violet-800">Cambio temporal · hasta {formatDateSpanish(item.data.temporaryClassChange.until)}</span>
+                                <span className="text-[9px] font-black uppercase tracking-widest text-violet-800">Cambio temporal · hasta {formatDateSpanish(normalizeTemporaryClassChangeDate(item.data.temporaryClassChange.until))}</span>
                                 <span className="text-[9px] font-bold text-violet-600">Después vuelve a {getDayName(item.data.officialSchedule?.dayOfWeek)} {item.data.officialSchedule?.time}h · {item.data.officialSchedule?.sede || 'Tarragona'} · {item.data.officialSchedule?.sala || 'Sala 1'}</span>
                               </div>
                             )}
@@ -4283,7 +4327,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                         return (
                           <div key={change.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-2">
                             <div>
-                              <p className="text-sm font-black text-violet-950">{officialClass.subject || change.classSubject || 'Clase'} · {formatDateSpanish(change.from)}–{formatDateSpanish(change.until)}</p>
+                              <p className="text-sm font-black text-violet-950">{officialClass.subject || change.classSubject || 'Clase'} · {formatDateSpanish(normalizeTemporaryClassChangeDate(change.from))}–{formatDateSpanish(normalizeTemporaryClassChangeDate(change.until))}</p>
                               <p className="text-[10px] font-bold text-violet-700 mt-1">{getDayName(change.dayOfWeek)} {change.time}h · {change.sede || 'Tarragona'} · {change.sala || 'Sala 1'} · {getOfficialTeacherName(change.teacher)}</p>
                             </div>
                             <span className="px-2.5 py-1 rounded-lg bg-white border border-violet-200 text-violet-700 text-[9px] font-black uppercase tracking-widest">{isTemporaryTeacher ? 'La asumirás temporalmente' : 'Cambio programado'}</span>
@@ -4326,7 +4370,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                                   <p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {row.classData.sede || 'Tarragona'} · {row.classData.sala || 'Sala 1'}</p>
                                   <p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'}{row.status !== 'reserved' ? ` · ${row.activeCount} activos` : ''}{row.outsideAvailability ? ' · Fuera de disponibilidad declarada' : ''}</p>
                                   {row.detail && <p className="text-[10px] font-bold text-violet-700 mt-1">{row.detail}</p>}
-                                  {row.upcomingChange && <p className="text-[10px] font-bold text-violet-700 mt-1">Cambio programado del {formatDateSpanish(row.upcomingChange.from)} al {formatDateSpanish(row.upcomingChange.until)}</p>}
+                                  {row.upcomingChange && <p className="text-[10px] font-bold text-violet-700 mt-1">Cambio programado del {formatDateSpanish(normalizeTemporaryClassChangeDate(row.upcomingChange.from))} al {formatDateSpanish(normalizeTemporaryClassChangeDate(row.upcomingChange.until))}</p>}
                                 </>
                               ) : <p className="text-xs font-bold text-zinc-400">Disponible para que coordinación asigne una clase.</p>}
                             </div>

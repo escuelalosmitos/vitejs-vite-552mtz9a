@@ -1,3 +1,4 @@
+// AdminPortal · configuración multi-sede dinámica y compatible con datos heredados
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Inbox, ClipboardList, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
@@ -34,14 +35,208 @@ const createEmptyAnnouncementDraft = () => ({
   pollResultsVisibility: 'never'
 });
 
-const SEDES = ["Tarragona", "Reus"];
-const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
+const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
+const LEGACY_ROOM_NAMES = ["Sala 1", "Sala 2", "Sala 3"];
 
 const SCHEDULE_HOURS = ["09:00", "10:00", "11:00", "12:00", "13:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00"];
 
 const defaultRoomCapacities = {
   Tarragona: { 'Sala 1': 10, 'Sala 2': 8, 'Sala 3': 4 },
   Reus: { 'Sala 1': 8, 'Sala 2': 5, 'Sala 3': 4 }
+};
+
+const normalizeConfigId = (value = '', fallback = 'item') => {
+  const normalized = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+};
+
+const DEFAULT_CENTERS = [
+  {
+    id: 'tarragona',
+    name: 'Tarragona',
+    aliases: [],
+    status: 'active',
+    type: 'owned',
+    operatorId: 'los-mitos',
+    address: '',
+    phone: '',
+    email: '',
+    reviewUrl: '',
+    fixedMonthlyCost: 0,
+    holidays: [],
+    rooms: LEGACY_ROOM_NAMES.map(name => ({
+      id: normalizeConfigId(name, 'sala'),
+      name,
+      aliases: [],
+      capacity: defaultRoomCapacities.Tarragona[name] || 0,
+      mitoboxEnabled: true,
+      active: true
+    }))
+  },
+  {
+    id: 'reus',
+    name: 'Reus',
+    aliases: [],
+    status: 'active',
+    type: 'owned',
+    operatorId: 'los-mitos',
+    address: '',
+    phone: '',
+    email: '',
+    reviewUrl: '',
+    fixedMonthlyCost: 0,
+    holidays: [],
+    rooms: LEGACY_ROOM_NAMES.map(name => ({
+      id: normalizeConfigId(name, 'sala'),
+      name,
+      aliases: [],
+      capacity: defaultRoomCapacities.Reus[name] || 0,
+      mitoboxEnabled: true,
+      active: true
+    }))
+  }
+];
+
+const uniqueStrings = (values = []) => [...new Set((values || [])
+  .map(value => String(value || '').trim())
+  .filter(Boolean))];
+
+const getLegacyCenterHolidays = (center = {}, legacySettings = {}) => {
+  const centerId = normalizeConfigId(center.id || center.name, 'sede');
+  if (centerId === 'tarragona') return legacySettings.festivosTarragona || [];
+  if (centerId === 'reus') return legacySettings.festivosReus || [];
+  return legacySettings.centerHolidays?.[centerId] || [];
+};
+
+const normalizeCenters = (rawCenters = [], legacySettings = {}) => {
+  const hasConfiguredCenters = Array.isArray(rawCenters) && rawCenters.length > 0;
+  const source = hasConfiguredCenters ? rawCenters : DEFAULT_CENTERS;
+  const usedCenterIds = new Set();
+
+  return source.map((rawCenter, centerIndex) => {
+    const name = String(rawCenter?.name || LEGACY_CENTER_NAMES[centerIndex] || `Sede ${centerIndex + 1}`).trim();
+    const baseCenterId = normalizeConfigId(rawCenter?.id || name, `sede-${centerIndex + 1}`);
+    let id = baseCenterId;
+    let duplicateIndex = 2;
+    while (usedCenterIds.has(id)) {
+      id = `${baseCenterId}-${duplicateIndex}`;
+      duplicateIndex += 1;
+    }
+    usedCenterIds.add(id);
+
+    const legacyCapacities = legacySettings.roomCapacities?.[name]
+      || legacySettings.roomCapacities?.[rawCenter?.name]
+      || defaultRoomCapacities[name]
+      || {};
+    const rawRooms = Array.isArray(rawCenter?.rooms) && rawCenter.rooms.length > 0
+      ? rawCenter.rooms
+      : Object.keys(legacyCapacities).map(roomName => ({ name: roomName, capacity: legacyCapacities[roomName] }));
+    const roomSource = rawRooms.length > 0
+      ? rawRooms
+      : LEGACY_ROOM_NAMES.map(roomName => ({ name: roomName, capacity: 0 }));
+    const usedRoomIds = new Set();
+    const rooms = roomSource.map((rawRoom, roomIndex) => {
+      const roomName = String(rawRoom?.name || `Sala ${roomIndex + 1}`).trim();
+      const baseRoomId = normalizeConfigId(rawRoom?.id || roomName, `sala-${roomIndex + 1}`);
+      let roomId = baseRoomId;
+      let roomDuplicateIndex = 2;
+      while (usedRoomIds.has(roomId)) {
+        roomId = `${baseRoomId}-${roomDuplicateIndex}`;
+        roomDuplicateIndex += 1;
+      }
+      usedRoomIds.add(roomId);
+      const legacyCapacity = legacyCapacities[roomName];
+      return {
+        id: roomId,
+        name: roomName,
+        aliases: uniqueStrings(rawRoom?.aliases || []),
+        capacity: Number(hasConfiguredCenters ? (rawRoom?.capacity ?? legacyCapacity ?? 0) : (legacyCapacity ?? rawRoom?.capacity ?? 0)) || 0,
+        mitoboxEnabled: rawRoom?.mitoboxEnabled !== false,
+        active: rawRoom?.active !== false
+      };
+    });
+
+    const legacyFixedCosts = legacySettings.gastosFijos || {};
+    const legacyFixedCost = legacyFixedCosts[id]
+      ?? legacyFixedCosts[normalizeConfigId(name, id)]
+      ?? 0;
+    const holidays = hasConfiguredCenters
+      ? uniqueStrings(rawCenter?.holidays || legacySettings.centerHolidays?.[id] || [])
+      : uniqueStrings(getLegacyCenterHolidays({ id, name }, legacySettings));
+
+    return {
+      id,
+      name,
+      aliases: uniqueStrings(rawCenter?.aliases || []),
+      status: ['draft', 'active', 'inactive'].includes(rawCenter?.status) ? rawCenter.status : 'active',
+      type: rawCenter?.type === 'franchise' ? 'franchise' : 'owned',
+      operatorId: String(rawCenter?.operatorId || 'los-mitos').trim(),
+      address: String(rawCenter?.address || '').trim(),
+      phone: String(rawCenter?.phone || '').trim(),
+      email: String(rawCenter?.email || '').trim(),
+      reviewUrl: String(rawCenter?.reviewUrl || '').trim(),
+      fixedMonthlyCost: Number(hasConfiguredCenters ? (rawCenter?.fixedMonthlyCost ?? legacyFixedCost ?? 0) : (legacyFixedCost ?? rawCenter?.fixedMonthlyCost ?? 0)) || 0,
+      holidays,
+      rooms,
+      createdAt: rawCenter?.createdAt || '',
+      updatedAt: rawCenter?.updatedAt || '',
+      updatedBy: rawCenter?.updatedBy || ''
+    };
+  });
+};
+
+const findCenterByValue = (centers = [], value = '') => {
+  const normalizedValue = normalizeConfigId(value, '');
+  const plainValue = String(value || '').trim().toLocaleLowerCase('es');
+  return (centers || []).find(center => (
+    center.id === value
+    || normalizeConfigId(center.id, '') === normalizedValue
+    || String(center.name || '').trim().toLocaleLowerCase('es') === plainValue
+    || (center.aliases || []).some(alias => String(alias || '').trim().toLocaleLowerCase('es') === plainValue)
+  )) || null;
+};
+
+const findRoomByValue = (center, value = '') => {
+  if (!center) return null;
+  const normalizedValue = normalizeConfigId(value, '');
+  const plainValue = String(value || '').trim().toLocaleLowerCase('es');
+  return (center.rooms || []).find(room => (
+    room.id === value
+    || normalizeConfigId(room.id, '') === normalizedValue
+    || String(room.name || '').trim().toLocaleLowerCase('es') === plainValue
+    || (room.aliases || []).some(alias => String(alias || '').trim().toLocaleLowerCase('es') === plainValue)
+  )) || null;
+};
+
+const buildLegacyCenterSettings = (centers = [], currentSettings = {}) => {
+  const roomCapacities = {};
+  const centerHolidays = {};
+  const gastosFijos = { global: Number(currentSettings.gastosFijos?.global || 0) || 0 };
+
+  centers.forEach(center => {
+    roomCapacities[center.name] = {};
+    (center.rooms || []).forEach(room => {
+      roomCapacities[center.name][room.name] = Number(room.capacity || 0) || 0;
+    });
+    centerHolidays[center.id] = uniqueStrings(center.holidays || []);
+    gastosFijos[center.id] = Number(center.fixedMonthlyCost || 0) || 0;
+  });
+
+  const tarragona = findCenterByValue(centers, 'tarragona');
+  const reus = findCenterByValue(centers, 'reus');
+  return {
+    roomCapacities,
+    centerHolidays,
+    gastosFijos,
+    festivosTarragona: uniqueStrings(tarragona?.holidays || currentSettings.festivosTarragona || []),
+    festivosReus: uniqueStrings(reus?.holidays || currentSettings.festivosReus || [])
+  };
 };
 
 const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
@@ -1053,13 +1248,17 @@ const TemporaryRelocationModalOverlay = ({
   );
 };
 
-const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses, registrations = [] }) => {
+const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], students, allClasses, registrations = [] }) => {
+  const workshopCenters = centers.filter(center => center.status === 'active');
+  const selectableWorkshopCenters = workshopCenters.length > 0 ? workshopCenters : centers.slice(0, 1);
+  const defaultWorkshopCenterName = selectableWorkshopCenters[0]?.name || 'Tarragona';
+  const createWorkshopDraft = () => ({ ...createEmptyWorkshop(), locationType: defaultWorkshopCenterName });
   const [workshops, setWorkshops] = useState([]);
   const [loadingWorkshops, setLoadingWorkshops] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [form, setForm] = useState(createEmptyWorkshop());
+  const [form, setForm] = useState(createWorkshopDraft);
   const [saving, setSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
@@ -1094,14 +1293,14 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
 
   const resetForm = () => {
     setEditingId(null);
-    setForm(createEmptyWorkshop());
+    setForm(createWorkshopDraft());
     setAdvancedOpen(false);
     setFormOpen(false);
   };
 
   const openNewWorkshop = () => {
     setEditingId(null);
-    setForm(createEmptyWorkshop());
+    setForm(createWorkshopDraft());
     setAdvancedOpen(false);
     setFormOpen(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1185,6 +1384,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
     setSaving(true);
     try {
       const now = new Date().toISOString();
+      const payloadCenter = findCenterByValue(centers, form.locationType);
+      const payloadRoom = findRoomByValue(payloadCenter, form.room);
       const sessions = [...form.sessions]
         .map(session => ({ id: session.id || createWorkshopLocalId(), date: session.date, startTime: session.startTime, endTime: session.endTime }))
         .sort((a, b) => `${a.date}T${a.startTime}`.localeCompare(`${b.date}T${b.startTime}`));
@@ -1202,7 +1403,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
         description: form.description.trim(),
         imageUrl: form.imageUrl.trim(),
         instructor: form.instructor.trim(),
-        room: form.room.trim(),
+        locationType: payloadCenter?.name || form.locationType,
+        room: payloadRoom?.name || form.room.trim(),
         externalLocation: form.externalLocation.trim(),
         capacity: form.unlimitedCapacity ? null : Number(form.capacity),
         minimumParticipants: form.minimumParticipants ? Number(form.minimumParticipants) : null,
@@ -1211,6 +1413,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
         ageMax: form.ageMax ? Number(form.ageMax) : null,
         sessions,
         questions,
+        centerId: payloadCenter?.id || '',
+        roomId: payloadRoom?.id || '',
         audienceLabel: form.audienceType === 'all'
           ? 'Todos los alumnos'
           : form.audienceType === 'manual'
@@ -1328,7 +1532,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
   };
 
   const audienceOptions = useMemo(() => {
-    if (form.audienceType === 'sede') return SEDES;
+    if (form.audienceType === 'sede') return selectableWorkshopCenters.map(center => center.name);
     if (form.audienceType === 'instrument') return settings.instrumentos || defaultInstrumentos;
     if (form.audienceType === 'teacher') return settings.teachersList || [];
     if (form.audienceType === 'class') return allClasses
@@ -1336,7 +1540,17 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
       .map(clase => ({ value: clase.id, label: `${clase.sede || ''} · ${clase.subject || clase.instrument || 'Clase'} · ${clase.teacher || ''} · ${clase.time || ''}` }))
       .sort((a, b) => a.label.localeCompare(b.label));
     return [];
-  }, [allClasses, form.audienceType, settings.instrumentos, settings.teachersList]);
+  }, [allClasses, form.audienceType, settings.instrumentos, settings.teachersList, centers]);
+
+  const workshopCenter = findCenterByValue(centers, form.locationType);
+  const workshopLocationCenters = workshopCenter && !selectableWorkshopCenters.some(center => center.id === workshopCenter.id)
+    ? [workshopCenter, ...selectableWorkshopCenters]
+    : selectableWorkshopCenters;
+  const activeWorkshopRooms = (workshopCenter?.rooms || []).filter(room => room.active !== false);
+  const currentWorkshopRoom = findRoomByValue(workshopCenter, form.room);
+  const workshopRoomOptions = currentWorkshopRoom && !activeWorkshopRooms.some(room => room.id === currentWorkshopRoom.id)
+    ? [currentWorkshopRoom, ...activeWorkshopRooms]
+    : activeWorkshopRooms;
 
   const getAudienceLabel = workshop => {
     if (workshop.audienceType === 'all') return 'Todos los alumnos';
@@ -1415,8 +1629,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, students, allClasses,
             <section className="border-t border-zinc-100 pt-6">
               <h4 className="font-black uppercase tracking-widest text-xs text-slate-800 mb-4 flex items-center gap-2"><MapPin className="w-4 h-4 text-violet-600"/> Lugar e impartición</h4>
               <div className="grid md:grid-cols-3 gap-4">
-                <div><label className={labelClass}>Lugar *</label><select className={fieldClass} value={form.locationType} onChange={e => setForm({ ...form, locationType: e.target.value, room: '', externalLocation: '' })}><option value="Tarragona">Tarragona</option><option value="Reus">Reus</option><option value="both">Ambas sedes</option><option value="online">Online</option><option value="other">Otro lugar</option></select></div>
-                {['Tarragona', 'Reus'].includes(form.locationType) && <div><label className={labelClass}>Aula o espacio</label><select className={fieldClass} value={form.room} onChange={e => setForm({ ...form, room: e.target.value })}><option value="">Por determinar</option>{SALAS.map(room => <option key={room} value={room}>{room}</option>)}</select></div>}
+                <div><label className={labelClass}>Lugar *</label><select className={fieldClass} value={form.locationType} onChange={e => setForm({ ...form, locationType: e.target.value, room: '', externalLocation: '' })}>{workshopLocationCenters.map(center => <option key={center.id} value={center.name}>{center.name}{center.status !== 'active' ? ' (inactiva)' : ''}</option>)}<option value="both">Todas las sedes</option><option value="online">Online</option><option value="other">Otro lugar</option></select></div>
+                {workshopCenter && <div><label className={labelClass}>Aula o espacio</label><select className={fieldClass} value={form.room} onChange={e => setForm({ ...form, room: e.target.value })}><option value="">Por determinar</option>{workshopRoomOptions.map(room => <option key={room.id} value={room.name}>{room.name}</option>)}</select></div>}
                 {form.locationType === 'other' && <div><label className={labelClass}>Dirección o lugar</label><input className={fieldClass} value={form.externalLocation} onChange={e => setForm({ ...form, externalLocation: e.target.value })}/></div>}
                 <div><label className={labelClass}>Profesor o responsable</label><input list="workshop-teachers" className={fieldClass} value={form.instructor} onChange={e => setForm({ ...form, instructor: e.target.value })} placeholder="Profesor interno o externo"/><datalist id="workshop-teachers">{(settings.teachersList || []).map(teacher => <option key={teacher} value={teacher}/>)}</datalist></div>
               </div>
@@ -1519,8 +1733,70 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
     hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 },
     generalTasks: [], prizes: { mensual: '', trimestral: '', anual: '' }, teachersList: [], teacherColors: {},
-    roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos
+    roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos,
+    centers: normalizeCenters([], {})
   });
+
+  const centers = useMemo(() => normalizeCenters(settings.centers, settings), [
+    settings.centers,
+    settings.roomCapacities,
+    settings.gastosFijos,
+    settings.centerHolidays,
+    settings.festivosTarragona,
+    settings.festivosReus
+  ]);
+  const activeCenters = useMemo(() => {
+    const active = centers.filter(center => center.status === 'active');
+    return active.length > 0 ? active : centers.slice(0, 1);
+  }, [centers]);
+  const activeCenterNames = useMemo(() => activeCenters.map(center => center.name), [activeCenters]);
+
+  const getCenterForValue = (value = '') => findCenterByValue(centers, value);
+  const getSelectableCenters = (currentValue = '') => {
+    const current = getCenterForValue(currentValue);
+    if (current && !activeCenters.some(center => center.id === current.id)) return [current, ...activeCenters];
+    return activeCenters;
+  };
+  const getCenterName = (value = '') => getCenterForValue(value)?.name || String(value || '').trim() || activeCenterNames[0] || 'Tarragona';
+  const getClassCenter = (classData = {}) => getCenterForValue(classData.centerId || classData.sede);
+  const getClassCenterName = (classData = {}) => getClassCenter(classData)?.name || classData.sede || activeCenterNames[0] || 'Tarragona';
+  const getClassRoomName = (classData = {}) => findRoomByValue(getClassCenter(classData), classData.roomId || classData.sala)?.name || classData.sala || 'Sala no indicada';
+  const getRoomsForCenterValue = (centerValue, includeInactive = false) => {
+    const center = getCenterForValue(centerValue);
+    if (!center) return [];
+    return (center.rooms || []).filter(room => includeInactive || room.active !== false);
+  };
+  const getRoomNamesForCenter = (centerValue, includeInactive = false) => getRoomsForCenterValue(centerValue, includeInactive).map(room => room.name);
+  const getRoomOptionsForCenter = (centerValue, currentRoom = '') => {
+    const options = getRoomNamesForCenter(centerValue);
+    if (currentRoom && !options.includes(currentRoom)) return [currentRoom, ...options];
+    return options;
+  };
+  const getLocationIdentity = (centerValue, roomValue = '') => {
+    const center = getCenterForValue(centerValue);
+    const room = findRoomByValue(center, roomValue);
+    return {
+      centerId: center?.id || normalizeConfigId(centerValue, 'sede'),
+      roomId: room?.id || normalizeConfigId(roomValue, 'sala')
+    };
+  };
+  const getCenterFixedCost = centerValue => {
+    const center = getCenterForValue(centerValue);
+    return center?.status === 'active' ? (Number(center.fixedMonthlyCost || 0) || 0) : 0;
+  };
+  const isSameCenter = (leftValue, rightValue) => {
+    const left = getCenterForValue(leftValue);
+    const right = getCenterForValue(rightValue);
+    if (left && right) return left.id === right.id;
+    return String(leftValue || '').trim().toLocaleLowerCase('es') === String(rightValue || '').trim().toLocaleLowerCase('es');
+  };
+  const isSameRoom = (centerValue, leftValue, rightValue) => {
+    const center = getCenterForValue(centerValue);
+    const left = findRoomByValue(center, leftValue);
+    const right = findRoomByValue(center, rightValue);
+    if (left && right) return left.id === right.id;
+    return String(leftValue || '').trim().toLocaleLowerCase('es') === String(rightValue || '').trim().toLocaleLowerCase('es');
+  };
 
   // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
@@ -1574,7 +1850,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   
   const [newClassData, setNewClassData] = useState({
     isRecurring: true, specificDate: new Date().toISOString().split('T')[0], 
-    dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1',
+    dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', centerId: 'tarragona', roomId: 'sala-1',
     teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: ''
   });
 
@@ -1592,6 +1868,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const [importText, setImportText] = useState('');
   const [isImporting, setIsImporting] = useState(false);
+  const [centerEditor, setCenterEditor] = useState(null);
+  const [savingCenter, setSavingCenter] = useState(false);
 
   useEffect(() => {
     let loaded = 0;
@@ -1612,15 +1890,25 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => { 
       if (docSnap.exists()) {
         const data = docSnap.data();
+        const normalizedCenters = normalizeCenters(data.centers, data);
+        const legacyCenterSettings = buildLegacyCenterSettings(normalizedCenters, data);
         setSettings(prev => ({ 
           ...prev, 
           ...data,
-          roomCapacities: data.roomCapacities || defaultRoomCapacities,
+          ...legacyCenterSettings,
+          centers: normalizedCenters,
           instrumentos: data.instrumentos || defaultInstrumentos,
           teacherColors: data.teacherColors || {},
           costeEmpresa: data.costeEmpresa || 22,
-          gastosFijos: data.gastosFijos || { global: 0, tarragona: 0, reus: 0 }
+          centersSchemaVersion: 1
         }));
+        if (!Array.isArray(data.centers) || data.centers.length === 0) {
+          setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
+            centers: normalizedCenters,
+            centersSchemaVersion: 1,
+            ...legacyCenterSettings
+          }, { merge: true }).catch(error => console.error('No se pudo completar la migración inicial de sedes:', error));
+        }
       }
       checkLoad(); 
     });
@@ -1728,6 +2016,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   }, []);
 
   useEffect(() => {
+    const firstCenter = activeCenters[0];
+    if (!firstCenter) return;
+    const firstRoom = (firstCenter.rooms || []).find(room => room.active !== false)?.name || '';
+    if (!activeCenters.some(center => isSameCenter(center.id, archSede))) setArchSede(firstCenter.name);
+    const mitoboxCenters = activeCenters.filter(center => (center.rooms || []).some(room => room.active !== false && room.mitoboxEnabled !== false));
+    if (!mitoboxCenters.some(center => isSameCenter(center.id, mboxAdminSede))) setMboxAdminSede(mitoboxCenters[0]?.name || firstCenter.name);
+    setNewClassData(previous => {
+      if (activeCenters.some(center => isSameCenter(center.id, previous.sede))) return previous;
+      const firstRoomData = findRoomByValue(firstCenter, firstRoom);
+      return { ...previous, sede: firstCenter.name, sala: firstRoom, centerId: firstCenter.id, roomId: firstRoomData?.id || '' };
+    });
+  }, [activeCenters.map(center => `${center.id}:${center.status}`).join('|')]);
+
+  useEffect(() => {
     if (viewClassModal) {
       const updatedClass = allClasses.find(c => c.id === viewClassModal.id);
       if (updatedClass) {
@@ -1757,6 +2059,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const recurringClassesOnly = useMemo(() => {
     return allClasses.filter(c => !isPunctualClass(c));
   }, [allClasses]);
+
+  const centerNamesForReporting = useMemo(() => {
+    const configuredNames = centers.map(center => center.name);
+    const historicalNames = recurringClassesOnly.map(classData => getClassCenterName(classData));
+    return uniqueStrings([...configuredNames, ...historicalNames]);
+  }, [centers, recurringClassesOnly]);
 
   const officialTeacherNameMap = useMemo(() => {
     const names = new Map();
@@ -1853,6 +2161,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       time: temporaryChange.time || classData.time,
       sede: temporaryChange.sede || classData.sede,
       sala: temporaryChange.sala || classData.sala,
+      centerId: temporaryChange.centerId || classData.centerId || getLocationIdentity(temporaryChange.sede || classData.sede, temporaryChange.sala || classData.sala).centerId,
+      roomId: temporaryChange.roomId || classData.roomId || getLocationIdentity(temporaryChange.sede || classData.sede, temporaryChange.sala || classData.sala).roomId,
       duration: Number(temporaryChange.duration) || Number(classData.duration) || 60,
       teacher: getOfficialTeacherName(temporaryChange.teacher || classData.teacher),
       temporaryClassChange: temporaryChange,
@@ -1861,6 +2171,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         time: classData.time,
         sede: classData.sede,
         sala: classData.sala,
+        centerId: classData.centerId || getLocationIdentity(classData.sede, classData.sala).centerId,
+        roomId: classData.roomId || getLocationIdentity(classData.sede, classData.sala).roomId,
         duration: classData.duration,
         teacher: getOfficialTeacherName(classData.teacher)
       }
@@ -2546,13 +2858,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
 
     const clasesRentabilidad = [];
-    const porSede = { Tarragona: createSedeStats(), Reus: createSedeStats() };
+    const porSede = Object.fromEntries(centerNamesForReporting.map(sede => [sede, createSedeStats()]));
     const porProfe = {};
     const porInstrumento = {};
     const studentById = new Map(studentsSnapshot.map(student => [student.id, student]));
     const frozenStudents = new Map();
     const activeUniqueStudents = new Set();
-    const activeUniqueBySede = new Map(SEDES.map(sede => [sede, new Set()]));
+    const activeUniqueBySede = new Map(centerNamesForReporting.map(sede => [sede, new Set()]));
     const legacyMaintenanceStudents = new Set();
     const teacherHourlyCost = Number(settings.costeEmpresa || 22);
     const pacoTeacherKey = normalizeTeacherKey('Paco');
@@ -2604,7 +2916,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           id: studentEntry.id || `${clase.id}-${index}`,
           name: displayName,
           email,
-          sede: clase.sede || 'Tarragona',
+          sede: getClassCenterName(clase),
           status: crmStatus,
           startDate,
           endDate,
@@ -2744,7 +3056,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const numRecolocadosFuera = activeStudents.filter(student => activeRelocatedOutIds.has(student.id)).length;
       const isClassOperative = numAlumnosOperativos > 0;
       const isHibernated = !isClassOperative;
-      const sedeKey = c.sede || 'Tarragona';
+      const sedeKey = getClassCenterName(c);
 
       activeStudents.forEach((student, index) => {
         const identityKey = getStudentIdentityKey(student, `${c.id}-${index}`);
@@ -2794,7 +3106,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         id: c.id,
         subject: c.subject,
         teacher: officialTeacher,
-        sede: c.sede,
+        sede: sedeKey,
         time: c.time,
         dayOfWeek: c.dayOfWeek,
         numAlumnos,
@@ -2866,7 +3178,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const alumnosMantenimiento = frozenStudents.size;
     const ingresosMantenimiento = alumnosMantenimiento * MAINTENANCE_MONTHLY_FEE;
     frozenStudents.forEach(student => {
-      const sedeKey = student.sede || 'Tarragona';
+      const sedeKey = getCenterName(student.sede || 'Tarragona');
       if (!porSede[sedeKey]) porSede[sedeKey] = createSedeStats();
       porSede[sedeKey].ingresos += MAINTENANCE_MONTHLY_FEE;
       porSede[sedeKey].mantenimiento += MAINTENANCE_MONTHLY_FEE;
@@ -2908,8 +3220,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     clasesRentabilidad.sort((a, b) => b.beneficio - a.beneficio);
     const totalIngresos = totalIngresosClases + ingresosMantenimiento + ingresosExtras;
-    const fijos = settings.gastosFijos || { global: 0, tarragona: 0, reus: 0 };
-    const totalFijos = Number(fijos.global) + Number(fijos.tarragona) + Number(fijos.reus);
+    const totalFijos = Number(settings.gastosFijos?.global || 0)
+      + centers.filter(center => center.status === 'active').reduce((sum, center) => sum + Number(center.fixedMonthlyCost || 0), 0);
 
     return {
       mode,
@@ -3108,7 +3420,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const formatClassLine = (clase) => {
     if (!clase) return '';
-    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${clase.sede || 'Sede no indicada'}${clase.sala ? ` · ${clase.sala}` : ''}`;
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time}h · ${getClassCenterName(clase)}${clase.sala || clase.roomId ? ` · ${getClassRoomName(clase)}` : ''}`;
   };
 
   const getGestionSourceClass = (gestion = {}, classes = allClasses) => {
@@ -3425,7 +3737,7 @@ ${body}`,
 
 
   const getAnnouncementTargetOptions = (targetType) => {
-    if (targetType === 'sede') return SEDES;
+    if (targetType === 'sede') return activeCenterNames;
     if (targetType === 'instrumento') {
       return [...new Set([
         ...(settings.instrumentos || defaultInstrumentos),
@@ -3464,7 +3776,7 @@ ${body}`,
     if (targetType === 'all') return true;
     if (targetType === 'teachers') return false;
     if (!targetValue) return false;
-    if (targetType === 'sede') return (clase.sede || 'Tarragona') === targetValue;
+    if (targetType === 'sede') return isSameCenter(clase.centerId || clase.sede || 'Tarragona', targetValue);
     if (targetType === 'instrumento') return (clase.subject || '') === targetValue;
     if (targetType === 'profesor') return isSameTeacher(clase.teacher, targetValue);
     return false;
@@ -5778,9 +6090,9 @@ Coordinación Los Mitos.`
       ] : []),
       '',
       'POR SEDE',
-      ...SEDES.flatMap(sede => {
+      ...centerNamesForReporting.flatMap(sede => {
         const data = businessIntelligence.porSede[sede] || { ingresos: 0, ingresosClases: 0, mantenimiento: 0, costesProf: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, impagos: 0 };
-        const gastoFijo = Number(settings.gastosFijos?.[sede.toLowerCase()]) || 0;
+        const gastoFijo = getCenterFixedCost(sede);
         return [
           `${sede}:`,
           `  Ingresos clases: ${money(data.ingresosClases)} (${data.alumnosActivos || 0} matrículas activas · ${data.alumnosUnicos || 0} alumnos únicos)`,
@@ -5865,7 +6177,7 @@ Coordinación Los Mitos.`
       const statusLabel = getSnapshotStatus({ activeCount, maintenanceCount, futureStartCount, relocatedCount });
 
       const endTime = getClassEndTime(clase.time, clase.duration);
-      const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
+      const turno = `${getClassCenterName(clase)} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${getClassRoomName(clase)}`;
 
       lines.push(
         '',
@@ -5952,7 +6264,7 @@ Coordinación Los Mitos.`
 
     const describeProjectedClass = (clase) => {
       if (!clase) return '';
-      return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''} · ${clase.teacher || 'Sin profesor'}`;
+      return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${getClassCenterName(clase)}${clase.sala || clase.roomId ? ` · ${getClassRoomName(clase)}` : ''} · ${clase.teacher || 'Sin profesor'}`;
     };
 
     const getStudentLineData = (studentEntry = {}, fallbackStudent = null) => {
@@ -6228,13 +6540,13 @@ Coordinación Los Mitos.`
       }
 
       const endTime = getClassEndTime(clase.time, clase.duration);
-      const turno = `${clase.sede || 'Tarragona'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${clase.sala || 'Sala no indicada'}`;
+      const turno = `${getClassCenterName(clase)} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}${endTime ? `-${endTime}` : ''} · ${getClassRoomName(clase)}`;
       const summaryLine = `${turno} · ${clase.subject || 'Clase'} · ${clase.teacher || 'Sin profesor'} · ${statusLabel} · activos ${activeCount} · mantenimiento ${maintenanceCount} · inicio futuro ${futureStartCount} · ocupación ${occupiedCount}/${cap || 'sin aforo'} · libres ${freeSpotsLabel}`;
 
       return {
         id: clase.id,
         classData: clase,
-        sede: clase.sede || 'Tarragona',
+        sede: getClassCenterName(clase),
         teacher: clase.teacher || 'Sin profesor',
         subject: clase.subject || 'Clase',
         dayOfWeek: Number(clase.dayOfWeek || 0),
@@ -6397,7 +6709,7 @@ Coordinación Los Mitos.`
     const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 
     pushGroupedRows('POR PROFESOR', planningRows, row => row.teacher || 'Sin profesor');
-    pushGroupedRows('POR SEDE', planningRows, row => row.sede || 'Tarragona', (a, b) => SEDES.indexOf(a) - SEDES.indexOf(b));
+    pushGroupedRows('POR SEDE', planningRows, row => row.sede || 'Tarragona', (a, b) => centerNamesForReporting.indexOf(a) - centerNamesForReporting.indexOf(b));
     pushGroupedRows('POR DÍA DE LA SEMANA', planningRows, row => getDayName(row.dayOfWeek), (a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
     pushSummaryBlock('PLAZAS LIBRES PROYECTADAS', freeSpotsRows, 'No hay plazas libres proyectadas.', row => `${row.turno} · ${row.subject} · ${row.teacher} · ${row.freeSpots} plaza(s) libre(s) · estado: ${row.statusLabel}`);
 
@@ -6431,8 +6743,8 @@ Coordinación Los Mitos.`
       return `${parseInt(h, 10)}:${m}h`;
     };
 
-    SEDES.forEach(sede => {
-      const clasesSede = recurringClassesOnly.filter(c => (c.sede || 'Tarragona') === sede && c.isWebVisible === true);
+    activeCenterNames.forEach(sede => {
+      const clasesSede = recurringClassesOnly.filter(c => isSameCenter(c.centerId || c.sede || 'Tarragona', sede) && c.isWebVisible === true);
       const filteredWithSpots = clasesSede.filter(c => getCommercialFreeSpots(c) > 0);
 
       if (filteredWithSpots.length > 0) {
@@ -6604,9 +6916,178 @@ Coordinación Los Mitos.`
     }
   };
 
-  const saveGlobalSettings = async (newSettings) => {
-    await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), newSettings, { merge: true });
-    alert('Ajustes guardados correctamente.');
+  const saveGlobalSettings = async (newSettings, successMessage = 'Ajustes guardados correctamente.') => {
+    const normalizedCenters = normalizeCenters(newSettings.centers || centers, newSettings);
+    const legacyCenterSettings = buildLegacyCenterSettings(normalizedCenters, newSettings);
+    const payload = {
+      ...newSettings,
+      ...legacyCenterSettings,
+      centers: normalizedCenters,
+      centersSchemaVersion: 1
+    };
+    await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), payload, { merge: true });
+    setSettings(previous => ({ ...previous, ...payload }));
+    if (successMessage) alert(successMessage);
+  };
+
+  const createEmptyCenterEditor = () => ({
+    id: '',
+    name: '',
+    aliases: [],
+    status: 'draft',
+    type: 'owned',
+    operatorId: 'los-mitos',
+    address: '',
+    phone: '',
+    email: '',
+    reviewUrl: '',
+    fixedMonthlyCost: 0,
+    holidays: [],
+    rooms: [{
+      id: '',
+      localId: `new-room-${Date.now()}`,
+      name: 'Sala 1',
+      aliases: [],
+      capacity: 4,
+      mitoboxEnabled: true,
+      active: true
+    }]
+  });
+
+  const openNewCenterEditor = () => setCenterEditor(createEmptyCenterEditor());
+  const openCenterEditor = center => setCenterEditor(JSON.parse(JSON.stringify(center)));
+
+  const updateCenterEditorRoom = (roomKey, changes) => {
+    setCenterEditor(previous => ({
+      ...previous,
+      rooms: (previous.rooms || []).map(room => (room.id || room.localId) === roomKey ? { ...room, ...changes } : room)
+    }));
+  };
+
+  const addCenterEditorRoom = () => {
+    setCenterEditor(previous => ({
+      ...previous,
+      rooms: [
+        ...(previous.rooms || []),
+        {
+          id: '',
+          localId: `new-room-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name: `Sala ${(previous.rooms || []).length + 1}`,
+          aliases: [],
+          capacity: 4,
+          mitoboxEnabled: true,
+          active: true
+        }
+      ]
+    }));
+  };
+
+  const removeUnsavedCenterRoom = roomKey => {
+    setCenterEditor(previous => ({
+      ...previous,
+      rooms: (previous.rooms || []).filter(room => (room.id || room.localId) !== roomKey)
+    }));
+  };
+
+  const addHolidayToCenterEditor = dateValue => {
+    if (!dateValue) return;
+    setCenterEditor(previous => ({
+      ...previous,
+      holidays: uniqueStrings([...(previous.holidays || []), dateValue]).sort()
+    }));
+  };
+
+  const saveCenterEditor = async () => {
+    if (!centerEditor) return;
+    const name = String(centerEditor.name || '').trim();
+    if (!name) return alert('Escribe el nombre de la sede.');
+    const duplicateCenter = centers.find(center => center.id !== centerEditor.id && String(center.name || '').trim().toLocaleLowerCase('es') === name.toLocaleLowerCase('es'));
+    if (duplicateCenter) return alert('Ya existe otra sede con ese nombre.');
+    if (centerEditor.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(centerEditor.email.trim())) return alert('El correo de la sede no tiene un formato válido.');
+    if (centerEditor.reviewUrl && !/^https?:\/\//i.test(centerEditor.reviewUrl.trim())) return alert('El enlace de reseñas debe empezar por http:// o https://.');
+
+    const roomsToSave = centerEditor.rooms || [];
+    if (roomsToSave.some(room => !String(room.name || '').trim())) return alert('Todas las salas deben tener nombre.');
+    const normalizedRoomNames = roomsToSave.map(room => String(room.name || '').trim().toLocaleLowerCase('es'));
+    if (new Set(normalizedRoomNames).size !== normalizedRoomNames.length) return alert('No puede haber dos salas con el mismo nombre dentro de una sede.');
+    if (centerEditor.status === 'active' && !roomsToSave.some(room => room.active !== false)) return alert('Una sede activa debe tener al menos una sala activa.');
+    if (roomsToSave.some(room => room.active !== false && Number(room.capacity || 0) < 1)) return alert('Las salas activas deben tener un aforo físico de al menos una persona.');
+
+    const originalCenter = centers.find(center => center.id === centerEditor.id) || null;
+    const usedCenterIds = new Set(centers.filter(center => center.id !== centerEditor.id).map(center => center.id));
+    let centerId = centerEditor.id || normalizeConfigId(name, 'sede');
+    let centerSuffix = 2;
+    const baseCenterId = centerId;
+    while (usedCenterIds.has(centerId)) {
+      centerId = `${baseCenterId}-${centerSuffix}`;
+      centerSuffix += 1;
+    }
+
+    const usedRoomIds = new Set();
+    const normalizedRooms = roomsToSave.map((room, roomIndex) => {
+      const originalRoom = originalCenter?.rooms?.find(item => item.id === room.id) || null;
+      const roomName = String(room.name || '').trim();
+      let roomId = room.id || normalizeConfigId(roomName, `sala-${roomIndex + 1}`);
+      const baseRoomId = roomId;
+      let roomSuffix = 2;
+      while (usedRoomIds.has(roomId)) {
+        roomId = `${baseRoomId}-${roomSuffix}`;
+        roomSuffix += 1;
+      }
+      usedRoomIds.add(roomId);
+      return {
+        id: roomId,
+        name: roomName,
+        aliases: uniqueStrings([
+          ...(room.aliases || []),
+          ...(originalRoom && originalRoom.name !== roomName ? [originalRoom.name] : [])
+        ]),
+        capacity: Number(room.capacity || 0) || 0,
+        mitoboxEnabled: room.mitoboxEnabled !== false,
+        active: room.active !== false
+      };
+    });
+
+    const normalizedCenter = {
+      id: centerId,
+      name,
+      aliases: uniqueStrings([
+        ...(centerEditor.aliases || []),
+        ...(originalCenter && originalCenter.name !== name ? [originalCenter.name] : [])
+      ]),
+      status: ['draft', 'active', 'inactive'].includes(centerEditor.status) ? centerEditor.status : 'draft',
+      type: centerEditor.type === 'franchise' ? 'franchise' : 'owned',
+      operatorId: String(centerEditor.operatorId || 'los-mitos').trim(),
+      address: String(centerEditor.address || '').trim(),
+      phone: String(centerEditor.phone || '').trim(),
+      email: String(centerEditor.email || '').trim(),
+      reviewUrl: String(centerEditor.reviewUrl || '').trim(),
+      fixedMonthlyCost: Number(centerEditor.fixedMonthlyCost || 0) || 0,
+      holidays: uniqueStrings(centerEditor.holidays || []).sort(),
+      rooms: normalizedRooms,
+      createdAt: originalCenter?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      updatedBy: user?.email || 'admin'
+    };
+
+    const nextCenters = originalCenter
+      ? centers.map(center => center.id === originalCenter.id ? normalizedCenter : center)
+      : [...centers, normalizedCenter];
+    setSavingCenter(true);
+    try {
+      await saveGlobalSettings({ ...settings, centers: nextCenters }, `Sede ${name} guardada correctamente.`);
+      setCenterEditor(null);
+    } catch (error) {
+      console.error(error);
+      alert('No se ha podido guardar la sede. Revisa la conexión y los permisos de Firestore.');
+    } finally {
+      setSavingCenter(false);
+    }
+  };
+
+  const updateCenterQuickField = (centerId, field, value) => {
+    const nextCenters = centers.map(center => center.id === centerId ? { ...center, [field]: value } : center);
+    setSettings(previous => ({ ...previous, centers: nextCenters }));
   };
 
   const getOwnerUidFromClassPath = (classData) => {
@@ -6638,13 +7119,21 @@ Coordinación Los Mitos.`
 
     setEditClassMode('permanent');
     setEditClassModal(officialClass);
+    const officialLocation = getLocationIdentity(officialClass.centerId || officialClass.sede || 'Tarragona', officialClass.roomId || officialClass.sala || 'Sala 1');
+    const temporaryLocation = getLocationIdentity(existingTemporaryChange?.centerId || existingTemporaryChange?.sede || officialClass.centerId || officialClass.sede || 'Tarragona', existingTemporaryChange?.roomId || existingTemporaryChange?.sala || officialClass.roomId || officialClass.sala || 'Sala 1');
+    const officialCenter = getCenterForValue(officialLocation.centerId);
+    const officialRoom = findRoomByValue(officialCenter, officialLocation.roomId);
+    const temporaryCenter = getCenterForValue(temporaryLocation.centerId);
+    const temporaryRoom = findRoomByValue(temporaryCenter, temporaryLocation.roomId);
     setEditClassData({
       isRecurring: !isPunctualClass(officialClass),
       specificDate: officialClass.date || officialClass.specificDate || new Date().toISOString().split('T')[0],
       dayOfWeek: String(officialClass.dayOfWeek ?? '1'),
       time: officialClass.time || '17:00',
-      sede: officialClass.sede || 'Tarragona',
-      sala: officialClass.sala || 'Sala 1',
+      sede: officialCenter?.name || officialClass.sede || 'Tarragona',
+      sala: officialRoom?.name || officialClass.sala || 'Sala 1',
+      centerId: officialClass.centerId || officialLocation.centerId,
+      roomId: officialClass.roomId || officialLocation.roomId,
       teacher: getOfficialTeacherName(officialClass.teacher, ''),
       subject: officialClass.subject || '',
       capacity: officialClass.capacity ?? '',
@@ -6658,8 +7147,10 @@ Coordinación Los Mitos.`
       until: existingTemporaryChange?.until || nextMonthEndStr,
       dayOfWeek: String(existingTemporaryChange?.dayOfWeek ?? officialClass.dayOfWeek ?? '1'),
       time: existingTemporaryChange?.time || officialClass.time || '17:00',
-      sede: existingTemporaryChange?.sede || officialClass.sede || 'Tarragona',
-      sala: existingTemporaryChange?.sala || officialClass.sala || 'Sala 1',
+      sede: temporaryCenter?.name || existingTemporaryChange?.sede || officialClass.sede || 'Tarragona',
+      sala: temporaryRoom?.name || existingTemporaryChange?.sala || officialClass.sala || 'Sala 1',
+      centerId: existingTemporaryChange?.centerId || temporaryLocation.centerId,
+      roomId: existingTemporaryChange?.roomId || temporaryLocation.roomId,
       teacher: getOfficialTeacherName(existingTemporaryChange?.teacher || officialClass.teacher, ''),
       duration: existingTemporaryChange?.duration ?? officialClass.duration ?? 60,
       notes: existingTemporaryChange?.notes || ''
@@ -6696,8 +7187,10 @@ Coordinación Los Mitos.`
     if (isPunctualClass(editClassModal)) return alert('Los cambios temporales están pensados para clases recurrentes. Edita directamente esta clase puntual.');
 
     const cleanTeacher = getOfficialTeacherName(temporaryClassData.teacher, cleanTeacherDisplayName(temporaryClassData.teacher));
+    const temporaryLocation = getLocationIdentity(temporaryClassData.centerId || temporaryClassData.sede, temporaryClassData.roomId || temporaryClassData.sala);
     const payload = {
       ...temporaryClassData,
+      ...temporaryLocation,
       teacher: cleanTeacher,
       dayOfWeek: Number(temporaryClassData.dayOfWeek),
       duration: Number(temporaryClassData.duration) || 60
@@ -6728,7 +7221,7 @@ Coordinación Los Mitos.`
 
     const physicalClashes = recurringClassesOnly.filter(classData => {
       if (classData.id === editClassModal.id) return false;
-      if ((classData.sede || 'Tarragona') !== payload.sede || (classData.sala || 'Sala 1') !== payload.sala) return false;
+      if (!isSameCenter(classData.centerId || classData.sede || 'Tarragona', payload.centerId || payload.sede) || !isSameRoom(payload.centerId || payload.sede, classData.roomId || classData.sala || 'Sala 1', payload.roomId || payload.sala)) return false;
 
       const directOfficialClash = Number(classData.dayOfWeek) === Number(payload.dayOfWeek) &&
         dateRangeContainsWeekday(payload.from, payload.until, payload.dayOfWeek) &&
@@ -6737,8 +7230,8 @@ Coordinación Los Mitos.`
       const temporaryClash = getClassTemporaryChanges(classData).some(change =>
         doDateRangesOverlap(change.from, change.until, payload.from, payload.until) &&
         Number(change.dayOfWeek) === Number(payload.dayOfWeek) &&
-        (change.sede || classData.sede || 'Tarragona') === payload.sede &&
-        (change.sala || classData.sala || 'Sala 1') === payload.sala &&
+        isSameCenter(change.centerId || change.sede || classData.centerId || classData.sede || 'Tarragona', payload.centerId || payload.sede) &&
+        isSameRoom(payload.centerId || payload.sede, change.roomId || change.sala || classData.roomId || classData.sala || 'Sala 1', payload.roomId || payload.sala) &&
         doClassTimeRangesOverlap(change, payload)
       );
       return directOfficialClash || temporaryClash;
@@ -6781,6 +7274,8 @@ Coordinación Los Mitos.`
         time: editClassModal.time || '',
         sede: editClassModal.sede || 'Tarragona',
         sala: editClassModal.sala || 'Sala 1',
+        centerId: editClassModal.centerId || getLocationIdentity(editClassModal.sede || 'Tarragona', editClassModal.sala || 'Sala 1').centerId,
+        roomId: editClassModal.roomId || getLocationIdentity(editClassModal.sede || 'Tarragona', editClassModal.sala || 'Sala 1').roomId,
         teacher: officialTeacher,
         duration: Number(editClassModal.duration) || 60
       },
@@ -6790,6 +7285,8 @@ Coordinación Los Mitos.`
       time: payload.time,
       sede: payload.sede,
       sala: payload.sala,
+      centerId: payload.centerId,
+      roomId: payload.roomId,
       teacher: cleanTeacher,
       duration: payload.duration,
       notes: payload.notes || '',
@@ -6811,8 +7308,8 @@ Coordinación Los Mitos.`
   const handleSaveEditedClass = async () => {
     if (!editClassModal || !editClassData) return;
     if (editClassMode === 'temporary') return handleSaveTemporaryClassChange();
-    if (!editClassData.teacher || !editClassData.subject || !editClassData.capacity) {
-      return alert("El profesor, el instrumento y el aforo son obligatorios.");
+    if (!editClassData.teacher || !editClassData.subject || !editClassData.capacity || !editClassData.sede || !editClassData.sala) {
+      return alert("El profesor, el instrumento, la sede, la sala y el aforo son obligatorios.");
     }
     if (!editClassData.isRecurring && !editClassData.specificDate) {
       return alert("Para una clase puntual, debes elegir una fecha.");
@@ -6835,8 +7332,8 @@ Coordinación Los Mitos.`
 
     const collidingClasses = operationalClasses.filter(c => {
       if (c.id === editClassModal.id) return false;
-      if (c.sede !== editClassData.sede) return false;
-      if (c.sala !== editClassData.sala) return false;
+      if (!isSameCenter(c.centerId || c.sede, editClassData.centerId || editClassData.sede)) return false;
+      if (!isSameRoom(editClassData.centerId || editClassData.sede, c.roomId || c.sala, editClassData.roomId || editClassData.sala)) return false;
       if (!doClassTimeRangesOverlap(c, editClassData)) return false;
 
       if (editClassData.isRecurring) {
@@ -6861,6 +7358,7 @@ Coordinación Los Mitos.`
     const targetRef = doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', editClassModal.id);
 
     const { refPath, ...currentClassData } = editClassModal;
+    const editedLocation = getLocationIdentity(editClassData.centerId || editClassData.sede, editClassData.roomId || editClassData.sala);
     const updatedClassData = {
       ...currentClassData,
       isRecurring: Boolean(editClassData.isRecurring),
@@ -6869,6 +7367,8 @@ Coordinación Los Mitos.`
       time: editClassData.time,
       sede: editClassData.sede,
       sala: editClassData.sala,
+      centerId: editedLocation.centerId,
+      roomId: editedLocation.roomId,
       teacher: cleanTeacher,
       subject: editClassData.subject,
       capacity: editClassData.capacity,
@@ -6905,8 +7405,8 @@ Coordinación Los Mitos.`
   };
 
   const handleCreateGlobalClass = async () => {
-    if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity) {
-      return alert("El profesor, el instrumento y el aforo son obligatorios.");
+    if (!newClassData.teacher || !newClassData.subject || !newClassData.capacity || !newClassData.sede || !newClassData.sala) {
+      return alert("El profesor, el instrumento, la sede, la sala y el aforo son obligatorios.");
     }
     if (!newClassData.isRecurring && !newClassData.specificDate) {
       return alert("Para una clase puntual, debes elegir una fecha.");
@@ -6927,8 +7427,8 @@ Coordinación Los Mitos.`
 
     // --- 2. Aviso de Solapamiento Físico de Sala ---
     const collidingClasses = operationalClasses.filter(c => {
-      if (c.sede !== newClassData.sede) return false;
-      if (c.sala !== newClassData.sala) return false;
+      if (!isSameCenter(c.centerId || c.sede, newClassData.centerId || newClassData.sede)) return false;
+      if (!isSameRoom(newClassData.centerId || newClassData.sede, c.roomId || c.sala, newClassData.roomId || newClassData.sala)) return false;
       if (!doClassTimeRangesOverlap(c, newClassData)) return false;
 
       if (newClassData.isRecurring) {
@@ -6967,9 +7467,11 @@ Coordinación Los Mitos.`
 
     try {
       const classId = Date.now().toString();
+      const newLocation = getLocationIdentity(newClassData.centerId || newClassData.sede, newClassData.roomId || newClassData.sala);
 
       await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'recurringClasses', classId), {
         ...newClassData,
+        ...newLocation,
         teacher: officialTeacherName,
         ...baseWebConfig,
         cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
@@ -6983,7 +7485,9 @@ Coordinación Los Mitos.`
       alert(`✅ Clase ${newClassData.isRecurring ? 'RECURRENTE' : 'PUNTUAL'} de ${newClassData.subject} asignada a ${officialTeacherName} correctamente.`);
 
       setCreateClassModal(false);
-      setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: 'Tarragona', sala: 'Sala 1', teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: '' });
+      const defaultCenter = activeCenters[0];
+      const defaultRoom = (defaultCenter?.rooms || []).find(room => room.active !== false);
+      setNewClassData({ isRecurring: true, specificDate: new Date().toISOString().split('T')[0], dayOfWeek: '1', time: '17:00', sede: defaultCenter?.name || 'Tarragona', sala: defaultRoom?.name || 'Sala 1', centerId: defaultCenter?.id || 'tarragona', roomId: defaultRoom?.id || 'sala-1', teacher: '', subject: '', capacity: '', duration: 60, cuotaBase: 60, notes: '' });
     } catch (e) {
       alert("Error al crear la clase.");
     }
@@ -7686,7 +8190,7 @@ Coordinación Los Mitos.`
         const isClassForSelectedDate = isPunctualClass(classData)
           ? classData.date === selectedDate
           : Number(classData.dayOfWeek) === Number(architectSelectedDay);
-        return (classData.sede || 'Tarragona') === archSede && isClassForSelectedDate;
+        return isSameCenter(classData.centerId || classData.sede || 'Tarragona', archSede) && isClassForSelectedDate;
       })
       .map(classData => classData.time)
       .filter(Boolean);
@@ -7694,6 +8198,8 @@ Coordinación Los Mitos.`
     return [...new Set([...SCHEDULE_HOURS, ...classTimesForSelectedDate])]
       .sort((a, b) => (parseTimeToMinutes(a) ?? Number.MAX_SAFE_INTEGER) - (parseTimeToMinutes(b) ?? Number.MAX_SAFE_INTEGER));
   }, [architectClasses, architectSelectedDay, archDate, archSede, todayStr]);
+
+  const architectRooms = useMemo(() => getRoomNamesForCenter(archSede), [centers, archSede]);
 
   const isArchitectProjection = archProjectionMode === 'proyeccion';
 
@@ -8347,7 +8853,7 @@ ${valueOrDash(comments.privateNote)}`,
       const allScheduledClasses = allClasses.filter(c => {
          if (c.date && c.date !== mboxAdminDate) return false;
          if (!c.date && c.dayOfWeek !== targetDay) return false;
-         return (c.sede || 'Tarragona') === mboxAdminSede;
+         return isSameCenter(c.centerId || c.sede || 'Tarragona', mboxAdminSede);
       });
       const aliveClasses = allScheduledClasses.filter(c => {
         if (c.cancelledDates?.includes(mboxAdminDate)) return false; 
@@ -8362,14 +8868,15 @@ ${valueOrDash(comments.privateNote)}`,
       });
       const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
       activeTimes.forEach(t => {
-        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala || 'Sala 1');
-        const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
+        const center = getCenterForValue(mboxAdminSede);
+        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => findRoomByValue(center, c.roomId || c.sala || 'Sala 1')?.name || c.sala || 'Sala 1');
+        const allSalas = (center?.rooms || []).filter(room => room.active !== false && room.mitoboxEnabled !== false).map(room => room.name);
         const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
         freeSalas.forEach(fs => { slots.push({ time: t, sala: fs }); });
       });
     }
     return slots;
-  }, [allClasses, maintenancePeriods, mboxAdminDate, mboxAdminSede]);
+  }, [allClasses, maintenancePeriods, mboxAdminDate, mboxAdminSede, centers]);
 
 
   // ==========================================
@@ -8843,8 +9350,8 @@ ${valueOrDash(comments.privateNote)}`,
               </div>
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede</label>
-                <select value={editClassData.sede} onChange={e => setEditClassData({...editClassData, sede: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
-                  {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+                <select value={editClassData.sede} onChange={e => { const center = getCenterForValue(e.target.value); const room = (center?.rooms || []).find(item => item.active !== false); setEditClassData({...editClassData, sede: center?.name || e.target.value, centerId: center?.id || '', sala: room?.name || '', roomId: room?.id || ''}); }} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                  {getSelectableCenters(editClassData.sede).map(center => <option key={center.id} value={center.name}>{center.name}{center.status !== 'active' ? ' (inactiva)' : ''}</option>)}
                 </select>
               </div>
             </div>
@@ -8853,8 +9360,8 @@ ${valueOrDash(comments.privateNote)}`,
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sala</label>
-              <select value={editClassData.sala} onChange={e => setEditClassData({...editClassData, sala: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
-                {SALAS.map(s => <option key={s} value={s}>{s}</option>)}
+              <select value={editClassData.sala} onChange={e => { const room = findRoomByValue(getCenterForValue(editClassData.centerId || editClassData.sede), e.target.value); setEditClassData({...editClassData, sala: room?.name || e.target.value, roomId: room?.id || ''}); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                {getRoomOptionsForCenter(editClassData.centerId || editClassData.sede, editClassData.sala).map(roomName => <option key={roomName} value={roomName}>{roomName}</option>)}
               </select>
             </div>
             <div>
@@ -8944,11 +9451,11 @@ ${valueOrDash(comments.privateNote)}`,
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede *</label>
-                <select value={temporaryClassData.sede} onChange={e => setTemporaryClassData({...temporaryClassData, sede: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">{SEDES.map(sede => <option key={sede} value={sede}>{sede}</option>)}</select>
+                <select value={temporaryClassData.sede} onChange={e => { const center = getCenterForValue(e.target.value); const room = (center?.rooms || []).find(item => item.active !== false); setTemporaryClassData({...temporaryClassData, sede: center?.name || e.target.value, centerId: center?.id || '', sala: room?.name || '', roomId: room?.id || ''}); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">{getSelectableCenters(temporaryClassData.sede).map(center => <option key={center.id} value={center.name}>{center.name}{center.status !== 'active' ? ' (inactiva)' : ''}</option>)}</select>
               </div>
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sala *</label>
-                <select value={temporaryClassData.sala} onChange={e => setTemporaryClassData({...temporaryClassData, sala: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">{SALAS.map(sala => <option key={sala} value={sala}>{sala}</option>)}</select>
+                <select value={temporaryClassData.sala} onChange={e => { const room = findRoomByValue(getCenterForValue(temporaryClassData.centerId || temporaryClassData.sede), e.target.value); setTemporaryClassData({...temporaryClassData, sala: room?.name || e.target.value, roomId: room?.id || ''}); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">{getRoomOptionsForCenter(temporaryClassData.centerId || temporaryClassData.sede, temporaryClassData.sala).map(roomName => <option key={roomName} value={roomName}>{roomName}</option>)}</select>
               </div>
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Profesor durante el cambio *</label>
@@ -9032,8 +9539,8 @@ ${valueOrDash(comments.privateNote)}`,
               </div>
               <div>
                 <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sede</label>
-                <select value={newClassData.sede} onChange={e => setNewClassData({...newClassData, sede: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
-                  {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+                <select value={newClassData.sede} onChange={e => { const center = getCenterForValue(e.target.value); const room = (center?.rooms || []).find(item => item.active !== false); setNewClassData({...newClassData, sede: center?.name || e.target.value, centerId: center?.id || '', sala: room?.name || '', roomId: room?.id || ''}); }} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                  {activeCenters.map(center => <option key={center.id} value={center.name}>{center.name}</option>)}
                 </select>
               </div>
             </div>
@@ -9041,8 +9548,8 @@ ${valueOrDash(comments.privateNote)}`,
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div>
               <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Sala</label>
-              <select value={newClassData.sala} onChange={e => setNewClassData({...newClassData, sala: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
-                {SALAS.map(s => <option key={s} value={s}>{s}</option>)}
+              <select value={newClassData.sala} onChange={e => { const room = findRoomByValue(getCenterForValue(newClassData.centerId || newClassData.sede), e.target.value); setNewClassData({...newClassData, sala: room?.name || e.target.value, roomId: room?.id || ''}); }} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none">
+                {getRoomOptionsForCenter(newClassData.centerId || newClassData.sede, newClassData.sala).map(roomName => <option key={roomName} value={roomName}>{roomName}</option>)}
               </select>
             </div>
             <div>
@@ -9838,9 +10345,9 @@ ${startDateWarning}
             {/* SUBVISTA 2: RENTABILIDAD POR SEDE */}
             {informeSubTab === 'sedes' && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
-                 {SEDES.map(sede => {
-                    const dataSede = businessIntelligence.porSede[sede];
-                    const gastoFijoSede = Number(settings.gastosFijos?.[sede.toLowerCase()]) || 0;
+                 {centerNamesForReporting.map(sede => {
+                    const dataSede = businessIntelligence.porSede[sede] || { ingresos: 0, ingresosClases: 0, mantenimiento: 0, costesProf: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosUnicos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, clasesOperativas: 0, clasesHibernadas: 0, horasSemanalesOperativas: 0 };
+                    const gastoFijoSede = getCenterFixedCost(sede);
                     const beneficioSede = dataSede.ingresos - dataSede.costesProf - gastoFijoSede;
                     return (
                        <div key={sede} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col">
@@ -10434,7 +10941,7 @@ ${startDateWarning}
                                 {visibleClasses.map(c => (
                                   <div key={c.id} className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-snug flex items-start gap-1">
                                     <BookOpen className="w-3 h-3 mt-0.5 shrink-0 text-zinc-400"/>
-                                    <span>{c.subject} · {getDayName(c.dayOfWeek)} · {c.time}h · {c.sede || 'Tarragona'}{c.sala ? ` · ${c.sala}` : ''}</span>
+                                    <span>{c.subject} · {getDayName(c.dayOfWeek)} · {c.time}h · {getClassCenterName(c)}{c.sala || c.roomId ? ` · ${getClassRoomName(c)}` : ''}</span>
                                   </div>
                                 ))}
                                 {hiddenClassCount > 0 && (
@@ -10879,8 +11386,7 @@ ${startDateWarning}
                 <div className="flex-1">
                   <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Centro</label>
                   <select value={mboxAdminSede} onChange={e => setMboxAdminSede(e.target.value)} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
-                    <option value="Tarragona">Tarragona</option>
-                    <option value="Reus">Reus</option>
+                    {activeCenters.filter(center => (center.rooms || []).some(room => room.active !== false && room.mitoboxEnabled !== false)).map(center => <option key={center.id} value={center.name}>{center.name}</option>)}
                   </select>
                 </div>
               </div>
@@ -10962,7 +11468,7 @@ ${startDateWarning}
                   <div className="bg-white p-4 rounded-2xl flex flex-col lg:flex-row gap-4 shadow-sm border border-zinc-200 items-stretch lg:items-center justify-between">
                      <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto">
                        <select value={archSede} onChange={e=>setArchSede(e.target.value)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest rounded-xl">
-                         {SEDES.map(s => <option key={s} value={s}>{s}</option>)}
+                         {activeCenters.map(center => <option key={center.id} value={center.name}>{center.name}</option>)}
                        </select>
                        <input type="date" value={archDate} onChange={e=>setArchDate(e.target.value || todayStr)} className="w-full sm:w-auto p-3 bg-zinc-50 border-2 border-zinc-200 outline-none font-black text-sm uppercase tracking-widest rounded-xl"/>
                        <div className="w-full sm:w-auto px-4 py-3 bg-zinc-50 border-2 border-zinc-100 rounded-xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">
@@ -11011,25 +11517,25 @@ ${startDateWarning}
                            <thead>
                               <tr>
                                  <th className="p-4 bg-zinc-100 border-b border-r border-zinc-200 w-24 text-center text-xs font-black text-zinc-500 uppercase tracking-widest">Hora</th>
-                                 {SALAS.map(sala => ( <th key={sala} className="p-4 bg-zinc-100 border-b border-r border-zinc-200 text-center text-sm font-black text-slate-800 uppercase tracking-widest">{sala}</th> ))}
+                                 {architectRooms.map(sala => ( <th key={sala} className="p-4 bg-zinc-100 border-b border-r border-zinc-200 text-center text-sm font-black text-slate-800 uppercase tracking-widest">{sala}</th> ))}
                               </tr>
                            </thead>
                            <tbody>
                               {architectScheduleHours.map(time => (
                                  <tr key={time} className="border-b border-zinc-100">
                                     <td className="p-4 border-r border-zinc-100 text-center font-black text-sm text-zinc-400 bg-zinc-50/50">{time}</td>
-                                    {SALAS.map(sala => {
+                                    {architectRooms.map(sala => {
                                        const classesInSlot = architectClasses.filter(c => {
-                                         const classSede = c.sede || 'Tarragona';
                                          const isClassForSelectedDate = isPunctualClass(c)
                                            ? c.date === (archDate || todayStr)
                                            : Number(c.dayOfWeek) === Number(architectSelectedDay);
 
-                                         return classSede === archSede && isClassForSelectedDate && c.sala === sala && c.time === time;
+                                         return isSameCenter(c.centerId || c.sede || 'Tarragona', archSede) && isClassForSelectedDate && isSameRoom(archSede, c.roomId || c.sala, sala) && c.time === time;
                                        });
                                        const openCreateFromSlot = () => {
                                          if (isArchitectProjection) return;
-                                         setNewClassData({...newClassData, isRecurring: true, dayOfWeek: architectSelectedDay, time: time, sede: archSede, sala: sala});
+                                         const location = getLocationIdentity(archSede, sala);
+                                         setNewClassData({...newClassData, isRecurring: true, dayOfWeek: architectSelectedDay, time: time, sede: getCenterName(archSede), sala: sala, ...location});
                                          setCreateClassModal(true);
                                        };
                                        return (
@@ -11297,7 +11803,7 @@ ${startDateWarning}
                             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{totalEnLista} en lista</span>
                           </div>
                           <h4 className="font-black uppercase tracking-tight text-slate-900 text-lg">{c.subject}</h4>
-                          <p className="text-xs font-bold text-slate-600 mt-1">{getDayName(c.dayOfWeek)} · {c.time}h · {c.sede || 'Tarragona'} · {c.sala || 'Sala no indicada'}</p>
+                          <p className="text-xs font-bold text-slate-600 mt-1">{getDayName(c.dayOfWeek)} · {c.time}h · {getClassCenterName(c)} · {getClassRoomName(c)}</p>
                           <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-2">Prof: {c.teacher || 'Sin asignar'} · Aforo: {c.capacity || '-'}</p>
                           {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
                             <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-600 bg-zinc-100 border border-zinc-200 px-2 py-1 rounded w-max">
@@ -11842,7 +12348,7 @@ ${startDateWarning}
                                 <div><span className={`inline-flex px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${statusConfig.style}`}>{statusConfig.label}</span></div>
                                 <div className="min-w-0">
                                   {classData ? (
-                                    <><p className="text-sm font-black text-slate-900 truncate">{classData.subject || 'Clase'} · {classData.sede || 'Tarragona'} · {classData.sala || 'Sala 1'}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">{row.activeCount}/{classData.capacity || '—'} activos{row.detail ? ` · ${row.detail}` : ''}</p></>
+                                    <><p className="text-sm font-black text-slate-900 truncate">{classData.subject || 'Clase'} · {getClassCenterName(classData)} · {getClassRoomName(classData)}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">{row.activeCount}/{classData.capacity || '—'} activos{row.detail ? ` · ${row.detail}` : ''}</p></>
                                   ) : <p className="text-xs font-bold text-zinc-400">Disponible para abrir una clase.</p>}
                                 </div>
                                 <div>
@@ -12139,6 +12645,7 @@ ${startDateWarning}
             appId={appId}
             user={user}
             settings={settings}
+            centers={centers}
             students={students}
             allClasses={allClasses}
             registrations={workshopRegistrations}
@@ -12283,20 +12790,18 @@ ${startDateWarning}
                       <span className="text-xs font-bold text-zinc-500">€</span>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between bg-blue-50 p-3 rounded-xl border border-blue-100">
-                    <p className="text-xs font-black uppercase tracking-widest text-blue-900">Sede Tarragona</p>
-                    <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.tarragona || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, tarragona: e.target.value}})} className="text-sm font-black w-20 p-2 border border-blue-200 rounded-lg outline-none focus:border-blue-500 text-right text-blue-900" />
-                      <span className="text-xs font-bold text-blue-600">€</span>
+                  {centers.map(center => (
+                    <div key={center.id} className="flex items-center justify-between bg-blue-50/60 p-3 rounded-xl border border-blue-100">
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-widest text-blue-900">Sede {center.name}</p>
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-blue-500">{center.status === 'active' ? 'Activa' : center.status === 'draft' ? 'Borrador' : 'Inactiva'}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input type="number" min="0" value={center.fixedMonthlyCost || 0} onChange={e => updateCenterQuickField(center.id, 'fixedMonthlyCost', e.target.value)} className="text-sm font-black w-24 p-2 border border-blue-200 rounded-lg outline-none focus:border-blue-500 text-right text-blue-900" />
+                        <span className="text-xs font-bold text-blue-600">€</span>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center justify-between bg-rose-50 p-3 rounded-xl border border-rose-100">
-                    <p className="text-xs font-black uppercase tracking-widest text-rose-900">Sede Reus</p>
-                    <div className="flex items-center gap-2">
-                      <input type="number" value={settings.gastosFijos?.reus || 0} onChange={e => setSettings({...settings, gastosFijos: {...settings.gastosFijos, reus: e.target.value}})} className="text-sm font-black w-20 p-2 border border-rose-200 rounded-lg outline-none focus:border-rose-500 text-right text-rose-900" />
-                      <span className="text-xs font-bold text-rose-600">€</span>
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -12329,30 +12834,95 @@ ${startDateWarning}
               </div>
             </div>
 
-            {/* AFOROS FÍSICOS DE LAS SALAS */}
+            {/* SEDES Y ESPACIOS DINÁMICOS */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Aforos Físicos de las Salas</h3>
-              <p className="text-xs text-zinc-500 font-medium mb-6">Define la capacidad real en personas de cada aula. Esto sirve para el Radar de Mitobox y la Vista de Arquitecto.</p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                 {SEDES.map(sede => (
-                    <div key={sede} className="bg-zinc-50 p-5 rounded-2xl border border-zinc-100">
-                       <h4 className="font-black uppercase tracking-widest text-slate-800 mb-4">{sede}</h4>
-                       <div className="space-y-4">
-                         {SALAS.map(sala => (
-                            <div key={sala} className="flex items-center justify-between bg-white p-3 rounded-xl border border-zinc-200 shadow-sm">
-                               <label className="text-xs font-black uppercase tracking-widest text-zinc-500">{sala}</label>
-                               <div className="flex items-center gap-2">
-                                 <input type="number" min="1" value={settings.roomCapacities?.[sede]?.[sala] || ''} onChange={e => { const val = parseInt(e.target.value) || 0; const newCaps = JSON.parse(JSON.stringify(settings.roomCapacities || defaultRoomCapacities)); if (!newCaps[sede]) newCaps[sede] = {}; newCaps[sede][sala] = val; setSettings({...settings, roomCapacities: newCaps}); }} className="w-16 p-2 text-center font-black text-sm bg-zinc-100 border border-zinc-200 rounded-lg outline-none" />
-                                 <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">pax</span>
-                               </div>
-                            </div>
-                         ))}
-                       </div>
-                    </div>
-                 ))}
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Sedes y espacios</h3>
+                  <p className="text-xs text-zinc-500 font-medium mt-2">Cada sede alimenta automáticamente clases, Arquitecto, BI, Talleres, Mitobox, avisos y calendario. Las sedes históricas se inactivan; no se eliminan.</p>
+                </div>
+                <button type="button" onClick={openNewCenterEditor} className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shrink-0"><PlusCircle className="w-4 h-4"/> Añadir sede</button>
               </div>
-              <button onClick={() => saveGlobalSettings(settings)} className="mt-6 bg-emerald-600 text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 hover:bg-emerald-700"><Save className="w-4 h-4"/> Guardar Aforos Físicos</button>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {centers.map(center => {
+                  const activeRoomsCount = (center.rooms || []).filter(room => room.active !== false).length;
+                  return (
+                    <article key={center.id} className={`rounded-2xl border p-5 ${center.status === 'active' ? 'bg-emerald-50/30 border-emerald-200' : center.status === 'draft' ? 'bg-amber-50/30 border-amber-200' : 'bg-zinc-50 border-zinc-200'}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-2">
+                            <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${center.status === 'active' ? 'bg-emerald-100 text-emerald-700' : center.status === 'draft' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-200 text-zinc-600'}`}>{center.status === 'active' ? 'Activa' : center.status === 'draft' ? 'Borrador' : 'Inactiva'}</span>
+                            <span className="px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-white border border-zinc-200 text-zinc-500">{center.type === 'franchise' ? 'Franquiciada' : 'Propia'}</span>
+                          </div>
+                          <h4 className="text-xl font-black uppercase tracking-tight text-slate-900">{center.name}</h4>
+                          <p className="text-[10px] font-bold text-zinc-400 mt-1">ID estable: {center.id}</p>
+                        </div>
+                        <button type="button" onClick={() => openCenterEditor(center)} className="p-2.5 bg-white border border-zinc-200 text-zinc-600 hover:bg-black hover:text-white rounded-xl transition-colors" title="Editar sede"><Pencil className="w-4 h-4"/></button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 mt-5">
+                        <div className="bg-white border border-zinc-100 rounded-xl p-3"><span className="block text-xl font-black text-slate-900">{activeRoomsCount}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Salas activas</span></div>
+                        <div className="bg-white border border-zinc-100 rounded-xl p-3"><span className="block text-xl font-black text-slate-900">{(center.holidays || []).length}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Festivos locales</span></div>
+                        <div className="bg-white border border-zinc-100 rounded-xl p-3"><span className="block text-xl font-black text-slate-900">{Number(center.fixedMonthlyCost || 0).toLocaleString('es-ES')}€</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Gasto fijo</span></div>
+                      </div>
+                      {(center.address || center.phone || center.email) && <p className="text-xs font-semibold text-zinc-500 mt-4 leading-relaxed">{[center.address, center.phone, center.email].filter(Boolean).join(' · ')}</p>}
+                    </article>
+                  );
+                })}
+              </div>
+
+              {centerEditor && (
+                <div className="mt-6 rounded-3xl border-2 border-emerald-200 bg-emerald-50/30 overflow-hidden">
+                  <div className="p-5 bg-white border-b border-emerald-100 flex items-start justify-between gap-4">
+                    <div><h4 className="font-black uppercase tracking-tight text-slate-900">{centerEditor.id ? `Editar ${centerEditor.name}` : 'Nueva sede'}</h4><p className="text-xs font-semibold text-zinc-500 mt-1">El identificador se crea al guardar y no cambia aunque renombres la sede.</p></div>
+                    <button type="button" onClick={() => setCenterEditor(null)} className="p-2 bg-zinc-100 text-zinc-500 hover:text-red-600 rounded-lg"><X className="w-4 h-4"/></button>
+                  </div>
+
+                  <div className="p-5 md:p-7 space-y-7">
+                    <section>
+                      <h5 className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-3">Identidad y estado</h5>
+                      <div className="grid md:grid-cols-3 gap-3">
+                        <div className="md:col-span-2"><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Nombre de la sede *</label><input value={centerEditor.name || ''} onChange={e => setCenterEditor({...centerEditor, name: e.target.value})} placeholder="Ej. Vila-seca" className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-emerald-500"/></div>
+                        <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Estado</label><select value={centerEditor.status || 'draft'} onChange={e => setCenterEditor({...centerEditor, status: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"><option value="draft">Borrador</option><option value="active">Activa</option><option value="inactive">Inactiva</option></select></div>
+                        <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Tipo</label><select value={centerEditor.type || 'owned'} onChange={e => setCenterEditor({...centerEditor, type: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"><option value="owned">Propia</option><option value="franchise">Franquiciada</option></select></div>
+                        <div className="md:col-span-2"><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Operador interno</label><input value={centerEditor.operatorId || ''} onChange={e => setCenterEditor({...centerEditor, operatorId: e.target.value})} placeholder="los-mitos o identificador del franquiciado" className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div>
+                      </div>
+                    </section>
+
+                    <section className="border-t border-emerald-100 pt-6">
+                      <h5 className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-3">Contacto y local</h5>
+                      <div className="grid md:grid-cols-2 gap-3">
+                        <div className="md:col-span-2"><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Dirección</label><input value={centerEditor.address || ''} onChange={e => setCenterEditor({...centerEditor, address: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div>
+                        <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Teléfono</label><input value={centerEditor.phone || ''} onChange={e => setCenterEditor({...centerEditor, phone: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div>
+                        <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Correo</label><input type="email" value={centerEditor.email || ''} onChange={e => setCenterEditor({...centerEditor, email: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div>
+                        <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Gasto fijo mensual</label><div className="relative"><input type="number" min="0" value={centerEditor.fixedMonthlyCost || 0} onChange={e => setCenterEditor({...centerEditor, fixedMonthlyCost: e.target.value})} className="w-full p-3 pr-10 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/><span className="absolute right-4 top-3 font-black text-zinc-400">€</span></div></div>
+                        <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Enlace de reseñas</label><input type="url" value={centerEditor.reviewUrl || ''} onChange={e => setCenterEditor({...centerEditor, reviewUrl: e.target.value})} placeholder="https://..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div>
+                      </div>
+                    </section>
+
+                    <section className="border-t border-emerald-100 pt-6">
+                      <div className="flex items-center justify-between gap-3 mb-3"><div><h5 className="text-[10px] font-black uppercase tracking-widest text-emerald-800">Salas y aforos</h5><p className="text-[10px] font-semibold text-zinc-500 mt-1">Mitobox solo usará las salas marcadas para reserva.</p></div><button type="button" onClick={addCenterEditorRoom} className="px-3 py-2 bg-emerald-100 text-emerald-800 rounded-lg text-[9px] font-black uppercase tracking-widest"><Plus className="w-3 h-3 inline"/> Añadir sala</button></div>
+                      <div className="space-y-3">
+                        {(centerEditor.rooms || []).map((room, roomIndex) => {
+                          const roomKey = room.id || room.localId;
+                          return <div key={roomKey} className="grid grid-cols-1 md:grid-cols-[1fr_120px_auto_auto_auto] gap-3 items-end bg-white border border-emerald-100 p-4 rounded-2xl"><div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Nombre</label><input value={room.name || ''} onChange={e => updateCenterEditorRoom(roomKey, { name: e.target.value })} className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div><div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Aforo</label><input type="number" min="1" value={room.capacity || ''} onChange={e => updateCenterEditorRoom(roomKey, { capacity: e.target.value })} className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl font-bold text-sm outline-none"/></div><label className="flex items-center gap-2 h-[46px] text-[10px] font-black uppercase tracking-widest text-zinc-600"><input type="checkbox" checked={room.mitoboxEnabled !== false} onChange={e => updateCenterEditorRoom(roomKey, { mitoboxEnabled: e.target.checked })} className="accent-blue-600"/> Mitobox</label><label className="flex items-center gap-2 h-[46px] text-[10px] font-black uppercase tracking-widest text-zinc-600"><input type="checkbox" checked={room.active !== false} onChange={e => updateCenterEditorRoom(roomKey, { active: e.target.checked })} className="accent-emerald-600"/> Activa</label>{!room.id ? <button type="button" onClick={() => removeUnsavedCenterRoom(roomKey)} disabled={(centerEditor.rooms || []).length === 1} className="h-[46px] p-3 bg-red-50 text-red-600 rounded-xl disabled:opacity-30" title="Quitar sala nueva"><Trash2 className="w-4 h-4"/></button> : <span className="h-[46px] flex items-center text-[9px] font-bold uppercase tracking-widest text-zinc-400">ID {room.id}</span>}</div>;
+                        })}
+                      </div>
+                    </section>
+
+                    <section className="border-t border-emerald-100 pt-6">
+                      <h5 className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-3">Festivos locales</h5>
+                      <div className="flex gap-2"><input id="centerEditorHolidayInput" type="date" className="flex-1 p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/><button type="button" onClick={() => { const input = document.getElementById('centerEditorHolidayInput'); addHolidayToCenterEditor(input?.value); if (input) input.value = ''; }} className="px-5 py-3 bg-emerald-600 text-white rounded-xl"><Plus className="w-4 h-4"/></button></div>
+                      <div className="flex flex-wrap gap-2 mt-3">{(centerEditor.holidays || []).sort().map(date => <span key={date} className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-emerald-100 rounded-lg text-xs font-bold text-emerald-900">{formatDateSpanish(date)}<button type="button" onClick={() => setCenterEditor({...centerEditor, holidays: centerEditor.holidays.filter(item => item !== date)})} className="text-red-500"><X className="w-3 h-3"/></button></span>)}</div>
+                    </section>
+
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <button type="button" onClick={saveCenterEditor} disabled={savingCenter} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50 flex items-center justify-center gap-2"><Save className="w-4 h-4"/>{savingCenter ? 'Guardando...' : 'Guardar sede'}</button>
+                      <button type="button" onClick={() => setCenterEditor(null)} disabled={savingCenter} className="px-6 py-4 bg-white border border-zinc-200 text-zinc-600 rounded-xl font-black uppercase tracking-widest text-[10px]">Cancelar</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* CALENDARIO ESCOLAR */}
@@ -12361,12 +12931,11 @@ ${startDateWarning}
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminDateInput" type="date" className="flex-1 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
                 <select id="adminDateType" className="flex-[2] p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-black uppercase">
-                  <option value="vacaciones">Vacaciones (Ambas sedes)</option>
-                  <option value="festivos">Festivo (Ambas sedes)</option>
-                  <option value="festivosTarragona">Festivo Local (Solo Tarragona)</option>
-                  <option value="festivosReus">Festivo Local (Solo Reus)</option>
+                  <option value="vacaciones">Vacaciones (Todas las sedes)</option>
+                  <option value="festivos">Festivo (Todas las sedes)</option>
+                  {centers.map(center => <option key={center.id} value={`center:${center.id}`}>Festivo local · {center.name}</option>)}
                 </select>
-                <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if(d) { const arr = settings[t] || []; if(!arr.includes(d)) { const s = {...settings, [t]: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4 inline"/></button>
+                <button onClick={() => { const d = document.getElementById('adminDateInput').value; const t = document.getElementById('adminDateType').value; if (!d) return; if (t.startsWith('center:')) { const centerId = t.slice(7); const nextCenters = centers.map(center => center.id === centerId ? {...center, holidays: uniqueStrings([...(center.holidays || []), d]).sort()} : center); const s = {...settings, centers: nextCenters}; setSettings(s); saveGlobalSettings(s); } else { const arr = settings[t] || []; if (!arr.includes(d)) { const s = {...settings, [t]: [...arr, d]}; setSettings(s); saveGlobalSettings(s); } } }} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4 inline"/></button>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -12386,22 +12955,16 @@ ${startDateWarning}
                     ))}
                   </div>
                 </div>
-                <div>
-                  <h4 className="font-black text-blue-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Tarragona</h4>
-                  <div className="space-y-1">
-                    {(settings.festivosTarragona || []).sort().map(f => (
-                      <div key={f} className="flex justify-between items-center p-2 bg-blue-50 rounded-lg text-xs font-bold text-blue-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosTarragona: settings.festivosTarragona.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
-                    ))}
+                {centers.map(center => (
+                  <div key={center.id}>
+                    <h4 className="font-black text-blue-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> {center.name}</h4>
+                    <div className="space-y-1">
+                      {(center.holidays || []).sort().map(f => (
+                        <div key={f} className="flex justify-between items-center p-2 bg-blue-50 rounded-lg text-xs font-bold text-blue-900">{formatDateSpanish(f)} <button onClick={() => { const nextCenters = centers.map(item => item.id === center.id ? {...item, holidays: (item.holidays || []).filter(date => date !== f)} : item); const s = {...settings, centers: nextCenters}; setSettings(s); saveGlobalSettings(s); }} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <h4 className="font-black text-rose-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> Reus</h4>
-                  <div className="space-y-1">
-                    {(settings.festivosReus || []).sort().map(f => (
-                      <div key={f} className="flex justify-between items-center p-2 bg-rose-50 rounded-lg text-xs font-bold text-rose-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivosReus: settings.festivosReus.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-rose-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-rose-500 hover:text-red-500"/></button></div>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
 

@@ -149,7 +149,7 @@ const formatWorkshopDeadline = (dateTimeString = '') => {
 };
 
 const getWorkshopLocationLabel = (workshop = {}) => {
-  if (workshop.locationType === 'both') return 'Tarragona y Reus';
+  if (workshop.locationType === 'both') return 'Todas las sedes';
   if (workshop.locationType === 'online') return 'Online';
   if (workshop.locationType === 'other') return workshop.externalLocation || 'Lugar por determinar';
   return `${workshop.locationType || 'Sede por determinar'}${workshop.room ? ` · ${workshop.room}` : ''}`;
@@ -165,9 +165,108 @@ const getWorkshopLevelLabel = (workshop = {}) => ({
 
 const buildWorkshopRegistrationId = (workshopId = '', studentId = '') => `workshop_${String(workshopId).replace(/[^a-zA-Z0-9_-]/g, '_')}_${String(studentId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
 
-const REVIEW_URLS = {
+const LEGACY_REVIEW_URLS = {
   Tarragona: 'https://g.page/r/CbRESEBKdg37EBM/review',
   Reus: 'https://g.page/r/CaVY9dFy-cmjEBM/review'
+};
+
+const LEGACY_CENTER_NAMES = ['Tarragona', 'Reus'];
+const LEGACY_ROOM_NAMES = ['Sala 1', 'Sala 2', 'Sala 3'];
+
+const normalizeConfigId = (value = '', fallback = 'item') => {
+  const normalized = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+};
+
+const uniqueStrings = (values = []) => [...new Set((values || [])
+  .map(value => String(value || '').trim())
+  .filter(Boolean))];
+
+const DEFAULT_CENTERS = LEGACY_CENTER_NAMES.map(name => ({
+  id: normalizeConfigId(name, 'sede'),
+  name,
+  aliases: [],
+  status: 'active',
+  reviewUrl: LEGACY_REVIEW_URLS[name] || '',
+  holidays: [],
+  rooms: LEGACY_ROOM_NAMES.map(roomName => ({
+    id: normalizeConfigId(roomName, 'sala'),
+    name: roomName,
+    aliases: [],
+    mitoboxEnabled: true,
+    active: true
+  }))
+}));
+
+const getLegacyCenterHolidays = (center = {}, legacySettings = {}) => {
+  const centerId = normalizeConfigId(center.id || center.name, 'sede');
+  if (centerId === 'tarragona') return legacySettings.festivosTarragona || [];
+  if (centerId === 'reus') return legacySettings.festivosReus || [];
+  return legacySettings.centerHolidays?.[centerId] || [];
+};
+
+const normalizeCenters = (rawCenters = [], legacySettings = {}) => {
+  const hasConfiguredCenters = Array.isArray(rawCenters) && rawCenters.length > 0;
+  const source = hasConfiguredCenters ? rawCenters : DEFAULT_CENTERS;
+
+  return source.map((rawCenter, centerIndex) => {
+    const name = String(rawCenter?.name || LEGACY_CENTER_NAMES[centerIndex] || `Sede ${centerIndex + 1}`).trim();
+    const id = normalizeConfigId(rawCenter?.id || name, `sede-${centerIndex + 1}`);
+    const rawRooms = Array.isArray(rawCenter?.rooms) && rawCenter.rooms.length > 0
+      ? rawCenter.rooms
+      : LEGACY_ROOM_NAMES.map(roomName => ({ name: roomName }));
+
+    return {
+      ...rawCenter,
+      id,
+      name,
+      aliases: uniqueStrings(rawCenter?.aliases || []),
+      status: ['draft', 'active', 'inactive'].includes(rawCenter?.status) ? rawCenter.status : 'active',
+      reviewUrl: String(rawCenter?.reviewUrl || '').trim(),
+      holidays: uniqueStrings(
+        hasConfiguredCenters
+          ? (rawCenter?.holidays || legacySettings.centerHolidays?.[id] || [])
+          : getLegacyCenterHolidays({ id, name }, legacySettings)
+      ),
+      rooms: rawRooms.map((rawRoom, roomIndex) => ({
+        ...rawRoom,
+        id: normalizeConfigId(rawRoom?.id || rawRoom?.name, `sala-${roomIndex + 1}`),
+        name: String(rawRoom?.name || `Sala ${roomIndex + 1}`).trim(),
+        aliases: uniqueStrings(rawRoom?.aliases || []),
+        mitoboxEnabled: rawRoom?.mitoboxEnabled !== false,
+        active: rawRoom?.active !== false
+      }))
+    };
+  });
+};
+
+const findCenterByValue = (centers = [], value = '') => {
+  const normalizedValue = normalizeConfigId(value, '');
+  const plainValue = String(value || '').trim().toLocaleLowerCase('es');
+  return (centers || []).find(center => (
+    center.id === value
+    || normalizeConfigId(center.id, '') === normalizedValue
+    || String(center.name || '').trim().toLocaleLowerCase('es') === plainValue
+    || (center.aliases || []).some(alias => String(alias || '').trim().toLocaleLowerCase('es') === plainValue)
+  )) || null;
+};
+
+const findRoomByValue = (center, value = '') => {
+  if (!center) return null;
+  const normalizedValue = normalizeConfigId(value, '');
+  const plainValue = String(value || '').trim().toLocaleLowerCase('es');
+  return (center.rooms || []).find(room => (
+    room.id === value
+    || normalizeConfigId(room.id, '') === normalizedValue
+    || String(room.name || '').trim().toLocaleLowerCase('es') === plainValue
+    || (room.aliases || []).some(alias => String(alias || '').trim().toLocaleLowerCase('es') === plainValue)
+  )) || null;
 };
 
 const SOCIAL_LINKS = [
@@ -387,7 +486,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [classesLoaded, setClassesLoaded] = useState(false);
   const [allClasses, setAllClasses] = useState([]); 
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
-  const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [] });
+  const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [], centers: [] });
   const [announcements, setAnnouncements] = useState([]); 
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [myPollResponses, setMyPollResponses] = useState([]);
@@ -459,6 +558,40 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const timeRules = getMonthNames();
   const dToday = new Date();
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
+  const centers = useMemo(() => normalizeCenters(globalSettings.centers, globalSettings), [globalSettings]);
+  const activeCenters = useMemo(() => {
+    const active = centers.filter(center => center.status === 'active');
+    return active.length > 0 ? active : centers.slice(0, 1);
+  }, [centers]);
+  const mitoboxCenters = useMemo(() => activeCenters.filter(center => (
+    (center.rooms || []).some(room => room.active !== false && room.mitoboxEnabled !== false)
+  )), [activeCenters]);
+  const getCenterForValue = (value = '') => findCenterByValue(centers, value);
+  const getClassCenter = (clase = {}) => getCenterForValue(clase.centerId || clase.sede);
+  const getClassCenterName = (clase = {}) => getClassCenter(clase)?.name || clase.sede || 'Tarragona';
+  const getClassRoom = (clase = {}) => findRoomByValue(getClassCenter(clase), clase.roomId || clase.sala);
+  const getClassRoomName = (clase = {}) => getClassRoom(clase)?.name || clase.sala || '';
+  const isSameCenter = (left = '', right = '') => {
+    const leftCenter = getCenterForValue(left);
+    const rightCenter = getCenterForValue(right);
+    if (leftCenter && rightCenter) return leftCenter.id === rightCenter.id;
+    return normalizeConfigId(left, '') === normalizeConfigId(right, '');
+  };
+  const getCenterReviewUrl = (center = null) => {
+    if (!center) return '';
+    if (center.reviewUrl) return center.reviewUrl;
+    if (center.id === 'tarragona') return LEGACY_REVIEW_URLS.Tarragona;
+    if (center.id === 'reus') return LEGACY_REVIEW_URLS.Reus;
+    return LEGACY_REVIEW_URLS[center.name] || '';
+  };
+  const getWorkshopLocationLabelForStudent = (workshop = {}) => {
+    if (['both', 'online', 'other'].includes(workshop.locationType)) return getWorkshopLocationLabel(workshop);
+    const center = getCenterForValue(workshop.centerId || workshop.locationType);
+    const room = findRoomByValue(center, workshop.roomId || workshop.room);
+    const centerName = center?.name || workshop.locationType || 'Sede por determinar';
+    const roomName = room?.name || workshop.room || '';
+    return `${centerName}${roomName ? ` · ${roomName}` : ''}`;
+  };
   const portalStartDate = String(profile?.classStartDate || '').trim();
   const isPortalAccessScheduled = Boolean(portalStartDate && portalStartDate > todayStr);
   const maintenanceOptions = useMemo(() => [
@@ -468,6 +601,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const selectedMaintenanceOption = useMemo(() => (
     maintenanceOptions.find(option => option.months === Number(maintenanceMonths)) || maintenanceOptions[0]
   ), [maintenanceOptions, maintenanceMonths]);
+
+  useEffect(() => {
+    if (mitoboxCenters.length === 0) return;
+    if (mitoboxCenters.some(center => isSameCenter(center.id, mboxSede))) return;
+    setMboxSede(mitoboxCenters[0].name);
+    setMboxSelectedSlot(null);
+  }, [mitoboxCenters, mboxSede]);
 
   const activeMaintenancePeriod = useMemo(() => {
     if (!profile?.id) return null;
@@ -574,6 +714,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
       time: clase.time,
       sede: clase.sede,
       sala: clase.sala,
+      centerId: clase.centerId,
+      roomId: clase.roomId,
       teacher: clase.teacher,
       duration: clase.duration
     };
@@ -584,6 +726,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
       time: temporaryChange.time || clase.time,
       sede: temporaryChange.sede || clase.sede,
       sala: temporaryChange.sala || clase.sala,
+      centerId: temporaryChange.centerId || clase.centerId,
+      roomId: temporaryChange.roomId || clase.roomId,
       teacher: temporaryChange.teacher || clase.teacher,
       duration: Number(temporaryChange.duration) || Number(clase.duration) || 60,
       temporaryClassChange: temporaryChange,
@@ -721,11 +865,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
     (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
   );
 
-  const studentSedes = [...new Set(
+  const studentCenters = [...new Map(
     (fixedMyClasses.length > 0 ? fixedMyClasses : effectiveMyClasses)
-      .map(c => c.sede || 'Tarragona')
+      .map(clase => getClassCenter(clase))
       .filter(Boolean)
-  )];
+      .map(center => [center.id, center])
+  ).values()];
+  const studentReviewCenters = studentCenters.filter(center => Boolean(getCenterReviewUrl(center)));
+  const reviewCenters = studentCenters.length > 0
+    ? studentReviewCenters
+    : activeCenters.filter(center => Boolean(getCenterReviewUrl(center)));
 
   const workshopRegistrationsByWorkshop = useMemo(() => {
     const byWorkshop = new Map();
@@ -741,7 +890,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (audienceType === 'all') return true;
     if (audienceType === 'manual') return (workshop.manualStudentIds || []).includes(profile?.id);
     if (!audienceValue) return false;
-    if (audienceType === 'sede') return referenceClasses.some(clase => (clase.sede || 'Tarragona') === audienceValue);
+    if (audienceType === 'sede') return referenceClasses.some(clase => isSameCenter(clase.centerId || clase.sede || 'Tarragona', audienceValue));
     if (audienceType === 'instrument') return referenceClasses.some(clase => (clase.subject || '') === audienceValue);
     if (audienceType === 'teacher') return referenceClasses.some(clase => (clase.teacher || '') === audienceValue);
     if (audienceType === 'class') return referenceClasses.some(clase => String(clase.id) === audienceValue);
@@ -780,7 +929,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       if (!byUrl.has(url)) {
         byUrl.set(url, {
           url,
-          label: `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}h · ${clase.sede || 'Sede'}`,
+          label: `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} ${clase.time || ''}h · ${getClassCenterName(clase)}`,
           teacher: clase.teacher || '',
           classId: clase.id
         });
@@ -977,8 +1126,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
   };
 
   const openSchoolReviewFlow = () => {
-    if (studentSedes.length === 1 && REVIEW_URLS[studentSedes[0]]) {
-      window.open(REVIEW_URLS[studentSedes[0]], '_blank', 'noopener,noreferrer');
+    if (reviewCenters.length === 0) {
+      showToast('Esta sede todavía no tiene configurado un enlace público de reseñas.', 'error');
+      return;
+    }
+    if (reviewCenters.length === 1) {
+      window.open(getCenterReviewUrl(reviewCenters[0]), '_blank', 'noopener,noreferrer');
       closeReviewModal();
       return;
     }
@@ -1108,8 +1261,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
         classRefPath: teacherEvaluationClass.refPath || '',
         classLine: formatClassLineForAdminCopy(teacherEvaluationClass),
         subject: teacherEvaluationClass.subject || '',
-        sede: teacherEvaluationClass.sede || 'Tarragona',
-        sala: teacherEvaluationClass.sala || '',
+        sede: getClassCenterName(teacherEvaluationClass),
+        sala: getClassRoomName(teacherEvaluationClass),
+        centerId: getClassCenter(teacherEvaluationClass)?.id || teacherEvaluationClass.centerId || '',
+        roomId: getClassRoom(teacherEvaluationClass)?.id || teacherEvaluationClass.roomId || '',
         dayOfWeek: teacherEvaluationClass.dayOfWeek ?? null,
         time: teacherEvaluationClass.time || '',
         period,
@@ -1185,12 +1340,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
                 <p className="text-xs font-bold text-zinc-500 mt-2">Elige sede para dejar una reseña pública en Google Maps.</p>
               </div>
               <div className="space-y-3">
-                <a href={REVIEW_URLS.Tarragona} target="_blank" rel="noopener noreferrer" onClick={closeReviewModal} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
-                  <MapPin className="w-4 h-4"/> Sede Tarragona
-                </a>
-                <a href={REVIEW_URLS.Reus} target="_blank" rel="noopener noreferrer" onClick={closeReviewModal} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
-                  <MapPin className="w-4 h-4"/> Sede Reus
-                </a>
+                {reviewCenters.map(center => (
+                  <a key={center.id} href={getCenterReviewUrl(center)} target="_blank" rel="noopener noreferrer" onClick={closeReviewModal} className="w-full bg-zinc-100 hover:bg-black hover:text-white text-slate-800 font-black py-4 rounded-xl uppercase text-xs tracking-widest transition-colors flex items-center justify-center gap-2">
+                    <MapPin className="w-4 h-4"/> Sede {center.name}
+                  </a>
+                ))}
               </div>
             </>
           )}
@@ -1251,7 +1405,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
                     className="w-full p-4 rounded-2xl border-2 border-zinc-100 hover:border-black text-left transition-all bg-white"
                   >
                     <p className="text-sm font-black uppercase tracking-tight text-slate-800">{clase.subject || 'Clase'} · {clase.teacher || 'Profesor'}</p>
-                    <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{getDayName(clase.dayOfWeek)} {clase.time || ''}h · {clase.sede || 'Sede'}{clase.sala ? ` · ${clase.sala}` : ''}</p>
+                    <p className="text-[11px] font-bold text-zinc-500 mt-1 leading-tight">{getDayName(clase.dayOfWeek)} {clase.time || ''}h · {getClassCenterName(clase)}{getClassRoomName(clase) ? ` · ${getClassRoomName(clase)}` : ''}</p>
                   </button>
                 ))}
               </div>
@@ -1359,7 +1513,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (audienceType === 'all') return true;
     if (!audienceValue || fixedMyClasses.length === 0) return false;
 
-    if (audienceType === 'sede') return fixedMyClasses.some(c => (c.sede || 'Tarragona') === audienceValue);
+    if (audienceType === 'sede') return fixedMyClasses.some(c => isSameCenter(c.centerId || c.sede || 'Tarragona', audienceValue));
     if (audienceType === 'instrumento') return fixedMyClasses.some(c => (c.subject || '') === audienceValue);
     if (audienceType === 'profesor') return fixedMyClasses.some(c => (c.teacher || '') === audienceValue);
 
@@ -1395,10 +1549,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
         const data = docSnap.data();
         setContractText(data.contract || 'El contrato aún no está disponible.');
         setGlobalSettings({
+          ...data,
           festivos: data.festivos || [],
           vacaciones: data.vacaciones || [],
           festivosTarragona: data.festivosTarragona || [],
-          festivosReus: data.festivosReus || []
+          festivosReus: data.festivosReus || [],
+          centers: normalizeCenters(data.centers, data)
         });
       }
     });
@@ -1412,39 +1568,40 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     if (!profile || effectiveMyClasses.length === 0) return;
 
-    const misSedes = new Set();
-    effectiveMyClasses.forEach(c => misSedes.add(c.sede || 'Tarragona'));
+    const misSedes = new Map();
+    effectiveMyClasses.forEach(clase => {
+      const center = getClassCenter(clase);
+      if (center) misSedes.set(center.id, center);
+    });
     temporaryClassChanges.forEach(change => {
       if (
         effectiveMyClasses.some(classData => doesTemporaryChangeBelongToClass(change, classData)) &&
         !isTemporaryClassChangeClosed(change) &&
-        (!normalizeTemporaryClassChangeDate(change.until) || normalizeTemporaryClassChangeDate(change.until) >= todayStr) &&
-        change.sede
+        (!normalizeTemporaryClassChangeDate(change.until) || normalizeTemporaryClassChangeDate(change.until) >= todayStr)
       ) {
-        misSedes.add(change.sede);
+        const center = getCenterForValue(change.centerId || change.sede);
+        if (center) misSedes.set(center.id, center);
       }
     });
 
     const newCal = [];
     
-    globalSettings.vacaciones.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones' }));
-    globalSettings.festivos.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Festivo Global' }));
+    globalSettings.vacaciones.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones', centerId: '' }));
+    globalSettings.festivos.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Festivo Global', centerId: '' }));
 
-    if (misSedes.has('Tarragona')) {
-      globalSettings.festivosTarragona.forEach(d => {
-        if (!newCal.some(c => c.date === d)) newCal.push({ date: d, type: 'festivo', title: 'Festivo Local (Tarragona)' });
+    misSedes.forEach(center => {
+      (center.holidays || []).forEach(d => {
+        const isAlreadyGlobal = newCal.some(calendarItem => calendarItem.date === d && !calendarItem.centerId);
+        const isAlreadyForCenter = newCal.some(calendarItem => calendarItem.date === d && calendarItem.centerId === center.id);
+        if (!isAlreadyGlobal && !isAlreadyForCenter) {
+          newCal.push({ date: d, type: 'festivo', title: `Festivo Local (${center.name})`, centerId: center.id });
+        }
       });
-    }
-
-    if (misSedes.has('Reus')) {
-      globalSettings.festivosReus.forEach(d => {
-        if (!newCal.some(c => c.date === d)) newCal.push({ date: d, type: 'festivo', title: 'Festivo Local (Reus)' });
-      });
-    }
+    });
 
     setSchoolCalendar(newCal);
 
-  }, [globalSettings, effectiveMyClasses, temporaryClassChanges, profile, todayStr]);
+  }, [globalSettings, effectiveMyClasses, temporaryClassChanges, profile, todayStr, centers]);
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -1908,7 +2065,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const formatClassLineForAdminCopy = (clase) => {
     if (!clase) return '';
-    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''}${clase.teacher ? ` · Prof. ${clase.teacher}` : ''}`;
+    const roomName = getClassRoomName(clase);
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${getClassCenterName(clase)}${roomName ? ` · ${roomName}` : ''}${clase.teacher ? ` · Prof. ${clase.teacher}` : ''}`;
   };
 
   const sendAdminGestionCopy = async ({ gestionId, payload, selectedClass = null, phase = 'recibida', status = 'pendiente' }) => {
@@ -2093,8 +2251,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         sourceClassLine: resolvedSourceClass ? formatClassLineForAdminCopy(resolvedSourceClass) : '',
         sourceSubject: resolvedSourceClass?.subject || '',
         sourceTeacher: resolvedSourceClass?.teacher || '',
-        sourceSede: resolvedSourceClass?.sede || '',
-        sourceSala: resolvedSourceClass?.sala || '',
+        sourceSede: resolvedSourceClass ? getClassCenterName(resolvedSourceClass) : '',
+        sourceSala: resolvedSourceClass ? getClassRoomName(resolvedSourceClass) : '',
+        sourceCenterId: resolvedSourceClass ? (getClassCenter(resolvedSourceClass)?.id || resolvedSourceClass.centerId || '') : '',
+        sourceRoomId: resolvedSourceClass ? (getClassRoom(resolvedSourceClass)?.id || resolvedSourceClass.roomId || '') : '',
         sourceDayOfWeek: resolvedSourceClass?.dayOfWeek ?? null,
         sourceTime: resolvedSourceClass?.time || '',
         bajaScope: gestionModal.type === 'baja' ? (isBajaTotalRequest ? 'total' : 'plaza') : '',
@@ -2107,6 +2267,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
         requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
         requestedTeacher: selectedNewClass?.teacher || '',
+        requestedSede: selectedNewClass ? getClassCenterName(selectedNewClass) : '',
+        requestedSala: selectedNewClass ? getClassRoomName(selectedNewClass) : '',
+        requestedCenterId: selectedNewClass ? (getClassCenter(selectedNewClass)?.id || selectedNewClass.centerId || '') : '',
+        requestedRoomId: selectedNewClass ? (getClassRoom(selectedNewClass)?.id || selectedNewClass.roomId || '') : '',
         recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, 
         maintenanceMonths: isMaintenanceRequest ? selectedMaintenanceOption.months : null,
         maintenanceFee: isMaintenanceRequest ? selectedMaintenanceOption.fee : null,
@@ -2246,16 +2410,26 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     setIsSendingGestion(true);
     try {
       const gestionId = `mbox-res-${Date.now()}`;
+      const selectedCenter = getCenterForValue(mboxSede);
+      const selectedRoom = findRoomByValue(selectedCenter, mboxSelectedSlot.roomId || mboxSelectedSlot.sala);
+      const selectedCenterName = selectedCenter?.name || mboxSede;
+      const selectedRoomName = selectedRoom?.name || mboxSelectedSlot.sala;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
         studentName: profile.name,
         studentEmail: profile.email,
         type: 'reserva_mitobox',
         title: 'Reserva de Sala (Mitobox)',
-        details: `Reserva para ensayar: ${mboxInst}. Fecha: ${formatDateSpanish(mboxDate)}. Sede: ${mboxSede}. Hora: ${mboxSelectedSlot.time}h en ${mboxSelectedSlot.sala}`,
+        details: `Reserva para ensayar: ${mboxInst}. Fecha: ${formatDateSpanish(mboxDate)}. Sede: ${selectedCenterName}. Hora: ${mboxSelectedSlot.time}h en ${selectedRoomName}`,
         status: 'pendiente',
         date: new Date().toISOString(),
-        reservationDate: mboxDate
+        reservationDate: mboxDate,
+        reservationTime: mboxSelectedSlot.time,
+        instrument: mboxInst,
+        sede: selectedCenterName,
+        sala: selectedRoomName,
+        centerId: selectedCenter?.id || '',
+        roomId: selectedRoom?.id || mboxSelectedSlot.roomId || ''
       });
 
       const [y, m, d] = mboxDate.split('-');
@@ -2270,8 +2444,8 @@ BEGIN:VEVENT
 DTSTART:${formatDateICS(startDate)}
 DTEND:${formatDateICS(endDate)}
 SUMMARY:Ensayo Mitobox - Escuela Los Mitos
-DESCRIPTION:Reserva para ensayar ${mboxInst} en ${mboxSede} (${mboxSelectedSlot.sala})
-LOCATION:Escuela Los Mitos - ${mboxSede}
+DESCRIPTION:Reserva para ensayar ${mboxInst} en ${selectedCenterName} (${selectedRoomName})
+LOCATION:Escuela Los Mitos - ${selectedCenterName}${selectedCenter?.address ? ` - ${selectedCenter.address}` : ''}
 END:VEVENT
 END:VCALENDAR`;
 
@@ -2592,10 +2766,10 @@ END:VCALENDAR`;
       if (currentDate.getDay() === targetDay) {
         const dateStr = currentDate.toISOString().split('T')[0];
         const isGlobalBlocked = globalSettings.festivos.includes(dateStr) || globalSettings.vacaciones.includes(dateStr);
-        const isTarragonaBlocked = selectedNewClass?.sede === 'Tarragona' && globalSettings.festivosTarragona?.includes(dateStr);
-        const isReusBlocked = selectedNewClass?.sede === 'Reus' && globalSettings.festivosReus?.includes(dateStr);
+        const targetCenter = getClassCenter(selectedNewClass || {});
+        const isLocalBlocked = Boolean(targetCenter?.holidays?.includes(dateStr));
 
-        if (!isGlobalBlocked && !isTarragonaBlocked && !isReusBlocked) {
+        if (!isGlobalBlocked && !isLocalBlocked) {
           validDates.push(dateStr);
         }
       }
@@ -2825,7 +2999,7 @@ END:VCALENDAR`;
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="text-sm font-black uppercase tracking-tight">{c.subject || 'Clase'} · {getDayName(c.dayOfWeek)} {c.time || ''}h</p>
-                                <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{c.sede || 'Sede'}{c.sala ? ` · ${c.sala}` : ''}{c.teacher ? ` · Prof. ${c.teacher}` : ''}</p>
+                                <p className="text-[11px] font-bold text-zinc-500 mt-0.5 leading-tight">{getClassCenterName(c)}{getClassRoomName(c) ? ` · ${getClassRoomName(c)}` : ''}{c.teacher ? ` · Prof. ${c.teacher}` : ''}</p>
                                 {locked && <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest mt-1">Trámite pendiente sobre esta plaza</p>}
                               </div>
                               {selected && <CheckCircle className="w-5 h-5 text-black shrink-0" />}
@@ -2913,7 +3087,7 @@ END:VCALENDAR`;
                         </div>
                         <div className="text-xs text-zinc-500 font-medium flex flex-wrap items-center gap-x-2 gap-y-1">
                           <span className="inline-flex items-center gap-1 font-black text-slate-700 uppercase">
-                            <MapPin className="w-3 h-3" /> {c.sede || 'Tarragona'}
+                            <MapPin className="w-3 h-3" /> {getClassCenterName(c)}
                           </span>
                           <span>Prof: {c.teacher}</span>
                           <span>Quedan {Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas</span>
@@ -3049,7 +3223,7 @@ END:VCALENDAR`;
             <p className="text-sm font-bold text-zinc-500 mt-2 leading-relaxed">{workshop.shortDescription}</p>
 
             <div className="grid sm:grid-cols-2 gap-3 mt-6">
-              <div className="bg-violet-50 border border-violet-100 p-4 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-violet-500 block mb-1">Lugar</span><span className="font-black text-sm text-violet-950 flex items-center gap-2"><MapPin className="w-4 h-4 shrink-0"/>{getWorkshopLocationLabel(workshop)}</span></div>
+              <div className="bg-violet-50 border border-violet-100 p-4 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-violet-500 block mb-1">Lugar</span><span className="font-black text-sm text-violet-950 flex items-center gap-2"><MapPin className="w-4 h-4 shrink-0"/>{getWorkshopLocationLabelForStudent(workshop)}</span></div>
               <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-2xl"><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Precio</span><span className="font-black text-sm text-slate-900">{workshop.priceType === 'free' ? 'Gratuito' : formatEuro(workshop.price)}</span>{workshop.priceNote && <span className="block text-[10px] font-bold text-zinc-500 mt-1">{workshop.priceNote}</span>}</div>
             </div>
 
@@ -3094,11 +3268,16 @@ END:VCALENDAR`;
     let availableMboxSlots = [];
     if (mboxDate && mboxSede) {
       const targetDay = getDayOfWeek(mboxDate);
-      
-      const allScheduledClasses = allClasses.filter(c => 
-        c.dayOfWeek === targetDay && 
-        (c.sede || 'Tarragona') === mboxSede
-      );
+      const selectedMboxCenter = getCenterForValue(mboxSede);
+      const isSchoolClosed = globalSettings.festivos.includes(mboxDate)
+        || globalSettings.vacaciones.includes(mboxDate)
+        || Boolean(selectedMboxCenter?.holidays?.includes(mboxDate));
+      const allScheduledClasses = isSchoolClosed ? [] : allClasses
+        .map(clase => getEffectiveClassForDate(clase, mboxDate))
+        .filter(clase => (
+          Number(clase.dayOfWeek) === targetDay
+          && isSameCenter(clase.centerId || clase.sede || 'Tarragona', selectedMboxCenter?.id || mboxSede)
+        ));
 
       const aliveClasses = allScheduledClasses.filter(c => {
         if (c.cancelledDates?.includes(mboxDate)) return false; 
@@ -3118,12 +3297,15 @@ END:VCALENDAR`;
       const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
       
       activeTimes.forEach(t => {
-        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => c.sala || 'Sala 1');
-        const allSalas = ['Sala 1', 'Sala 2', 'Sala 3'];
-        const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
+        const occupiedRoomIds = aliveClasses
+          .filter(c => c.time === t)
+          .map(c => findRoomByValue(selectedMboxCenter, c.roomId || c.sala || 'Sala 1')?.id || normalizeConfigId(c.roomId || c.sala || 'Sala 1', 'sala'));
+        const freeRooms = (selectedMboxCenter?.rooms || [])
+          .filter(room => room.active !== false && room.mitoboxEnabled !== false)
+          .filter(room => !occupiedRoomIds.includes(room.id));
         
-        freeSalas.forEach(fs => {
-          availableMboxSlots.push({ time: t, sala: fs });
+        freeRooms.forEach(room => {
+          availableMboxSlots.push({ time: t, sala: room.name, roomId: room.id });
         });
       });
     }
@@ -3158,8 +3340,7 @@ END:VCALENDAR`;
             <div>
               <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">3. Centro</label>
               <select value={mboxSede} onChange={e => {setMboxSede(e.target.value); setMboxSelectedSlot(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
-                <option value="Tarragona">Tarragona</option>
-                <option value="Reus">Reus</option>
+                {mitoboxCenters.map(center => <option key={center.id} value={center.name}>{center.name}</option>)}
               </select>
             </div>
           </div>
@@ -3173,7 +3354,7 @@ END:VCALENDAR`;
                     <button 
                       key={i} 
                       onClick={() => setMboxSelectedSlot(slot)} 
-                      className={`p-3 rounded-xl border-2 text-left transition-all ${mboxSelectedSlot === slot ? 'border-blue-500 bg-blue-50 text-blue-900' : 'border-zinc-100 hover:border-blue-300 text-slate-700'}`}
+                      className={`p-3 rounded-xl border-2 text-left transition-all ${mboxSelectedSlot?.time === slot.time && mboxSelectedSlot?.roomId === slot.roomId ? 'border-blue-500 bg-blue-50 text-blue-900' : 'border-zinc-100 hover:border-blue-300 text-slate-700'}`}
                     >
                       <div className="font-black text-sm">{slot.time}h</div>
                       <div className="text-[10px] font-bold uppercase tracking-widest opacity-60">{slot.sala}</div>
@@ -3623,10 +3804,32 @@ END:VCALENDAR`;
                   time: assignedClass.time,
                   sede: assignedClass.sede,
                   sala: assignedClass.sala,
+                  centerId: assignedClass.centerId,
+                  roomId: assignedClass.roomId,
                   teacher: assignedClass.teacher,
                   duration: assignedClass.duration
                 };
-                const holidayMatch = schoolCalendar.find(c => c.date === classInfo.dateStr);
+                const officialLocation = {
+                  ...assignedClass,
+                  ...officialSchedule,
+                  centerId: officialSchedule.centerId || assignedClass.centerId,
+                  roomId: officialSchedule.roomId || assignedClass.roomId,
+                  sede: officialSchedule.sede || assignedClass.sede,
+                  sala: officialSchedule.sala || assignedClass.sala
+                };
+                const upcomingLocation = upcomingTemporaryClassChange ? {
+                  ...assignedClass,
+                  ...upcomingTemporaryClassChange,
+                  centerId: upcomingTemporaryClassChange.centerId || assignedClass.centerId,
+                  roomId: upcomingTemporaryClassChange.roomId || assignedClass.roomId,
+                  sede: upcomingTemporaryClassChange.sede || assignedClass.sede,
+                  sala: upcomingTemporaryClassChange.sala || assignedClass.sala
+                } : null;
+                const classCenterId = getClassCenter(clase)?.id || normalizeConfigId(clase.centerId || clase.sede || 'Tarragona', 'tarragona');
+                const holidayMatch = schoolCalendar.find(calendarItem => (
+                  calendarItem.date === classInfo.dateStr
+                  && (!calendarItem.centerId || calendarItem.centerId === classCenterId)
+                ));
                 const hasNotifiedNext = clase.exceptions?.[classInfo.dateStr]?.[profile.id];
                 const myStudentEntry = clase.students?.find(s => s.id === profile.id);
                 const isRecoveryClassForMe = myStudentEntry?.isRecovery === true;
@@ -3656,11 +3859,11 @@ END:VCALENDAR`;
                           <p className="text-xs font-black uppercase tracking-tight">{getTemporaryClassChangePeriodLabel(announcedTemporaryClassChange)}</p>
                           {upcomingTemporaryClassChange && (
                             <p className="text-xs font-bold mt-2 leading-relaxed">
-                              Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {upcomingTemporaryClassChange.sede || assignedClass.sede || 'Sede'}{upcomingTemporaryClassChange.sala ? ` (${upcomingTemporaryClassChange.sala})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}
+                              Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {getClassCenterName(upcomingLocation)}{getClassRoomName(upcomingLocation) ? ` (${getClassRoomName(upcomingLocation)})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}
                             </p>
                           )}
                           <p className="text-[10px] font-bold text-violet-700 mt-3 leading-relaxed">
-                            Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {officialSchedule.sede || assignedClass.sede || 'Sede'}{officialSchedule.sala ? ` (${officialSchedule.sala})` : ''}.
+                            Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {getClassCenterName(officialLocation)}{getClassRoomName(officialLocation) ? ` (${getClassRoomName(officialLocation)})` : ''}.
                           </p>
                         </div>
                       )}
@@ -3699,7 +3902,7 @@ END:VCALENDAR`;
                           </p>
                           {upcomingTemporaryClassChange && (
                             <p className="text-xs font-bold mt-2 leading-relaxed">
-                              Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {upcomingTemporaryClassChange.sede || assignedClass.sede || 'Sede'}{upcomingTemporaryClassChange.sala ? ` (${upcomingTemporaryClassChange.sala})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}
+                              Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {getClassCenterName(upcomingLocation)}{getClassRoomName(upcomingLocation) ? ` (${getClassRoomName(upcomingLocation)})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}
                               {Number(upcomingTemporaryClassChange.duration) && Number(upcomingTemporaryClassChange.duration) !== Number(officialSchedule.duration || 60) ? ` · ${Number(upcomingTemporaryClassChange.duration)} min` : ''}
                             </p>
                           )}
@@ -3707,7 +3910,7 @@ END:VCALENDAR`;
                             <p className="text-xs font-bold mt-2">Duración temporal: {Number(clase.duration)} min</p>
                           )}
                           <p className={`text-[10px] font-bold mt-3 leading-relaxed ${isCongelado ? 'text-violet-700' : 'text-violet-300'}`}>
-                            Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {officialSchedule.sede || assignedClass.sede || 'Sede'}{officialSchedule.sala ? ` (${officialSchedule.sala})` : ''}{officialSchedule.teacher ? ` · Prof. ${officialSchedule.teacher}` : ''}.
+                            Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {getClassCenterName(officialLocation)}{getClassRoomName(officialLocation) ? ` (${getClassRoomName(officialLocation)})` : ''}{officialSchedule.teacher ? ` · Prof. ${officialSchedule.teacher}` : ''}.
                           </p>
                         </div>
                       )}
@@ -3719,7 +3922,7 @@ END:VCALENDAR`;
                       )}
                       
                       <div className={`flex flex-col sm:flex-row gap-3 text-sm font-medium mb-8 p-4 rounded-2xl border ${isCongelado ? 'bg-zinc-300/50 border-zinc-300 text-zinc-600' : 'bg-zinc-800/50 border-zinc-700/50 text-zinc-300'}`}>
-                        <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {clase.sede} ({clase.sala})</span>
+                        <span className="flex items-center gap-2"><User className="w-4 h-4"/> Prof: {clase.teacher}</span> <span className="hidden sm:inline">•</span> <span className="flex items-center gap-2"><MapPin className="w-4 h-4"/> {getClassCenterName(clase)}{getClassRoomName(clase) ? ` (${getClassRoomName(clase)})` : ''}</span>
                       </div>
 
                       {renderClassTasksResources({
@@ -3916,7 +4119,7 @@ END:VCALENDAR`;
                             <h4 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">{workshop.title}</h4>
                             <p className="text-sm text-zinc-500 font-medium mt-2 leading-relaxed flex-1">{workshop.shortDescription}</p>
                             <div className="space-y-2 mt-5 pt-4 border-t border-zinc-100">
-                              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Lugar</span><span className="text-slate-700 text-right">{getWorkshopLocationLabel(workshop)}</span></div>
+                              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Lugar</span><span className="text-slate-700 text-right">{getWorkshopLocationLabelForStudent(workshop)}</span></div>
                               <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Ticket className="w-3.5 h-3.5"/> Precio</span><span className="text-slate-700">{workshop.priceType === 'free' ? 'Gratuito' : formatEuro(workshop.price)}</span></div>
                               {!activeRegistration && <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Clock className="w-3.5 h-3.5"/> Inscripción</span><span className={registrationOpen ? 'text-emerald-700' : 'text-zinc-500'}>{registrationOpen ? isFull && workshop.waitlistEnabled ? 'Lista de espera' : workshop.unlimitedCapacity ? 'Abierta' : `${freeSeats} ${freeSeats === 1 ? 'plaza' : 'plazas'}` : 'Cerrada'}</span></div>}
                             </div>

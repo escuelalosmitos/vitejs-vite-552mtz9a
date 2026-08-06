@@ -10,8 +10,100 @@ import {
 import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
-const SEDES = ["Tarragona", "Reus"];
-const SALAS = ["Sala 1", "Sala 2", "Sala 3"];
+const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
+const LEGACY_ROOM_NAMES = ["Sala 1", "Sala 2", "Sala 3"];
+
+const normalizeConfigId = (value = '', fallback = 'item') => {
+  const normalized = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+};
+
+const uniqueStrings = (values = []) => [...new Set((values || [])
+  .map(value => String(value || '').trim())
+  .filter(Boolean))];
+
+const DEFAULT_CENTERS = LEGACY_CENTER_NAMES.map(name => ({
+  id: normalizeConfigId(name, 'sede'),
+  name,
+  aliases: [],
+  status: 'active',
+  holidays: [],
+  rooms: LEGACY_ROOM_NAMES.map(roomName => ({
+    id: normalizeConfigId(roomName, 'sala'),
+    name: roomName,
+    aliases: [],
+    active: true
+  }))
+}));
+
+const getLegacyCenterHolidays = (center = {}, legacySettings = {}) => {
+  const centerId = normalizeConfigId(center.id || center.name, 'sede');
+  if (centerId === 'tarragona') return legacySettings.festivosTarragona || [];
+  if (centerId === 'reus') return legacySettings.festivosReus || [];
+  return legacySettings.centerHolidays?.[centerId] || [];
+};
+
+const normalizeCenters = (rawCenters = [], legacySettings = {}) => {
+  const hasConfiguredCenters = Array.isArray(rawCenters) && rawCenters.length > 0;
+  const source = hasConfiguredCenters ? rawCenters : DEFAULT_CENTERS;
+
+  return source.map((rawCenter, centerIndex) => {
+    const name = String(rawCenter?.name || LEGACY_CENTER_NAMES[centerIndex] || `Sede ${centerIndex + 1}`).trim();
+    const id = normalizeConfigId(rawCenter?.id || name, `sede-${centerIndex + 1}`);
+    const rawRooms = Array.isArray(rawCenter?.rooms) && rawCenter.rooms.length > 0
+      ? rawCenter.rooms
+      : LEGACY_ROOM_NAMES.map(roomName => ({ name: roomName }));
+
+    return {
+      ...rawCenter,
+      id,
+      name,
+      aliases: uniqueStrings(rawCenter?.aliases || []),
+      status: ['draft', 'active', 'inactive'].includes(rawCenter?.status) ? rawCenter.status : 'active',
+      holidays: uniqueStrings(
+        hasConfiguredCenters
+          ? (rawCenter?.holidays || legacySettings.centerHolidays?.[id] || [])
+          : getLegacyCenterHolidays({ id, name }, legacySettings)
+      ),
+      rooms: rawRooms.map((rawRoom, roomIndex) => ({
+        ...rawRoom,
+        id: normalizeConfigId(rawRoom?.id || rawRoom?.name, `sala-${roomIndex + 1}`),
+        name: String(rawRoom?.name || `Sala ${roomIndex + 1}`).trim(),
+        aliases: uniqueStrings(rawRoom?.aliases || []),
+        active: rawRoom?.active !== false
+      }))
+    };
+  });
+};
+
+const findCenterByValue = (centers = [], value = '') => {
+  const normalizedValue = normalizeConfigId(value, '');
+  const plainValue = String(value || '').trim().toLocaleLowerCase('es');
+  return (centers || []).find(center => (
+    center.id === value
+    || normalizeConfigId(center.id, '') === normalizedValue
+    || String(center.name || '').trim().toLocaleLowerCase('es') === plainValue
+    || (center.aliases || []).some(alias => String(alias || '').trim().toLocaleLowerCase('es') === plainValue)
+  )) || null;
+};
+
+const findRoomByValue = (center, value = '') => {
+  if (!center) return null;
+  const normalizedValue = normalizeConfigId(value, '');
+  const plainValue = String(value || '').trim().toLocaleLowerCase('es');
+  return (center.rooms || []).find(room => (
+    room.id === value
+    || normalizeConfigId(room.id, '') === normalizedValue
+    || String(room.name || '').trim().toLocaleLowerCase('es') === plainValue
+    || (room.aliases || []).some(alias => String(alias || '').trim().toLocaleLowerCase('es') === plainValue)
+  )) || null;
+};
 
 const CLASS_RESOURCE_TYPES = [
   { value: 'pdf', label: 'PDF' },
@@ -602,7 +694,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     festivosTarragona: [],
     festivosReus: [],
     vacaciones: [],
-    teacherRules: ''
+    teacherRules: '',
+    centers: normalizeCenters([], {})
   });
 
   const [activeTab, setActiveTab] = useState('attendance');
@@ -644,6 +737,47 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
+
+  const centers = useMemo(() => normalizeCenters(settings.centers, settings), [
+    settings.centers,
+    settings.centerHolidays,
+    settings.festivosTarragona,
+    settings.festivosReus
+  ]);
+
+  const getCenterForValue = (value = '') => findCenterByValue(centers, value);
+  const getClassCenter = (classData = {}) => getCenterForValue(classData.centerId || classData.sede);
+  const getClassCenterName = (classData = {}) => getClassCenter(classData)?.name || classData.sede || 'Tarragona';
+  const getClassRoom = (classData = {}) => findRoomByValue(getClassCenter(classData), classData.roomId || classData.sala);
+  const getClassRoomName = (classData = {}) => getClassRoom(classData)?.name || classData.sala || 'Sala 1';
+  const getLocationIdentity = (centerValue = '', roomValue = '') => {
+    const center = getCenterForValue(centerValue);
+    const room = findRoomByValue(center, roomValue);
+    return {
+      centerId: center?.id || normalizeConfigId(centerValue, 'sede'),
+      roomId: room?.id || normalizeConfigId(roomValue, 'sala')
+    };
+  };
+  const isSameCenter = (leftValue = '', rightValue = '') => {
+    const left = getCenterForValue(leftValue);
+    const right = getCenterForValue(rightValue);
+    if (left && right) return left.id === right.id;
+    return String(leftValue || '').trim().toLocaleLowerCase('es') === String(rightValue || '').trim().toLocaleLowerCase('es');
+  };
+  const isClassOnLocalHoliday = (classData = {}, targetDate = '') => {
+    if (!targetDate) return false;
+    const center = getClassCenter(classData);
+    if (center) return (center.holidays || []).includes(targetDate);
+    const legacyCenterId = normalizeConfigId(classData.centerId || classData.sede, '');
+    if (legacyCenterId === 'tarragona') return (settings.festivosTarragona || []).includes(targetDate);
+    if (legacyCenterId === 'reus') return (settings.festivosReus || []).includes(targetDate);
+    return (settings.centerHolidays?.[legacyCenterId] || []).includes(targetDate);
+  };
+  const isClassBlockedForDate = (classData = {}, targetDate = '') => (
+    (settings.festivos || []).includes(targetDate)
+    || (settings.vacaciones || []).includes(targetDate)
+    || isClassOnLocalHoliday(classData, targetDate)
+  );
   
   const getTeacherName = () => {
     if (!user || !user.email) return 'Profesor';
@@ -754,7 +888,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
       if (docSnap.exists()) {
-        setSettings(docSnap.data());
+        const data = docSnap.data();
+        setSettings({ ...data, centers: normalizeCenters(data.centers, data) });
       }
     });
 
@@ -958,25 +1093,51 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const temporaryChange = getActiveClassTemporaryChange(classData, targetDate);
     if (!temporaryChange) return classData;
 
-    const officialSchedule = temporaryChange.officialSchedule || {
+    const rawOfficialSchedule = temporaryChange.officialSchedule || {
       dayOfWeek: classData.dayOfWeek,
       time: classData.time,
       sede: classData.sede,
       sala: classData.sala,
+      centerId: classData.centerId,
+      roomId: classData.roomId,
       teacher: classData.teacher,
       duration: classData.duration
     };
+    const officialLocation = getLocationIdentity(
+      rawOfficialSchedule.centerId || rawOfficialSchedule.sede,
+      rawOfficialSchedule.roomId || rawOfficialSchedule.sala
+    );
+    const normalizedOfficialSchedule = {
+      ...rawOfficialSchedule,
+      sede: getClassCenterName({ ...classData, ...rawOfficialSchedule }),
+      sala: getClassRoomName({ ...classData, ...rawOfficialSchedule }),
+      centerId: rawOfficialSchedule.centerId || officialLocation.centerId,
+      roomId: rawOfficialSchedule.roomId || officialLocation.roomId
+    };
+    const effectiveLocationData = {
+      ...classData,
+      sede: temporaryChange.sede || classData.sede,
+      sala: temporaryChange.sala || classData.sala,
+      centerId: temporaryChange.centerId || classData.centerId,
+      roomId: temporaryChange.roomId || classData.roomId
+    };
+    const effectiveLocation = getLocationIdentity(
+      effectiveLocationData.centerId || effectiveLocationData.sede,
+      effectiveLocationData.roomId || effectiveLocationData.sala
+    );
 
     return {
       ...classData,
       dayOfWeek: Number(temporaryChange.dayOfWeek),
       time: temporaryChange.time || classData.time,
-      sede: temporaryChange.sede || classData.sede,
-      sala: temporaryChange.sala || classData.sala,
+      sede: getClassCenterName(effectiveLocationData),
+      sala: getClassRoomName(effectiveLocationData),
+      centerId: temporaryChange.centerId || classData.centerId || effectiveLocation.centerId,
+      roomId: temporaryChange.roomId || classData.roomId || effectiveLocation.roomId,
       teacher: getOfficialTeacherName(temporaryChange.teacher || classData.teacher),
       duration: Number(temporaryChange.duration) || Number(classData.duration) || 60,
       temporaryClassChange: temporaryChange,
-      officialSchedule
+      officialSchedule: normalizedOfficialSchedule
     };
   };
 
@@ -1128,15 +1289,21 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const teacherName = normalizeTeacherKey(getTeacherName());
     const teacherEmail = String(user?.email || '').toLowerCase();
     const valueLower = normalizeTeacherKey(audienceValue);
+    const announcementClasses = [
+      ...recurringClasses,
+      ...allRecurringClasses
+        .map(classData => getEffectiveClassForDate(classData, getTodayLocalString()))
+        .filter(classData => isSameTeacher(classData.teacher, getTeacherName()))
+    ];
 
     if (audienceType === 'profesor') {
       return valueLower === teacherName || audienceValue.toLowerCase() === teacherEmail;
     }
     if (audienceType === 'sede') {
-      return recurringClasses.some(c => (c.sede || 'Tarragona') === audienceValue);
+      return announcementClasses.some(c => isSameCenter(c.centerId || c.sede || 'Tarragona', audienceValue));
     }
     if (audienceType === 'instrumento') {
-      return recurringClasses.some(c => (c.subject || '') === audienceValue);
+      return announcementClasses.some(c => (c.subject || '') === audienceValue);
     }
 
     // Cierre seguro: si aparece un tipo de audiencia nuevo, no lo mostramos por defecto.
@@ -1145,7 +1312,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
   const visibleTeacherAnnouncements = useMemo(() => {
     return announcements.filter(teacherAnnouncementMatches);
-  }, [announcements, recurringClasses, user]);
+  }, [announcements, recurringClasses, allRecurringClasses, temporaryClassChanges, settings.teachersList, user, centers]);
 
   const latestTeacherAnnouncementId = visibleTeacherAnnouncements.length > 0 ? String(visibleTeacherAnnouncements[0].id) : null;
   const hasUnreadTeacherTablon = Boolean(latestTeacherAnnouncementId && latestTeacherAnnouncementId !== lastSeenTeacherTablon);
@@ -1401,7 +1568,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
-  }, [date, records, allRecurringClasses, temporaryClassChanges, settings.teachersList]);
+  }, [date, records, allRecurringClasses, temporaryClassChanges, settings.teachersList, centers]);
 
   const isExpiredDate = useMemo(() => {
     const classDate = new Date(date);
@@ -1448,7 +1615,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
   const formatClassSummary = (clase = {}) => {
     if (!clase) return 'Clase no localizada';
-    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${clase.sede || 'Tarragona'}${clase.sala ? ` · ${clase.sala}` : ''}`;
+    return `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek)} · ${clase.time || ''}h · ${getClassCenterName(clase)}${clase.sala || clase.roomId ? ` · ${getClassRoomName(clase)}` : ''}`;
   };
 
   const isTemporaryRelocationActiveForDate = (relocation = {}, targetDate = date) => {
@@ -1667,7 +1834,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
           status: 'reserved',
           role: 'reserved',
           temporaryChange: activeChange,
-          detail: `Ahora: ${getDayName(effectiveClass.dayOfWeek)} ${effectiveClass.time}h · ${effectiveClass.sede || 'Tarragona'} · ${effectiveClass.sala || 'Sala 1'}${!isSameTeacher(effectiveClass.teacher, officialClass.teacher) ? ` · ${getOfficialTeacherName(effectiveClass.teacher)}` : ''}`
+          detail: `Ahora: ${getDayName(effectiveClass.dayOfWeek)} ${effectiveClass.time}h · ${getClassCenterName(effectiveClass)} · ${getClassRoomName(effectiveClass)}${!isSameTeacher(effectiveClass.teacher, officialClass.teacher) ? ` · ${getOfficialTeacherName(effectiveClass.teacher)}` : ''}`
         }));
       }
 
@@ -1777,7 +1944,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         freeHours: freeMinutes / 60
       }
     };
-  }, [allRecurringClasses, temporaryClassChanges, availability, globalStudents, maintenancePeriods, temporaryRelocations, settings.teachersList]);
+  }, [allRecurringClasses, temporaryClassChanges, availability, globalStudents, maintenancePeriods, temporaryRelocations, settings.teachersList, centers]);
 
   const sanitizeTemplateStudentForSave = (student = {}) => {
     const studentInfo = globalStudents.find(g => g.id === student.id) || {};
@@ -2086,7 +2253,7 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
 
       return `
 CLASE: ${record.time} - ${record.subject} ${record.isRenounced ? '(NO COMPUTABLE)' : ''}
-Sede: ${record.sede || 'Tarragona'} (${record.sala || 'Sala 1'})
+Sede: ${getClassCenterName(record)} (${getClassRoomName(record)})
 Profesor: ${record.teacher}
 Estado de hora: ${hourStatus}${reasonLine}
 Total alumnos: ${students.length}
@@ -2127,11 +2294,7 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
     
     const pendingClasses = dashboardItems.filter(item => {
       if (item.type !== 'pending') return false;
-      
-      const isGlobalSpecial = settings.festivos?.includes(date) || settings.vacaciones?.includes(date);
-      const isTarragonaSpecial = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
-      const isReusSpecial = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
-      if (isGlobalSpecial || isTarragonaSpecial || isReusSpecial) return false;
+      if (isClassBlockedForDate(item.data, date)) return false;
 
       const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
       return activeCount > 0;
@@ -2303,14 +2466,21 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         });
       });
 
+    const sessionLocation = getLocationIdentity(
+      scheduledClass.centerId || scheduledClass.sede || 'Tarragona',
+      scheduledClass.roomId || scheduledClass.sala || 'Sala 1'
+    );
+
     setCurrentSession({
       isAutoCancelled: scheduledClass.autoCancelled?.[date] || false,
       isNew: false,
       classId: scheduledClass.id,
       refPath: scheduledClass.refPath,
       time: scheduledClass.time,
-      sede: scheduledClass.sede || 'Tarragona',
-      sala: scheduledClass.sala || 'Sala 1',
+      sede: getClassCenterName(scheduledClass),
+      sala: getClassRoomName(scheduledClass),
+      centerId: scheduledClass.centerId || sessionLocation.centerId,
+      roomId: scheduledClass.roomId || sessionLocation.roomId,
       teacher: scheduledClass.teacher,
       subject: scheduledClass.subject,
       capacity: scheduledClass.capacity || '',
@@ -2381,6 +2551,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         const latestSub = { id: subSnap.id, ...subSnap.data() };
         const latestStatus = getSubstitutionStatus(latestSub);
         const latestStats = getSubstitutionStudentStats(latestSub);
+        const assumedLocation = getLocationIdentity(
+          latestSub.centerId || latestSub.sede || 'Tarragona',
+          latestSub.roomId || latestSub.sala || 'Sala 1'
+        );
 
         if (latestStatus !== 'open') {
           throw new Error('Esta sustitución ya ha sido asumida o cerrada.');
@@ -2404,8 +2578,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           date: latestSub.date,
           dayOfWeek: getDayOfWeek(latestSub.date),
           time: latestSub.time,
-          sede: latestSub.sede || 'Tarragona',
-          sala: latestSub.sala || 'Sala 1',
+          sede: getClassCenterName(latestSub),
+          sala: getClassRoomName(latestSub),
+          centerId: latestSub.centerId || assumedLocation.centerId,
+          roomId: latestSub.roomId || assumedLocation.roomId,
           teacher: getOfficialTeacherName(),
           subject: latestSub.subject,
           capacity: latestSub.capacity || '',
@@ -2546,6 +2722,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
     }
 
     const persistedSchedule = currentSession.officialSchedule || currentSession;
+    const persistedLocation = getLocationIdentity(
+      persistedSchedule.centerId || persistedSchedule.sede || 'Tarragona',
+      persistedSchedule.roomId || persistedSchedule.sala || 'Sala 1'
+    );
 
     try {
       const templateStudents = getTemplateStudentsForSave(currentSession);
@@ -2576,8 +2756,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         dayOfWeek: persistedSchedule.dayOfWeek,
         date: currentSession.date || null, 
         time: persistedSchedule.time,
-        sede: persistedSchedule.sede || 'Tarragona',
-        sala: persistedSchedule.sala || 'Sala 1',
+        sede: getClassCenterName(persistedSchedule),
+        sala: getClassRoomName(persistedSchedule),
+        centerId: persistedSchedule.centerId || persistedLocation.centerId,
+        roomId: persistedSchedule.roomId || persistedLocation.roomId,
         teacher: persistedSchedule.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
@@ -2627,10 +2809,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         const activeCount = getEffectiveActiveStudentsForClass(item.data, date).length;
         if (activeCount === 0) return false;
 
-        const isGlobalSpecial = settings.festivos?.includes(date) || settings.vacaciones?.includes(date);
-        const isTarragonaSpecial = item.data?.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
-        const isReusSpecial = item.data?.sede === 'Reus' && settings.festivosReus?.includes(date);
-        if (isGlobalSpecial || isTarragonaSpecial || isReusSpecial) return false;
+        if (isClassBlockedForDate(item.data, date)) return false;
 
         return true;
       });
@@ -2695,7 +2874,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const teacherEmail = String(user?.email || '').trim().toLowerCase();
       const studentInfo = globalStudents.find(item => item.id === student.id) || {};
       const now = new Date().toISOString();
-      const classLine = `${savedRecord.subject || 'Clase'} · ${getDayName(currentSession.dayOfWeek)} · ${savedRecord.time || ''}h · ${savedRecord.sede || 'Tarragona'}${savedRecord.sala ? ` · ${savedRecord.sala}` : ''}`;
+      const classLine = `${savedRecord.subject || 'Clase'} · ${getDayName(currentSession.dayOfWeek)} · ${savedRecord.time || ''}h · ${getClassCenterName(savedRecord)}${savedRecord.sala || savedRecord.roomId ? ` · ${getClassRoomName(savedRecord)}` : ''}`;
       const details = `${student.name} acumula ${streakRecords.length} clases consecutivas sin asistir ni avisar.\n\nClase: ${classLine}\nFechas de la racha: ${absenceDates.map(formatDateSpanish).join(', ')}\n\nAviso informativo para valorar si conviene ponerse en contacto con el alumno o la familia.`;
       const teacherNotificationRef = doc(db, 'artifacts', appId, 'teacherNotifications', safeAlertId);
       const adminGestionRef = doc(db, 'artifacts', appId, 'gestiones', safeAlertId);
@@ -2836,13 +3015,20 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       });
       await Promise.all(ticketPromises);
 
+      const currentLocation = getLocationIdentity(
+        currentSession.centerId || currentSession.sede || 'Tarragona',
+        currentSession.roomId || currentSession.sala || 'Sala 1'
+      );
+
       const savedRecord = {
         id: recordId,
         classId: currentSession.classId,
         date,
         time: currentSession.time,
-        sede: currentSession.sede || 'Tarragona',
-        sala: currentSession.sala || 'Sala 1',
+        sede: getClassCenterName(currentSession),
+        sala: getClassRoomName(currentSession),
+        centerId: currentSession.centerId || currentLocation.centerId,
+        roomId: currentSession.roomId || currentLocation.roomId,
         teacher: currentSession.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
@@ -2870,13 +3056,19 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
 
       const targetPath = doc(db, currentSession.refPath);
       const persistedSchedule = currentSession.officialSchedule || currentSession;
+      const persistedLocation = getLocationIdentity(
+        persistedSchedule.centerId || persistedSchedule.sede || 'Tarragona',
+        persistedSchedule.roomId || persistedSchedule.sala || 'Sala 1'
+      );
         
       await setDoc(targetPath, {
         dayOfWeek: persistedSchedule.dayOfWeek,
         date: currentSession.date || null,
         time: persistedSchedule.time,
-        sede: persistedSchedule.sede || 'Tarragona',
-        sala: persistedSchedule.sala || 'Sala 1',
+        sede: getClassCenterName(persistedSchedule),
+        sala: getClassRoomName(persistedSchedule),
+        centerId: persistedSchedule.centerId || persistedLocation.centerId,
+        roomId: persistedSchedule.roomId || persistedLocation.roomId,
         teacher: persistedSchedule.teacher,
         subject: currentSession.subject,
         capacity: currentSession.capacity,
@@ -2931,6 +3123,11 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
 Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== activeStudents.length ? ` / ${effectiveStudents.length} en lista` : ''}.`);
     if (!isConfirmed) return;
 
+    const classLocation = getLocationIdentity(
+      classData.centerId || classData.sede || 'Tarragona',
+      classData.roomId || classData.sala || 'Sala 1'
+    );
+
     try {
       await setDoc(doc(db, 'artifacts', appId, 'substitutions', subId), {
         status: 'open',
@@ -2941,8 +3138,10 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
         originalTeacherName: classData.teacher || getTeacherName(),
         date: date,
         time: classData.time,
-        sede: classData.sede || 'Tarragona',
-        sala: classData.sala || 'Sala 1',
+        sede: getClassCenterName(classData),
+        sala: getClassRoomName(classData),
+        centerId: classData.centerId || classLocation.centerId,
+        roomId: classData.roomId || classLocation.roomId,
         subject: classData.subject,
         capacity: classData.capacity || '',
         duration: classData.duration || 60,
@@ -3972,9 +4171,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       const planningGestionesForClass = getPlanningGestionesForClass(item.data);
                       const isHibernated = item.type === 'pending' && activeCount === 0;
 
-                      const isTarragonaFestivo = item.data.sede === 'Tarragona' && settings.festivosTarragona?.includes(date);
-                      const isReusFestivo = item.data.sede === 'Reus' && settings.festivosReus?.includes(date);
-                      const isThisClassBlocked = isSpecialDay || isTarragonaFestivo || isReusFestivo;
+                      const isLocalHoliday = isClassOnLocalHoliday(item.data, date);
+                      const isThisClassBlocked = isSpecialDay || isLocalHoliday;
 
                       return (
                       <div key={idx} className={`group flex flex-col sm:flex-row justify-between items-start sm:items-center p-5 rounded-2xl border-2 transition-all ${item.type === 'completed' || isThisClassBlocked || isHibernated ? 'bg-zinc-50 border-zinc-100 opacity-70' : 'bg-white border-zinc-100 hover:border-black shadow-sm hover:shadow-md'}`}>
@@ -3988,7 +4186,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                               {item.data.subject}
                             </p>
                             <p className="text-xs font-bold text-zinc-400 flex items-center gap-1 mt-1 uppercase">
-                              <MapPin className="w-3 h-3" /> {item.data.sede || 'Tarragona'} ({item.data.sala || 'Sala 1'})
+                              <MapPin className="w-3 h-3" /> {getClassCenterName(item.data)} ({getClassRoomName(item.data)})
                               <span className="mx-1">•</span> 
                               <User className="w-3 h-3" /> Prof: {item.data.teacher} 
                               {!isHibernated && (
@@ -4001,7 +4199,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                             {item.data.temporaryClassChange && (
                               <div className="mt-2 inline-flex flex-col gap-0.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2">
                                 <span className="text-[9px] font-black uppercase tracking-widest text-violet-800">Cambio temporal · hasta {formatDateSpanish(normalizeTemporaryClassChangeDate(item.data.temporaryClassChange.until))}</span>
-                                <span className="text-[9px] font-bold text-violet-600">Después vuelve a {getDayName(item.data.officialSchedule?.dayOfWeek)} {item.data.officialSchedule?.time}h · {item.data.officialSchedule?.sede || 'Tarragona'} · {item.data.officialSchedule?.sala || 'Sala 1'}</span>
+                                <span className="text-[9px] font-bold text-violet-600">Después vuelve a {getDayName(item.data.officialSchedule?.dayOfWeek)} {item.data.officialSchedule?.time}h · {getClassCenterName(item.data.officialSchedule || item.data)} · {getClassRoomName(item.data.officialSchedule || item.data)}</span>
                               </div>
                             )}
                             {planningGestionesForClass.length > 0 && (
@@ -4020,7 +4218,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                           
                           {isThisClassBlocked ? (
                             <span className="bg-zinc-200 text-zinc-500 px-4 py-2 rounded-lg font-black text-[10px] uppercase border border-zinc-300">
-                              {(isTarragonaFestivo || isReusFestivo) ? 'Festivo Local' : 'No Laborable'}
+                              {isLocalHoliday ? 'Festivo Local' : 'No Laborable'}
                             </span>
                           ) : isHibernated ? (
                             <div className="w-full sm:w-auto bg-zinc-100 text-zinc-400 py-2.5 px-5 rounded-xl font-black text-[10px] uppercase tracking-widest border-2 border-dashed border-zinc-200 flex items-center justify-center gap-2 cursor-not-allowed">
@@ -4143,7 +4341,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><MapPin className="w-3 h-3" /> Sede</label>
                       <input 
                         type="text" 
-                        value={currentSession.sede} 
+                        value={getClassCenterName(currentSession)} 
                         disabled
                         className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
                       />
@@ -4153,7 +4351,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest flex items-center gap-1"><LayoutGrid className="w-3 h-3" /> Sala</label>
                       <input 
                         type="text" 
-                        value={currentSession.sala} 
+                        value={getClassRoomName(currentSession)} 
                         disabled
                         className="w-full p-4 rounded-xl font-bold bg-zinc-100 text-zinc-400 border-2 border-zinc-200 cursor-not-allowed" 
                       />
@@ -4328,7 +4526,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                           <div key={change.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-2">
                             <div>
                               <p className="text-sm font-black text-violet-950">{officialClass.subject || change.classSubject || 'Clase'} · {formatDateSpanish(normalizeTemporaryClassChangeDate(change.from))}–{formatDateSpanish(normalizeTemporaryClassChangeDate(change.until))}</p>
-                              <p className="text-[10px] font-bold text-violet-700 mt-1">{getDayName(change.dayOfWeek)} {change.time}h · {change.sede || 'Tarragona'} · {change.sala || 'Sala 1'} · {getOfficialTeacherName(change.teacher)}</p>
+                              <p className="text-[10px] font-bold text-violet-700 mt-1">{getDayName(change.dayOfWeek)} {change.time}h · {getClassCenterName({ ...officialClass, sede: change.sede || officialClass.sede, centerId: change.centerId || officialClass.centerId })} · {getClassRoomName({ ...officialClass, sede: change.sede || officialClass.sede, centerId: change.centerId || officialClass.centerId, sala: change.sala || officialClass.sala, roomId: change.roomId || officialClass.roomId })} · {getOfficialTeacherName(change.teacher)}</p>
                             </div>
                             <span className="px-2.5 py-1 rounded-lg bg-white border border-violet-200 text-violet-700 text-[9px] font-black uppercase tracking-widest">{isTemporaryTeacher ? 'La asumirás temporalmente' : 'Cambio programado'}</span>
                           </div>
@@ -4367,7 +4565,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                             <div className="min-w-0">
                               {row.classData ? (
                                 <>
-                                  <p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {row.classData.sede || 'Tarragona'} · {row.classData.sala || 'Sala 1'}</p>
+                                  <p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {getClassCenterName(row.classData)} · {getClassRoomName(row.classData)}</p>
                                   <p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'}{row.status !== 'reserved' ? ` · ${row.activeCount} activos` : ''}{row.outsideAvailability ? ' · Fuera de disponibilidad declarada' : ''}</p>
                                   {row.detail && <p className="text-[10px] font-bold text-violet-700 mt-1">{row.detail}</p>}
                                   {row.upcomingChange && <p className="text-[10px] font-bold text-violet-700 mt-1">Cambio programado del {formatDateSpanish(normalizeTemporaryClassChangeDate(row.upcomingChange.from))} al {formatDateSpanish(normalizeTemporaryClassChangeDate(row.upcomingChange.until))}</p>}
@@ -4389,7 +4587,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                         <div key={row.key} className="p-3 md:p-4 grid grid-cols-1 md:grid-cols-[150px_190px_1fr] gap-3 md:items-center">
                           <div><p className="font-black text-sm text-slate-900">{formatDateSpanish(row.date)}</p><p className="text-xs font-bold text-zinc-400">{row.time}–{row.endTime}h</p></div>
                           <div><span className={`inline-flex px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${row.status === 'punctual' ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-zinc-100 text-zinc-500 border-zinc-200'}`}>Clase puntual</span></div>
-                          <div><p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {row.classData.sede || 'Tarragona'} · {row.classData.sala || 'Sala 1'}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'} · {row.activeCount} activos</p></div>
+                          <div><p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {getClassCenterName(row.classData)} · {getClassRoomName(row.classData)}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'} · {row.activeCount} activos</p></div>
                         </div>
                       ))}
                     </div>
@@ -4749,7 +4947,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                           {record.isRenounced && <span className="text-amber-600 text-xs font-black uppercase tracking-widest ml-3 bg-amber-50 px-2 py-1 rounded-lg">(RENUNCIADA)</span>}
                         </h3>
                         <p className="text-xs font-bold uppercase tracking-widest text-zinc-400 flex items-center gap-1.5 mt-2">
-                          <MapPin className="w-4 h-4" /> {record.sede || 'Tarragona'} ({record.sala || 'Sala 1'})
+                          <MapPin className="w-4 h-4" /> {getClassCenterName(record)} ({getClassRoomName(record)})
                           <span className="mx-1">•</span> 
                           <User className="w-4 h-4" /> {record.teacher}
                         </p>

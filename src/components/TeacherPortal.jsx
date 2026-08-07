@@ -7,7 +7,7 @@ import {
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
   Megaphone, Send, Link as LinkIcon
 } from 'lucide-react';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
+import { collection, query, where, documentId, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
@@ -389,6 +389,23 @@ const getTodayLocalString = () => {
   return `${year}-${month}-${day}`;
 };
 
+const shiftLocalDateString = (dateString = getTodayLocalString(), days = 0) => {
+  const [year, month, day] = String(dateString || '').split('-').map(Number);
+  if (!year || !month || !day) return getTodayLocalString();
+  const shifted = new Date(year, month - 1, day + Number(days || 0));
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, '0')}-${String(shifted.getDate()).padStart(2, '0')}`;
+};
+
+const getClassStudentIds = (students = []) => [...new Set((students || [])
+  .map(student => String(student?.id || '').trim())
+  .filter(Boolean))];
+
+const chunkValues = (values = [], size = 10) => {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+};
+
 const isSummerRecoveryDate = (dateString) => {
   if (!dateString) return false;
   const month = Number(dateString.split('-')[1]);
@@ -664,7 +681,15 @@ const NotesModalComponent = ({ notesModal, onClose, globalStudents, db, appId, s
 export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL, switchToAdmin }) {
   const [loadingData, setLoadingData] = useState(true);
   const [recurringClasses, setRecurringClasses] = useState([]);
-  const [allRecurringClasses, setAllRecurringClasses] = useState([]);
+  const [externalRecurringClasses, setExternalRecurringClasses] = useState([]);
+  const allRecurringClasses = useMemo(() => {
+    const byReference = new Map();
+    [...recurringClasses, ...externalRecurringClasses].forEach(classData => {
+      if (!classData) return;
+      byReference.set(classData.refPath || classData.id, classData);
+    });
+    return [...byReference.values()];
+  }, [recurringClasses, externalRecurringClasses]);
   const [records, setRecords] = useState([]);
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
@@ -795,36 +820,43 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     setLoadingData(true);
     const myName = getTeacherName();
+    const teacherEmail = String(user.email || '').trim().toLowerCase();
+    const today = getTodayLocalString();
+    const operationalLookbackDate = shiftLocalDateString(today, -3);
 
-    const recurringRef = collectionGroup(db, 'recurringClasses');
-    const recordsRef = collectionGroup(db, 'records'); 
-    const dailyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports');
-    const globalStudentsRef = collection(db, 'artifacts', appId, 'students');
+    const recurringRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses');
+    const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
-    const ticketsRef = collectionGroup(db, 'tickets');
-    const substitutionsRef = collection(db, 'artifacts', appId, 'substitutions');
-    const gestionesRef = collection(db, 'artifacts', appId, 'gestiones'); 
+    const substitutionsRef = query(
+      collection(db, 'artifacts', appId, 'substitutions'),
+      where('date', '>=', today)
+    );
+    const gestionesCollection = collection(db, 'artifacts', appId, 'gestiones');
+    const pendingGestionesRef = query(gestionesCollection, where('status', '==', 'pendiente'));
+    const futureRecoveryGestionesRef = query(gestionesCollection, where('recoveryDate', '>=', today));
     const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
-    const temporaryRelocationsRef = collection(db, 'artifacts', appId, 'temporaryRelocations');
-    const temporaryClassChangesRef = collection(db, 'artifacts', appId, 'temporaryClassChanges');
-    const maintenancePeriodsRef = collection(db, 'artifacts', appId, 'maintenancePeriods');
+    const temporaryRelocationsRef = query(
+      collection(db, 'artifacts', appId, 'temporaryRelocations'),
+      where('until', '>=', operationalLookbackDate)
+    );
+    const temporaryClassChangesRef = query(
+      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+      where('until', '>=', operationalLookbackDate)
+    );
     const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
-    const teacherNotificationsRef = collection(db, 'artifacts', appId, 'teacherNotifications');
-    const teacherTasksRef = collection(db, 'artifacts', appId, 'teacherTasks');
+    const teacherNotificationsCollection = collection(db, 'artifacts', appId, 'teacherNotifications');
+    const teacherTasksCollection = collection(db, 'artifacts', appId, 'teacherTasks');
     const availRef = doc(db, 'artifacts', appId, 'availability', normalizeTeacherKey(myName));
     const userDocRef = doc(db, 'artifacts', appId, 'users', user.uid);
 
     let recordsLoaded = false;
     let recurringLoaded = false;
-    let dailyLoaded = false;
-    let studentsLoaded = false;
-    let ticketsLoaded = false;
+    let settingsLoaded = false;
     let subsLoaded = false;
     let gestionesLoaded = false;
     let payrollAdjustmentsLoaded = false;
     let temporaryRelocationsLoaded = false;
     let temporaryClassChangesLoaded = false;
-    let maintenancePeriodsLoaded = false;
     let announcementsLoaded = false;
     let teacherNotificationsLoaded = false;
     let teacherTasksLoaded = false;
@@ -832,8 +864,43 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     let userDocLoaded = false;
 
     const checkLoading = () => {
-      if (recordsLoaded && recurringLoaded && dailyLoaded && studentsLoaded && ticketsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && temporaryClassChangesLoaded && maintenancePeriodsLoaded && announcementsLoaded && teacherNotificationsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
+      if (recordsLoaded && recurringLoaded && settingsLoaded && subsLoaded && gestionesLoaded && payrollAdjustmentsLoaded && temporaryRelocationsLoaded && temporaryClassChangesLoaded && announcementsLoaded && teacherNotificationsLoaded && teacherTasksLoaded && availLoaded && userDocLoaded) setLoadingData(false);
     };
+
+    const subscribeMergedQueries = (sources, handleData, handleReady, label) => {
+      const buckets = new Map();
+      const completedSources = new Set();
+      const publish = () => {
+        const byId = new Map();
+        buckets.forEach(items => items.forEach(item => byId.set(item.id, item)));
+        handleData([...byId.values()]);
+      };
+
+      const unsubs = sources.map((source, sourceIndex) => onSnapshot(
+        source,
+        snapshot => {
+          buckets.set(sourceIndex, snapshot.docs.map(docSnap => ({ id: docSnap.id, refPath: docSnap.ref.path, ...docSnap.data() })));
+          completedSources.add(sourceIndex);
+          publish();
+          if (completedSources.size === sources.length) handleReady();
+        },
+        error => {
+          console.error(`No se pudo cargar ${label}:`, error);
+          buckets.set(sourceIndex, []);
+          completedSources.add(sourceIndex);
+          publish();
+          if (completedSources.size === sources.length) handleReady();
+        }
+      ));
+
+      return () => unsubs.forEach(unsub => unsub());
+    };
+
+    let recurringFallbackUnsub = null;
+    let recordsFallbackUnsub = null;
+    let substitutionsFallbackUnsub = null;
+    let temporaryRelocationsFallbackUnsub = null;
+    let temporaryClassChangesFallbackUnsub = null;
 
     const unsubUserDoc = onSnapshot(userDocRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -846,44 +913,54 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
-      const allClasses = [];
       const myClasses = [];
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
         const classData = { id: docSnap.id, refPath: docSnap.ref.path, ...data };
-        allClasses.push(classData);
-        if (isSameTeacher(data.teacher, myName) || data.originalTeacherUid === user.uid) { 
-            myClasses.push(classData);
-        }
+        if (isSameTeacher(data.teacher, myName) || data.originalTeacherUid === user.uid || docSnap.ref.parent.parent?.id === user.uid) myClasses.push(classData);
       });
-      setAllRecurringClasses(allClasses);
       setRecurringClasses(myClasses);
       recurringLoaded = true;
       checkLoading();
+    }, (error) => {
+      console.error('La consulta directa de clases falló; se aplica compatibilidad heredada:', error);
+      recurringFallbackUnsub = onSnapshot(collectionGroup(db, 'recurringClasses'), snapshot => {
+        const myClasses = snapshot.docs
+          .map(docSnap => ({ id: docSnap.id, refPath: docSnap.ref.path, ...docSnap.data() }))
+          .filter(classData => isSameTeacher(classData.teacher, myName) || classData.originalTeacherUid === user.uid);
+        setRecurringClasses(myClasses);
+        recurringLoaded = true;
+        checkLoading();
+      }, fallbackError => {
+        console.error('No se pudieron cargar las clases del profesor:', fallbackError);
+        setRecurringClasses([]);
+        recurringLoaded = true;
+        checkLoading();
+      });
     });
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
-      const recs = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        if (isSameTeacher(data.teacher, myName)) recs.push({ id: docSnap.id, ...data });
-      });
+      const recs = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
       recs.sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
       setRecords(recs);
       recordsLoaded = true;
       checkLoading();
-    });
-
-    const unsubDaily = onSnapshot(dailyRef, (snapshot) => {
-      setDailyReports(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
-      dailyLoaded = true;
-      checkLoading();
-    });
-
-    const unsubStudents = onSnapshot(globalStudentsRef, (snapshot) => {
-      setGlobalStudents(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
-      studentsLoaded = true;
-      checkLoading();
+    }, (error) => {
+      console.error('La consulta directa de asistencias falló; se aplica compatibilidad heredada:', error);
+      recordsFallbackUnsub = onSnapshot(collectionGroup(db, 'records'), snapshot => {
+        const recs = snapshot.docs
+          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+          .filter(record => isSameTeacher(record.teacher, myName))
+          .sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
+        setRecords(recs);
+        recordsLoaded = true;
+        checkLoading();
+      }, fallbackError => {
+        console.error('No se pudieron cargar las asistencias del profesor:', fallbackError);
+        setRecords([]);
+        recordsLoaded = true;
+        checkLoading();
+      });
     });
 
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
@@ -891,12 +968,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         const data = docSnap.data();
         setSettings({ ...data, centers: normalizeCenters(data.centers, data) });
       }
-    });
-
-    const unsubTickets = onSnapshot(ticketsRef, (snapshot) => {
-      const tks = snapshot.docs.map(docSnap => ({ id: docSnap.id, refPath: docSnap.ref.path, ...docSnap.data() }));
-      setTickets(tks);
-      ticketsLoaded = true;
+      settingsLoaded = true;
+      checkLoading();
+    }, (error) => {
+      console.error('No se pudo cargar la configuración general:', error);
+      settingsLoaded = true;
       checkLoading();
     });
 
@@ -904,13 +980,35 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       setSubstitutions(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       subsLoaded = true;
       checkLoading();
+    }, error => {
+      console.error('La consulta optimizada de sustituciones falló; se aplica compatibilidad heredada:', error);
+      substitutionsFallbackUnsub = onSnapshot(
+        collection(db, 'artifacts', appId, 'substitutions'),
+        snapshot => {
+          setSubstitutions(snapshot.docs
+            .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+            .filter(substitution => String(substitution.date || '') >= today));
+          subsLoaded = true;
+          checkLoading();
+        },
+        fallbackError => {
+          console.error('No se pudieron cargar las sustituciones vigentes:', fallbackError);
+          setSubstitutions([]);
+          subsLoaded = true;
+          checkLoading();
+        }
+      );
     });
 
-    const unsubGestiones = onSnapshot(gestionesRef, (snapshot) => {
-      setGestiones(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
-      gestionesLoaded = true;
-      checkLoading();
-    });
+    const unsubGestiones = subscribeMergedQueries(
+      [pendingGestionesRef, futureRecoveryGestionesRef],
+      setGestiones,
+      () => {
+        gestionesLoaded = true;
+        checkLoading();
+      },
+      'los trámites operativos'
+    );
 
     const unsubPayrollAdjustments = onSnapshot(payrollAdjustmentsRef, (snapshot) => {
       setPayrollAdjustments(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
@@ -922,6 +1020,24 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       setTemporaryRelocations(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
       temporaryRelocationsLoaded = true;
       checkLoading();
+    }, error => {
+      console.error('La consulta optimizada de recolocaciones falló; se aplica compatibilidad heredada:', error);
+      temporaryRelocationsFallbackUnsub = onSnapshot(
+        collection(db, 'artifacts', appId, 'temporaryRelocations'),
+        snapshot => {
+          setTemporaryRelocations(snapshot.docs
+            .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+            .filter(relocation => String(relocation.until || '') >= operationalLookbackDate));
+          temporaryRelocationsLoaded = true;
+          checkLoading();
+        },
+        fallbackError => {
+          console.error('No se pudieron cargar las recolocaciones temporales:', fallbackError);
+          setTemporaryRelocations([]);
+          temporaryRelocationsLoaded = true;
+          checkLoading();
+        }
+      );
     });
 
     const unsubTemporaryClassChanges = onSnapshot(temporaryClassChangesRef, (snapshot) => {
@@ -929,16 +1045,23 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       temporaryClassChangesLoaded = true;
       checkLoading();
     }, (error) => {
-      console.error('No se pudieron cargar los cambios temporales de clase:', error);
-      setTemporaryClassChanges([]);
-      temporaryClassChangesLoaded = true;
-      checkLoading();
-    });
-
-    const unsubMaintenancePeriods = onSnapshot(maintenancePeriodsRef, (snapshot) => {
-      setMaintenancePeriods(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
-      maintenancePeriodsLoaded = true;
-      checkLoading();
+      console.error('La consulta optimizada de cambios temporales falló; se aplica compatibilidad heredada:', error);
+      temporaryClassChangesFallbackUnsub = onSnapshot(
+        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+        snapshot => {
+          setTemporaryClassChanges(snapshot.docs
+            .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+            .filter(change => normalizeTemporaryClassChangeDate(change.until) >= operationalLookbackDate));
+          temporaryClassChangesLoaded = true;
+          checkLoading();
+        },
+        fallbackError => {
+          console.error('No se pudieron cargar los cambios temporales de clase:', fallbackError);
+          setTemporaryClassChanges([]);
+          temporaryClassChangesLoaded = true;
+          checkLoading();
+        }
+      );
     });
 
     const unsubAnnouncements = onSnapshot(announcementsRef, (snapshot) => {
@@ -949,26 +1072,38 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
-    const unsubTeacherNotifications = onSnapshot(teacherNotificationsRef, (snapshot) => {
-      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
-      data.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-      setTeacherNotifications(data);
-      teacherNotificationsLoaded = true;
-      checkLoading();
-    }, (error) => {
-      console.error('No se pudieron cargar los avisos internos del profesor:', error);
-      setTeacherNotifications([]);
-      teacherNotificationsLoaded = true;
-      checkLoading();
-    });
+    const notificationSources = isAdmin
+      ? [teacherNotificationsCollection]
+      : [
+          query(teacherNotificationsCollection, where('teacherEmail', '==', teacherEmail)),
+          query(teacherNotificationsCollection, where('teacherNameNormalized', '==', String(myName || '').trim().toLowerCase()))
+        ];
+    const unsubTeacherNotifications = subscribeMergedQueries(
+      notificationSources,
+      data => setTeacherNotifications(data.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))),
+      () => {
+        teacherNotificationsLoaded = true;
+        checkLoading();
+      },
+      'los avisos internos del profesor'
+    );
 
-    const unsubTeacherTasks = onSnapshot(teacherTasksRef, (snapshot) => {
-      const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
-      data.sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
-      setTeacherTasks(data);
-      teacherTasksLoaded = true;
-      checkLoading();
-    });
+    const taskSources = isAdmin
+      ? [teacherTasksCollection]
+      : [
+          query(teacherTasksCollection, where('teacherUid', '==', user.uid)),
+          query(teacherTasksCollection, where('teacherEmail', '==', teacherEmail)),
+          query(teacherTasksCollection, where('teacherName', '==', myName))
+        ];
+    const unsubTeacherTasks = subscribeMergedQueries(
+      taskSources,
+      data => setTeacherTasks(data.sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0))),
+      () => {
+        teacherTasksLoaded = true;
+        checkLoading();
+      },
+      'las tareas del profesor'
+    );
 
     const unsubAvail = onSnapshot(availRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -983,23 +1118,261 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return () => {
       unsubRecurring();
       unsubRecords();
-      unsubDaily();
-      unsubStudents();
       unsubSettings();
-      unsubTickets();
       unsubSubs();
       unsubGestiones();
       unsubPayrollAdjustments();
       unsubTemporaryRelocations();
       unsubTemporaryClassChanges();
-      unsubMaintenancePeriods();
       unsubAnnouncements();
       unsubTeacherNotifications();
       unsubTeacherTasks();
       unsubAvail();
       unsubUserDoc();
+      if (recurringFallbackUnsub) recurringFallbackUnsub();
+      if (recordsFallbackUnsub) recordsFallbackUnsub();
+      if (substitutionsFallbackUnsub) substitutionsFallbackUnsub();
+      if (temporaryRelocationsFallbackUnsub) temporaryRelocationsFallbackUnsub();
+      if (temporaryClassChangesFallbackUnsub) temporaryClassChangesFallbackUnsub();
     };
   }, [user, db, appId]);
+
+  // Las clases propias viven bajo el UID del profesor. Solo añadimos clases externas
+  // cuando un cambio temporal las asigna a este profesor.
+  useEffect(() => {
+    if (!user) {
+      setExternalRecurringClasses([]);
+      return;
+    }
+
+    const myName = getTeacherName();
+    const ownPaths = new Set(recurringClasses.map(classData => classData.refPath).filter(Boolean));
+    const ownIds = new Set(recurringClasses.map(classData => String(classData.id || '')).filter(Boolean));
+    const assignedChanges = temporaryClassChanges.filter(change => (
+      !isTemporaryClassChangeClosed(change) && isSameTeacher(change.teacher, myName)
+    ));
+
+    const externalPaths = [...new Set(assignedChanges
+      .map(change => String(change.classRefPath || '').trim())
+      .filter(classPath => classPath && !ownPaths.has(classPath)))];
+    const missingExternalIds = [...new Set(assignedChanges
+      .filter(change => !change.classRefPath)
+      .map(change => String(change.classId || '').trim())
+      .filter(classId => classId && !ownIds.has(classId)))];
+
+    if (externalPaths.length === 0 && missingExternalIds.length === 0) {
+      setExternalRecurringClasses([]);
+      return;
+    }
+
+    let cancelled = false;
+    const byReference = new Map();
+    const publish = () => {
+      if (!cancelled) setExternalRecurringClasses([...byReference.values()]);
+    };
+    const unsubs = externalPaths.map(classPath => onSnapshot(
+      doc(db, classPath),
+      classSnap => {
+        if (classSnap.exists()) {
+          byReference.set(classPath, { id: classSnap.id, refPath: classSnap.ref.path, ...classSnap.data() });
+        } else {
+          byReference.delete(classPath);
+        }
+        publish();
+      },
+      error => console.error('No se pudo cargar una clase asignada temporalmente:', error)
+    ));
+
+    if (missingExternalIds.length > 0) {
+      // Compatibilidad excepcional con cambios antiguos que aún no guardaban classRefPath.
+      getDocs(collectionGroup(db, 'recurringClasses')).then(snapshot => {
+        if (cancelled) return;
+        snapshot.forEach(classSnap => {
+          if (missingExternalIds.includes(classSnap.id)) {
+            byReference.set(classSnap.ref.path, { id: classSnap.id, refPath: classSnap.ref.path, ...classSnap.data() });
+          }
+        });
+        publish();
+      }).catch(error => console.error('No se pudo resolver una clase temporal antigua:', error));
+    }
+
+    return () => {
+      cancelled = true;
+      unsubs.forEach(unsub => unsub());
+    };
+  }, [user?.uid, user?.email, db, recurringClasses, temporaryClassChanges]);
+
+  const relevantStudentIds = useMemo(() => {
+    const ids = new Set();
+    const relevantClassIds = new Set();
+    const myName = getTeacherName();
+
+    allRecurringClasses.forEach(classData => {
+      if (classData?.id) relevantClassIds.add(String(classData.id));
+      (classData?.students || []).forEach(student => {
+        if (student?.id) ids.add(String(student.id));
+      });
+    });
+
+    temporaryRelocations.forEach(relocation => {
+      if (
+        relevantClassIds.has(String(relocation.sourceClassId || '')) ||
+        relevantClassIds.has(String(relocation.targetClassId || ''))
+      ) {
+        if (relocation.studentId) ids.add(String(relocation.studentId));
+      }
+    });
+
+    gestiones.forEach(gestion => {
+      const relevantByClass = gestion.requestedClass && relevantClassIds.has(String(gestion.requestedClass));
+      const relevantByTeacher = gestion.requestedTeacher && isSameTeacher(gestion.requestedTeacher, myName);
+      if ((relevantByClass || relevantByTeacher) && gestion.studentId) ids.add(String(gestion.studentId));
+    });
+
+    return [...ids].sort();
+  }, [allRecurringClasses, temporaryRelocations, gestiones, user?.email]);
+
+  // Los perfiles, mantenimientos y tickets se consultan únicamente para los alumnos
+  // relacionados con las clases y solicitudes de este profesor.
+  useEffect(() => {
+    if (!user || relevantStudentIds.length === 0) {
+      setGlobalStudents([]);
+      setTickets([]);
+      setMaintenancePeriods([]);
+      return;
+    }
+
+    const relevantIds = new Set(relevantStudentIds);
+    const chunks = chunkValues(relevantStudentIds, 10);
+    const studentBuckets = new Map();
+    const ticketBuckets = new Map();
+    const maintenanceBuckets = new Map();
+    const unsubs = [];
+    let studentsFallbackUnsub = null;
+    let ticketsFallbackUnsub = null;
+    let maintenanceFallbackUnsub = null;
+    let studentsFallbackStarted = false;
+    let ticketsFallbackStarted = false;
+    let maintenanceFallbackStarted = false;
+
+    const publishBuckets = (buckets, setter, getKey = item => item.id) => {
+      const byId = new Map();
+      buckets.forEach(items => items.forEach(item => byId.set(getKey(item), item)));
+      setter([...byId.values()]);
+    };
+
+    const startStudentsFallback = error => {
+      if (studentsFallbackStarted) return;
+      studentsFallbackStarted = true;
+      console.error('La consulta optimizada de alumnos falló; se aplica compatibilidad heredada:', error);
+      studentsFallbackUnsub = onSnapshot(
+        collection(db, 'artifacts', appId, 'students'),
+        snapshot => setGlobalStudents(snapshot.docs
+          .filter(studentDoc => relevantIds.has(studentDoc.id))
+          .map(studentDoc => ({ id: studentDoc.id, ...studentDoc.data() }))),
+        fallbackError => {
+          console.error('No se pudieron cargar los alumnos relacionados:', fallbackError);
+          setGlobalStudents([]);
+        }
+      );
+    };
+
+    const startTicketsFallback = error => {
+      if (ticketsFallbackStarted) return;
+      ticketsFallbackStarted = true;
+      console.error('La consulta optimizada de tickets falló; se aplica compatibilidad heredada:', error);
+      ticketsFallbackUnsub = onSnapshot(
+        collectionGroup(db, 'tickets'),
+        snapshot => setTickets(snapshot.docs
+          .map(ticketDoc => ({ id: ticketDoc.id, refPath: ticketDoc.ref.path, ...ticketDoc.data() }))
+          .filter(ticket => relevantIds.has(String(ticket.studentId || '')))),
+        fallbackError => {
+          console.error('No se pudieron cargar los tickets relacionados:', fallbackError);
+          setTickets([]);
+        }
+      );
+    };
+
+    const startMaintenanceFallback = error => {
+      if (maintenanceFallbackStarted) return;
+      maintenanceFallbackStarted = true;
+      console.error('La consulta optimizada de mantenimientos falló; se aplica compatibilidad heredada:', error);
+      maintenanceFallbackUnsub = onSnapshot(
+        collection(db, 'artifacts', appId, 'maintenancePeriods'),
+        snapshot => setMaintenancePeriods(snapshot.docs
+          .map(periodDoc => ({ id: periodDoc.id, ...periodDoc.data() }))
+          .filter(period => relevantIds.has(String(period.studentId || '')))),
+        fallbackError => {
+          console.error('No se pudieron cargar los mantenimientos relacionados:', fallbackError);
+          setMaintenancePeriods([]);
+        }
+      );
+    };
+
+    chunks.forEach((studentIds, chunkIndex) => {
+      const studentsQuery = query(
+        collection(db, 'artifacts', appId, 'students'),
+        where(documentId(), 'in', studentIds)
+      );
+      unsubs.push(onSnapshot(
+        studentsQuery,
+        snapshot => {
+          if (studentsFallbackStarted) return;
+          studentBuckets.set(chunkIndex, snapshot.docs.map(studentDoc => ({ id: studentDoc.id, ...studentDoc.data() })));
+          publishBuckets(studentBuckets, setGlobalStudents);
+        },
+        startStudentsFallback
+      ));
+
+      const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentId', 'in', studentIds));
+      unsubs.push(onSnapshot(
+        ticketsQuery,
+        snapshot => {
+          if (ticketsFallbackStarted) return;
+          ticketBuckets.set(chunkIndex, snapshot.docs.map(ticketDoc => ({ id: ticketDoc.id, refPath: ticketDoc.ref.path, ...ticketDoc.data() })));
+          publishBuckets(ticketBuckets, setTickets, ticket => ticket.refPath || ticket.id);
+        },
+        startTicketsFallback
+      ));
+
+      const maintenanceQuery = query(
+        collection(db, 'artifacts', appId, 'maintenancePeriods'),
+        where('studentId', 'in', studentIds)
+      );
+      unsubs.push(onSnapshot(
+        maintenanceQuery,
+        snapshot => {
+          if (maintenanceFallbackStarted) return;
+          maintenanceBuckets.set(chunkIndex, snapshot.docs.map(periodDoc => ({ id: periodDoc.id, ...periodDoc.data() })));
+          publishBuckets(maintenanceBuckets, setMaintenancePeriods);
+        },
+        startMaintenanceFallback
+      ));
+    });
+
+    return () => {
+      unsubs.forEach(unsub => unsub());
+      if (studentsFallbackUnsub) studentsFallbackUnsub();
+      if (ticketsFallbackUnsub) ticketsFallbackUnsub();
+      if (maintenanceFallbackUnsub) maintenanceFallbackUnsub();
+    };
+  }, [user?.uid, db, appId, relevantStudentIds]);
+
+  useEffect(() => {
+    if (!user?.uid || !date) {
+      setDailyReports([]);
+      return;
+    }
+
+    return onSnapshot(
+      doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date),
+      reportSnap => setDailyReports(reportSnap.exists() ? [{ id: reportSnap.id, ...reportSnap.data() }] : []),
+      error => {
+        console.error('No se pudo cargar el resumen diario seleccionado:', error);
+        setDailyReports([]);
+      }
+    );
+  }, [user?.uid, db, appId, date]);
 
   useEffect(() => {
     const reportForDate = dailyReports.find(r => r.id === date);
@@ -2175,8 +2548,13 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
           recoveryDate
         };
 
+        const updatedTargetStudents = [
+          ...(targetClass.students || []).filter(s => !(s.id === gestion.studentId && s.isRecovery && s.recoveryDate === recoveryDate)),
+          recoveryStudent
+        ];
         await updateDoc(doc(db, targetClass.refPath), {
-          students: [...(targetClass.students || []).filter(s => !(s.id === gestion.studentId && s.isRecovery && s.recoveryDate === recoveryDate)), recoveryStudent]
+          students: updatedTargetStudents,
+          studentIds: getClassStudentIds(updatedTargetStudents)
         });
       }
 
@@ -2593,6 +2971,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           notesUpdatedBy: latestSub.notesUpdatedBy || '',
           notesUpdatedByName: latestSub.notesUpdatedByName || '',
           students: latestSub.students || [],
+          studentIds: getClassStudentIds(latestSub.students || []),
           exceptions: hasExceptionsForDate ? { [latestSub.date]: exceptionsForDate } : {},
           autoCancelled: autoCancelledForDate ? { [latestSub.date]: true } : {},
           cancelledDates: [],
@@ -2768,6 +3147,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents,
+        studentIds: getClassStudentIds(templateStudents),
         exceptions: finalExceptions
       }, { merge: true });
 
@@ -3077,6 +3457,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
         students: templateStudents,
+        studentIds: getClassStudentIds(templateStudents),
         exceptions: currentSession.exceptions || {}
       }, { merge: true });
 

@@ -484,9 +484,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [profile, setProfile] = useState(null);
   const [myClasses, setMyClasses] = useState([]);
   const [classesLoaded, setClassesLoaded] = useState(false);
-  const [allClasses, setAllClasses] = useState([]); 
+  const [classCatalog, setClassCatalog] = useState([]);
+  const [relocationTargetClasses, setRelocationTargetClasses] = useState([]);
+  const [classCatalogLoaded, setClassCatalogLoaded] = useState(false);
+  const [classCatalogLoading, setClassCatalogLoading] = useState(false);
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [], centers: [] });
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [announcements, setAnnouncements] = useState([]); 
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [myPollResponses, setMyPollResponses] = useState([]);
@@ -495,7 +499,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [pollClock, setPollClock] = useState(Date.now());
   const [myGestiones, setMyGestiones] = useState([]); 
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
-  const [temporaryClassChanges, setTemporaryClassChanges] = useState([]);
+  const [studentTemporaryClassChanges, setStudentTemporaryClassChanges] = useState([]);
+  const [catalogTemporaryClassChanges, setCatalogTemporaryClassChanges] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
@@ -559,6 +564,26 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const dToday = new Date();
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
   const centers = useMemo(() => normalizeCenters(globalSettings.centers, globalSettings), [globalSettings]);
+  const isStudentClassIndexReady = Number(globalSettings.studentClassIndexVersion || 0) >= 1;
+  const allClasses = useMemo(() => {
+    const byReference = new Map();
+    [...myClasses, ...relocationTargetClasses, ...classCatalog].forEach(classData => {
+      if (!classData) return;
+      const key = classData.refPath || classData.id;
+      if (key) byReference.set(key, classData);
+    });
+    return [...byReference.values()];
+  }, [myClasses, relocationTargetClasses, classCatalog]);
+  const temporaryClassChanges = useMemo(() => {
+    const byId = new Map();
+    [...studentTemporaryClassChanges, ...catalogTemporaryClassChanges].forEach(change => {
+      if (change?.id) byId.set(change.id, change);
+    });
+    return [...byId.values()];
+  }, [studentTemporaryClassChanges, catalogTemporaryClassChanges]);
+  const needsFullClassCatalog = Boolean(
+    mitoboxModal || ['cambio_horario', 'ampliar_clases', 'recuperacion'].includes(gestionModal?.type)
+  );
   const activeCenters = useMemo(() => {
     const active = centers.filter(center => center.status === 'active');
     return active.length > 0 ? active : centers.slice(0, 1);
@@ -1537,6 +1562,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   useEffect(() => {
     checkRegistration();
+    setSettingsLoaded(false);
 
     const unsubAnnouncements = onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -1544,20 +1570,28 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setAnnouncements(data);
     });
 
-    const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        setContractText(data.contract || 'El contrato aún no está disponible.');
-        setGlobalSettings({
-          ...data,
-          festivos: data.festivos || [],
-          vacaciones: data.vacaciones || [],
-          festivosTarragona: data.festivosTarragona || [],
-          festivosReus: data.festivosReus || [],
-          centers: normalizeCenters(data.centers, data)
-        });
+    const unsubSettings = onSnapshot(
+      doc(db, 'artifacts', appId, 'settings', 'global'),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setContractText(data.contract || 'El contrato aún no está disponible.');
+          setGlobalSettings({
+            ...data,
+            festivos: data.festivos || [],
+            vacaciones: data.vacaciones || [],
+            festivosTarragona: data.festivosTarragona || [],
+            festivosReus: data.festivosReus || [],
+            centers: normalizeCenters(data.centers, data)
+          });
+        }
+        setSettingsLoaded(true);
+      },
+      (error) => {
+        console.error('Error al cargar la configuración global', error);
+        setSettingsLoaded(true);
       }
-    });
+    );
 
     return () => {
       unsubAnnouncements();
@@ -1604,9 +1638,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   }, [globalSettings, effectiveMyClasses, temporaryClassChanges, profile, todayStr, centers]);
 
   useEffect(() => {
-    if (!profile?.id) return;
+    if (!profile?.id || !settingsLoaded) return;
     setClassesLoaded(false);
     setWorkshopsLoaded(false);
+    if (!isStudentClassIndexReady) setClassCatalogLoaded(false);
     
     const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
       if (docSnap.exists()) {
@@ -1614,8 +1649,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       }
     });
 
-    const classesQuery = collectionGroup(db, 'recurringClasses');
-    const unsubClasses = onSnapshot(classesQuery, (snapshot) => {
+    const processClassesSnapshot = (snapshot, usingStudentIndex) => {
       const all = [];
       const mine = [];
       snapshot.forEach(doc => {
@@ -1623,32 +1657,58 @@ export default function StudentPortal({ user, logout, db, appId }) {
         const classObj = { id: doc.id, refPath: doc.ref.path, ...data };
         all.push(classObj); 
         
-        if (data.students && data.students.some(s => s.id === profile.id)) {
+        if (usingStudentIndex || (data.students && data.students.some(s => s.id === profile.id))) {
           mine.push(classObj); 
         }
       });
-      setAllClasses(all);
+      if (!usingStudentIndex) {
+        setClassCatalog(all);
+        setClassCatalogLoaded(true);
+      }
       setMyClasses(mine);
       setClassesLoaded(true);
-    });
+    };
+
+    let unsubClasses = () => {};
+    const subscribeLegacyClasses = () => {
+      unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snapshot) => {
+        processClassesSnapshot(snapshot, false);
+      }, (legacyError) => {
+        console.error('Error al cargar las clases del alumno mediante compatibilidad', legacyError);
+        setMyClasses([]);
+        setClassCatalog([]);
+        setClassCatalogLoaded(true);
+        setClassesLoaded(true);
+      });
+    };
+
+    if (isStudentClassIndexReady) {
+      const indexedClassesQuery = query(
+        collectionGroup(db, 'recurringClasses'),
+        where('studentIds', 'array-contains', profile.id)
+      );
+      unsubClasses = onSnapshot(indexedClassesQuery, (snapshot) => {
+        processClassesSnapshot(snapshot, true);
+      }, (error) => {
+        console.error('La consulta studentIds no está disponible; se activa compatibilidad temporal', error);
+        subscribeLegacyClasses();
+      });
+    } else {
+      subscribeLegacyClasses();
+    }
 
     const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
     const unsubGestiones = onSnapshot(q, (snapshot) => {
       setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
-    const unsubTemporaryRelocations = onSnapshot(collection(db, 'artifacts', appId, 'temporaryRelocations'), (snapshot) => {
+    const temporaryRelocationsQuery = query(
+      collection(db, 'artifacts', appId, 'temporaryRelocations'),
+      where('studentId', '==', profile.id)
+    );
+    const unsubTemporaryRelocations = onSnapshot(temporaryRelocationsQuery, (snapshot) => {
       setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
-
-    const unsubTemporaryClassChanges = onSnapshot(
-      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-      (snapshot) => setTemporaryClassChanges(snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))),
-      (error) => {
-        console.error('Error al cargar los cambios temporales de clase', error);
-        setTemporaryClassChanges([]);
-      }
-    );
 
     const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentId', '==', profile.id));
     const unsubMaintenancePeriods = onSnapshot(maintenanceQuery, (snapshot) => {
@@ -1687,24 +1747,23 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => console.error('Error al cargar respuestas de encuestas', error)
     );
 
-    const ticketsQuery = collectionGroup(db, 'tickets');
+    const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentId', '==', profile.id));
     const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
       let validTicketsCount = 0;
       let futureSummerTicketsCount = 0;
       let activeSummerTicketsCount = 0;
       snapshot.forEach(doc => {
         const data = doc.data();
-        const isMine = data.studentId === profile.id;
         const isPending = !data.isUsed && !data.voided;
         const isAlreadyValid = !data.validFrom || data.validFrom <= todayStr;
         const isNotExpired = !data.validUntil || data.validUntil >= todayStr;
         const isFuture = data.validFrom && data.validFrom > todayStr;
         const isSummerTicket = data.isSummerTicket || data.recoveryPolicy === 'summer';
 
-        if (isMine && isPending && isAlreadyValid && isNotExpired) {
+        if (isPending && isAlreadyValid && isNotExpired) {
           validTicketsCount++;
           if (isSummerTicket) activeSummerTicketsCount++;
-        } else if (isMine && isPending && isFuture && isSummerTicket) {
+        } else if (isPending && isFuture && isSummerTicket) {
           futureSummerTicketsCount++;
         }
       });
@@ -1721,14 +1780,215 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubClasses(); 
       unsubGestiones();
       unsubTemporaryRelocations();
-      unsubTemporaryClassChanges();
       unsubMaintenancePeriods();
       unsubWorkshops();
       unsubWorkshopRegistrations();
       unsubPollResponses();
       unsubTickets(); 
     };
-  }, [profile?.id, db, appId]);
+  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, db, appId]);
+
+  // Una recolocación puede llevar al alumno a una clase que no forma parte de su plaza fija.
+  // Escuchamos solo esas clases destino, utilizando la ruta exacta guardada por Admin.
+  useEffect(() => {
+    if (!profile?.id || !isStudentClassIndexReady) {
+      setRelocationTargetClasses([]);
+      return;
+    }
+
+    const activeRelocations = temporaryRelocations.filter(relocation => (
+      relocation.studentId === profile.id && isTemporaryRelocationActiveForDate(relocation, todayStr)
+    ));
+    const targetPaths = [...new Set(activeRelocations.map(relocation => relocation.targetClassRefPath).filter(Boolean))];
+    const missingTargetIds = [...new Set(
+      activeRelocations
+        .filter(relocation => !relocation.targetClassRefPath)
+        .map(relocation => relocation.targetClassId)
+        .filter(Boolean)
+    )];
+
+    if (targetPaths.length === 0 && missingTargetIds.length === 0) {
+      setRelocationTargetClasses([]);
+      return;
+    }
+
+    let cancelled = false;
+    const classesByReference = new Map();
+    const publish = () => {
+      if (!cancelled) setRelocationTargetClasses([...classesByReference.values()]);
+    };
+    const unsubs = targetPaths.map(refPath => onSnapshot(
+      doc(db, refPath),
+      (classSnap) => {
+        if (classSnap.exists()) {
+          classesByReference.set(refPath, { id: classSnap.id, refPath: classSnap.ref.path, ...classSnap.data() });
+        } else {
+          classesByReference.delete(refPath);
+        }
+        publish();
+      },
+      (error) => console.error('Error al cargar una clase de recolocación', error)
+    ));
+
+    // Compatibilidad excepcional con recolocaciones antiguas sin targetClassRefPath.
+    if (missingTargetIds.length > 0) {
+      getDocs(collectionGroup(db, 'recurringClasses')).then(snapshot => {
+        snapshot.forEach(classDoc => {
+          if (missingTargetIds.includes(classDoc.id)) {
+            classesByReference.set(classDoc.ref.path, { id: classDoc.id, refPath: classDoc.ref.path, ...classDoc.data() });
+          }
+        });
+        publish();
+      }).catch(error => console.error('Error al recuperar una clase de recolocación antigua', error));
+    }
+
+    return () => {
+      cancelled = true;
+      unsubs.forEach(unsub => unsub());
+    };
+  }, [profile?.id, isStudentClassIndexReady, temporaryRelocations, todayStr, db]);
+
+  // Los cambios temporales ordinarios se limitan a las clases propias y de recolocación.
+  // Antes de que Admin active el índice, se conserva automáticamente el listener global heredado.
+  useEffect(() => {
+    if (!profile?.id || !settingsLoaded) return;
+
+    if (!isStudentClassIndexReady) {
+      const unsubLegacyChanges = onSnapshot(
+        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+        snapshot => setStudentTemporaryClassChanges(snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))),
+        error => {
+          console.error('Error al cargar los cambios temporales de clase', error);
+          setStudentTemporaryClassChanges([]);
+        }
+      );
+      return () => unsubLegacyChanges();
+    }
+
+    const relevantClassIds = [...new Set(
+      [...myClasses, ...relocationTargetClasses].map(classData => classData.id).filter(Boolean)
+    )];
+    if (relevantClassIds.length === 0) {
+      setStudentTemporaryClassChanges([]);
+      return;
+    }
+
+    const chunks = [];
+    for (let index = 0; index < relevantClassIds.length; index += 10) {
+      chunks.push(relevantClassIds.slice(index, index + 10));
+    }
+
+    const snapshotsByChunk = new Map();
+    let fallbackUnsub = null;
+    let fallbackStarted = false;
+    const unsubs = [];
+    const publish = () => {
+      const byId = new Map();
+      snapshotsByChunk.forEach(items => items.forEach(item => byId.set(item.id, item)));
+      setStudentTemporaryClassChanges([...byId.values()]);
+    };
+    const startFallback = (error) => {
+      if (fallbackStarted) return;
+      fallbackStarted = true;
+      console.error('La consulta optimizada de cambios temporales falló; se aplica compatibilidad heredada', error);
+      unsubs.forEach(unsub => unsub());
+      fallbackUnsub = onSnapshot(
+        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+        snapshot => {
+          setStudentTemporaryClassChanges(snapshot.docs
+            .map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))
+            .filter(change => relevantClassIds.includes(change.classId)));
+        },
+        fallbackError => {
+          console.error('Error al cargar los cambios temporales de clase', fallbackError);
+          setStudentTemporaryClassChanges([]);
+        }
+      );
+    };
+
+    chunks.forEach((classIds, chunkIndex) => {
+      const changesQuery = query(
+        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+        where('classId', 'in', classIds)
+      );
+      const unsub = onSnapshot(
+        changesQuery,
+        snapshot => {
+          snapshotsByChunk.set(chunkIndex, snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() })));
+          publish();
+        },
+        startFallback
+      );
+      unsubs.push(unsub);
+    });
+
+    return () => {
+      unsubs.forEach(unsub => unsub());
+      if (fallbackUnsub) fallbackUnsub();
+    };
+  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, myClasses, relocationTargetClasses, db, appId]);
+
+  // El catálogo completo solo es necesario para buscar plazas o calcular disponibilidad Mitobox.
+  // Se abre en tiempo real mientras el modal correspondiente está visible y se libera al cerrarlo.
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (!isStudentClassIndexReady) {
+      setClassCatalogLoading(false);
+      return;
+    }
+    if (!needsFullClassCatalog) {
+      setClassCatalogLoading(false);
+      setClassCatalogLoaded(false);
+      setClassCatalog([]);
+      setCatalogTemporaryClassChanges([]);
+      return;
+    }
+
+    setClassCatalogLoading(true);
+    setClassCatalogLoaded(false);
+    let classesReady = false;
+    let changesReady = false;
+    const finishIfReady = () => {
+      if (classesReady && changesReady) {
+        setClassCatalogLoading(false);
+        setClassCatalogLoaded(true);
+      }
+    };
+
+    const unsubClassCatalog = onSnapshot(
+      collectionGroup(db, 'recurringClasses'),
+      snapshot => {
+        setClassCatalog(snapshot.docs.map(classDoc => ({ id: classDoc.id, refPath: classDoc.ref.path, ...classDoc.data() })));
+        classesReady = true;
+        finishIfReady();
+      },
+      error => {
+        console.error('Error al cargar el catálogo de clases', error);
+        setClassCatalog([]);
+        classesReady = true;
+        finishIfReady();
+      }
+    );
+    const unsubCatalogChanges = onSnapshot(
+      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
+      snapshot => {
+        setCatalogTemporaryClassChanges(snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() })));
+        changesReady = true;
+        finishIfReady();
+      },
+      error => {
+        console.error('Error al cargar los cambios temporales del catálogo', error);
+        setCatalogTemporaryClassChanges([]);
+        changesReady = true;
+        finishIfReady();
+      }
+    );
+
+    return () => {
+      unsubClassCatalog();
+      unsubCatalogChanges();
+    };
+  }, [settingsLoaded, isStudentClassIndexReady, needsFullClassCatalog, db, appId]);
 
   useEffect(() => {
     let timer;
@@ -2905,6 +3165,7 @@ END:VCALENDAR`;
     const isSendDisabled = isSendingGestion || 
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
       (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) ||
+      (isClassSearch && (!classCatalogLoaded || classCatalogLoading)) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
       isMaintenanceChoiceInvalid;
@@ -3072,7 +3333,11 @@ END:VCALENDAR`;
                 </select>
               )}
 
-              {gestionModal.type === 'cambio_horario' && !resolvedSourceClass ? (
+              {classCatalogLoading || !classCatalogLoaded ? (
+                <div className="bg-blue-50 p-4 rounded-xl text-center border-2 border-dashed border-blue-100">
+                  <p className="text-xs font-bold text-blue-700 uppercase tracking-wider">Consultando plazas disponibles...</p>
+                </div>
+              ) : gestionModal.type === 'cambio_horario' && !resolvedSourceClass ? (
                 <div className="bg-zinc-50 p-4 rounded-xl text-center border-2 border-dashed border-zinc-100">
                   <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Elige primero la plaza que quieres cambiar.</p>
                 </div>
@@ -3348,7 +3613,11 @@ END:VCALENDAR`;
           {mboxDate && mboxSede && (
             <div className="mb-6 space-y-4 border-t border-zinc-100 pt-4">
               <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block">4. Salas y Horas disponibles</label>
-              {availableMboxSlots.length > 0 ? (
+              {classCatalogLoading || !classCatalogLoaded ? (
+                <div className="bg-blue-50 p-4 rounded-xl text-center border-2 border-dashed border-blue-100">
+                  <p className="text-xs font-bold text-blue-700">Consultando la ocupación de las aulas...</p>
+                </div>
+              ) : availableMboxSlots.length > 0 ? (
                 <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
                   {availableMboxSlots.map((slot, i) => (
                     <button 
@@ -3369,7 +3638,7 @@ END:VCALENDAR`;
             </div>
           )}
 
-          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
             {isSendingGestion ? 'Enviando...' : <><CheckCircle className="w-4 h-4"/> Confirmar Reserva</>}
           </button>
         </div>

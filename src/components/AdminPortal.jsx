@@ -115,6 +115,77 @@ const withClassStudentIndex = (classStudents = []) => ({
   studentIds: getClassStudentIds(classStudents)
 });
 
+const ADMIN_STARTUP_DATA_LABELS = {
+  gestiones: 'Bandeja de gestiones',
+  students: 'Alumnos',
+  settings: 'Configuración global',
+  classes: 'Clases',
+  tickets: 'Tickets de recuperación',
+  temporaryRelocations: 'Recolocaciones temporales',
+  temporaryClassChanges: 'Cambios temporales de clase',
+  maintenancePeriods: 'Periodos de mantenimiento',
+  teacherTasks: 'Tareas y peticiones de profesores',
+  workshopRegistrations: 'Inscripciones en talleres'
+};
+
+const ADMIN_DEFERRED_DATA_LABELS = {
+  announcements: 'Avisos del tablón',
+  availability: 'Disponibilidad docente',
+  records: 'Historial de asistencias',
+  payrollAdjustments: 'Ajustes de nómina',
+  teacherEvaluations: 'Evaluaciones docentes',
+  pollResponses: 'Respuestas de encuestas'
+};
+
+const ADMIN_TAB_DEFERRED_DATA_KEYS = {
+  classes: ['availability'],
+  teachers: ['availability', 'records', 'payrollAdjustments', 'teacherEvaluations'],
+  announcements: ['announcements', 'pollResponses'],
+  gamification: ['announcements']
+};
+
+const ADMIN_VERIFIED_QUERY_TIMEOUT_MS = 20000;
+
+const subscribeVerifiedAdminSnapshot = ({ reference, label, applySnapshot, onStatus }) => {
+  let disposed = false;
+  let serverVerified = false;
+  let verificationTimeoutId;
+
+  const handleError = error => {
+    if (disposed) return;
+    console.error(`No se pudo cargar ${label}:`, error);
+    onStatus('error');
+  };
+
+  const unsubscribe = onSnapshot(
+    reference,
+    { includeMetadataChanges: true },
+    snapshot => {
+      if (disposed) return;
+      try {
+        applySnapshot(snapshot);
+        if (snapshot.metadata?.fromCache === true) return;
+        serverVerified = true;
+        if (verificationTimeoutId) window.clearTimeout(verificationTimeoutId);
+        onStatus('ready');
+      } catch (error) {
+        handleError(error);
+      }
+    },
+    handleError
+  );
+
+  verificationTimeoutId = window.setTimeout(() => {
+    if (!serverVerified) handleError(new Error('Tiempo de espera agotado'));
+  }, ADMIN_VERIFIED_QUERY_TIMEOUT_MS);
+
+  return () => {
+    disposed = true;
+    if (verificationTimeoutId) window.clearTimeout(verificationTimeoutId);
+    unsubscribe();
+  };
+};
+
 const haveSameStringValues = (left = [], right = []) => {
   const normalizedLeft = uniqueStrings(left).sort();
   const normalizedRight = uniqueStrings(right).sort();
@@ -1270,6 +1341,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
   const createWorkshopDraft = () => ({ ...createEmptyWorkshop(), locationType: defaultWorkshopCenterName });
   const [workshops, setWorkshops] = useState([]);
   const [loadingWorkshops, setLoadingWorkshops] = useState(true);
+  const [workshopLoadError, setWorkshopLoadError] = useState('');
+  const [workshopRetryVersion, setWorkshopRetryVersion] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -1280,19 +1353,25 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
   const [expandedWorkshopId, setExpandedWorkshopId] = useState(null);
 
   useEffect(() => {
-    const unsubWorkshops = onSnapshot(
-      collection(db, 'artifacts', appId, 'workshops'),
-      snap => {
+    setLoadingWorkshops(true);
+    setWorkshopLoadError('');
+    return subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'workshops'),
+      label: 'los talleres',
+      applySnapshot: snap => {
         setWorkshops(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(a.sessions?.[0]?.date || '2999-12-31') - new Date(b.sessions?.[0]?.date || '2999-12-31')));
-        setLoadingWorkshops(false);
       },
-      error => {
-        console.error('No se pudieron cargar los talleres:', error);
+      onStatus: status => {
+        if (status === 'ready') {
+          setWorkshopLoadError('');
+          setLoadingWorkshops(false);
+          return;
+        }
+        setWorkshopLoadError('No se han podido verificar los talleres. No se mostrará una lista vacía porque podría ser incorrecta.');
         setLoadingWorkshops(false);
       }
-    );
-    return () => { unsubWorkshops(); };
-  }, [appId, db]);
+    });
+  }, [appId, db, workshopRetryVersion]);
 
   const getWorkshopRegistrations = workshopId => registrations.filter(registration => registration.workshopId === workshopId);
 
@@ -1589,6 +1668,15 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
   if (loadingWorkshops) return <div className="bg-white border border-zinc-200 rounded-2xl p-10 text-center font-black uppercase tracking-widest text-zinc-400">Cargando talleres...</div>;
 
+  if (workshopLoadError) return (
+    <div className="bg-red-50 border-2 border-red-200 rounded-2xl p-8 text-center">
+      <AlertTriangle className="w-9 h-9 text-red-600 mx-auto mb-3"/>
+      <h2 className="font-black uppercase tracking-tight text-red-950">No se pudieron cargar los talleres</h2>
+      <p className="text-sm font-bold text-red-800 mt-2">{workshopLoadError}</p>
+      <button type="button" onClick={() => setWorkshopRetryVersion(version => version + 1)} className="mt-5 bg-red-700 hover:bg-red-800 text-white px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px]">Reintentar carga</button>
+    </div>
+  );
+
   return (
     <div className="space-y-6 animate-in fade-in">
       <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1725,9 +1813,13 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
   const [loading, setLoading] = useState(true);
+  const [startupLoadErrors, setStartupLoadErrors] = useState({});
+  const [startupRetryVersion, setStartupRetryVersion] = useState(0);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [classesLoaded, setClassesLoaded] = useState(false);
   const [activatedDataAreas, setActivatedDataAreas] = useState({ gestiones: true });
+  const [deferredDataStatus, setDeferredDataStatus] = useState({});
+  const [deferredRetryVersion, setDeferredRetryVersion] = useState(0);
   const classIndexMigrationRef = useRef(false);
 
   // --- DATOS GLOBALES ---
@@ -1891,24 +1983,74 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [savingCenter, setSavingCenter] = useState(false);
 
   useEffect(() => {
-    let loaded = 0;
-    const checkLoad = () => { loaded++; if (loaded === 10) setLoading(false); };
+    let disposed = false;
+    let startupTimeoutId;
+    const settledSources = new Set();
+    const expectedSources = Object.keys(ADMIN_STARTUP_DATA_LABELS).length;
 
-    const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
-      setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
-      checkLoad(); 
+    setLoading(true);
+    setStartupLoadErrors({});
+    setSettingsLoaded(false);
+    setClassesLoaded(false);
+
+    const markSourceSettled = source => {
+      if (disposed || settledSources.has(source)) return;
+      settledSources.add(source);
+      if (settledSources.size === expectedSources) {
+        if (startupTimeoutId) window.clearTimeout(startupTimeoutId);
+        setLoading(false);
+      }
+    };
+
+    const clearSourceError = source => {
+      setStartupLoadErrors(previous => {
+        if (!previous[source]) return previous;
+        const next = { ...previous };
+        delete next[source];
+        return next;
+      });
+    };
+
+    const handleSourceError = (source, error) => {
+      if (disposed) return;
+      console.error(`No se pudo cargar ${ADMIN_STARTUP_DATA_LABELS[source] || source}:`, error);
+      setStartupLoadErrors(previous => ({
+        ...previous,
+        [source]: ADMIN_STARTUP_DATA_LABELS[source] || source
+      }));
+      markSourceSettled(source);
+    };
+
+    const subscribeStartupSource = (source, reference, applySnapshot) => onSnapshot(
+      reference,
+      { includeMetadataChanges: true },
+      snapshot => {
+        if (disposed) return;
+        try {
+          applySnapshot(snapshot);
+          if (snapshot.metadata?.fromCache === true) return;
+          clearSourceError(source);
+          markSourceSettled(source);
+        } catch (error) {
+          handleSourceError(source, error);
+        }
+      },
+      error => handleSourceError(source, error)
+    );
+
+    const unsubGestiones = subscribeStartupSource('gestiones', collection(db, 'artifacts', appId, 'gestiones'), snap => {
+      setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date)));
     });
-    const unsubStudents = onSnapshot(collection(db, 'artifacts', appId, 'students'), (snap) => { 
-      setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => a.name.localeCompare(b.name))); 
-      checkLoad(); 
+    const unsubStudents = subscribeStartupSource('students', collection(db, 'artifacts', appId, 'students'), snap => {
+      setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => String(a.name || '').localeCompare(String(b.name || ''))));
     });
-    const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => { 
+    const unsubSettings = subscribeStartupSource('settings', doc(db, 'artifacts', appId, 'settings', 'global'), docSnap => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         const normalizedCenters = normalizeCenters(data.centers, data);
         const legacyCenterSettings = buildLegacyCenterSettings(normalizedCenters, data);
-        setSettings(prev => ({ 
-          ...prev, 
+        setSettings(prev => ({
+          ...prev,
           ...data,
           ...legacyCenterSettings,
           centers: normalizedCenters,
@@ -1926,60 +2068,39 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         }
       }
       setSettingsLoaded(true);
-      checkLoad(); 
     });
-    const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
+    const unsubClasses = subscribeStartupSource('classes', collectionGroup(db, 'recurringClasses'), snap => {
       setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
       setClassesLoaded(true);
-      checkLoad();
     });
-
-    const unsubTickets = onSnapshot(collectionGroup(db, 'tickets'), (snap) => {
+    const unsubTickets = subscribeStartupSource('tickets', collectionGroup(db, 'tickets'), snap => {
       setAllTickets(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
-      checkLoad();
     });
-
-    const unsubTemporaryRelocations = onSnapshot(collection(db, 'artifacts', appId, 'temporaryRelocations'), (snap) => {
+    const unsubTemporaryRelocations = subscribeStartupSource('temporaryRelocations', collection(db, 'artifacts', appId, 'temporaryRelocations'), snap => {
       setTemporaryRelocations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-      checkLoad();
     });
-
-    const unsubTemporaryClassChanges = onSnapshot(
-      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-      (snap) => {
-        setTemporaryClassChanges(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-        checkLoad();
-      },
-      (error) => {
-        console.error('No se pudieron cargar los cambios temporales de clase:', error);
-        setTemporaryClassChanges([]);
-        checkLoad();
-      }
-    );
-
-    const unsubMaintenancePeriods = onSnapshot(collection(db, 'artifacts', appId, 'maintenancePeriods'), (snap) => {
+    const unsubTemporaryClassChanges = subscribeStartupSource('temporaryClassChanges', collection(db, 'artifacts', appId, 'temporaryClassChanges'), snap => {
+      setTemporaryClassChanges(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+    });
+    const unsubMaintenancePeriods = subscribeStartupSource('maintenancePeriods', collection(db, 'artifacts', appId, 'maintenancePeriods'), snap => {
       setMaintenancePeriods(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-      checkLoad();
     });
-
-    const unsubTeacherTasks = onSnapshot(collection(db, 'artifacts', appId, 'teacherTasks'), (snap) => {
+    const unsubTeacherTasks = subscribeStartupSource('teacherTasks', collection(db, 'artifacts', appId, 'teacherTasks'), snap => {
       setTeacherTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)));
-      checkLoad();
+    });
+    const unsubWorkshopRegistrations = subscribeStartupSource('workshopRegistrations', collection(db, 'artifacts', appId, 'workshopRegistrations'), snap => {
+      setWorkshopRegistrations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)));
     });
 
-    const unsubWorkshopRegistrations = onSnapshot(
-      collection(db, 'artifacts', appId, 'workshopRegistrations'),
-      (snap) => {
-        setWorkshopRegistrations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0)));
-        checkLoad();
-      },
-      (error) => {
-        console.error('No se pudieron cargar las inscripciones de talleres:', error);
-        checkLoad();
-      }
-    );
+    startupTimeoutId = window.setTimeout(() => {
+      Object.keys(ADMIN_STARTUP_DATA_LABELS)
+        .filter(source => !settledSources.has(source))
+        .forEach(source => handleSourceError(source, new Error('Tiempo de espera agotado')));
+    }, 20000);
 
     return () => {
+      disposed = true;
+      if (startupTimeoutId) window.clearTimeout(startupTimeoutId);
       unsubGestiones();
       unsubStudents();
       unsubSettings();
@@ -1991,7 +2112,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       unsubTeacherTasks();
       unsubWorkshopRegistrations();
     };
-  }, [appId, db]);
+  }, [appId, db, startupRetryVersion]);
 
   useEffect(() => {
     setActivatedDataAreas(previous => previous[activeTab]
@@ -2008,63 +2129,103 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // durante la sesión para no volver a pagar su carga inicial al alternar pestañas.
   useEffect(() => {
     if (!needsAnnouncementsData) return undefined;
-    return onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snap) => {
-      setAnnouncements(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.date) - new Date(a.date)));
-    }, (error) => console.error('No se pudieron cargar los avisos:', error));
-  }, [needsAnnouncementsData, appId, db]);
+    setDeferredDataStatus(previous => ({ ...previous, announcements: 'loading' }));
+    return subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'announcements'),
+      label: 'los avisos',
+      applySnapshot: snap => {
+        setAnnouncements(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.date) - new Date(a.date)));
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, announcements: status }))
+    });
+  }, [needsAnnouncementsData, appId, db, deferredRetryVersion]);
 
   // La disponibilidad se necesita al crear/editar clases y dentro del panel de profesores.
   useEffect(() => {
     if (!needsAvailabilityData) return undefined;
-    return onSnapshot(collection(db, 'artifacts', appId, 'availability'), (snap) => {
-      const av = {};
-      snap.forEach(d => {
-        const key = normalizeTeacherKey(d.id);
-        if (!key) return;
-        const incomingSlots = d.data().slots || {};
-        const mergedSlots = { ...(av[key] || {}) };
-        Object.entries(incomingSlots).forEach(([day, slots]) => {
-          const uniqueSlots = [...(mergedSlots[day] || []), ...(Array.isArray(slots) ? slots : [])]
-            .filter(slot => slot?.start && slot?.end)
-            .filter((slot, index, list) => list.findIndex(item => item.start === slot.start && item.end === slot.end) === index)
-            .sort((a, b) => a.start.localeCompare(b.start));
-          mergedSlots[day] = uniqueSlots;
+    setDeferredDataStatus(previous => ({ ...previous, availability: 'loading' }));
+    return subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'availability'),
+      label: 'la disponibilidad docente',
+      applySnapshot: snap => {
+        const av = {};
+        snap.forEach(d => {
+          const key = normalizeTeacherKey(d.id);
+          if (!key) return;
+          const incomingSlots = d.data().slots || {};
+          const mergedSlots = { ...(av[key] || {}) };
+          Object.entries(incomingSlots).forEach(([day, slots]) => {
+            const uniqueSlots = [...(mergedSlots[day] || []), ...(Array.isArray(slots) ? slots : [])]
+              .filter(slot => slot?.start && slot?.end)
+              .filter((slot, index, list) => list.findIndex(item => item.start === slot.start && item.end === slot.end) === index)
+              .sort((a, b) => a.start.localeCompare(b.start));
+            mergedSlots[day] = uniqueSlots;
+          });
+          av[key] = mergedSlots;
         });
-        av[key] = mergedSlots;
-      });
-      setAvailabilities(av);
-    }, (error) => console.error('No se pudo cargar la disponibilidad docente:', error));
-  }, [needsAvailabilityData, appId, db]);
+        setAvailabilities(av);
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, availability: status }))
+    });
+  }, [needsAvailabilityData, appId, db, deferredRetryVersion]);
 
   // Asistencias, ajustes y evaluaciones son históricos pesados: se conectan al abrir Profesores.
   useEffect(() => {
     if (!needsTeacherHistoryData) return undefined;
 
-    const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
-      setAllRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (error) => console.error('No se pudo cargar el histórico de asistencias:', error));
+    setDeferredDataStatus(previous => ({
+      ...previous,
+      records: 'loading',
+      payrollAdjustments: 'loading',
+      teacherEvaluations: 'loading'
+    }));
 
-    const unsubPayrollAdjustments = onSnapshot(collection(db, 'artifacts', appId, 'payrollAdjustments'), (snap) => {
-      setPayrollAdjustments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-    }, (error) => console.error('No se pudieron cargar los ajustes de nómina:', error));
+    const unsubRecords = subscribeVerifiedAdminSnapshot({
+      reference: collectionGroup(db, 'records'),
+      label: 'el histórico de asistencias',
+      applySnapshot: snap => {
+        setAllRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, records: status }))
+    });
 
-    const unsubTeacherEvaluations = onSnapshot(collection(db, 'artifacts', appId, 'teacherEvaluations'), (snap) => {
-      setTeacherEvaluations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)));
-    }, (error) => console.error('No se pudieron cargar las evaluaciones docentes:', error));
+    const unsubPayrollAdjustments = subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'payrollAdjustments'),
+      label: 'los ajustes de nómina',
+      applySnapshot: snap => {
+        setPayrollAdjustments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, payrollAdjustments: status }))
+    });
+
+    const unsubTeacherEvaluations = subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'teacherEvaluations'),
+      label: 'las evaluaciones docentes',
+      applySnapshot: snap => {
+        setTeacherEvaluations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)));
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, teacherEvaluations: status }))
+    });
 
     return () => {
       unsubRecords();
       unsubPayrollAdjustments();
       unsubTeacherEvaluations();
     };
-  }, [needsTeacherHistoryData, appId, db]);
+  }, [needsTeacherHistoryData, appId, db, deferredRetryVersion]);
 
   useEffect(() => {
     if (!needsPollResponsesData) return undefined;
-    return onSnapshot(collection(db, 'artifacts', appId, 'pollResponses'), (snap) => {
-      setPollResponses(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)));
-    }, (error) => console.error('No se pudieron cargar las respuestas de encuestas:', error));
-  }, [needsPollResponsesData, appId, db]);
+    setDeferredDataStatus(previous => ({ ...previous, pollResponses: 'loading' }));
+    return subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'pollResponses'),
+      label: 'las respuestas de encuestas',
+      applySnapshot: snap => {
+        setPollResponses(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)));
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, pollResponses: status }))
+    });
+  }, [needsPollResponsesData, appId, db, deferredRetryVersion]);
 
   // Migra una sola vez las clases antiguas. StudentPortal no activa la consulta optimizada
   // hasta que todas las clases contienen un índice studentIds coherente.
@@ -10238,7 +10399,45 @@ ${startDateWarning}
     );
   };
 
+  const startupLoadErrorEntries = Object.entries(startupLoadErrors);
+  const activeDeferredDataKeys = ADMIN_TAB_DEFERRED_DATA_KEYS[activeTab] || [];
+  const activeDeferredLoadingEntries = activeDeferredDataKeys
+    .filter(key => !['ready', 'error'].includes(deferredDataStatus[key]))
+    .map(key => [key, ADMIN_DEFERRED_DATA_LABELS[key] || key]);
+  const activeDeferredErrorEntries = activeDeferredDataKeys
+    .filter(key => deferredDataStatus[key] === 'error')
+    .map(key => [key, ADMIN_DEFERRED_DATA_LABELS[key] || key]);
+
+  const retryActiveDeferredData = () => {
+    setDeferredDataStatus(previous => {
+      const next = { ...previous };
+      activeDeferredDataKeys.forEach(key => { next[key] = 'loading'; });
+      return next;
+    });
+    setDeferredRetryVersion(version => version + 1);
+  };
+
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Admin...</div>;
+
+  if (startupLoadErrorEntries.length > 0) return (
+    <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-6">
+      <div className="w-full max-w-xl bg-zinc-900 border-2 border-red-600 rounded-3xl p-7 shadow-2xl">
+        <AlertTriangle className="w-10 h-10 text-red-500 mb-4"/>
+        <h1 className="text-2xl font-black uppercase tracking-tight">Admin no se ha cargado con seguridad</h1>
+        <p className="text-sm font-bold text-zinc-300 mt-3 leading-relaxed">Se ha detenido la operativa para evitar que datos no cargados parezcan listas vacías o cifras reales.</p>
+        <div className="mt-5 bg-black/40 border border-zinc-700 rounded-2xl p-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">No se pudo verificar</p>
+          <ul className="space-y-1.5 text-sm font-bold text-red-300">
+            {startupLoadErrorEntries.map(([key, label]) => <li key={key}>• {label}</li>)}
+          </ul>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 mt-6">
+          <button type="button" onClick={() => setStartupRetryVersion(version => version + 1)} className="flex-1 bg-red-600 hover:bg-red-700 text-white px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px]">Reintentar carga</button>
+          <button type="button" onClick={logout} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px]">Cerrar sesión</button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
@@ -10338,6 +10537,28 @@ ${startDateWarning}
             </button>
           </div>
         )}
+
+        {activeDeferredErrorEntries.length > 0 ? (
+          <div className="bg-red-50 border-2 border-red-200 rounded-3xl p-7 shadow-sm">
+            <AlertTriangle className="w-9 h-9 text-red-600 mb-3"/>
+            <h2 className="text-xl font-black uppercase tracking-tight text-red-950">No se puede abrir este apartado con datos fiables</h2>
+            <p className="text-sm font-bold text-red-800 mt-2">Se ha bloqueado temporalmente para que un fallo de consulta no se confunda con historiales vacíos, cero horas, ausencia de respuestas o falta de disponibilidad.</p>
+            <div className="mt-4 bg-white border border-red-200 rounded-2xl p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-red-500 mb-2">No se pudo verificar</p>
+              <ul className="space-y-1.5 text-sm font-bold text-red-900">
+                {activeDeferredErrorEntries.map(([key, label]) => <li key={key}>• {label}</li>)}
+              </ul>
+            </div>
+            <button type="button" onClick={retryActiveDeferredData} className="mt-5 bg-red-700 hover:bg-red-800 text-white px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px]">Reintentar este apartado</button>
+          </div>
+        ) : activeDeferredLoadingEntries.length > 0 ? (
+          <div className="bg-white border border-zinc-200 rounded-3xl p-10 text-center shadow-sm">
+            <Activity className="w-8 h-8 text-indigo-600 mx-auto mb-3 animate-pulse"/>
+            <p className="font-black uppercase tracking-widest text-sm text-slate-800">Cargando datos del apartado...</p>
+            <p className="text-xs font-bold text-zinc-500 mt-2">{activeDeferredLoadingEntries.map(([, label]) => label).join(' · ')}</p>
+          </div>
+        ) : (
+          <>
 
         {/* --- PESTAÑA: INFORMES (BUSINESS INTELLIGENCE) --- */}
         {activeTab === 'informes' && (
@@ -13223,6 +13444,9 @@ ${startDateWarning}
             </div>
 
           </div>
+        )}
+
+          </>
         )}
 
       </main>

@@ -824,7 +824,24 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const today = getTodayLocalString();
     const operationalLookbackDate = shiftLocalDateString(today, -3);
 
-    const recurringRef = collection(db, 'artifacts', appId, 'users', user.uid, 'recurringClasses');
+    // Las clases creadas desde Admin no siempre viven bajo el UID de Auth del
+    // profesor. Históricamente también se han guardado bajo una clave derivada
+    // de su correo (por ejemplo, profesor_escuelalosmitos_com). Escuchamos
+    // ambas rutas conocidas y solo usamos la consulta global heredada si las
+    // rutas directas no resuelven ninguna clase o alguna no puede consultarse.
+    const teacherSchoolEmail = `${String(myName || '')
+      .trim()
+      .toLocaleLowerCase('es-ES')
+      .replace(/\s+/g, '.')}@escuelalosmitos.com`;
+    const recurringOwnerUids = [...new Set([
+      user.uid,
+      teacherEmail ? teacherEmail.replace(/[@.]/g, '_') : '',
+      teacherSchoolEmail.replace(/[@.]/g, '_')
+    ].filter(Boolean))];
+    const recurringRefs = recurringOwnerUids.map(ownerUid => ({
+      ownerUid,
+      ref: collection(db, 'artifacts', appId, 'users', ownerUid, 'recurringClasses')
+    }));
     const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
     const substitutionsRef = query(
@@ -897,6 +914,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     };
 
     let recurringFallbackUnsub = null;
+    let recurringFallbackActive = false;
     let recordsFallbackUnsub = null;
     let substitutionsFallbackUnsub = null;
     let temporaryRelocationsFallbackUnsub = null;
@@ -912,18 +930,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
-    const unsubRecurring = onSnapshot(recurringRef, (snapshot) => {
-      const myClasses = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        const classData = { id: docSnap.id, refPath: docSnap.ref.path, ...data };
-        if (isSameTeacher(data.teacher, myName) || data.originalTeacherUid === user.uid || docSnap.ref.parent.parent?.id === user.uid) myClasses.push(classData);
-      });
-      setRecurringClasses(myClasses);
-      recurringLoaded = true;
-      checkLoading();
-    }, (error) => {
-      console.error('La consulta directa de clases falló; se aplica compatibilidad heredada:', error);
+    const recurringBuckets = new Map();
+    const recurringReadySources = new Set();
+
+    const startRecurringFallback = (reason) => {
+      if (recurringFallbackActive) return;
+      recurringFallbackActive = true;
+      console.warn(`Se aplica compatibilidad heredada para las clases del profesor: ${reason}`);
       recurringFallbackUnsub = onSnapshot(collectionGroup(db, 'recurringClasses'), snapshot => {
         const myClasses = snapshot.docs
           .map(docSnap => ({ id: docSnap.id, refPath: docSnap.ref.path, ...docSnap.data() }))
@@ -937,7 +950,49 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         recurringLoaded = true;
         checkLoading();
       });
-    });
+    };
+
+    const publishDirectRecurringClasses = () => {
+      if (recurringFallbackActive) return;
+      const byPath = new Map();
+      recurringBuckets.forEach(classes => classes.forEach(classData => {
+        byPath.set(classData.refPath || classData.id, classData);
+      }));
+      const myClasses = [...byPath.values()].filter(classData => (
+        isSameTeacher(classData.teacher, myName)
+        || classData.originalTeacherUid === user.uid
+        || recurringOwnerUids.includes(String(classData.ownerUid || ''))
+      ));
+
+      if (recurringReadySources.size < recurringRefs.length) return;
+      if (myClasses.length === 0) {
+        startRecurringFallback('las rutas directas devolvieron cero clases');
+        return;
+      }
+
+      setRecurringClasses(myClasses);
+      recurringLoaded = true;
+      checkLoading();
+    };
+
+    const recurringDirectUnsubs = recurringRefs.map(({ ownerUid, ref }, sourceIndex) => onSnapshot(
+      ref,
+      snapshot => {
+        recurringBuckets.set(sourceIndex, snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          refPath: docSnap.ref.path,
+          ...docSnap.data(),
+          ownerUid
+        })));
+        recurringReadySources.add(sourceIndex);
+        publishDirectRecurringClasses();
+      },
+      error => {
+        console.error(`La consulta directa de clases en ${ownerUid} falló:`, error);
+        recurringReadySources.add(sourceIndex);
+        startRecurringFallback('una ruta directa no se pudo consultar');
+      }
+    ));
 
     const unsubRecords = onSnapshot(recordsRef, (snapshot) => {
       const recs = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
@@ -1116,7 +1171,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     return () => {
-      unsubRecurring();
+      recurringDirectUnsubs.forEach(unsub => unsub());
       unsubRecords();
       unsubSettings();
       unsubSubs();
@@ -1137,8 +1192,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     };
   }, [user, db, appId]);
 
-  // Las clases propias viven bajo el UID del profesor. Solo añadimos clases externas
-  // cuando un cambio temporal las asigna a este profesor.
+  // Las clases propias se resuelven desde las rutas directas conocidas del profesor.
+  // Solo añadimos clases externas cuando un cambio temporal se las asigna.
   useEffect(() => {
     if (!user) {
       setExternalRecurringClasses([]);

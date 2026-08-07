@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen } from 'lucide-react';
+import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
 import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -57,6 +57,34 @@ const getPreviousMonthStr = (currentMonthStr) => {
 const formatDateSpanish = (dateString) => {
   if (!dateString) return '';
   return dateString.split('-').reverse().join('/');
+};
+
+const capitalizeFirst = (value = '') => value ? `${value.charAt(0).toLocaleUpperCase('es')}${value.slice(1)}` : '';
+
+const shiftMonthValue = (monthValue = '', amount = 0) => {
+  const [year, month] = String(monthValue).split('-').map(Number);
+  if (!year || !month) return '';
+  const shifted = new Date(year, month - 1 + amount, 1);
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const formatCalendarMonthLabel = (monthValue = '') => {
+  const [year, month] = String(monthValue).split('-').map(Number);
+  if (!year || !month) return '';
+  return capitalizeFirst(new Date(year, month - 1, 1).toLocaleDateString('es-ES', {
+    month: 'long',
+    year: 'numeric'
+  }));
+};
+
+const formatCalendarDateLabel = (dateString = '') => {
+  const [year, month, day] = String(dateString).split('-').map(Number);
+  if (!year || !month || !day) return formatDateSpanish(dateString);
+  return capitalizeFirst(new Date(year, month - 1, day).toLocaleDateString('es-ES', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long'
+  }));
 };
 
 const formatEuro = (value = 0) => `${Number(value || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}€`;
@@ -496,6 +524,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [], centers: [] });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsLoadError, setSettingsLoadError] = useState('');
+  const [settingsRetryNonce, setSettingsRetryNonce] = useState(0);
+  const [calendarMonth, setCalendarMonth] = useState(() => formatLocalDateString(new Date()).slice(0, 7));
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState('');
   const [announcements, setAnnouncements] = useState([]); 
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [myPollResponses, setMyPollResponses] = useState([]);
@@ -895,6 +927,111 @@ export default function StudentPortal({ user, logout, db, appId }) {
     !isPunctualClass(c) &&
     (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
   );
+
+  const currentCalendarMonth = todayStr.slice(0, 7);
+  const calendarEventsByDate = useMemo(() => {
+    const eventsByDate = new Map();
+    schoolCalendar.forEach(calendarItem => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(calendarItem?.date || ''))) return;
+      const normalizedItem = {
+        ...calendarItem,
+        type: calendarItem.type === 'festivo' ? 'festivo' : 'vacaciones',
+        title: calendarItem.type === 'festivo'
+          ? (calendarItem.title || 'Festivo')
+          : 'Vacaciones'
+      };
+      const dateEvents = eventsByDate.get(normalizedItem.date) || [];
+      const duplicate = dateEvents.some(event => (
+        event.type === normalizedItem.type
+        && event.title === normalizedItem.title
+        && (event.centerId || '') === (normalizedItem.centerId || '')
+      ));
+      if (!duplicate) eventsByDate.set(normalizedItem.date, [...dateEvents, normalizedItem]);
+    });
+    return eventsByDate;
+  }, [schoolCalendar]);
+
+  const calendarMonthOptions = useMemo(() => {
+    let firstMonth = shiftMonthValue(currentCalendarMonth, -12);
+    let lastMonth = shiftMonthValue(currentCalendarMonth, 24);
+    if (calendarMonth < firstMonth) firstMonth = calendarMonth;
+    if (calendarMonth > lastMonth) lastMonth = calendarMonth;
+    schoolCalendar.forEach(calendarItem => {
+      const eventMonth = /^\d{4}-\d{2}-\d{2}$/.test(String(calendarItem?.date || ''))
+        ? calendarItem.date.slice(0, 7)
+        : '';
+      if (!eventMonth) return;
+      if (eventMonth < firstMonth) firstMonth = eventMonth;
+      if (eventMonth > lastMonth) lastMonth = eventMonth;
+    });
+
+    const options = [];
+    let cursor = firstMonth;
+    for (let index = 0; cursor && cursor <= lastMonth && index < 120; index++) {
+      options.push(cursor);
+      cursor = shiftMonthValue(cursor, 1);
+    }
+    return options;
+  }, [schoolCalendar, currentCalendarMonth, calendarMonth]);
+
+  const calendarGridDays = useMemo(() => {
+    const [year, month] = String(calendarMonth).split('-').map(Number);
+    if (!year || !month) return [];
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const leadingBlankDays = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+    const totalCells = Math.ceil((leadingBlankDays + daysInMonth) / 7) * 7;
+
+    return Array.from({ length: totalCells }, (_, cellIndex) => {
+      const day = cellIndex - leadingBlankDays + 1;
+      if (day < 1 || day > daysInMonth) return { key: `blank-${cellIndex}`, empty: true };
+      const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const dayOfWeek = new Date(year, month - 1, day).getDay();
+      return {
+        key: date,
+        date,
+        day,
+        isToday: date === todayStr,
+        isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
+        events: calendarEventsByDate.get(date) || []
+      };
+    });
+  }, [calendarMonth, calendarEventsByDate, todayStr]);
+
+  const selectedMonthClosures = useMemo(() => (
+    schoolCalendar
+      .filter(calendarItem => String(calendarItem?.date || '').startsWith(`${calendarMonth}-`))
+      .map(calendarItem => ({
+        ...calendarItem,
+        type: calendarItem.type === 'festivo' ? 'festivo' : 'vacaciones',
+        title: calendarItem.type === 'festivo' ? (calendarItem.title || 'Festivo') : 'Vacaciones'
+      }))
+      .filter((calendarItem, index, items) => items.findIndex(candidate => (
+        candidate.date === calendarItem.date
+        && candidate.type === calendarItem.type
+        && candidate.title === calendarItem.title
+        && (candidate.centerId || '') === (calendarItem.centerId || '')
+      )) === index)
+      .sort((left, right) => left.date.localeCompare(right.date) || left.type.localeCompare(right.type))
+  ), [schoolCalendar, calendarMonth]);
+
+  const selectedCalendarDetails = selectedCalendarDay
+    ? (calendarEventsByDate.get(selectedCalendarDay) || [])
+    : [];
+
+  const calendarCenterNames = useMemo(() => {
+    const namesByCenter = new Map();
+    effectiveMyClasses.forEach(classData => {
+      const center = findCenterByValue(centers, classData.centerId || classData.sede);
+      if (center) namesByCenter.set(center.id, center.name);
+    });
+    return [...namesByCenter.values()];
+  }, [effectiveMyClasses, centers]);
+
+  const selectCalendarMonth = (monthValue) => {
+    if (!monthValue) return;
+    setCalendarMonth(monthValue);
+    setSelectedCalendarDay('');
+  };
 
   const fixedSeatClasses = myClasses.filter(c =>
     !isPunctualClass(c) &&
@@ -1576,6 +1713,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     checkRegistration();
     setSettingsLoaded(false);
+    setSettingsLoadError('');
 
     const unsubAnnouncements = onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -1598,10 +1736,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
             centers: normalizeCenters(data.centers, data)
           });
         }
+        setSettingsLoadError('');
         setSettingsLoaded(true);
       },
       (error) => {
         console.error('Error al cargar la configuración global', error);
+        setSettingsLoadError('No se ha podido consultar el calendario escolar.');
         setSettingsLoaded(true);
       }
     );
@@ -1610,10 +1750,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubAnnouncements();
       unsubSettings();
     };
-  }, [user.email]);
+  }, [user.email, settingsRetryNonce]);
 
   useEffect(() => {
-    if (!profile || effectiveMyClasses.length === 0) return;
+    if (!profile) {
+      setSchoolCalendar([]);
+      return;
+    }
 
     const misSedes = new Map();
     effectiveMyClasses.forEach(clase => {
@@ -1633,7 +1776,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const newCal = [];
     
-    globalSettings.vacaciones.forEach(d => newCal.push({ date: d, type: 'vacacion', title: 'Vacaciones', centerId: '' }));
+    globalSettings.vacaciones.forEach(d => newCal.push({ date: d, type: 'vacaciones', title: 'Vacaciones', centerId: '' }));
     globalSettings.festivos.forEach(d => newCal.push({ date: d, type: 'festivo', title: 'Festivo Global', centerId: '' }));
 
     misSedes.forEach(center => {
@@ -4513,34 +4656,194 @@ END:VCALENDAR`;
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
                 <h2 className="text-2xl font-black uppercase tracking-tight">Calendario</h2>
-                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Días no lectivos oficiales</p>
+                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">
+                  Días no lectivos oficiales
+                  {calendarCenterNames.length > 0 && (
+                    <span className="block mt-1 text-zinc-500 normal-case tracking-normal">
+                      {calendarCenterNames.length === 1 ? 'Sede' : 'Sedes'}: {calendarCenterNames.length === 2
+                        ? `${calendarCenterNames[0]} y ${calendarCenterNames[1]}`
+                        : calendarCenterNames.join(', ')}
+                    </span>
+                  )}
+                </p>
               </div>
               <Calendar className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
-               {schoolCalendar.length === 0 ? (
-                 <div className="text-center py-8">
-                   <Calendar className="w-12 h-12 text-zinc-200 mx-auto mb-3" />
-                   <p className="font-bold text-zinc-400 uppercase tracking-widest text-sm">No hay festivos registrados</p>
-                 </div>
-               ) : (
-                 <div className="space-y-3">
-                   {schoolCalendar.sort((a,b) => a.date.localeCompare(b.date)).map((cal, i) => {
-                     const isPast = cal.date < new Date().toISOString().split('T')[0];
-                     return (
-                       <div key={i} className={`p-4 rounded-2xl border flex justify-between items-center ${isPast ? 'bg-zinc-50 border-zinc-100 opacity-60' : cal.type === 'festivo' ? 'bg-red-50 border-red-100 text-red-900' : 'bg-purple-50 border-purple-100 text-purple-900'}`}>
-                         <div>
-                           <span className="text-[10px] font-black uppercase tracking-widest opacity-60 block">{cal.type}</span>
-                           <span className="font-bold text-sm">{cal.title || 'Día no lectivo'}</span>
-                         </div>
-                         <span className="font-black text-sm">{formatDateSpanish(cal.date)}</span>
-                       </div>
-                     );
-                   })}
-                 </div>
-               )}
-            </div>
+            {!settingsLoaded ? (
+              <div className="bg-white rounded-3xl p-10 shadow-sm border border-zinc-200 text-center">
+                <RefreshCcw className="w-9 h-9 text-zinc-300 mx-auto mb-4 animate-spin" />
+                <p className="font-black text-zinc-500 uppercase tracking-widest text-xs">Cargando calendario…</p>
+              </div>
+            ) : settingsLoadError ? (
+              <div className="bg-red-50 rounded-3xl p-6 shadow-sm border border-red-200 text-center">
+                <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-3" />
+                <p className="font-black text-red-900 uppercase tracking-tight">No se ha podido cargar el calendario</p>
+                <p className="text-sm font-medium text-red-700 mt-2">No mostraremos fechas vacías hasta poder verificarlas.</p>
+                <button
+                  type="button"
+                  onClick={() => setSettingsRetryNonce(value => value + 1)}
+                  className="mt-5 inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-red-600 text-white font-black uppercase tracking-widest text-[10px] hover:bg-red-700 transition-colors"
+                >
+                  <RefreshCcw className="w-4 h-4" /> Reintentar
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="bg-white rounded-3xl p-4 sm:p-6 shadow-sm border border-zinc-200">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => selectCalendarMonth(shiftMonthValue(calendarMonth, -1))}
+                        className="w-10 h-10 rounded-xl border border-zinc-200 bg-white text-zinc-700 flex items-center justify-center hover:bg-zinc-50 transition-colors"
+                        aria-label="Mes anterior"
+                      >
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                      <label className="sr-only" htmlFor="student-calendar-month">Seleccionar mes</label>
+                      <select
+                        id="student-calendar-month"
+                        value={calendarMonth}
+                        onChange={event => selectCalendarMonth(event.target.value)}
+                        className="h-10 min-w-0 flex-1 sm:min-w-52 rounded-xl border border-zinc-200 bg-zinc-50 px-3 text-sm font-black text-slate-800 capitalize outline-none focus:ring-2 focus:ring-black"
+                      >
+                        {calendarMonthOptions.map(monthValue => (
+                          <option key={monthValue} value={monthValue}>{formatCalendarMonthLabel(monthValue)}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => selectCalendarMonth(shiftMonthValue(calendarMonth, 1))}
+                        className="w-10 h-10 rounded-xl border border-zinc-200 bg-white text-zinc-700 flex items-center justify-center hover:bg-zinc-50 transition-colors"
+                        aria-label="Mes siguiente"
+                      >
+                        <ChevronRight className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    {calendarMonth !== currentCalendarMonth && (
+                      <button
+                        type="button"
+                        onClick={() => selectCalendarMonth(currentCalendarMonth)}
+                        className="self-start sm:self-auto px-4 py-2.5 rounded-xl bg-zinc-900 text-white font-black uppercase tracking-widest text-[9px] hover:bg-black transition-colors"
+                      >
+                        Mes actual
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap gap-x-4 gap-y-2 mb-5 px-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                    <span className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-red-500" /> Festivo</span>
+                    <span className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-violet-500" /> Vacaciones</span>
+                    <span className="flex items-center gap-2"><span className="w-3 h-3 rounded-full border-2 border-zinc-900 bg-white" /> Hoy</span>
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-1">
+                    {['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(dayName => (
+                      <div key={dayName} className="py-2 text-center text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-zinc-400">
+                        {dayName}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-1 sm:gap-2">
+                    {calendarGridDays.map(calendarDay => {
+                      if (calendarDay.empty) return <div key={calendarDay.key} aria-hidden="true" />;
+                      const hasFestivo = calendarDay.events.some(event => event.type === 'festivo');
+                      const hasVacaciones = calendarDay.events.some(event => event.type === 'vacaciones');
+                      const hasClosure = hasFestivo || hasVacaciones;
+                      const isSelected = selectedCalendarDay === calendarDay.date;
+                      const closureColor = hasFestivo && hasVacaciones
+                        ? 'bg-gradient-to-br from-red-100 to-violet-100 border-red-200 text-zinc-900'
+                        : hasFestivo
+                          ? 'bg-red-100 border-red-200 text-red-950'
+                          : hasVacaciones
+                            ? 'bg-violet-100 border-violet-200 text-violet-950'
+                            : calendarDay.isWeekend
+                              ? 'bg-zinc-50 border-zinc-100 text-zinc-400'
+                              : 'bg-white border-zinc-100 text-slate-700';
+
+                      return (
+                        <button
+                          key={calendarDay.key}
+                          type="button"
+                          onClick={() => hasClosure && setSelectedCalendarDay(calendarDay.date)}
+                          disabled={!hasClosure}
+                          title={hasClosure ? calendarDay.events.map(event => event.title).join(' · ') : undefined}
+                          aria-label={`${formatCalendarDateLabel(calendarDay.date)}${hasClosure ? `: ${calendarDay.events.map(event => event.title).join(', ')}` : ''}`}
+                          className={`min-h-12 sm:min-h-16 rounded-xl border p-1.5 sm:p-2 flex flex-col items-center justify-between transition-all ${closureColor} ${hasClosure ? 'cursor-pointer hover:-translate-y-0.5 hover:shadow-sm' : 'cursor-default'} ${calendarDay.isToday ? 'ring-2 ring-zinc-900 ring-offset-1' : ''} ${isSelected ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}
+                        >
+                          <span className="font-black text-xs sm:text-sm">{calendarDay.day}</span>
+                          <span className="h-2 flex items-center justify-center gap-1" aria-hidden="true">
+                            {hasFestivo && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
+                            {hasVacaciones && <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <p className="mt-5 text-[10px] font-medium leading-relaxed text-zinc-400">
+                    Los días sin color no tienen cierres generales registrados. Consulta «Mis clases» para ver tu horario concreto.
+                  </p>
+
+                  {selectedCalendarDetails.length > 0 && (
+                    <div className="mt-4 p-4 rounded-2xl bg-amber-50 border border-amber-200" aria-live="polite">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mb-2">{formatCalendarDateLabel(selectedCalendarDay)}</p>
+                      <div className="space-y-1">
+                        {selectedCalendarDetails.map((calendarItem, index) => (
+                          <p key={`${calendarItem.type}-${calendarItem.centerId || 'global'}-${index}`} className="font-bold text-sm text-amber-950">
+                            {calendarItem.type === 'festivo' ? 'Festivo' : 'Vacaciones'} · {calendarItem.title}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-3xl p-5 sm:p-6 shadow-sm border border-zinc-200">
+                  <div className="mb-5">
+                    <h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Días sin clase</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{formatCalendarMonthLabel(calendarMonth)}</p>
+                  </div>
+
+                  {selectedMonthClosures.length === 0 ? (
+                    <div className="py-7 px-4 rounded-2xl bg-zinc-50 border border-zinc-100 text-center">
+                      <CheckCircle className="w-9 h-9 text-emerald-400 mx-auto mb-3" />
+                      <p className="font-black text-zinc-600 text-sm">No hay festivos ni Vacaciones registrados este mes</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {selectedMonthClosures.map((calendarItem, index) => {
+                        const isFestivo = calendarItem.type === 'festivo';
+                        const center = calendarItem.centerId ? findCenterByValue(centers, calendarItem.centerId) : null;
+                        return (
+                          <button
+                            key={`${calendarItem.date}-${calendarItem.type}-${calendarItem.centerId || 'global'}-${index}`}
+                            type="button"
+                            onClick={() => setSelectedCalendarDay(calendarItem.date)}
+                            className={`w-full p-4 rounded-2xl border text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all hover:shadow-sm ${selectedCalendarDay === calendarItem.date ? 'ring-2 ring-amber-400 ring-offset-1' : ''} ${isFestivo ? 'bg-red-50 border-red-100 text-red-950' : 'bg-violet-50 border-violet-100 text-violet-950'}`}
+                          >
+                            <div className="flex items-start gap-3 min-w-0">
+                              <span className={`mt-1 w-3 h-3 rounded-full shrink-0 ${isFestivo ? 'bg-red-500' : 'bg-violet-500'}`} />
+                              <div className="min-w-0">
+                                <span className="text-[9px] font-black uppercase tracking-widest opacity-60 block">{isFestivo ? 'Festivo' : 'Vacaciones'}</span>
+                                <span className="font-black text-sm block mt-0.5">{formatCalendarDateLabel(calendarItem.date)}</span>
+                                <span className="font-medium text-xs block mt-1 opacity-80">{calendarItem.title}</span>
+                              </div>
+                            </div>
+                            <span className="self-start sm:self-auto text-[9px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-white/70 border border-current/10 whitespace-nowrap">
+                              {center?.name || 'Todas las sedes'}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
 

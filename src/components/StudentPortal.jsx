@@ -482,12 +482,17 @@ const getMonthNames = () => {
 export default function StudentPortal({ user, logout, db, appId }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
+  const [profileLoadError, setProfileLoadError] = useState('');
   const [myClasses, setMyClasses] = useState([]);
   const [classesLoaded, setClassesLoaded] = useState(false);
+  const [classesLoadError, setClassesLoadError] = useState('');
+  const [classesRetryNonce, setClassesRetryNonce] = useState(0);
   const [classCatalog, setClassCatalog] = useState([]);
   const [relocationTargetClasses, setRelocationTargetClasses] = useState([]);
   const [classCatalogLoaded, setClassCatalogLoaded] = useState(false);
   const [classCatalogLoading, setClassCatalogLoading] = useState(false);
+  const [classCatalogError, setClassCatalogError] = useState('');
+  const [classCatalogRetryNonce, setClassCatalogRetryNonce] = useState(0);
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [], centers: [] });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -643,14 +648,22 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const isStudentInMaintenanceForDate = (studentId, dateStr = todayStr) => {
     if (!studentId) return false;
-    return maintenancePeriods.some(period => period.studentId === studentId && isMaintenancePeriodActiveForDate(period, dateStr));
+    return maintenancePeriods.some(period => String(period.studentId || '') === String(studentId) && isMaintenancePeriodActiveForDate(period, dateStr));
   };
 
   const normalizeClassDate = (value = '') => String(value || '').trim();
 
+  const getStudentEntryId = (studentEntry = {}) => String(
+    studentEntry?.id || studentEntry?.studentId || ''
+  );
+
+  const isStudentEntryFor = (studentEntry = {}, studentId = profile?.id) => (
+    Boolean(studentId) && getStudentEntryId(studentEntry) === String(studentId)
+  );
+
   const getStudentEntryInClass = (clase = {}, studentId = profile?.id) => {
     if (!studentId) return null;
-    return (clase.students || []).find(studentEntry => studentEntry.id === studentId) || null;
+    return (clase.students || []).find(studentEntry => isStudentEntryFor(studentEntry, studentId)) || null;
   };
 
   const getClassEntryStartDate = (studentEntry = {}, studentInfo = {}) => normalizeClassDate(
@@ -849,7 +862,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       if (!targetClass) return;
 
       const displayName = profile.alias && profile.useAlias ? profile.alias : (profile.name || rel.studentName || 'Alumno');
-      const alreadyInTarget = (targetClass.students || []).some(s => s.id === profile.id);
+      const alreadyInTarget = Boolean(getStudentEntryInClass(targetClass, profile.id));
       const temporaryEntry = {
         id: profile.id,
         name: displayName,
@@ -880,14 +893,14 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
-    (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
+    (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
   );
 
   const fixedSeatClasses = myClasses.filter(c =>
     !isPunctualClass(c) &&
     isStudentClassVisibleForNextSession(c) &&
     !isStudentClassScheduledToEnd(c) &&
-    (c.students || []).some(s => s.id === profile?.id && isFixedClassStudent(s))
+    (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
   );
 
   const studentCenters = [...new Map(
@@ -948,7 +961,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       const url = getSafeAnnouncementUrl(clase.whatsappGroupUrl || clase.whatsappUrl || '');
       if (!url) return;
 
-      const myStudentEntry = (clase.students || []).find(s => s.id === profile?.id);
+      const myStudentEntry = getStudentEntryInClass(clase, profile?.id);
       if (myStudentEntry?.isRecovery) return;
 
       if (!byUrl.has(url)) {
@@ -1640,46 +1653,107 @@ export default function StudentPortal({ user, logout, db, appId }) {
   useEffect(() => {
     if (!profile?.id || !settingsLoaded) return;
     setClassesLoaded(false);
+    setClassesLoadError('');
     setWorkshopsLoaded(false);
     if (!isStudentClassIndexReady) setClassCatalogLoaded(false);
     
-    const unsubProfile = onSnapshot(doc(db, 'artifacts', appId, 'students', profile.id), (docSnap) => {
-      if (docSnap.exists()) {
-        setProfile(prev => ({ ...prev, ...docSnap.data() }));
+    const unsubProfile = onSnapshot(
+      doc(db, 'artifacts', appId, 'students', profile.id),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setProfile(prev => ({ ...prev, ...docSnap.data() }));
+        }
+      },
+      (error) => {
+        console.error('Error al mantener actualizado el perfil del alumno', error);
+        setProfileLoadError('Tu perfil se cargó, pero no se ha podido mantener sincronizado. Reintenta para evitar trabajar con datos antiguos.');
       }
-    });
+    );
 
-    const processClassesSnapshot = (snapshot, usingStudentIndex) => {
+    const extractClassesSnapshot = (snapshot) => {
       const all = [];
       const mine = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        const classObj = { id: doc.id, refPath: doc.ref.path, ...data };
+      snapshot.forEach(classDoc => {
+        const data = classDoc.data();
+        const classObj = { id: classDoc.id, refPath: classDoc.ref.path, ...data };
         all.push(classObj); 
-        
-        if (usingStudentIndex || (data.students && data.students.some(s => s.id === profile.id))) {
+
+        if (getStudentEntryInClass(classObj, profile.id)) {
           mine.push(classObj); 
         }
       });
-      if (!usingStudentIndex) {
+      return { all, mine };
+    };
+
+    const publishClassesSnapshot = (snapshot, { publishCatalog = false } = {}) => {
+      const { all, mine } = extractClassesSnapshot(snapshot);
+      if (publishCatalog) {
         setClassCatalog(all);
         setClassCatalogLoaded(true);
       }
       setMyClasses(mine);
+      setClassesLoadError('');
+      setClassesLoaded(true);
+      return { all, mine };
+    };
+
+    let cancelled = false;
+    let legacyVerificationStarted = false;
+    let legacySubscribed = false;
+    let unsubIndexedClasses = () => {};
+    let unsubLegacyClasses = () => {};
+
+    const failClassesLoad = (error) => {
+      if (cancelled) return;
+      console.error('Error al cargar las clases del alumno', error);
+      setClassesLoadError('No se han podido comprobar tus clases y su estado actual. No se mostrará “Sin clase asignada” hasta verificarlo correctamente.');
+      setMyClasses([]);
       setClassesLoaded(true);
     };
 
-    let unsubClasses = () => {};
-    const subscribeLegacyClasses = () => {
-      unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snapshot) => {
-        processClassesSnapshot(snapshot, false);
+    const subscribeLegacyClasses = ({ publishCatalog = false } = {}) => {
+      if (cancelled || legacySubscribed) return;
+      legacySubscribed = true;
+      unsubIndexedClasses();
+      unsubLegacyClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snapshot) => {
+        if (cancelled) return;
+        publishClassesSnapshot(snapshot, { publishCatalog });
       }, (legacyError) => {
         console.error('Error al cargar las clases del alumno mediante compatibilidad', legacyError);
         setMyClasses([]);
-        setClassCatalog([]);
-        setClassCatalogLoaded(true);
-        setClassesLoaded(true);
+        if (publishCatalog) {
+          setClassCatalog([]);
+          setClassCatalogLoaded(false);
+        }
+        failClassesLoad(legacyError);
       });
+    };
+
+    const verifyLegacyClassesAfterEmptyIndex = async () => {
+      if (cancelled || legacyVerificationStarted || legacySubscribed) return;
+      legacyVerificationStarted = true;
+      try {
+        const legacySnapshot = await getDocs(collectionGroup(db, 'recurringClasses'));
+        if (cancelled || legacySubscribed) return;
+        const { mine } = extractClassesSnapshot(legacySnapshot);
+        if (mine.length > 0) {
+          // El índice ha omitido clases reales: el respaldo queda activo durante toda la sesión.
+          setMyClasses(mine);
+          setClassesLoadError('');
+          setClassesLoaded(true);
+          subscribeLegacyClasses({ publishCatalog: false });
+          return;
+        }
+
+        // Solo ahora podemos afirmar que el alumno no tiene ninguna clase en el sistema heredado.
+        setMyClasses([]);
+        setClassesLoadError('');
+        setClassesLoaded(true);
+      } catch (legacyError) {
+        failClassesLoad(legacyError);
+      } finally {
+        if (!legacySubscribed) legacyVerificationStarted = false;
+      }
     };
 
     if (isStudentClassIndexReady) {
@@ -1687,14 +1761,20 @@ export default function StudentPortal({ user, logout, db, appId }) {
         collectionGroup(db, 'recurringClasses'),
         where('studentIds', 'array-contains', profile.id)
       );
-      unsubClasses = onSnapshot(indexedClassesQuery, (snapshot) => {
-        processClassesSnapshot(snapshot, true);
+      unsubIndexedClasses = onSnapshot(indexedClassesQuery, (snapshot) => {
+        if (cancelled || legacySubscribed) return;
+        const { mine } = extractClassesSnapshot(snapshot);
+        if (snapshot.empty || mine.length === 0) {
+          verifyLegacyClassesAfterEmptyIndex();
+          return;
+        }
+        publishClassesSnapshot(snapshot);
       }, (error) => {
         console.error('La consulta studentIds no está disponible; se activa compatibilidad temporal', error);
-        subscribeLegacyClasses();
+        subscribeLegacyClasses({ publishCatalog: false });
       });
     } else {
-      subscribeLegacyClasses();
+      subscribeLegacyClasses({ publishCatalog: true });
     }
 
     const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
@@ -1706,14 +1786,22 @@ export default function StudentPortal({ user, logout, db, appId }) {
       collection(db, 'artifacts', appId, 'temporaryRelocations'),
       where('studentId', '==', profile.id)
     );
-    const unsubTemporaryRelocations = onSnapshot(temporaryRelocationsQuery, (snapshot) => {
-      setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    const unsubTemporaryRelocations = onSnapshot(
+      temporaryRelocationsQuery,
+      (snapshot) => {
+        setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      },
+      (error) => failClassesLoad(error)
+    );
 
     const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentId', '==', profile.id));
-    const unsubMaintenancePeriods = onSnapshot(maintenanceQuery, (snapshot) => {
-      setMaintenancePeriods(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    const unsubMaintenancePeriods = onSnapshot(
+      maintenanceQuery,
+      (snapshot) => {
+        setMaintenancePeriods(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      },
+      (error) => failClassesLoad(error)
+    );
 
     const unsubWorkshops = onSnapshot(
       collection(db, 'artifacts', appId, 'workshops'),
@@ -1748,12 +1836,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
     );
 
     const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentId', '==', profile.id));
-    const unsubTickets = onSnapshot(ticketsQuery, (snapshot) => {
+    const processTicketsSnapshot = (snapshot, filterLegacyResults = false) => {
       let validTicketsCount = 0;
       let futureSummerTicketsCount = 0;
       let activeSummerTicketsCount = 0;
-      snapshot.forEach(doc => {
-        const data = doc.data();
+      snapshot.forEach(ticketDoc => {
+        const data = ticketDoc.data();
+        if (filterLegacyResults && String(data.studentId || '') !== String(profile.id)) return;
         const isPending = !data.isUsed && !data.voided;
         const isAlreadyValid = !data.validFrom || data.validFrom <= todayStr;
         const isNotExpired = !data.validUntil || data.validUntil >= todayStr;
@@ -1773,11 +1862,40 @@ export default function StudentPortal({ user, logout, db, appId }) {
         activeSummerTickets: activeSummerTicketsCount,
         futureSummerTickets: futureSummerTicketsCount
       } : null);
-    });
+    };
+
+    let unsubFilteredTickets = () => {};
+    let unsubLegacyTickets = () => {};
+    let legacyTicketsStarted = false;
+    const subscribeLegacyTickets = (queryError) => {
+      if (legacyTicketsStarted) return;
+      legacyTicketsStarted = true;
+      console.error('La consulta optimizada de tickets falló; se activa compatibilidad temporal', queryError);
+      unsubFilteredTickets();
+      unsubLegacyTickets = onSnapshot(
+        collectionGroup(db, 'tickets'),
+        snapshot => processTicketsSnapshot(snapshot, true),
+        legacyError => {
+          console.error('No se pudieron comprobar los tickets del alumno', legacyError);
+          setNotification({ text: 'No se han podido comprobar tus tickets de recuperación. Reintenta recargando la página.', type: 'error' });
+        }
+      );
+    };
+    unsubFilteredTickets = onSnapshot(
+      ticketsQuery,
+      snapshot => processTicketsSnapshot(snapshot),
+      subscribeLegacyTickets
+    );
+    const unsubTickets = () => {
+      unsubFilteredTickets();
+      unsubLegacyTickets();
+    };
 
     return () => {
+      cancelled = true;
       unsubProfile();
-      unsubClasses(); 
+      unsubIndexedClasses();
+      unsubLegacyClasses();
       unsubGestiones();
       unsubTemporaryRelocations();
       unsubMaintenancePeriods();
@@ -1786,7 +1904,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubPollResponses();
       unsubTickets(); 
     };
-  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, db, appId]);
+  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, classesRetryNonce, db, appId]);
 
   // Una recolocación puede llevar al alumno a una clase que no forma parte de su plaza fija.
   // Escuchamos solo esas clases destino, utilizando la ruta exacta guardada por Admin.
@@ -1827,7 +1945,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
         }
         publish();
       },
-      (error) => console.error('Error al cargar una clase de recolocación', error)
+      (error) => {
+        console.error('Error al cargar una clase de recolocación', error);
+        setClassesLoadError('No se ha podido comprobar una recolocación temporal. Reintenta antes de consultar tu horario.');
+        setClassesLoaded(true);
+      }
     ));
 
     // Compatibilidad excepcional con recolocaciones antiguas sin targetClassRefPath.
@@ -1839,14 +1961,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
           }
         });
         publish();
-      }).catch(error => console.error('Error al recuperar una clase de recolocación antigua', error));
+      }).catch(error => {
+        if (cancelled) return;
+        console.error('Error al recuperar una clase de recolocación antigua', error);
+        setClassesLoadError('No se ha podido comprobar una recolocación temporal antigua. Reintenta antes de consultar tu horario.');
+        setClassesLoaded(true);
+      });
     }
 
     return () => {
       cancelled = true;
       unsubs.forEach(unsub => unsub());
     };
-  }, [profile?.id, isStudentClassIndexReady, temporaryRelocations, todayStr, db]);
+  }, [profile?.id, isStudentClassIndexReady, temporaryRelocations, todayStr, classesRetryNonce, db]);
 
   // Los cambios temporales ordinarios se limitan a las clases propias y de recolocación.
   // Antes de que Admin active el índice, se conserva automáticamente el listener global heredado.
@@ -1860,6 +1987,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
         error => {
           console.error('Error al cargar los cambios temporales de clase', error);
           setStudentTemporaryClassChanges([]);
+          setClassesLoadError('No se han podido comprobar los cambios temporales de tus clases. Reintenta antes de consultar tu horario.');
+          setClassesLoaded(true);
         }
       );
       return () => unsubLegacyChanges();
@@ -1902,6 +2031,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
         fallbackError => {
           console.error('Error al cargar los cambios temporales de clase', fallbackError);
           setStudentTemporaryClassChanges([]);
+          setClassesLoadError('No se han podido comprobar los cambios temporales de tus clases. Reintenta antes de consultar tu horario.');
+          setClassesLoaded(true);
         }
       );
     };
@@ -1926,7 +2057,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubs.forEach(unsub => unsub());
       if (fallbackUnsub) fallbackUnsub();
     };
-  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, myClasses, relocationTargetClasses, db, appId]);
+  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, myClasses, relocationTargetClasses, classesRetryNonce, db, appId]);
 
   // El catálogo completo solo es necesario para buscar plazas o calcular disponibilidad Mitobox.
   // Se abre en tiempo real mientras el modal correspondiente está visible y se libera al cerrarlo.
@@ -1934,11 +2065,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (!settingsLoaded) return;
     if (!isStudentClassIndexReady) {
       setClassCatalogLoading(false);
+      setClassCatalogError('');
       return;
     }
     if (!needsFullClassCatalog) {
       setClassCatalogLoading(false);
       setClassCatalogLoaded(false);
+      setClassCatalogError('');
       setClassCatalog([]);
       setCatalogTemporaryClassChanges([]);
       return;
@@ -1946,6 +2079,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     setClassCatalogLoading(true);
     setClassCatalogLoaded(false);
+    setClassCatalogError('');
     let classesReady = false;
     let changesReady = false;
     const finishIfReady = () => {
@@ -1965,6 +2099,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
       error => {
         console.error('Error al cargar el catálogo de clases', error);
         setClassCatalog([]);
+        setSelectedNewClass(null);
+        setMboxSelectedSlot(null);
+        setClassCatalogError('No se ha podido consultar la disponibilidad. Reintenta antes de elegir una plaza o una sala.');
         classesReady = true;
         finishIfReady();
       }
@@ -1979,6 +2116,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
       error => {
         console.error('Error al cargar los cambios temporales del catálogo', error);
         setCatalogTemporaryClassChanges([]);
+        setSelectedNewClass(null);
+        setMboxSelectedSlot(null);
+        setClassCatalogError('No se ha podido comprobar la disponibilidad completa. Reintenta antes de elegir una plaza o una sala.');
         changesReady = true;
         finishIfReady();
       }
@@ -1988,7 +2128,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubClassCatalog();
       unsubCatalogChanges();
     };
-  }, [settingsLoaded, isStudentClassIndexReady, needsFullClassCatalog, db, appId]);
+  }, [settingsLoaded, isStudentClassIndexReady, needsFullClassCatalog, classCatalogRetryNonce, db, appId]);
 
   useEffect(() => {
     let timer;
@@ -2284,14 +2424,22 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const checkRegistration = async () => {
     setLoading(true);
-    const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", user.email));
-    const snapshot = await getDocs(q);
-    
-    if (!snapshot.empty) {
-      const studentData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
-      setProfile(studentData);
+    setProfileLoadError('');
+    setProfile(null);
+    try {
+      const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", user.email));
+      const snapshot = await getDocs(q);
+
+      if (!snapshot.empty) {
+        const studentData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
+        setProfile(studentData);
+      }
+    } catch (error) {
+      console.error('Error al localizar el perfil del alumno', error);
+      setProfileLoadError('No se ha podido consultar tu perfil. Puede ser un problema temporal de conexión o permisos.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleOnboarding = async (e) => {
@@ -2401,9 +2549,9 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       const currentExceptions = absenceModal.clase.exceptions?.[absenceModal.dateStr] || {};
       currentExceptions[profile.id] = status; 
       
-      const activeStudents = (absenceModal.clase.students || []).filter(s => !isStudentInMaintenanceForDate(s.id, absenceModal.dateStr));
+      const activeStudents = (absenceModal.clase.students || []).filter(s => !isStudentInMaintenanceForDate(getStudentEntryId(s), absenceModal.dateStr));
       const allAbsentNow = activeStudents.length > 0 && activeStudents.every(s => {
-        const st = currentExceptions[s.id];
+        const st = currentExceptions[getStudentEntryId(s)];
         return st === 'absent' || st === 'notified' || st === 'notified_no_ticket';
       });
 
@@ -3143,14 +3291,14 @@ END:VCALENDAR`;
         
         const activeStudents = (c.students || []).filter(s => {
           if (!isStudentEntryActiveOnDate(s, {}, todayStr)) return false;
-          return !isStudentInMaintenanceForDate(s.id, todayStr);
+          return !isStudentInMaintenanceForDate(getStudentEntryId(s), todayStr);
         }).length;
         if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
         const currentStudents = getCommittedSeatCountForClass(c, todayStr);
         if (currentStudents >= maxCap) return false;
-        if (c.students?.some(s => s.id === profile.id)) return false;
+        if (getStudentEntryInClass(c, profile.id)) return false;
         
         if (isTicketRedemption && targetInstrument === 'Guitarra') {
           if (maxCap !== 8) return false; 
@@ -3166,6 +3314,7 @@ END:VCALENDAR`;
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
       (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) ||
       (isClassSearch && (!classCatalogLoaded || classCatalogLoading)) ||
+      (isClassSearch && Boolean(classCatalogError)) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
       isMaintenanceChoiceInvalid;
@@ -3333,7 +3482,14 @@ END:VCALENDAR`;
                 </select>
               )}
 
-              {classCatalogLoading || !classCatalogLoaded ? (
+              {classCatalogError ? (
+                <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
+                  <p className="text-xs font-bold text-red-700 leading-relaxed">{classCatalogError}</p>
+                  <button type="button" onClick={() => setClassCatalogRetryNonce(value => value + 1)} className="mt-3 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px]">
+                    <RefreshCcw className="w-3.5 h-3.5" /> Reintentar consulta
+                  </button>
+                </div>
+              ) : classCatalogLoading || !classCatalogLoaded ? (
                 <div className="bg-blue-50 p-4 rounded-xl text-center border-2 border-dashed border-blue-100">
                   <p className="text-xs font-bold text-blue-700 uppercase tracking-wider">Consultando plazas disponibles...</p>
                 </div>
@@ -3548,9 +3704,10 @@ END:VCALENDAR`;
         if (c.cancelledDates?.includes(mboxDate)) return false; 
         const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
         const activeStudents = (c.students || []).filter(s => {
+          const entryStudentId = getStudentEntryId(s);
           if (!isStudentEntryActiveOnDate(s, {}, mboxDate)) return false;
-          if (isStudentInMaintenanceForDate(s.id, mboxDate)) return false;
-          const estadoHoy = exceptionsEseDia[s.id];
+          if (isStudentInMaintenanceForDate(entryStudentId, mboxDate)) return false;
+          const estadoHoy = exceptionsEseDia[entryStudentId];
           if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
           return true;
         });
@@ -3613,7 +3770,14 @@ END:VCALENDAR`;
           {mboxDate && mboxSede && (
             <div className="mb-6 space-y-4 border-t border-zinc-100 pt-4">
               <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block">4. Salas y Horas disponibles</label>
-              {classCatalogLoading || !classCatalogLoaded ? (
+              {classCatalogError ? (
+                <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
+                  <p className="text-xs font-bold text-red-700 leading-relaxed">{classCatalogError}</p>
+                  <button type="button" onClick={() => setClassCatalogRetryNonce(value => value + 1)} className="mt-3 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px]">
+                    <RefreshCcw className="w-3.5 h-3.5" /> Reintentar consulta
+                  </button>
+                </div>
+              ) : classCatalogLoading || !classCatalogLoaded ? (
                 <div className="bg-blue-50 p-4 rounded-xl text-center border-2 border-dashed border-blue-100">
                   <p className="text-xs font-bold text-blue-700">Consultando la ocupación de las aulas...</p>
                 </div>
@@ -3638,7 +3802,7 @@ END:VCALENDAR`;
             </div>
           )}
 
-          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || Boolean(classCatalogError) || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
             {isSendingGestion ? 'Enviando...' : <><CheckCircle className="w-4 h-4"/> Confirmar Reserva</>}
           </button>
         </div>
@@ -3732,6 +3896,24 @@ END:VCALENDAR`;
   
   if (loading) return <div className="min-h-screen bg-zinc-50 flex items-center justify-center font-black">Sincronizando perfil...</div>;
 
+  if (profileLoadError) {
+    return (
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
+        <div className="bg-red-100 text-red-600 p-6 rounded-full mb-6">
+          <AlertCircle className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">No se pudo cargar tu perfil</h1>
+        <p className="text-zinc-500 font-medium mb-8 leading-relaxed">{profileLoadError}</p>
+        <button onClick={checkRegistration} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors flex items-center justify-center gap-2">
+          <RefreshCcw className="w-4 h-4" /> Reintentar
+        </button>
+        <button onClick={logout} className="mt-5 text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
+          Cerrar sesión
+        </button>
+      </div>
+    );
+  }
+
   if (!profile) {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
@@ -3808,6 +3990,24 @@ END:VCALENDAR`;
         <button onClick={logout} className="text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
           Cerrar Sesión
         </button>
+      </div>
+    );
+  }
+
+  if (classesLoadError) {
+    return (
+      <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
+        <div className="bg-red-100 text-red-600 p-6 rounded-full mb-6">
+          <AlertCircle className="w-12 h-12" />
+        </div>
+        <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">No se pudieron comprobar tus clases</h1>
+        <p className="text-zinc-500 font-medium mb-8 leading-relaxed">{classesLoadError}</p>
+        <button onClick={() => setClassesRetryNonce(value => value + 1)} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-lg transition-colors flex items-center justify-center gap-2">
+          <RefreshCcw className="w-4 h-4" /> Reintentar
+        </button>
+        <a href={`mailto:${SUPPORT_EMAIL}?subject=Error%20al%20cargar%20clases`} className="mt-5 text-[10px] font-bold text-zinc-400 hover:text-black uppercase tracking-widest underline underline-offset-4 transition-colors">
+          Contactar con soporte
+        </a>
       </div>
     );
   }
@@ -4100,7 +4300,7 @@ END:VCALENDAR`;
                   && (!calendarItem.centerId || calendarItem.centerId === classCenterId)
                 ));
                 const hasNotifiedNext = clase.exceptions?.[classInfo.dateStr]?.[profile.id];
-                const myStudentEntry = clase.students?.find(s => s.id === profile.id);
+                const myStudentEntry = getStudentEntryInClass(clase, profile.id);
                 const isRecoveryClassForMe = myStudentEntry?.isRecovery === true;
                 const isTemporaryRelocationClassForMe = myStudentEntry?.isTemporaryRelocation === true || clase.isTemporaryRelocationClass === true;
                 const visibleClassResources = getVisibleClassResourcesForStudent(clase);

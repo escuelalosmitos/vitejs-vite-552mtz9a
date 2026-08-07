@@ -6,7 +6,7 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query, runTransaction } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query, where, runTransaction } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -106,6 +106,21 @@ const DEFAULT_CENTERS = [
 const uniqueStrings = (values = []) => [...new Set((values || [])
   .map(value => String(value || '').trim())
   .filter(Boolean))];
+
+const getClassStudentIds = (classStudents = []) => uniqueStrings((classStudents || [])
+  .map(studentEntry => studentEntry?.id || studentEntry?.studentId));
+
+const withClassStudentIndex = (classStudents = []) => ({
+  students: classStudents,
+  studentIds: getClassStudentIds(classStudents)
+});
+
+const haveSameStringValues = (left = [], right = []) => {
+  const normalizedLeft = uniqueStrings(left).sort();
+  const normalizedRight = uniqueStrings(right).sort();
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((value, index) => value === normalizedRight[index]);
+};
 
 const getLegacyCenterHolidays = (center = {}, legacySettings = {}) => {
   const centerId = normalizeConfigId(center.id || center.name, 'sede');
@@ -1710,6 +1725,10 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
   const [loading, setLoading] = useState(true);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [classesLoaded, setClassesLoaded] = useState(false);
+  const [activatedDataAreas, setActivatedDataAreas] = useState({ gestiones: true });
+  const classIndexMigrationRef = useRef(false);
 
   // --- DATOS GLOBALES ---
   const [gestiones, setGestiones] = useState([]);
@@ -1873,7 +1892,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   useEffect(() => {
     let loaded = 0;
-    const checkLoad = () => { loaded++; if(loaded === 16) setLoading(false); };
+    const checkLoad = () => { loaded++; if (loaded === 10) setLoading(false); };
 
     const unsubGestiones = onSnapshot(collection(db, 'artifacts', appId, 'gestiones'), (snap) => { 
       setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
@@ -1881,10 +1900,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     const unsubStudents = onSnapshot(collection(db, 'artifacts', appId, 'students'), (snap) => { 
       setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => a.name.localeCompare(b.name))); 
-      checkLoad(); 
-    });
-    const unsubAnnouncements = onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snap) => { 
-      setAnnouncements(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date))); 
       checkLoad(); 
     });
     const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'settings', 'global'), (docSnap) => { 
@@ -1910,43 +1925,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           }, { merge: true }).catch(error => console.error('No se pudo completar la migración inicial de sedes:', error));
         }
       }
+      setSettingsLoaded(true);
       checkLoad(); 
     });
     const unsubClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snap) => {
       setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
-      checkLoad();
-    });
-    const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
-      setAllRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      checkLoad();
-    });
-    const unsubAvail = onSnapshot(collection(db, 'artifacts', appId, 'availability'), (snap) => {
-      const av = {};
-      snap.forEach(d => {
-        const key = normalizeTeacherKey(d.id);
-        if (!key) return;
-        const incomingSlots = d.data().slots || {};
-        const mergedSlots = { ...(av[key] || {}) };
-        Object.entries(incomingSlots).forEach(([day, slots]) => {
-          const uniqueSlots = [...(mergedSlots[day] || []), ...(Array.isArray(slots) ? slots : [])]
-            .filter(slot => slot?.start && slot?.end)
-            .filter((slot, index, list) => list.findIndex(item => item.start === slot.start && item.end === slot.end) === index)
-            .sort((a, b) => a.start.localeCompare(b.start));
-          mergedSlots[day] = uniqueSlots;
-        });
-        av[key] = mergedSlots;
-      });
-      setAvailabilities(av);
+      setClassesLoaded(true);
       checkLoad();
     });
 
     const unsubTickets = onSnapshot(collectionGroup(db, 'tickets'), (snap) => {
       setAllTickets(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
-      checkLoad();
-    });
-
-    const unsubPayrollAdjustments = onSnapshot(collection(db, 'artifacts', appId, 'payrollAdjustments'), (snap) => {
-      setPayrollAdjustments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
       checkLoad();
     });
 
@@ -1978,11 +1967,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       checkLoad();
     });
 
-    const unsubTeacherEvaluations = onSnapshot(collection(db, 'artifacts', appId, 'teacherEvaluations'), (snap) => {
-      setTeacherEvaluations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)));
-      checkLoad();
-    });
-
     const unsubWorkshopRegistrations = onSnapshot(
       collection(db, 'artifacts', appId, 'workshopRegistrations'),
       (snap) => {
@@ -1995,20 +1979,138 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
     );
 
-    const unsubPollResponses = onSnapshot(
-      collection(db, 'artifacts', appId, 'pollResponses'),
-      (snap) => {
-        setPollResponses(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)));
-        checkLoad();
-      },
-      (error) => {
-        console.error('No se pudieron cargar las respuestas de encuestas:', error);
-        checkLoad();
-      }
-    );
-
-    return () => { unsubGestiones(); unsubStudents(); unsubAnnouncements(); unsubSettings(); unsubClasses(); unsubRecords(); unsubAvail(); unsubTickets(); unsubPayrollAdjustments(); unsubTemporaryRelocations(); unsubTemporaryClassChanges(); unsubMaintenancePeriods(); unsubTeacherTasks(); unsubTeacherEvaluations(); unsubWorkshopRegistrations(); unsubPollResponses(); };
+    return () => {
+      unsubGestiones();
+      unsubStudents();
+      unsubSettings();
+      unsubClasses();
+      unsubTickets();
+      unsubTemporaryRelocations();
+      unsubTemporaryClassChanges();
+      unsubMaintenancePeriods();
+      unsubTeacherTasks();
+      unsubWorkshopRegistrations();
+    };
   }, [appId, db]);
+
+  useEffect(() => {
+    setActivatedDataAreas(previous => previous[activeTab]
+      ? previous
+      : { ...previous, [activeTab]: true });
+  }, [activeTab]);
+
+  const needsAnnouncementsData = Boolean(activatedDataAreas.announcements || activatedDataAreas.gamification);
+  const needsAvailabilityData = Boolean(activatedDataAreas.classes || activatedDataAreas.teachers);
+  const needsTeacherHistoryData = Boolean(activatedDataAreas.teachers);
+  const needsPollResponsesData = Boolean(activatedDataAreas.announcements);
+
+  // Cada bloque diferido se conecta la primera vez que se usa y permanece actualizado
+  // durante la sesión para no volver a pagar su carga inicial al alternar pestañas.
+  useEffect(() => {
+    if (!needsAnnouncementsData) return undefined;
+    return onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snap) => {
+      setAnnouncements(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.date) - new Date(a.date)));
+    }, (error) => console.error('No se pudieron cargar los avisos:', error));
+  }, [needsAnnouncementsData, appId, db]);
+
+  // La disponibilidad se necesita al crear/editar clases y dentro del panel de profesores.
+  useEffect(() => {
+    if (!needsAvailabilityData) return undefined;
+    return onSnapshot(collection(db, 'artifacts', appId, 'availability'), (snap) => {
+      const av = {};
+      snap.forEach(d => {
+        const key = normalizeTeacherKey(d.id);
+        if (!key) return;
+        const incomingSlots = d.data().slots || {};
+        const mergedSlots = { ...(av[key] || {}) };
+        Object.entries(incomingSlots).forEach(([day, slots]) => {
+          const uniqueSlots = [...(mergedSlots[day] || []), ...(Array.isArray(slots) ? slots : [])]
+            .filter(slot => slot?.start && slot?.end)
+            .filter((slot, index, list) => list.findIndex(item => item.start === slot.start && item.end === slot.end) === index)
+            .sort((a, b) => a.start.localeCompare(b.start));
+          mergedSlots[day] = uniqueSlots;
+        });
+        av[key] = mergedSlots;
+      });
+      setAvailabilities(av);
+    }, (error) => console.error('No se pudo cargar la disponibilidad docente:', error));
+  }, [needsAvailabilityData, appId, db]);
+
+  // Asistencias, ajustes y evaluaciones son históricos pesados: se conectan al abrir Profesores.
+  useEffect(() => {
+    if (!needsTeacherHistoryData) return undefined;
+
+    const unsubRecords = onSnapshot(collectionGroup(db, 'records'), (snap) => {
+      setAllRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => console.error('No se pudo cargar el histórico de asistencias:', error));
+
+    const unsubPayrollAdjustments = onSnapshot(collection(db, 'artifacts', appId, 'payrollAdjustments'), (snap) => {
+      setPayrollAdjustments(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+    }, (error) => console.error('No se pudieron cargar los ajustes de nómina:', error));
+
+    const unsubTeacherEvaluations = onSnapshot(collection(db, 'artifacts', appId, 'teacherEvaluations'), (snap) => {
+      setTeacherEvaluations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0)));
+    }, (error) => console.error('No se pudieron cargar las evaluaciones docentes:', error));
+
+    return () => {
+      unsubRecords();
+      unsubPayrollAdjustments();
+      unsubTeacherEvaluations();
+    };
+  }, [needsTeacherHistoryData, appId, db]);
+
+  useEffect(() => {
+    if (!needsPollResponsesData) return undefined;
+    return onSnapshot(collection(db, 'artifacts', appId, 'pollResponses'), (snap) => {
+      setPollResponses(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)));
+    }, (error) => console.error('No se pudieron cargar las respuestas de encuestas:', error));
+  }, [needsPollResponsesData, appId, db]);
+
+  // Migra una sola vez las clases antiguas. StudentPortal no activa la consulta optimizada
+  // hasta que todas las clases contienen un índice studentIds coherente.
+  useEffect(() => {
+    if (!settingsLoaded || !classesLoaded || classIndexMigrationRef.current) return;
+    if (Number(settings.studentClassIndexVersion || 0) >= 1) return;
+
+    classIndexMigrationRef.current = true;
+    const migrateClassStudentIndex = async () => {
+      try {
+        const classesToUpdate = allClasses.filter(classData => {
+          const expectedStudentIds = getClassStudentIds(classData.students || []);
+          return !haveSameStringValues(classData.studentIds || [], expectedStudentIds);
+        });
+
+        for (let start = 0; start < classesToUpdate.length; start += 400) {
+          const batch = writeBatch(db);
+          classesToUpdate.slice(start, start + 400).forEach(classData => {
+            if (!classData.refPath) return;
+            batch.update(doc(db, classData.refPath), {
+              studentIds: getClassStudentIds(classData.students || [])
+            });
+          });
+          await batch.commit();
+        }
+
+        // No se activa la versión optimizada hasta comprobar que Firestore acepta
+        // la consulta de grupo necesaria (reglas e índice de studentIds incluidos).
+        await getDocs(query(
+          collectionGroup(db, 'recurringClasses'),
+          where('studentIds', 'array-contains', '__student_index_probe__')
+        ));
+
+        await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
+          studentClassIndexVersion: 1,
+          studentClassIndexMigratedAt: new Date().toISOString(),
+          studentClassIndexMigratedClasses: classesToUpdate.length
+        }, { merge: true });
+      } catch (error) {
+        classIndexMigrationRef.current = false;
+        console.error('No se pudo completar la migración de studentIds:', error);
+      }
+    };
+
+    migrateClassStudentIndex();
+  }, [settingsLoaded, classesLoaded, settings.studentClassIndexVersion, allClasses, appId, db]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setPollClock(Date.now()), 60000);
@@ -4234,7 +4336,7 @@ Coordinación Los Mitos.`;
         s.id === studentId ? { ...s, isPaused } : s
       );
 
-      return updateDoc(doc(db, c.refPath), { students: updatedList });
+      return updateDoc(doc(db, c.refPath), withClassStudentIndex(updatedList));
     });
 
     await Promise.all(updatePromises);
@@ -4496,7 +4598,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           const updatedList = (sourceClass.students || []).map(s =>
             s.id === studentId ? applyScheduledEndToStudentEntry(s, scheduledEndDate, 'baja_parcial', gestionId) : s
           );
-          await updateDoc(doc(db, sourceClass.refPath), { students: updatedList });
+          await updateDoc(doc(db, sourceClass.refPath), withClassStudentIndex(updatedList));
 
           if (studentInfo?.globalStatus === 'baja') {
             await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: 'activo' });
@@ -4559,7 +4661,7 @@ Coordinación Los Mitos.`
           const updatedList = (c.students || []).map(s =>
             s.id === studentId ? applyScheduledEndToStudentEntry(s, scheduledEndDate, 'baja_total', gestionId) : s
           );
-          if (c.refPath) await updateDoc(doc(db, c.refPath), { students: updatedList });
+          if (c.refPath) await updateDoc(doc(db, c.refPath), withClassStudentIndex(updatedList));
         }
 
         await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
@@ -4693,7 +4795,7 @@ Cancélalo o ajusta fechas antes de crear otro.`);
         for (let c of classesWithStudent) {
           if (c.refPath && (c.students || []).some(s => s.id === studentId && s.isPaused === true)) {
             const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: false } : s);
-            await updateDoc(doc(db, c.refPath), { students: updatedList });
+            await updateDoc(doc(db, c.refPath), withClassStudentIndex(updatedList));
           }
         }
 
@@ -4757,7 +4859,7 @@ Coordinación Los Mitos.`
         for (let c of classesWithStudent) {
           if (c.refPath && (c.students || []).some(s => s.id === studentId && s.isPaused === true)) {
             const updatedList = c.students.map(s => s.id === studentId ? { ...s, isPaused: false } : s);
-            await updateDoc(doc(db, c.refPath), { students: updatedList });
+            await updateDoc(doc(db, c.refPath), withClassStudentIndex(updatedList));
           }
         }
 
@@ -4873,7 +4975,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
               s.id === studentId ? applyScheduledEndToStudentEntry(s, scheduledEndDate, 'cambio_horario', gestionId) : s
             );
             if (c.refPath) {
-              await updateDoc(doc(db, c.refPath), { students: updatedList });
+              await updateDoc(doc(db, c.refPath), withClassStudentIndex(updatedList));
               logMessage += `➖ Salida programada de ${formatClassLine(c)} el ${formatDateSpanish(scheduledEndDate)}.\n`;
             }
           }
@@ -4892,7 +4994,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
             recoveryDate: null
           };
           const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-          await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
+          await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
           logMessage += `➕ Entrada programada en ${formatClassLine(targetClass)} desde ${formatDateSpanish(scheduledStartDate)}.\n`;
           await finalizeGestionStatus(
             gestionId,
@@ -4953,7 +5055,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           recoveryDate: type === 'recuperacion' ? recoveryDate : null
         };
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-        await updateDoc(doc(db, targetClass.refPath), { students: updatedTargetStudents });
+        await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
         logMessage += `✅ Trámite archivado con éxito.\n`;
@@ -5217,7 +5319,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       });
 
       if (updatedStudents.length !== currentStudents.length) {
-        await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+        await updateDoc(doc(db, classData.refPath), withClassStudentIndex(updatedStudents));
         localClassUpdates.set(classData.id, updatedStudents);
         removedClassLines.push(formatClassLine(classData));
       }
@@ -5318,7 +5420,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       });
 
       if (updatedStudents.length !== currentStudents.length) {
-        await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+        await updateDoc(doc(db, classData.refPath), withClassStudentIndex(updatedStudents));
         removedClassLines.push(formatClassLine(classData));
       }
     }
@@ -5340,7 +5442,8 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           isRecovery: false,
           recoveryDate: null
         };
-        await updateDoc(doc(db, targetClass.refPath), { students: [...(targetClass.students || []), newStudentPayload] });
+        const updatedTargetStudents = [...(targetClass.students || []), newStudentPayload];
+        await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
         targetStatus = 'recreada_entrada_destino';
       }
     } else {
@@ -5638,7 +5741,7 @@ Coordinación Los Mitos.`
     if (!window.confirm(`¿Seguro que quieres borrar a ${studentName} SOLO de esta clase de ${classData.subject}?\n\nSeguirá activo en la escuela y en sus otras clases (si las tiene).`)) return;
     try {
       const updatedStudents = (classData.students || []).filter(s => s.id !== studentId);
-      await updateDoc(doc(db, classData.refPath), { students: updatedStudents });
+      await updateDoc(doc(db, classData.refPath), withClassStudentIndex(updatedStudents));
     } catch (e) {
       alert('Error al borrar alumno de la clase: ' + e.message);
     }
@@ -7361,6 +7464,7 @@ Coordinación Los Mitos.`
     const editedLocation = getLocationIdentity(editClassData.centerId || editClassData.sede, editClassData.roomId || editClassData.sala);
     const updatedClassData = {
       ...currentClassData,
+      studentIds: getClassStudentIds(currentClassData.students || []),
       isRecurring: Boolean(editClassData.isRecurring),
       specificDate: editClassData.isRecurring ? '' : editClassData.specificDate,
       dayOfWeek: dayKey,
@@ -7477,6 +7581,7 @@ Coordinación Los Mitos.`
         cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
         id: classId,
         students: [],
+        studentIds: [],
         exceptions: {},
         cancelledDates: [],
         dayOfWeek: dayKey,
@@ -9027,7 +9132,7 @@ ${valueOrDash(comments.privateNote)}`,
               ? { ...s, name: finalDisplayName, email: email.toLowerCase().trim(), classStartDate: cleanClassStartDate }
               : s
           );
-          batch.update(doc(db, c.refPath), { students: updatedList });
+          batch.update(doc(db, c.refPath), withClassStudentIndex(updatedList));
         });
         await batch.commit();
         
@@ -9710,7 +9815,7 @@ ${startDateWarning}
         };
         const targetPath = doc(db, resurrectClassModal.refPath);
         const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
-        await updateDoc(targetPath, { students: updatedStudents });
+        await updateDoc(targetPath, withClassStudentIndex(updatedStudents));
 
         let initialEmailSent = false;
         if (!isPunctualClass(resurrectClassModal)) {
@@ -9928,7 +10033,7 @@ ${startDateWarning}
         };
         const targetPath = doc(db, c.refPath);
         const updatedStudents = [...(c.students || []), newStudentPayload];
-        await updateDoc(targetPath, { students: updatedStudents });
+        await updateDoc(targetPath, withClassStudentIndex(updatedStudents));
 
         let initialEmailSent = false;
         if (!isPunctual) {

@@ -356,6 +356,11 @@ const buildTeacherEvaluationId = ({ studentId = '', classId = '', period = '' } 
 
 const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
 
+const isAssumedSubstitutionClass = (clase = {}) => Boolean(
+  clase?.sourceSubstitutionId
+  || String(clase?.id || clase?.docId || '').startsWith('assumed-')
+);
+
 const isFixedClassStudent = (studentEntry = {}) => !(
   studentEntry?.isRecovery === true ||
   studentEntry?.isTemporary === true ||
@@ -366,9 +371,37 @@ const isFixedClassStudent = (studentEntry = {}) => !(
   studentEntry?.status === 'recovery'
 );
 
+const TEMPORARY_RELOCATION_FINAL_STATUSES = new Set([
+  'cancelled',
+  'cancelada',
+  'expired',
+  'finalizada'
+]);
+
+const normalizeTemporaryRelocationDate = (value = '') => {
+  if (!value) return '';
+  const dateValue = typeof value?.toDate === 'function'
+    ? value.toDate()
+    : (value instanceof Date ? value : null);
+
+  if (dateValue && !Number.isNaN(dateValue.getTime())) {
+    const year = dateValue.getFullYear();
+    const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+    const day = String(dateValue.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  const cleanValue = String(value || '').trim();
+  const isoMatch = cleanValue.match(/^\d{4}-\d{2}-\d{2}/);
+  return isoMatch ? isoMatch[0] : cleanValue.slice(0, 10);
+};
+
 const isTemporaryRelocationActiveForDate = (relocation = {}, dateStr = '') => {
-  if (!relocation || relocation.status === 'cancelled') return false;
-  return Boolean(relocation.from && relocation.until && relocation.from <= dateStr && relocation.until >= dateStr);
+  if (!relocation || TEMPORARY_RELOCATION_FINAL_STATUSES.has(String(relocation.status || '').toLowerCase())) return false;
+  const from = normalizeTemporaryRelocationDate(relocation.from);
+  const until = normalizeTemporaryRelocationDate(relocation.until);
+  const referenceDate = normalizeTemporaryRelocationDate(dateStr);
+  return Boolean(from && until && referenceDate && from <= referenceDate && until >= referenceDate);
 };
 
 const getTemporaryRelocationLabel = (relocation = {}) => {
@@ -698,6 +731,69 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return (clase.students || []).find(studentEntry => isStudentEntryFor(studentEntry, studentId)) || null;
   };
 
+  const getClassRefPath = (clase = {}) => String(
+    clase.refPath || clase.classRefPath || ''
+  ).trim();
+
+  const getClassDocumentId = (clase = {}) => {
+    const refPath = getClassRefPath(clase);
+    const refPathParts = refPath.split('/').filter(Boolean);
+    return String(clase.docId || refPathParts[refPathParts.length - 1] || clase.id || '').trim();
+  };
+
+  const getClassIdentityIds = (clase = {}) => [...new Set([
+    clase.id,
+    clase.docId,
+    getClassDocumentId(clase),
+    clase.classId,
+    clase.canonicalClassId,
+    clase.officialClassId,
+    clase.originalClassId,
+    clase.legacyClassId,
+    clase.migratedFromClassId,
+    clase.previousClassId
+  ].map(value => String(value || '').trim()).filter(Boolean))];
+
+  const getClassIdentityPaths = (clase = {}) => [...new Set([
+    clase.refPath,
+    clase.classRefPath,
+    clase.canonicalClassRefPath,
+    clase.officialClassRefPath,
+    clase.originalClassRefPath,
+    clase.migratedFromRefPath,
+    clase.previousClassRefPath
+  ].map(value => String(value || '').trim()).filter(Boolean))];
+
+  const classesShareStableIdentity = (left = {}, right = {}) => {
+    const leftPaths = new Set(getClassIdentityPaths(left));
+    if (getClassIdentityPaths(right).some(path => leftPaths.has(path))) return true;
+    const leftIds = new Set(getClassIdentityIds(left));
+    return getClassIdentityIds(right).some(id => leftIds.has(id));
+  };
+
+  const classMatchesReference = (clase = {}, referenceId = '', referencePath = '') => {
+    const cleanPath = String(referencePath || '').trim();
+    if (cleanPath) {
+      if (getClassIdentityPaths(clase).includes(cleanPath)) return true;
+      const referencedPathStillExists = allClasses.some(candidate => getClassIdentityPaths(candidate).includes(cleanPath));
+      if (referencedPathStillExists) return false;
+    }
+    const cleanId = String(referenceId || '').trim();
+    return Boolean(cleanId && getClassIdentityIds(clase).includes(cleanId));
+  };
+
+  const findClassByReference = (classes = [], referenceId = '', referencePath = '') => {
+    const cleanPath = String(referencePath || '').trim();
+    if (cleanPath) {
+      const exactPathMatch = classes.find(clase => getClassIdentityPaths(clase).includes(cleanPath));
+      if (exactPathMatch) return exactPathMatch;
+    }
+    const cleanId = String(referenceId || '').trim();
+    if (!cleanId) return null;
+    const idMatches = classes.filter(clase => getClassIdentityIds(clase).includes(cleanId));
+    return idMatches.length === 1 ? idMatches[0] : null;
+  };
+
   const getClassEntryStartDate = (studentEntry = {}, studentInfo = {}) => normalizeClassDate(
     studentEntry.classStartDate ||
     studentEntry.startDate ||
@@ -739,13 +835,23 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
     const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
     const classId = classData?.id ?? classDataOrId;
-    const sameId = Boolean(String(change.classId ?? '')) && String(change.classId) === String(classId ?? '');
-    if (sameId) return true;
-    return Boolean(
-      classData?.refPath &&
-      change.classRefPath &&
-      String(change.classRefPath) === String(classData.refPath)
-    );
+    const changeRefPath = String(change.classRefPath || '').trim();
+    const classRefPath = classData ? getClassRefPath(classData) : '';
+
+    // La ruta es la identidad más precisa. Mientras la ruta guardada siga
+    // existiendo, nunca aplicamos el cambio a una copia homónima bajo otro
+    // profesor. Si la clase fue trasladada y la ruta antigua ya no existe,
+    // permitimos después la compatibilidad por ID.
+    if (changeRefPath && classRefPath) {
+      if (changeRefPath === classRefPath) return true;
+      const referencedPathStillExists = allClasses.some(clase => getClassRefPath(clase) === changeRefPath);
+      if (referencedPathStillExists) return false;
+    }
+
+    const changeClassId = String(change.classId || '').trim();
+    if (!changeClassId) return false;
+    if (classData) return getClassIdentityIds(classData).includes(changeClassId);
+    return changeClassId === String(classId || '').trim();
   };
 
   const getClassTemporaryChanges = (classDataOrId = '') => temporaryClassChanges
@@ -774,8 +880,74 @@ export default function StudentPortal({ user, logout, db, appId }) {
       }) || null;
   };
 
+  const getAssumedSubstitutionOriginalClassId = (clase = {}) => {
+    const explicitOriginalClassId = String(clase.originalClassId || '').trim();
+    if (explicitOriginalClassId) return explicitOriginalClassId;
+
+    const substitutionId = String(clase.sourceSubstitutionId || '').trim();
+    const substitutionDate = normalizeClassDate(clase.date || clase.specificDate || '');
+    const dateSuffix = substitutionDate ? `-${substitutionDate}` : '';
+    if (dateSuffix && substitutionId.endsWith(dateSuffix)) {
+      return substitutionId.slice(0, -dateSuffix.length);
+    }
+
+    return '';
+  };
+
+  const getAssumedSubstitutionKey = (clase = {}) => {
+    if (!isAssumedSubstitutionClass(clase)) return '';
+    const substitutionId = String(clase.sourceSubstitutionId || '').trim();
+    if (substitutionId) return `substitution|${substitutionId}`;
+
+    const substitutionDate = normalizeClassDate(clase.date || clase.specificDate || '');
+    const documentId = getClassDocumentId(clase);
+    const originalClassId = getAssumedSubstitutionOriginalClassId(clase);
+    return `substitution|${originalClassId}|${substitutionDate}|${documentId}`;
+  };
+
+  const doesAssumedSubstitutionBelongToClass = (substitutionClass = {}, originalClass = {}) => {
+    if (!isAssumedSubstitutionClass(substitutionClass) || isPunctualClass(originalClass)) return false;
+
+    const originalClassId = getAssumedSubstitutionOriginalClassId(substitutionClass);
+    const originalClassRefPath = String(substitutionClass.originalClassRefPath || '').trim();
+    return classMatchesReference(originalClass, originalClassId, originalClassRefPath);
+  };
+
+  const getStudentSubstitutionForDate = (clase = {}, dateStr = todayStr) => {
+    if (isPunctualClass(clase)) return null;
+    const substitutions = Array.isArray(clase.studentSubstitutionClasses)
+      ? clase.studentSubstitutionClasses
+      : [];
+
+    return substitutions.find(substitutionClass => (
+      isAssumedSubstitutionClass(substitutionClass)
+      && normalizeClassDate(substitutionClass.date || substitutionClass.specificDate) === normalizeClassDate(dateStr)
+    )) || null;
+  };
+
   const getEffectiveClassForDate = (clase = {}, dateStr = todayStr) => {
     if (!clase || isPunctualClass(clase)) return clase;
+
+    // Una clase asumida sustituye a la sesión oficial solo en su fecha exacta.
+    // Conservamos la clase fija como base para que antes y después de ese día
+    // el alumno siga viendo su horario y profesor habituales.
+    const studentSubstitutionClass = getStudentSubstitutionForDate(clase, dateStr);
+    if (studentSubstitutionClass) {
+      return {
+        ...clase,
+        ...studentSubstitutionClass,
+        id: studentSubstitutionClass.id || studentSubstitutionClass.docId || clase.id,
+        docId: studentSubstitutionClass.docId || getClassDocumentId(studentSubstitutionClass),
+        refPath: getClassRefPath(studentSubstitutionClass) || getClassRefPath(clase),
+        date: normalizeClassDate(studentSubstitutionClass.date || studentSubstitutionClass.specificDate || dateStr),
+        isRecurring: false,
+        isStudentSubstitutionClass: true,
+        studentSubstitutionClass,
+        originalClassId: getAssumedSubstitutionOriginalClassId(studentSubstitutionClass) || clase.id,
+        officialClass: clase
+      };
+    }
+
     const temporaryChange = getActiveClassTemporaryChange(clase, dateStr);
     if (!temporaryChange) return clase;
 
@@ -825,6 +997,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
       const dateStr = formatLocalDateString(candidateDay);
       const effectiveClass = getEffectiveClassForDate(clase, dateStr);
 
+      // Al renunciar el profesor, Teacher marca la fecha como cancelada en la
+      // clase fija. Si otro profesor la asume, el documento puntual anterior
+      // vuelve a habilitar exactamente esa fecha; si nadie la asume, se omite.
+      const hasAssignedSubstitution = Boolean(effectiveClass?.studentSubstitutionClass);
+      if (!hasAssignedSubstitution && (clase.cancelledDates || []).includes(dateStr)) continue;
+
       if (Number(effectiveClass.dayOfWeek) !== candidateDay.getDay()) continue;
 
       const [hours, minutes] = String(effectiveClass.time || '00:00').split(':').map(Number);
@@ -860,6 +1038,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const isStudentClassVisibleForNextSession = (clase = {}) => {
     const studentEntry = getStudentEntryInClass(clase);
     if (!studentEntry) return false;
+    if (isPunctualClass(clase)) {
+      const punctualDate = normalizeClassDate(clase.date || clase.specificDate || '');
+      if (punctualDate && punctualDate < todayStr) return false;
+    }
     return isStudentEntryActiveOnDate(studentEntry, profile || {}, getClassReferenceDateForStudent(clase));
   };
 
@@ -873,30 +1055,191 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const scheduledBajaEffectiveDate = normalizeClassDate(profile?.scheduledBajaEffectiveDate || profile?.bajaEffectiveDate || profile?.effectiveBajaDate || '');
   const isProfileBajaEffective = profile?.globalStatus === 'baja' || Boolean(profile?.scheduledBaja && scheduledBajaEffectiveDate && scheduledBajaEffectiveDate <= todayStr);
 
+  const getStudentClassSlotFingerprint = (clase = {}) => {
+    const studentEntry = getStudentEntryInClass(clase, profile?.id);
+    if (!studentEntry || !isFixedClassStudent(studentEntry) || isPunctualClass(clase)) return '';
+
+    const subject = normalizeConfigId(clase.subject || '', '');
+    const dayOfWeek = Number(clase.dayOfWeek);
+    const time = String(clase.time || '').trim();
+    const centerValue = String(clase.centerId || clase.sede || '').trim();
+    const roomValue = String(clase.roomId || clase.sala || '').trim();
+
+    // No deduplicamos por horario si falta alguno de estos datos. Así evitamos
+    // ocultar dos matrículas reales antiguas que no tengan sala o sede informada.
+    if (!subject || !Number.isFinite(dayOfWeek) || !time || !centerValue || !roomValue) return '';
+
+    return [
+      'fixed',
+      subject,
+      dayOfWeek,
+      time,
+      normalizeConfigId(centerValue, ''),
+      normalizeConfigId(roomValue, ''),
+      Number(clase.duration) || 60
+    ].join('|');
+  };
+
+  const getClassTemporaryChangePriority = (clase = {}) => {
+    const classRefPath = getClassRefPath(clase);
+    const classIds = new Set(getClassIdentityIds(clase));
+    return temporaryClassChanges.reduce((bestScore, change) => {
+      if (isTemporaryClassChangeClosed(change)) return bestScore;
+      const until = normalizeTemporaryClassChangeDate(change.until);
+      if (until && until < todayStr) return bestScore;
+
+      const exactPath = Boolean(classRefPath && change.classRefPath && String(change.classRefPath) === classRefPath);
+      const matchingId = Boolean(change.classId && classIds.has(String(change.classId)));
+      if (!exactPath && !matchingId) return bestScore;
+
+      const activeBonus = isTemporaryClassChangeActiveForDate(change, todayStr) ? 500 : 250;
+      return Math.max(bestScore, (exactPath ? 10000 : 2000) + activeBonus);
+    }, 0);
+  };
+
+  const getClassFreshness = (clase = {}) => {
+    const rawValue = clase.updatedAt || clase.createdAt || '';
+    const timestamp = new Date(rawValue).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  };
+
+  const choosePreferredClassCopy = (left = {}, right = {}) => {
+    const scoreClass = (clase = {}) => (
+      (clase.isTemporaryRelocationClass ? 20000 : 0)
+      + getClassTemporaryChangePriority(clase)
+      + (getClassRefPath(clase) ? 100 : 0)
+      + (getClassDocumentId(clase) ? 10 : 0)
+    );
+
+    const leftScore = scoreClass(left);
+    const rightScore = scoreClass(right);
+    if (leftScore !== rightScore) return rightScore > leftScore ? right : left;
+
+    const leftFreshness = getClassFreshness(left);
+    const rightFreshness = getClassFreshness(right);
+    if (leftFreshness !== rightFreshness) return rightFreshness > leftFreshness ? right : left;
+
+    // Desempate estable para no alternar tarjetas entre actualizaciones.
+    return getClassRefPath(right).localeCompare(getClassRefPath(left)) > 0 ? right : left;
+  };
+
+  const deduplicateStudentClasses = (classes = []) => {
+    const result = [];
+
+    classes.filter(Boolean).forEach(clase => {
+      const slotFingerprint = getStudentClassSlotFingerprint(clase);
+      const duplicateIndex = result.findIndex(existingClass => (
+        isAssumedSubstitutionClass(existingClass) || isAssumedSubstitutionClass(clase)
+          ? Boolean(
+              isAssumedSubstitutionClass(existingClass)
+              && isAssumedSubstitutionClass(clase)
+              && getAssumedSubstitutionKey(existingClass) === getAssumedSubstitutionKey(clase)
+            )
+          : (
+              classesShareStableIdentity(existingClass, clase)
+              || Boolean(
+                slotFingerprint
+                && slotFingerprint === getStudentClassSlotFingerprint(existingClass)
+              )
+            )
+      ));
+
+      if (duplicateIndex < 0) {
+        result.push(clase);
+        return;
+      }
+
+      result[duplicateIndex] = choosePreferredClassCopy(result[duplicateIndex], clase);
+    });
+
+    return result;
+  };
+
   const effectiveMyClasses = useMemo(() => {
     if (!profile?.id) return myClasses;
 
     const activeRelocations = temporaryRelocations.filter(rel =>
-      rel.studentId === profile.id &&
+      String(rel.studentId || '') === String(profile.id) &&
       isTemporaryRelocationActiveForDate(rel, todayStr)
     );
 
-    const hiddenSourceClassIds = new Set(activeRelocations.map(rel => rel.sourceClassId).filter(Boolean));
-    const effectiveById = new Map();
+    const visibleStudentClasses = myClasses.filter(isStudentClassVisibleForNextSession);
+    const visibleAssumedSubstitutions = deduplicateStudentClasses(
+      visibleStudentClasses.filter(isAssumedSubstitutionClass)
+    );
+    const visibleBaseClasses = deduplicateStudentClasses(
+      visibleStudentClasses.filter(clase => !isAssumedSubstitutionClass(clase))
+    );
 
-    myClasses
-      .filter(c => !hiddenSourceClassIds.has(c.id))
-      .filter(isStudentClassVisibleForNextSession)
-      .forEach(c => effectiveById.set(c.id, c));
+    const attachedSubstitutionKeys = new Set();
+    const baseClassesWithSubstitutions = visibleBaseClasses.map(baseClass => {
+      if (isPunctualClass(baseClass)) return baseClass;
 
-    activeRelocations.forEach(rel => {
-      const targetClass = allClasses.find(c => c.id === rel.targetClassId);
-      if (!targetClass) return;
+      const substitutionsForClass = visibleAssumedSubstitutions
+        .filter(substitutionClass => doesAssumedSubstitutionBelongToClass(substitutionClass, baseClass))
+        .sort((left, right) => (
+          normalizeClassDate(left.date || left.specificDate)
+            .localeCompare(normalizeClassDate(right.date || right.specificDate))
+        ));
 
+      if (substitutionsForClass.length === 0) return baseClass;
+      substitutionsForClass.forEach(substitutionClass => {
+        attachedSubstitutionKeys.add(getAssumedSubstitutionKey(substitutionClass));
+      });
+
+      return {
+        ...baseClass,
+        studentSubstitutionClasses: substitutionsForClass
+      };
+    });
+
+    // Compatibilidad: si una clase puntual antigua no conserva una referencia
+    // fiable a su clase de origen, no la ocultamos. Se muestra solo hasta su
+    // fecha y nunca se fusiona con otra matrícula por una coincidencia horaria.
+    const unmatchedAssumedSubstitutions = visibleAssumedSubstitutions.filter(substitutionClass => (
+      !attachedSubstitutionKeys.has(getAssumedSubstitutionKey(substitutionClass))
+    ));
+
+    // Solo sustituimos la clase de origen cuando la clase destino se ha podido
+    // resolver. Si un documento antiguo está incompleto, es preferible conservar
+    // la clase oficial y mostrar el error de carga que hacerla desaparecer.
+    const resolvedRelocations = activeRelocations
+      .map(relocation => ({
+        relocation,
+        targetClass: findClassByReference(
+          allClasses,
+          relocation.targetClassId,
+          relocation.targetClassRefPath || relocation.targetRefPath
+        )
+      }))
+      .filter(item => Boolean(item.targetClass));
+
+    let displayedClasses = [
+      ...baseClassesWithSubstitutions,
+      ...unmatchedAssumedSubstitutions
+    ].filter(clase => !resolvedRelocations.some(({ relocation }) => (
+      classMatchesReference(
+        clase,
+        relocation.sourceClassId || relocation.sourceClass || relocation.originClassId,
+        relocation.sourceClassRefPath || relocation.sourceRefPath || relocation.originClassRefPath
+      )
+    )));
+
+    resolvedRelocations.forEach(({ relocation: rel, targetClass }) => {
       const displayName = profile.alias && profile.useAlias ? profile.alias : (profile.name || rel.studentName || 'Alumno');
       const alreadyInTarget = Boolean(getStudentEntryInClass(targetClass, profile.id));
+      const substitutionsForTarget = visibleAssumedSubstitutions
+        .filter(substitutionClass => doesAssumedSubstitutionBelongToClass(substitutionClass, targetClass))
+        .sort((left, right) => (
+          normalizeClassDate(left.date || left.specificDate)
+            .localeCompare(normalizeClassDate(right.date || right.specificDate))
+        ));
+      const targetSubstitutionKeys = new Set(
+        substitutionsForTarget.map(getAssumedSubstitutionKey).filter(Boolean)
+      );
       const temporaryEntry = {
         id: profile.id,
+        studentId: profile.id,
         name: displayName,
         email: profile.email || rel.studentEmail || '',
         isPaused: false,
@@ -910,17 +1253,32 @@ export default function StudentPortal({ user, logout, db, appId }) {
         relocationLabel: getTemporaryRelocationLabel(rel)
       };
 
-      effectiveById.set(targetClass.id, {
+      const relocatedTargetClass = {
         ...targetClass,
         isTemporaryRelocationClass: true,
         temporaryRelocation: rel,
+        ...(substitutionsForTarget.length > 0
+          ? { studentSubstitutionClasses: substitutionsForTarget }
+          : {}),
         students: alreadyInTarget
           ? targetClass.students
           : [...(targetClass.students || []), temporaryEntry]
-      });
+      };
+
+      // La clase destino puede haber entrado ya por studentIds o por una entrada
+      // temporal guardada físicamente. La retiramos por identidad y añadimos una
+      // sola versión marcada como recolocación.
+      displayedClasses = displayedClasses.filter(clase => (
+        !classesShareStableIdentity(clase, targetClass)
+        && !(
+          isAssumedSubstitutionClass(clase)
+          && targetSubstitutionKeys.has(getAssumedSubstitutionKey(clase))
+        )
+      ));
+      displayedClasses.push(relocatedTargetClass);
     });
 
-    return [...effectiveById.values()];
+    return deduplicateStudentClasses(displayedClasses);
   }, [myClasses, allClasses, temporaryRelocations, temporaryClassChanges, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBajaClassEndDate, todayStr]);
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
@@ -1033,12 +1391,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setSelectedCalendarDay('');
   };
 
-  const fixedSeatClasses = myClasses.filter(c =>
+  const fixedSeatClasses = deduplicateStudentClasses(myClasses.filter(c =>
     !isPunctualClass(c) &&
     isStudentClassVisibleForNextSession(c) &&
     !isStudentClassScheduledToEnd(c) &&
     (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
-  );
+  ));
 
   const studentCenters = [...new Map(
     (fixedMyClasses.length > 0 ? fixedMyClasses : effectiveMyClasses)
@@ -1818,7 +2176,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
       const mine = [];
       snapshot.forEach(classDoc => {
         const data = classDoc.data();
-        const classObj = { id: classDoc.id, refPath: classDoc.ref.path, ...data };
+        const classObj = {
+          ...data,
+          id: data.id || classDoc.id,
+          docId: classDoc.id,
+          refPath: classDoc.ref.path
+        };
         all.push(classObj); 
 
         if (getStudentEntryInClass(classObj, profile.id)) {
@@ -2058,7 +2421,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
 
     const activeRelocations = temporaryRelocations.filter(relocation => (
-      relocation.studentId === profile.id && isTemporaryRelocationActiveForDate(relocation, todayStr)
+      String(relocation.studentId || '') === String(profile.id) && isTemporaryRelocationActiveForDate(relocation, todayStr)
     ));
     const targetPaths = [...new Set(activeRelocations.map(relocation => relocation.targetClassRefPath).filter(Boolean))];
     const missingTargetIds = [...new Set(
@@ -2082,9 +2445,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
       doc(db, refPath),
       (classSnap) => {
         if (classSnap.exists()) {
-          classesByReference.set(refPath, { id: classSnap.id, refPath: classSnap.ref.path, ...classSnap.data() });
+          const classData = classSnap.data();
+          classesByReference.set(refPath, {
+            ...classData,
+            id: classData.id || classSnap.id,
+            docId: classSnap.id,
+            refPath: classSnap.ref.path
+          });
         } else {
           classesByReference.delete(refPath);
+          setClassesLoadError('Una clase de recolocación temporal ya no existe. Se conservará visible la clase oficial hasta que Administración revise el destino.');
+          setClassesLoaded(true);
         }
         publish();
       },
@@ -2100,7 +2471,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
       getDocs(collectionGroup(db, 'recurringClasses')).then(snapshot => {
         snapshot.forEach(classDoc => {
           if (missingTargetIds.includes(classDoc.id)) {
-            classesByReference.set(classDoc.ref.path, { id: classDoc.id, refPath: classDoc.ref.path, ...classDoc.data() });
+            const classData = classDoc.data();
+            classesByReference.set(classDoc.ref.path, {
+              ...classData,
+              id: classData.id || classDoc.id,
+              docId: classDoc.id,
+              refPath: classDoc.ref.path
+            });
           }
         });
         publish();
@@ -2137,8 +2514,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
       return () => unsubLegacyChanges();
     }
 
+    const relevantClasses = [...myClasses, ...relocationTargetClasses];
     const relevantClassIds = [...new Set(
-      [...myClasses, ...relocationTargetClasses].map(classData => classData.id).filter(Boolean)
+      relevantClasses.flatMap(classData => getClassIdentityIds(classData)).filter(Boolean)
     )];
     if (relevantClassIds.length === 0) {
       setStudentTemporaryClassChanges([]);
@@ -2169,7 +2547,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         snapshot => {
           setStudentTemporaryClassChanges(snapshot.docs
             .map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))
-            .filter(change => relevantClassIds.includes(change.classId)));
+            .filter(change => relevantClasses.some(classData => doesTemporaryChangeBelongToClass(change, classData))));
         },
         fallbackError => {
           console.error('Error al cargar los cambios temporales de clase', fallbackError);
@@ -2235,7 +2613,15 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const unsubClassCatalog = onSnapshot(
       collectionGroup(db, 'recurringClasses'),
       snapshot => {
-        setClassCatalog(snapshot.docs.map(classDoc => ({ id: classDoc.id, refPath: classDoc.ref.path, ...classDoc.data() })));
+        setClassCatalog(snapshot.docs.map(classDoc => {
+          const classData = classDoc.data();
+          return {
+            ...classData,
+            id: classData.id || classDoc.id,
+            docId: classDoc.id,
+            refPath: classDoc.ref.path
+          };
+        }));
         classesReady = true;
         finishIfReady();
       },

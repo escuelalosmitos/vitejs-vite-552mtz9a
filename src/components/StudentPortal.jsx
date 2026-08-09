@@ -157,6 +157,22 @@ const WORKSHOP_REGISTRATION_STATUS_STYLE = {
   cancelled: 'bg-zinc-100 text-zinc-600 border-zinc-200'
 };
 
+const CALL_RESPONSE_STATUS_LABELS = {
+  pending: 'Pendiente de revisión',
+  confirmed: 'Participación confirmada',
+  waitlist: 'En reserva',
+  rejected: 'No seleccionado',
+  withdrawn: 'Candidatura retirada'
+};
+
+const CALL_RESPONSE_STATUS_STYLE = {
+  pending: 'bg-amber-50 text-amber-800 border-amber-200',
+  confirmed: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+  waitlist: 'bg-sky-50 text-sky-800 border-sky-200',
+  rejected: 'bg-red-50 text-red-700 border-red-200',
+  withdrawn: 'bg-zinc-100 text-zinc-600 border-zinc-200'
+};
+
 const getLocalDateTimeString = (date = new Date()) => {
   const offset = date.getTimezoneOffset();
   return new Date(date.getTime() - (offset * 60000)).toISOString().slice(0, 16);
@@ -566,6 +582,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [myPollResponses, setMyPollResponses] = useState([]);
   const [pollDrafts, setPollDrafts] = useState({});
   const [savingPollId, setSavingPollId] = useState(null);
+  const [myCallResponses, setMyCallResponses] = useState([]);
+  const [callDrafts, setCallDrafts] = useState({});
+  const [savingCallId, setSavingCallId] = useState(null);
   const [pollClock, setPollClock] = useState(Date.now());
   const [myGestiones, setMyGestiones] = useState([]); 
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
@@ -2038,6 +2057,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const audienceValue = String(ann.audienceValue || '').trim();
 
     if (ann.type === 'poll' && ann.pollStatus === 'archived') return false;
+    if (ann.type === 'call' && ann.callStatus === 'archived') return false;
 
     // Los avisos dirigidos a profesores se leen solo desde TeacherPortal.
     // StudentPortal debe ignorarlos aunque estén en la misma colección announcements.
@@ -2341,6 +2361,16 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => console.error('Error al cargar respuestas de encuestas', error)
     );
 
+    const callResponsesQuery = query(
+      collection(db, 'artifacts', appId, 'callResponses'),
+      where('studentId', '==', profile.id)
+    );
+    const unsubCallResponses = onSnapshot(
+      callResponsesQuery,
+      (snapshot) => setMyCallResponses(snapshot.docs.map(responseDoc => ({ id: responseDoc.id, ...responseDoc.data() }))),
+      (error) => console.error('Error al cargar candidaturas de convocatorias', error)
+    );
+
     const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentId', '==', profile.id));
     const processTicketsSnapshot = (snapshot, filterLegacyResults = false) => {
       let validTicketsCount = 0;
@@ -2408,6 +2438,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubWorkshops();
       unsubWorkshopRegistrations();
       unsubPollResponses();
+      unsubCallResponses();
       unsubTickets(); 
     };
   }, [profile?.id, settingsLoaded, isStudentClassIndexReady, classesRetryNonce, db, appId]);
@@ -2788,6 +2819,149 @@ export default function StudentPortal({ user, logout, db, appId }) {
       showToast(message, 'error');
     } finally {
       setSavingPollId(null);
+    }
+  };
+
+  const getMyCallResponse = (callId) => myCallResponses.find(response => (
+    (response.callId || response.announcementId) === callId
+  )) || null;
+
+  const isStudentCallClosed = (call = {}) => {
+    if (['closed', 'archived'].includes(call.callStatus)) return true;
+    if (!call.callDeadline) return false;
+    return new Date(call.callDeadline).getTime() <= pollClock;
+  };
+
+  const getCallDraft = (call) => {
+    if (callDrafts[call.id] !== undefined) return callDrafts[call.id];
+    return getMyCallResponse(call.id)?.comment || '';
+  };
+
+  const updateCallDraft = (callId, value) => {
+    setCallDrafts(previous => ({ ...previous, [callId]: value }));
+  };
+
+  const getCallStudentContext = (call = {}) => {
+    const audienceType = call.audienceType || 'all';
+    const audienceValue = String(call.audienceValue || '').trim();
+    const matchingClasses = fixedMyClasses.filter(classData => {
+      if (audienceType === 'sede') return isSameCenter(classData.centerId || classData.sede || 'Tarragona', audienceValue);
+      if (audienceType === 'instrumento') return (classData.subject || '') === audienceValue;
+      if (audienceType === 'profesor') return (classData.teacher || '') === audienceValue;
+      return true;
+    });
+    const contextClasses = matchingClasses.length > 0 ? matchingClasses : fixedMyClasses;
+    const joinUnique = values => [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))].join(', ');
+
+    return {
+      instrument: joinUnique(contextClasses.map(classData => classData.subject)),
+      site: joinUnique(contextClasses.map(classData => getClassCenterName(classData))),
+      teacher: joinUnique(contextClasses.map(classData => classData.teacher))
+    };
+  };
+
+  const submitCallResponse = async (call) => {
+    if (!profile?.id || savingCallId) return;
+    const responseBeforeSaving = getMyCallResponse(call.id);
+    const comment = String(getCallDraft(call) || '').trim();
+    const studentContext = getCallStudentContext(call);
+    const nowIso = new Date().toISOString();
+    const callRef = doc(db, 'artifacts', appId, 'announcements', call.id);
+    const responseRef = doc(db, 'artifacts', appId, 'callResponses', `${call.id}_${profile.id}`);
+
+    setSavingCallId(call.id);
+    try {
+      await runTransaction(db, async transaction => {
+        const callSnapshot = await transaction.get(callRef);
+        const responseSnapshot = await transaction.get(responseRef);
+        if (!callSnapshot.exists()) throw new Error('CALL_NOT_FOUND');
+
+        const currentCall = callSnapshot.data();
+        if (
+          currentCall.type !== 'call' ||
+          ['closed', 'archived'].includes(currentCall.callStatus) ||
+          (currentCall.callDeadline && new Date(currentCall.callDeadline).getTime() <= Date.now())
+        ) {
+          throw new Error('CALL_CLOSED');
+        }
+
+        const previous = responseSnapshot.exists() ? responseSnapshot.data() : null;
+        const previousStatus = previous?.status || 'pending';
+        if (previous && !['pending', 'withdrawn'].includes(previousStatus)) {
+          throw new Error('CALL_ALREADY_REVIEWED');
+        }
+
+        const isResubmission = previousStatus === 'withdrawn';
+        transaction.set(responseRef, {
+          callId: call.id,
+          announcementId: call.id,
+          callTitle: currentCall.title || call.title || '',
+          studentId: profile.id,
+          studentName: profile.useAlias && profile.alias ? profile.alias : (profile.name || ''),
+          studentEmail: profile.email || user.email || '',
+          instrument: studentContext.instrument,
+          site: studentContext.site,
+          teacher: studentContext.teacher,
+          comment,
+          status: 'pending',
+          createdAt: previous?.createdAt || nowIso,
+          submittedAt: nowIso,
+          updatedAt: nowIso,
+          ...(isResubmission ? {
+            resubmittedAt: nowIso,
+            withdrawnAt: '',
+            reviewedAt: '',
+            reviewedBy: ''
+          } : {})
+        }, { merge: true });
+      });
+
+      setCallDrafts(previous => {
+        const next = { ...previous };
+        delete next[call.id];
+        return next;
+      });
+      showToast(responseBeforeSaving?.status === 'pending' ? 'Candidatura actualizada.' : 'Candidatura enviada. Administración la revisará.');
+    } catch (error) {
+      console.error('Error al guardar la candidatura', error);
+      const message = error?.message === 'CALL_CLOSED'
+        ? 'La convocatoria ya está cerrada.'
+        : error?.message === 'CALL_ALREADY_REVIEWED'
+          ? 'Administración ya ha revisado esta candidatura y no puede editarse.'
+          : 'No se ha podido guardar la candidatura.';
+      showToast(message, 'error');
+    } finally {
+      setSavingCallId(null);
+    }
+  };
+
+  const withdrawCallResponse = async (call) => {
+    if (!profile?.id || savingCallId) return;
+    if (!window.confirm('¿Quieres retirar tu candidatura de esta convocatoria?')) return;
+
+    const responseRef = doc(db, 'artifacts', appId, 'callResponses', `${call.id}_${profile.id}`);
+    const nowIso = new Date().toISOString();
+    setSavingCallId(call.id);
+    try {
+      await runTransaction(db, async transaction => {
+        const responseSnapshot = await transaction.get(responseRef);
+        if (!responseSnapshot.exists()) throw new Error('CALL_RESPONSE_NOT_FOUND');
+        const currentResponse = responseSnapshot.data();
+        if ((currentResponse.callId || currentResponse.announcementId) !== call.id) throw new Error('CALL_RESPONSE_NOT_FOUND');
+        if ((currentResponse.status || 'pending') === 'withdrawn') return;
+
+        transaction.update(responseRef, {
+          status: 'withdrawn',
+          withdrawnAt: nowIso,
+          updatedAt: nowIso
+        });
+      });
+      showToast('Candidatura retirada.');
+    } catch (error) {
+      console.error('Error al retirar la candidatura', error);
+      showToast('No se ha podido retirar la candidatura.', 'error');
+    } finally {
+      setSavingCallId(null);
     }
   };
 
@@ -5424,6 +5598,97 @@ END:VCALENDAR`;
             ) : (
               <div className="space-y-4">
                 {visibleAnnouncements.slice(0, visibleAnnouncementsCount).map(ann => {
+                  if (ann.type === 'call') {
+                    const response = getMyCallResponse(ann.id);
+                    const responseStatus = response?.status || 'pending';
+                    const draft = getCallDraft(ann);
+                    const closed = isStudentCallClosed(ann);
+                    const canSubmit = !closed && (!response || ['pending', 'withdrawn'].includes(responseStatus));
+                    const canWithdraw = Boolean(response && ['pending', 'confirmed', 'waitlist'].includes(responseStatus));
+                    const capacity = Number(ann.callCapacity || 0);
+                    const isSaving = savingCallId === ann.id;
+
+                    return (
+                      <div key={ann.id} className="bg-white rounded-3xl shadow-sm border-2 border-amber-200 overflow-hidden">
+                        <div className="bg-amber-50 px-6 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-amber-100">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Convocatoria</span>
+                          <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${closed ? 'bg-zinc-200 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>
+                            {closed ? 'Finalizada' : `Abierta hasta ${ann.callDeadline ? new Date(ann.callDeadline).toLocaleString('es-ES') : 'nuevo aviso'}`}
+                          </span>
+                        </div>
+
+                        <div className="p-6">
+                          <h3 className="font-black text-slate-800 tracking-tight text-xl leading-tight mb-2">{ann.title}</h3>
+                          <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">Publicada el {formatDateSpanish(ann.date)}</p>
+                          {ann.content && <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap mb-5">{ann.content}</p>}
+
+                          <div className="flex flex-wrap gap-2 mb-5">
+                            {capacity > 0 && <span className="px-3 py-2 bg-amber-50 border border-amber-100 rounded-xl text-[10px] font-black uppercase tracking-widest text-amber-800">{capacity} plaza(s) orientativas</span>}
+                            <span className="px-3 py-2 bg-zinc-50 border border-zinc-100 rounded-xl text-[10px] font-black uppercase tracking-widest text-zinc-600">Selección por Administración</span>
+                          </div>
+
+                          {response && (
+                            <div className={`mb-5 border rounded-2xl p-4 ${CALL_RESPONSE_STATUS_STYLE[responseStatus] || CALL_RESPONSE_STATUS_STYLE.pending}`}>
+                              <div className="flex items-center gap-2">
+                                <CheckCircle className="w-4 h-4 shrink-0"/>
+                                <span className="text-xs font-black uppercase tracking-widest">{CALL_RESPONSE_STATUS_LABELS[responseStatus] || responseStatus}</span>
+                              </div>
+                              <p className="text-xs font-medium mt-2 leading-relaxed">
+                                {responseStatus === 'pending' && 'Administración todavía no ha revisado tu candidatura.'}
+                                {responseStatus === 'confirmed' && 'Administración ha confirmado tu participación.'}
+                                {responseStatus === 'waitlist' && 'Tu candidatura está en reserva por si queda una plaza disponible.'}
+                                {responseStatus === 'rejected' && 'En esta ocasión tu candidatura no ha sido seleccionada.'}
+                                {responseStatus === 'withdrawn' && (closed ? 'Retiraste tu candidatura antes del cierre.' : 'Has retirado tu candidatura. Puedes volver a presentarla mientras siga abierta.')}
+                              </p>
+                            </div>
+                          )}
+
+                          {canSubmit && (
+                            <div className="space-y-3">
+                              <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-amber-800 mb-2">
+                                  {ann.callResponsePrompt || 'Comentario para Administración (opcional)'}
+                                </label>
+                                <textarea
+                                  value={draft}
+                                  onChange={event => updateCallDraft(ann.id, event.target.value)}
+                                  placeholder={ann.callResponsePrompt ? 'Escribe aquí la información solicitada...' : 'Puedes indicar disponibilidad, instrumento u otra información útil...'}
+                                  className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-amber-500 outline-none min-h-[110px] resize-y text-sm font-medium"
+                                />
+                                <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Apuntarte envía una candidatura. La plaza no queda confirmada hasta que Administración la revise.</p>
+                              </div>
+
+                              <button onClick={() => submitCallResponse(ann)} disabled={isSaving} className="w-full bg-amber-500 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-amber-600 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50">
+                                {isSaving ? 'Guardando...' : <><Send className="w-4 h-4"/> {!response ? 'Quiero participar' : responseStatus === 'withdrawn' ? 'Volver a presentarme' : 'Actualizar candidatura'}</>}
+                              </button>
+                            </div>
+                          )}
+
+                          {!canSubmit && response?.comment && (
+                            <div className="mb-5 bg-zinc-50 border border-zinc-200 rounded-2xl p-4">
+                              <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-2">Información que enviaste</p>
+                              <p className="text-sm font-medium text-zinc-700 whitespace-pre-wrap">{response.comment}</p>
+                            </div>
+                          )}
+
+                          {closed && !response && <div className="text-xs font-bold text-zinc-500 bg-zinc-100 rounded-xl p-3">La convocatoria ha finalizado sin que conste una candidatura tuya.</div>}
+
+                          {canWithdraw && (
+                            <button onClick={() => withdrawCallResponse(ann)} disabled={isSaving} className="w-full mt-3 bg-white border-2 border-zinc-200 text-zinc-600 font-black py-3 rounded-xl uppercase text-[10px] tracking-widest hover:border-red-300 hover:text-red-600 transition-colors flex justify-center items-center gap-2 disabled:opacity-50">
+                              <UserMinus className="w-4 h-4"/> Retirar candidatura
+                            </button>
+                          )}
+
+                          {getSafeAnnouncementUrl(ann.url) && (
+                            <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
+                              <LinkIcon className="w-4 h-4"/> Abrir enlace
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
                   if (ann.type !== 'poll') {
                     return (
                       <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">

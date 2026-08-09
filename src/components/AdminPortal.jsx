@@ -32,8 +32,23 @@ const createEmptyAnnouncementDraft = () => ({
   pollDeadline: '',
   pollPrivacy: 'identified',
   pollAllowEdit: true,
-  pollResultsVisibility: 'never'
+  pollResultsVisibility: 'never',
+  callDeadline: '',
+  callCapacity: '',
+  callResponsePrompt: ''
 });
+
+const CALL_RESPONSE_STATUS_OPTIONS = [
+  { value: 'pending', label: 'Pendiente' },
+  { value: 'confirmed', label: 'Confirmado' },
+  { value: 'waitlist', label: 'En reserva' },
+  { value: 'rejected', label: 'No seleccionado' },
+  { value: 'withdrawn', label: 'Renuncia' }
+];
+
+const CALL_RESPONSE_STATUS_LABELS = Object.fromEntries(
+  CALL_RESPONSE_STATUS_OPTIONS.map(option => [option.value, option.label])
+);
 
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
 const LEGACY_ROOM_NAMES = ["Sala 1", "Sala 2", "Sala 3"];
@@ -134,13 +149,14 @@ const ADMIN_DEFERRED_DATA_LABELS = {
   records: 'Historial de asistencias',
   payrollAdjustments: 'Ajustes de nómina',
   teacherEvaluations: 'Evaluaciones docentes',
-  pollResponses: 'Respuestas de encuestas'
+  pollResponses: 'Respuestas de encuestas',
+  callResponses: 'Candidaturas de convocatorias'
 };
 
 const ADMIN_TAB_DEFERRED_DATA_KEYS = {
   classes: ['availability'],
   teachers: ['availability', 'records', 'payrollAdjustments', 'teacherEvaluations'],
-  announcements: ['announcements', 'pollResponses'],
+  announcements: ['announcements', 'pollResponses', 'callResponses'],
   gamification: ['announcements']
 };
 
@@ -1838,6 +1854,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [teacherEvaluations, setTeacherEvaluations] = useState([]);
   const [workshopRegistrations, setWorkshopRegistrations] = useState([]);
   const [pollResponses, setPollResponses] = useState([]);
+  const [callResponses, setCallResponses] = useState([]);
   const workshopEmailClaimsRef = useRef(new Set());
   
   const [settings, setSettings] = useState({ 
@@ -1916,6 +1933,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [announceEmailOptions, setAnnounceEmailOptions] = useState({ enabled: false, targetType: 'all', targetValue: '' });
   const [editingAnnouncementId, setEditingAnnouncementId] = useState(null);
   const [expandedPollResultsId, setExpandedPollResultsId] = useState(null);
+  const [expandedCallResponsesId, setExpandedCallResponsesId] = useState(null);
   const [pollClock, setPollClock] = useState(Date.now());
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(10);
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
@@ -2124,6 +2142,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const needsAvailabilityData = Boolean(activatedDataAreas.classes || activatedDataAreas.teachers);
   const needsTeacherHistoryData = Boolean(activatedDataAreas.teachers);
   const needsPollResponsesData = Boolean(activatedDataAreas.announcements);
+  const needsCallResponsesData = Boolean(activatedDataAreas.announcements);
 
   // Cada bloque diferido se conecta la primera vez que se usa y permanece actualizado
   // durante la sesión para no volver a pagar su carga inicial al alternar pestañas.
@@ -2226,6 +2245,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       onStatus: status => setDeferredDataStatus(previous => ({ ...previous, pollResponses: status }))
     });
   }, [needsPollResponsesData, appId, db, deferredRetryVersion]);
+
+  useEffect(() => {
+    if (!needsCallResponsesData) return undefined;
+    setDeferredDataStatus(previous => ({ ...previous, callResponses: 'loading' }));
+    return subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'callResponses'),
+      label: 'las candidaturas de convocatorias',
+      applySnapshot: snap => {
+        setCallResponses(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)));
+      },
+      onStatus: status => setDeferredDataStatus(previous => ({ ...previous, callResponses: status }))
+    });
+  }, [needsCallResponsesData, appId, db, deferredRetryVersion]);
 
   // Migra una sola vez las clases antiguas. StudentPortal no activa la consulta optimizada
   // hasta que todas las clases contienen un índice studentIds coherente.
@@ -4099,13 +4131,20 @@ ${body}`,
     return 'Filtro personalizado';
   };
 
-  const buildAnnouncementEmailBody = ({ type, title, content, url, pollDeadline }, targetLabel) => {
+  const buildAnnouncementEmailBody = ({ type, title, content, url, pollDeadline, callDeadline, callResponsePrompt }, targetLabel) => {
     const cleanUrl = normalizeAnnouncementUrl(url);
     const isPoll = type === 'poll';
-    const deadlineText = isPoll && pollDeadline
-      ? `\nFECHA LÍMITE:\n${new Date(pollDeadline).toLocaleString('es-ES')}`
+    const isCall = type === 'call';
+    const deadline = isPoll ? pollDeadline : (isCall ? callDeadline : '');
+    const deadlineText = deadline
+      ? `\nFECHA LÍMITE:\n${new Date(deadline).toLocaleString('es-ES')}`
       : '';
-    return `${isPoll ? 'Nueva encuesta' : 'Nuevo aviso'} en el Tablón de Escuela Los Mitos
+    const typeLabel = isPoll ? 'Nueva encuesta' : (isCall ? 'Nueva convocatoria' : 'Nuevo aviso');
+    const contentLabel = isPoll ? 'INFORMACIÓN' : (isCall ? 'CONVOCATORIA' : 'AVISO');
+    const portalAction = isPoll
+      ? 'Puedes responder la encuesta'
+      : (isCall ? 'Puedes presentar o retirar tu candidatura' : 'También puedes consultar los avisos publicados');
+    return `${typeLabel} en el Tablón de Escuela Los Mitos
 
 TÍTULO:
 ${title}
@@ -4113,12 +4152,12 @@ ${title}
 DESTINATARIOS:
 ${targetLabel}
 
-${isPoll ? 'INFORMACIÓN' : 'AVISO'}:
-${content || (isPoll ? 'Entra en tu Área del Alumno para responder.' : '')}${deadlineText}${cleanUrl ? `\n\nENLACE:\n${cleanUrl}` : ''}
+${contentLabel}:
+${content || (isPoll ? 'Entra en tu Área del Alumno para responder.' : (isCall ? 'Entra en tu Área del Alumno para presentar tu candidatura.' : ''))}${deadlineText}${isCall && callResponsePrompt ? `\n\nINFORMACIÓN QUE DEBES INDICAR:\n${callResponsePrompt}` : ''}${cleanUrl ? `\n\nENLACE:\n${cleanUrl}` : ''}
 
 ---
 Este correo corresponde a una comunicación operativa del servicio educativo de Escuela Los Mitos.
-${isPoll ? 'Puedes responder la encuesta' : 'También puedes consultar los avisos publicados'} accediendo a tu portal.`;
+${portalAction} accediendo a tu portal.`;
   };
 
   const sendAnnouncementEmailToTargets = async ({ announcement, emailOptions = announceEmailOptions }) => {
@@ -4131,7 +4170,8 @@ ${isPoll ? 'Puedes responder la encuesta' : 'También puedes consultar los aviso
     }
 
     const targetLabel = getAnnouncementTargetLabel(emailOptions);
-    const subject = `[${announcement.type === 'poll' ? 'Encuesta' : 'Tablón'} Escuela Los Mitos] ${announcement.title}`;
+    const subjectType = announcement.type === 'poll' ? 'Encuesta' : (announcement.type === 'call' ? 'Convocatoria' : 'Tablón');
+    const subject = `[${subjectType} Escuela Los Mitos] ${announcement.title}`;
     const body = buildAnnouncementEmailBody(announcement, targetLabel);
 
     const requested = await sendNotificationEmail({
@@ -6155,9 +6195,140 @@ Coordinación Los Mitos.`
     downloadTextFile(`Encuesta_${String(poll.title || 'resultados').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]+/g, '_')}_${getTodayLocalString()}.csv`, csv, 'text/csv;charset=utf-8');
   };
 
+  const getCallResponses = (callId) => callResponses.filter(response => (response.callId || response.announcementId) === callId);
+
+  const hasProtectedAnnouncementResponses = (announcementId) => {
+    if (!announcementId) return false;
+    const announcement = announcements.find(item => item.id === announcementId);
+    if (announcement?.type === 'poll') return getPollResponses(announcementId).length > 0;
+    if (announcement?.type === 'call') return getCallResponses(announcementId).length > 0;
+    return false;
+  };
+
+  const isCallClosed = (call = {}) => {
+    if (['closed', 'archived'].includes(call.callStatus)) return true;
+    if (!call.callDeadline) return false;
+    return new Date(call.callDeadline).getTime() <= pollClock;
+  };
+
+  const getCallStatusLabel = (call = {}) => {
+    if (call.callStatus === 'archived') return 'Archivada';
+    return isCallClosed(call) ? 'Cerrada' : 'Abierta';
+  };
+
+  const getCallSummary = (call) => {
+    const responses = getCallResponses(call.id);
+    const count = status => responses.filter(response => (response.status || 'pending') === status).length;
+    const confirmed = count('confirmed');
+    const capacity = Number(call.callCapacity || 0);
+    return {
+      responses,
+      total: responses.length,
+      pending: count('pending'),
+      confirmed,
+      waitlist: count('waitlist'),
+      rejected: count('rejected'),
+      withdrawn: count('withdrawn'),
+      capacity,
+      remaining: capacity > 0 ? Math.max(0, capacity - confirmed) : null
+    };
+  };
+
+  const getCallResponseContext = (response = {}) => {
+    const studentInfo = students.find(student => student.id === response.studentId) || {};
+    const currentClass = recurringClassesOnly.find(classData => getClassStudentIds(classData.students || []).includes(response.studentId));
+    return {
+      name: response.studentName || studentInfo.alias || studentInfo.name || 'Alumno',
+      email: normalizeEmail(response.studentEmail || response.email || studentInfo.email || ''),
+      instrument: response.instrument || response.subject || currentClass?.subject || '',
+      center: response.site || response.sede || (currentClass ? getClassCenterName(currentClass) : ''),
+      teacher: response.teacher || currentClass?.teacher || '',
+      comment: response.comment || response.notes || response.responseText || ''
+    };
+  };
+
+  const getCallResponseStatusClass = status => ({
+    pending: 'bg-amber-50 text-amber-800 border-amber-200',
+    confirmed: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+    waitlist: 'bg-sky-50 text-sky-800 border-sky-200',
+    rejected: 'bg-red-50 text-red-700 border-red-200',
+    withdrawn: 'bg-zinc-100 text-zinc-600 border-zinc-200'
+  }[status || 'pending'] || 'bg-zinc-100 text-zinc-600 border-zinc-200');
+
+  const setCallStatus = async (call, status) => {
+    const labels = { open: 'reabrir', closed: 'cerrar', archived: 'archivar' };
+    if (status === 'open' && call.callDeadline && new Date(call.callDeadline).getTime() <= Date.now()) {
+      alert('Amplía primero la fecha límite editando la convocatoria y después podrás reabrirla.');
+      return;
+    }
+    if (!window.confirm(`¿Quieres ${labels[status] || 'actualizar'} esta convocatoria?`)) return;
+    await updateDoc(doc(db, 'artifacts', appId, 'announcements', call.id), {
+      callStatus: status,
+      updatedAt: new Date().toISOString()
+    });
+  };
+
+  const updateCallResponseStatus = async (call, response, status) => {
+    if (status === 'confirmed' && (response.status || 'pending') !== 'confirmed') {
+      const summary = getCallSummary(call);
+      if (summary.capacity > 0 && summary.confirmed >= summary.capacity) {
+        const continueAnyway = window.confirm(`La convocatoria ya tiene ${summary.confirmed} confirmados para ${summary.capacity} plaza(s). ¿Confirmar igualmente a este alumno?`);
+        if (!continueAnyway) return;
+      }
+    }
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'callResponses', response.id), {
+        status,
+        updatedAt: new Date().toISOString(),
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: user?.email || user?.uid || 'admin'
+      });
+    } catch (error) {
+      alert('No se ha podido actualizar la candidatura: ' + error.message);
+    }
+  };
+
+  const copyCallEmails = async (call, statuses = []) => {
+    const allowedStatuses = new Set(statuses);
+    const emails = [...new Set(getCallResponses(call.id)
+      .filter(response => allowedStatuses.size === 0 || allowedStatuses.has(response.status || 'pending'))
+      .map(response => getCallResponseContext(response).email)
+      .filter(Boolean))];
+    if (!emails.length) return alert('No hay correos válidos en este grupo de candidaturas.');
+    try {
+      await navigator.clipboard.writeText(emails.map(email => `${email},`).join('\n'));
+      alert(`${emails.length} correo(s) copiado(s), uno por fila.`);
+    } catch (error) {
+      alert('El navegador no ha permitido copiar los correos. Revisa los permisos del portapapeles.');
+    }
+  };
+
+  const exportCallResponses = (call) => {
+    const header = ['Convocatoria', 'Alumno', 'Email', 'Instrumento', 'Sede', 'Profesor', 'Comentario', 'Estado', 'Fecha'];
+    const rows = getCallResponses(call.id).map(response => {
+      const context = getCallResponseContext(response);
+      return [
+        call.title,
+        context.name,
+        context.email,
+        context.instrument,
+        context.center,
+        context.teacher,
+        context.comment,
+        CALL_RESPONSE_STATUS_LABELS[response.status || 'pending'] || response.status || 'Pendiente',
+        response.updatedAt || response.createdAt || ''
+      ];
+    });
+    const csv = [header, ...rows].map(row => row.map(escapeCsvCell).join(';')).join('\n');
+    downloadTextFile(`Convocatoria_${String(call.title || 'candidaturas').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]+/g, '_')}_${getTodayLocalString()}.csv`, csv, 'text/csv;charset=utf-8');
+  };
+
   const postAnnouncement = async () => {
     const isPoll = newAnnounce.type === 'poll';
-    if (!newAnnounce.title || (!isPoll && !newAnnounce.content)) return alert(isPoll ? 'Escribe la pregunta de la encuesta.' : 'Rellena titular y detalles del aviso');
+    const isCall = newAnnounce.type === 'call';
+    if (!newAnnounce.title || (!isPoll && !newAnnounce.content)) {
+      return alert(isPoll ? 'Escribe la pregunta de la encuesta.' : (isCall ? 'Rellena el título y los detalles de la convocatoria.' : 'Rellena titular y detalles del aviso'));
+    }
     const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
     if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
 
@@ -6166,10 +6337,10 @@ Coordinación Los Mitos.`
       targetValue: announceEmailOptions.targetValue || ''
     };
     if (!['all', 'teachers'].includes(audienceOptions.targetType) && !String(audienceOptions.targetValue || '').trim()) {
-      return alert('Selecciona el segmento de destinatarios del aviso.');
+      return alert('Selecciona el segmento de destinatarios de la publicación.');
     }
-    if (isPoll && audienceOptions.targetType === 'teachers') {
-      return alert('Las encuestas de esta versión solo pueden dirigirse a alumnos.');
+    if ((isPoll || isCall) && audienceOptions.targetType === 'teachers') {
+      return alert(`${isPoll ? 'Las encuestas' : 'Las convocatorias'} de esta versión solo pueden dirigirse a alumnos.`);
     }
 
     const cleanPollOptions = (newAnnounce.pollOptions || [])
@@ -6179,9 +6350,21 @@ Coordinación Los Mitos.`
       return alert('Añade al menos dos opciones de respuesta.');
     }
     if (isPoll && !newAnnounce.pollDeadline) return alert('Indica la fecha y hora límite de la encuesta.');
+    if (isCall && !newAnnounce.callDeadline) return alert('Indica la fecha y hora límite de la convocatoria.');
+
+    const cleanCallCapacity = String(newAnnounce.callCapacity ?? '').trim() === ''
+      ? null
+      : Number(newAnnounce.callCapacity);
+    if (isCall && cleanCallCapacity !== null && (!Number.isInteger(cleanCallCapacity) || cleanCallCapacity < 1)) {
+      return alert('El número orientativo de plazas debe ser un número entero mayor que cero o quedar vacío.');
+    }
 
     const existingResponses = editingAnnouncementId ? getPollResponses(editingAnnouncementId) : [];
+    const existingCallResponses = editingAnnouncementId ? getCallResponses(editingAnnouncementId) : [];
     const existingAnnouncement = editingAnnouncementId ? announcements.find(item => item.id === editingAnnouncementId) : null;
+    if (existingAnnouncement?.type === 'call' && existingCallResponses.length > 0 && !isCall) {
+      return alert('Esta convocatoria ya tiene candidaturas y no puede convertirse en otro tipo de publicación.');
+    }
     if (isPoll && existingResponses.length > 0 && existingAnnouncement) {
       const originalOptions = JSON.stringify((existingAnnouncement.pollOptions || []).map(option => ({ id: option.id, label: option.label })));
       const editedOptions = JSON.stringify(cleanPollOptions);
@@ -6195,10 +6378,19 @@ Coordinación Los Mitos.`
         return alert('La encuesta ya tiene respuestas. No se pueden cambiar sus destinatarios.');
       }
     }
+    if (isCall && existingCallResponses.length > 0 && existingAnnouncement) {
+      if ((existingAnnouncement.audienceType || 'all') !== audienceOptions.targetType || String(existingAnnouncement.audienceValue || '') !== String(audienceOptions.targetValue || '')) {
+        return alert('La convocatoria ya tiene candidaturas. No se pueden cambiar sus destinatarios.');
+      }
+      const confirmedCount = existingCallResponses.filter(response => (response.status || 'pending') === 'confirmed').length;
+      if (cleanCallCapacity !== null && cleanCallCapacity < confirmedCount) {
+        return alert(`Ya hay ${confirmedCount} alumno(s) confirmados. El número de plazas no puede quedar por debajo de esa cifra.`);
+      }
+    }
     const audienceLabel = getAnnouncementTargetLabel(audienceOptions);
 
     const payload = {
-      type: isPoll ? 'poll' : 'notice',
+      type: isPoll ? 'poll' : (isCall ? 'call' : 'notice'),
       title: newAnnounce.title.trim(),
       content: String(newAnnounce.content || '').trim(),
       url: cleanUrl || '',
@@ -6213,6 +6405,12 @@ Coordinación Los Mitos.`
         pollAllowEdit: newAnnounce.pollAllowEdit !== false,
         pollResultsVisibility: newAnnounce.pollResultsVisibility || 'never',
         pollStatus: existingAnnouncement?.pollStatus || 'open'
+      } : {}),
+      ...(isCall ? {
+        callDeadline: newAnnounce.callDeadline,
+        callCapacity: cleanCallCapacity,
+        callResponsePrompt: String(newAnnounce.callResponsePrompt || '').trim(),
+        callStatus: existingAnnouncement?.callStatus || 'open'
       } : {})
     };
 
@@ -6248,15 +6446,17 @@ Coordinación Los Mitos.`
       });
     }
 
+    const updatedMessage = isPoll ? 'Encuesta actualizada' : (isCall ? 'Convocatoria actualizada' : 'Aviso actualizado');
+    const publishedMessage = isPoll ? 'Encuesta publicada' : (isCall ? 'Convocatoria publicada' : 'Aviso publicado');
     if (editingAnnouncementId) {
       setEditingAnnouncementId(null);
       alert(emailRequest.requested
-        ? `Aviso actualizado y email solicitado a ${emailRequest.count} destinatarios.`
-        : 'Aviso actualizado.');
+        ? `${updatedMessage} y email solicitado a ${emailRequest.count} destinatarios.`
+        : `${updatedMessage}.`);
     } else {
       alert(emailRequest.requested
-        ? `Aviso publicado y email solicitado a ${emailRequest.count} destinatarios.`
-        : 'Aviso publicado.');
+        ? `${publishedMessage} y email solicitado a ${emailRequest.count} destinatarios.`
+        : `${publishedMessage}.`);
     }
 
     setNewAnnounce(createEmptyAnnouncementDraft());
@@ -6266,7 +6466,7 @@ Coordinación Los Mitos.`
   const startEditAnnouncement = (ann) => {
     setEditingAnnouncementId(ann.id);
     setNewAnnounce({
-      type: ann.type === 'poll' ? 'poll' : 'notice',
+      type: ann.type === 'poll' ? 'poll' : (ann.type === 'call' ? 'call' : 'notice'),
       title: ann.title || '',
       content: ann.content || '',
       url: normalizeAnnouncementUrl(ann.url) || '',
@@ -6275,7 +6475,10 @@ Coordinación Los Mitos.`
       pollDeadline: ann.pollDeadline || '',
       pollPrivacy: ann.pollPrivacy || 'identified',
       pollAllowEdit: ann.pollAllowEdit !== false,
-      pollResultsVisibility: ann.pollResultsVisibility || 'never'
+      pollResultsVisibility: ann.pollResultsVisibility || 'never',
+      callDeadline: ann.callDeadline || '',
+      callCapacity: ann.callCapacity ?? '',
+      callResponsePrompt: ann.callResponsePrompt || ''
     });
     setAnnounceEmailOptions({
       enabled: false,
@@ -6312,7 +6515,14 @@ Coordinación Los Mitos.`
       }
       return;
     }
-    if(window.confirm(item?.type === 'poll' ? '¿Borrar encuesta?' : '¿Borrar aviso?')) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id));
+    if (item?.type === 'call' && getCallResponses(id).length > 0) {
+      if (window.confirm('Esta convocatoria ya tiene candidaturas y no se puede borrar. ¿Quieres archivarla?')) {
+        await updateDoc(doc(db, 'artifacts', appId, 'announcements', id), { callStatus: 'archived', updatedAt: new Date().toISOString() });
+      }
+      return;
+    }
+    const deleteLabel = item?.type === 'poll' ? 'encuesta' : (item?.type === 'call' ? 'convocatoria' : 'aviso');
+    if(window.confirm(`¿Borrar ${deleteLabel}?`)) await deleteDoc(doc(db, 'artifacts', appId, 'announcements', id));
   };
 
   const handleDownloadBIReport = () => {
@@ -12716,7 +12926,7 @@ ${startDateWarning}
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tablón</h2>
-              <p className="text-zinc-500 font-medium text-sm">Publica avisos o encuestas para los alumnos.</p>
+              <p className="text-zinc-500 font-medium text-sm">Publica avisos, encuestas o convocatorias para los alumnos.</p>
             </header>
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-zinc-200 mb-8">
               <div className="space-y-4">
@@ -12727,18 +12937,20 @@ ${startDateWarning}
                     onChange={e => {
                       const type = e.target.value;
                       setNewAnnounce(prev => ({ ...prev, type }));
-                      if (type === 'poll' && announceEmailOptions.targetType === 'teachers') {
+                      if (type !== 'notice' && announceEmailOptions.targetType === 'teachers') {
                         setAnnounceEmailOptions(prev => ({ ...prev, targetType: 'all', targetValue: '' }));
                       }
                     }}
-                    className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-xs uppercase tracking-widest"
+                    disabled={hasProtectedAnnouncementResponses(editingAnnouncementId)}
+                    className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-xs uppercase tracking-widest disabled:opacity-60"
                   >
                     <option value="notice">Aviso</option>
                     <option value="poll">Encuesta</option>
+                    <option value="call">Convocatoria</option>
                   </select>
                 </div>
-                <input type="text" placeholder={newAnnounce.type === 'poll' ? 'Pregunta de la encuesta...' : 'Titular impactante...'} value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-sm" />
-                <textarea placeholder={newAnnounce.type === 'poll' ? 'Explicación opcional...' : 'Detalles del aviso...'} value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
+                <input type="text" placeholder={newAnnounce.type === 'poll' ? 'Pregunta de la encuesta...' : (newAnnounce.type === 'call' ? 'Título de la convocatoria...' : 'Titular impactante...')} value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-sm" />
+                <textarea placeholder={newAnnounce.type === 'poll' ? 'Explicación opcional...' : (newAnnounce.type === 'call' ? 'Explica la actividad, compromisos, ensayos y criterios relevantes...' : 'Detalles del aviso...')} value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
                 {newAnnounce.type === 'poll' && (
@@ -12795,6 +13007,26 @@ ${startDateWarning}
                     </label>
                   </div>
                 )}
+                {newAnnounce.type === 'call' && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-4">
+                    <div className="grid md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-widest text-amber-900 mb-2">Fecha y hora límite</label>
+                        <input type="datetime-local" value={newAnnounce.callDeadline} onChange={e => setNewAnnounce(prev => ({ ...prev, callDeadline: e.target.value }))} className="w-full p-3 bg-white border border-amber-200 rounded-xl outline-none font-bold text-sm" />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-widest text-amber-900 mb-2">Número orientativo de plazas</label>
+                        <input type="number" min="1" step="1" placeholder="Opcional" value={newAnnounce.callCapacity} onChange={e => setNewAnnounce(prev => ({ ...prev, callCapacity: e.target.value }))} className="w-full p-3 bg-white border border-amber-200 rounded-xl outline-none font-bold text-sm" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-amber-900 mb-2">Información que debe indicar el alumno</label>
+                      <textarea value={newAnnounce.callResponsePrompt} onChange={e => setNewAnnounce(prev => ({ ...prev, callResponsePrompt: e.target.value }))} placeholder="Opcional. Por ejemplo: indica tu disponibilidad para los ensayos." className="w-full p-3 bg-white border border-amber-200 rounded-xl outline-none min-h-[80px] resize-y font-medium text-sm" />
+                    </div>
+                    <p className="text-[10px] font-bold text-amber-800">Apuntarse será una candidatura: Administración decidirá después si queda confirmada, en reserva o no seleccionada.</p>
+                    {editingAnnouncementId && getCallResponses(editingAnnouncementId).length > 0 && <p className="text-[10px] font-bold text-amber-800">Esta convocatoria ya tiene candidaturas: el tipo y los destinatarios están bloqueados.</p>}
+                  </div>
+                )}
                 <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-4">
                   <div>
                     <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Destinatarios en el Tablón</span>
@@ -12804,11 +13036,11 @@ ${startDateWarning}
                     <select
                       value={announceEmailOptions.targetType}
                       onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetType: e.target.value, targetValue: '' })}
-                      disabled={newAnnounce.type === 'poll' && editingAnnouncementId && getPollResponses(editingAnnouncementId).length > 0}
+                      disabled={hasProtectedAnnouncementResponses(editingAnnouncementId)}
                       className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-black text-xs uppercase tracking-widest text-sky-900"
                     >
                       <option value="all">Todos los alumnos con clase fija</option>
-                      {newAnnounce.type !== 'poll' && <option value="teachers">Solo profesores</option>}
+                      {newAnnounce.type === 'notice' && <option value="teachers">Solo profesores</option>}
                       <option value="sede">Solo una sede</option>
                       <option value="instrumento">Solo un instrumento</option>
                       <option value="profesor">Solo alumnos de un profesor</option>
@@ -12817,7 +13049,7 @@ ${startDateWarning}
                       <select
                         value={announceEmailOptions.targetValue}
                         onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetValue: e.target.value })}
-                        disabled={newAnnounce.type === 'poll' && editingAnnouncementId && getPollResponses(editingAnnouncementId).length > 0}
+                        disabled={hasProtectedAnnouncementResponses(editingAnnouncementId)}
                         className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-bold text-sm text-sky-900"
                       >
                         <option value="">Selecciona...</option>
@@ -12839,13 +13071,13 @@ ${startDateWarning}
                     />
                     <span>
                       <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email a esos destinatarios</span>
-                      <span className="block text-xs text-sky-700 font-semibold mt-1">Uso recomendado solo para avisos importantes de funcionamiento. No se envía nada si dejas esta casilla desmarcada.</span>
+                      <span className="block text-xs text-sky-700 font-semibold mt-1">Úsalo cuando la publicación requiera atención especial. No se envía nada si dejas esta casilla desmarcada.</span>
                     </span>
                   </label>
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
-                    {editingAnnouncementId ? <Save className="w-4 h-4"/> : <Megaphone className="w-4 h-4"/>} {editingAnnouncementId ? 'Guardar Cambios' : newAnnounce.type === 'poll' ? 'Publicar Encuesta' : 'Publicar Aviso'}
+                    {editingAnnouncementId ? <Save className="w-4 h-4"/> : <Megaphone className="w-4 h-4"/>} {editingAnnouncementId ? 'Guardar Cambios' : newAnnounce.type === 'poll' ? 'Publicar Encuesta' : newAnnounce.type === 'call' ? 'Publicar Convocatoria' : 'Publicar Aviso'}
                   </button>
                   {editingAnnouncementId && (
                     <button onClick={cancelEditAnnouncement} className="bg-zinc-100 text-zinc-600 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-200">
@@ -12858,23 +13090,26 @@ ${startDateWarning}
             <div className="space-y-3">
               {announcements.slice(0, visibleAnnouncementsCount).map(ann => {
                 const isPoll = ann.type === 'poll';
+                const isCall = ann.type === 'call';
                 const participation = isPoll ? getPollParticipation(ann) : null;
+                const callSummary = isCall ? getCallSummary(ann) : null;
                 const optionCounts = isPoll ? (ann.pollOptions || []).reduce((acc, option) => {
                   acc[option.id] = participation.responses.filter(response => (response.selectedOptionIds || []).includes(option.id)).length;
                   return acc;
                 }, {}) : {};
-                const isExpanded = expandedPollResultsId === ann.id;
+                const isExpanded = isPoll ? expandedPollResultsId === ann.id : (isCall ? expandedCallResponsesId === ann.id : false);
                 return (
-                  <div key={ann.id} className={`bg-white rounded-2xl shadow-sm border overflow-hidden ${editingAnnouncementId === ann.id ? 'border-sky-300 ring-2 ring-sky-100' : isPoll ? 'border-violet-200' : 'border-zinc-200'}`}>
+                  <div key={ann.id} className={`bg-white rounded-2xl shadow-sm border overflow-hidden ${editingAnnouncementId === ann.id ? 'border-sky-300 ring-2 ring-sky-100' : isPoll ? 'border-violet-200' : isCall ? 'border-amber-200' : 'border-zinc-200'}`}>
                     <div className="p-5 flex flex-col md:flex-row md:justify-between items-start gap-4">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap gap-2 mb-2">
-                          <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isPoll ? 'bg-violet-100 text-violet-800' : 'bg-zinc-100 text-zinc-600'}`}>{isPoll ? 'Encuesta' : 'Aviso'}</span>
+                          <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isPoll ? 'bg-violet-100 text-violet-800' : isCall ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-600'}`}>{isPoll ? 'Encuesta' : isCall ? 'Convocatoria' : 'Aviso'}</span>
                           {isPoll && <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isPollClosed(ann) ? 'bg-zinc-100 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{getPollStatusLabel(ann)}</span>}
+                          {isCall && <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isCallClosed(ann) ? 'bg-zinc-100 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{getCallStatusLabel(ann)}</span>}
                         </div>
                         <h4 className="font-black text-slate-800 text-md leading-tight">{ann.title}</h4>
                         <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
-                          {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}{isPoll && ann.pollDeadline ? ` · Hasta ${new Date(ann.pollDeadline).toLocaleString('es-ES')}` : ''}
+                          {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}{isPoll && ann.pollDeadline ? ` · Hasta ${new Date(ann.pollDeadline).toLocaleString('es-ES')}` : ''}{isCall && ann.callDeadline ? ` · Hasta ${new Date(ann.callDeadline).toLocaleString('es-ES')}` : ''}
                         </p>
                         {ann.content && <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>}
                         <div className="flex flex-wrap items-center gap-3 mt-2">
@@ -12882,6 +13117,7 @@ ${startDateWarning}
                             <Users className="w-3 h-3"/> {ann.audienceLabel || getAnnouncementTargetLabel({ targetType: ann.audienceType || 'all', targetValue: ann.audienceValue || '' })}
                           </span>
                           {isPoll && <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-violet-700"><PieChart className="w-3 h-3"/> {participation.responses.length} de {participation.audience.length} respuestas · {participation.percentage.toFixed(1)}%</span>}
+                          {isCall && <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-amber-700"><Ticket className="w-3 h-3"/> {callSummary.total} candidaturas · {callSummary.confirmed} confirmadas{callSummary.capacity > 0 ? ` de ${callSummary.capacity}` : ''}</span>}
                           {normalizeAnnouncementUrl(ann.url) && (
                             <a href={normalizeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-sky-600 hover:text-sky-800">
                               <Globe className="w-3 h-3"/> Enlace añadido
@@ -12896,14 +13132,19 @@ ${startDateWarning}
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
                         {isPoll && <button onClick={() => setExpandedPollResultsId(isExpanded ? null : ann.id)} className="px-3 py-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">{isExpanded ? 'Ocultar' : 'Resultados'}</button>}
+                        {isCall && <button onClick={() => setExpandedCallResponsesId(isExpanded ? null : ann.id)} className="px-3 py-2 bg-amber-50 text-amber-800 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">{isExpanded ? 'Ocultar' : 'Candidaturas'}</button>}
                         {isPoll && ann.pollStatus !== 'archived' && (isPollClosed(ann)
                           ? <button onClick={() => setPollStatus(ann, 'open')} className="px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Reabrir</button>
                           : <button onClick={() => setPollStatus(ann, 'closed')} className="px-3 py-2 bg-amber-50 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Cerrar</button>)}
                         {isPoll && ann.pollStatus !== 'archived' && <button onClick={() => setPollStatus(ann, 'archived')} className="px-3 py-2 bg-zinc-100 text-zinc-600 hover:bg-zinc-700 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Archivar</button>}
-                        <button onClick={() => startEditAnnouncement(ann)} className="p-2 bg-sky-50 text-sky-700 hover:bg-sky-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Editar encuesta' : 'Editar aviso'}>
+                        {isCall && ann.callStatus !== 'archived' && (isCallClosed(ann)
+                          ? <button onClick={() => setCallStatus(ann, 'open')} className="px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Reabrir</button>
+                          : <button onClick={() => setCallStatus(ann, 'closed')} className="px-3 py-2 bg-amber-50 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Cerrar</button>)}
+                        {isCall && ann.callStatus !== 'archived' && <button onClick={() => setCallStatus(ann, 'archived')} className="px-3 py-2 bg-zinc-100 text-zinc-600 hover:bg-zinc-700 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Archivar</button>}
+                        <button onClick={() => startEditAnnouncement(ann)} className="p-2 bg-sky-50 text-sky-700 hover:bg-sky-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Editar encuesta' : isCall ? 'Editar convocatoria' : 'Editar aviso'}>
                           <Pencil className="w-4 h-4"/>
                         </button>
-                        <button onClick={() => deleteAnnouncement(ann)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Borrar o archivar encuesta' : 'Borrar aviso'}>
+                        <button onClick={() => deleteAnnouncement(ann)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Borrar o archivar encuesta' : isCall ? 'Borrar o archivar convocatoria' : 'Borrar aviso'}>
                           <Trash2 className="w-4 h-4"/>
                         </button>
                       </div>
@@ -12952,12 +13193,67 @@ ${startDateWarning}
                         </div>
                       </div>
                     )}
+                    {isCall && isExpanded && (
+                      <div className="border-t border-amber-100 bg-amber-50/40 p-5 space-y-5">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                          <div className="bg-white border border-amber-100 rounded-xl p-3"><span className="block text-xl font-black text-slate-800">{callSummary.total}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Interesados</span></div>
+                          <div className="bg-white border border-amber-100 rounded-xl p-3"><span className="block text-xl font-black text-amber-700">{callSummary.pending}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Pendientes</span></div>
+                          <div className="bg-white border border-amber-100 rounded-xl p-3"><span className="block text-xl font-black text-emerald-700">{callSummary.confirmed}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Confirmados</span></div>
+                          <div className="bg-white border border-amber-100 rounded-xl p-3"><span className="block text-xl font-black text-sky-700">{callSummary.waitlist}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">En reserva</span></div>
+                          <div className="bg-white border border-amber-100 rounded-xl p-3"><span className="block text-xl font-black text-red-600">{callSummary.rejected}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">No seleccionados</span></div>
+                          <div className="bg-white border border-amber-100 rounded-xl p-3"><span className="block text-xl font-black text-zinc-500">{callSummary.withdrawn}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Renuncias</span></div>
+                        </div>
+
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                          <div>
+                            {callSummary.capacity > 0
+                              ? <p className="text-xs font-black text-amber-900">Plazas orientativas: {callSummary.capacity} · Restantes tras confirmaciones: {callSummary.remaining}</p>
+                              : <p className="text-xs font-black text-amber-900">Sin número máximo de plazas indicado.</p>}
+                            {ann.callResponsePrompt && <p className="text-xs text-zinc-600 mt-1"><span className="font-black">Información solicitada:</span> {ann.callResponsePrompt}</p>}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button onClick={() => copyCallEmails(ann, ['confirmed'])} className="px-3 py-2 bg-white border border-amber-200 text-amber-800 rounded-lg text-[9px] font-black uppercase tracking-widest"><ClipboardList className="w-3 h-3 inline"/> Copiar confirmados</button>
+                            <button onClick={() => copyCallEmails(ann)} className="px-3 py-2 bg-white border border-amber-200 text-amber-800 rounded-lg text-[9px] font-black uppercase tracking-widest"><Mail className="w-3 h-3 inline"/> Copiar todos</button>
+                            <button onClick={() => exportCallResponses(ann)} className="px-3 py-2 bg-white border border-amber-200 text-amber-800 rounded-lg text-[9px] font-black uppercase tracking-widest"><FileText className="w-3 h-3 inline"/> Exportar CSV</button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          {callSummary.responses.length === 0 ? (
+                            <p className="text-center text-xs font-bold text-zinc-400 py-5">Todavía no hay candidaturas.</p>
+                          ) : callSummary.responses.map(response => {
+                            const context = getCallResponseContext(response);
+                            const status = response.status || 'pending';
+                            return (
+                              <div key={response.id} className="bg-white border border-amber-100 rounded-xl p-4 flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                                    <p className="font-black text-sm text-slate-800">{context.name}</p>
+                                    <span className={`px-2 py-1 rounded-lg border text-[8px] font-black uppercase tracking-widest ${getCallResponseStatusClass(status)}`}>{CALL_RESPONSE_STATUS_LABELS[status] || status}</span>
+                                  </div>
+                                  <p className="text-[10px] font-bold text-zinc-500 break-all">{context.email || 'Sin email'}</p>
+                                  <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{[context.instrument, context.center, context.teacher].filter(Boolean).join(' · ') || 'Sin datos de clase'}</p>
+                                  {context.comment && <p className="text-sm text-zinc-600 whitespace-pre-wrap mt-3 bg-zinc-50 rounded-lg p-3">{context.comment}</p>}
+                                  <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-400 mt-2">Solicitud: {response.createdAt ? new Date(response.createdAt).toLocaleString('es-ES') : 'Fecha no indicada'}</p>
+                                </div>
+                                <div className="w-full lg:w-52 shrink-0">
+                                  <label className="block text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-1">Estado de candidatura</label>
+                                  <select value={status} onChange={event => updateCallResponseStatus(ann, response, event.target.value)} className={`w-full px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest outline-none ${getCallResponseStatusClass(status)}`}>
+                                    {CALL_RESPONSE_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                  </select>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
               {visibleAnnouncementsCount < announcements.length && (
                 <button onClick={() => setVisibleAnnouncementsCount(c => c + 10)} className="w-full py-3 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
-                  Cargar más avisos ({Math.min(10, announcements.length - visibleAnnouncementsCount)} más)
+                  Cargar más publicaciones ({Math.min(10, announcements.length - visibleAnnouncementsCount)} más)
                 </button>
               )}
             </div>

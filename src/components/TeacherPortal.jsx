@@ -374,13 +374,6 @@ const isTemporaryClassChangeActiveForDate = (change = {}, targetDate = '') => {
   return Boolean(from && until && referenceDate && from <= referenceDate && until >= referenceDate);
 };
 
-const doClassTimeRangesOverlap = (left = {}, right = {}) => {
-  const leftRange = getClassTimeRange(left.time, left.duration);
-  const rightRange = getClassTimeRange(right.time, right.duration);
-  if (!leftRange || !rightRange) return false;
-  return leftRange.start < rightRange.end && rightRange.start < leftRange.end;
-};
-
 const getTodayLocalString = () => {
   const now = new Date();
   const year = now.getFullYear();
@@ -2288,46 +2281,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       }
     });
 
-    const offeredSegments = [];
-    [1, 2, 3, 4, 5, 6].forEach(day => {
-      (availability[String(day)] || availability[day] || []).forEach(slot => {
-        const slotStart = parseTimeToMinutes(slot.start);
-        const slotEnd = parseTimeToMinutes(slot.end);
-        if (slotStart === null || slotEnd === null || slotEnd <= slotStart) return;
-        for (let cursor = slotStart; cursor < slotEnd; cursor += 60) {
-          const segmentEnd = Math.min(cursor + 60, slotEnd);
-          const key = `${day}-${cursor}-${segmentEnd}`;
-          if (offeredSegments.some(segment => segment.key === key)) continue;
-          offeredSegments.push({
-            key,
-            dayOfWeek: day,
-            time: formatMinutesToTime(cursor),
-            endTime: formatMinutesToTime(segmentEnd),
-            duration: segmentEnd - cursor
-          });
-        }
-      });
-    });
-
-    const freeRows = offeredSegments
-      .filter(segment => !classRows.some(row =>
-        Number(row.dayOfWeek) === Number(segment.dayOfWeek) &&
-        doClassTimeRangesOverlap(row, segment)
-      ))
-      .map(segment => ({
-        ...segment,
-        key: `free-${segment.key}`,
-        status: 'free',
-        role: 'free',
-        classData: null,
-        officialClass: null,
-        activeCount: 0,
-        detail: '',
-        outsideAvailability: false
-      }));
-
-    const statusOrder = { active: 0, temporary_active: 0, inactive: 1, temporary_inactive: 1, reserved: 2, free: 3 };
-    const weeklyRows = [...classRows, ...freeRows].sort((a, b) =>
+    const statusOrder = { active: 0, temporary_active: 0, inactive: 1, temporary_inactive: 1, reserved: 2 };
+    const weeklyRows = [...classRows].sort((a, b) =>
       Number(a.dayOfWeek) - Number(b.dayOfWeek) ||
       String(a.time || '').localeCompare(String(b.time || '')) ||
       (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
@@ -2365,20 +2320,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       .sort((a, b) => normalizeTemporaryClassChangeDate(a.change.from).localeCompare(normalizeTemporaryClassChangeDate(b.change.from)));
 
     const uniqueIdsForStatus = status => new Set(classRows.filter(row => status.includes(row.status)).map(row => row.classId)).size;
-    const offeredMinutes = offeredSegments.reduce((sum, segment) => sum + segment.duration, 0);
-    const freeMinutes = freeRows.reduce((sum, segment) => sum + segment.duration, 0);
-
     return {
       weeklyRows,
       punctualRows,
       upcomingChanges,
-      outsideRows: classRows.filter(row => row.outsideAvailability),
+      outsideRows: [...classRows, ...punctualRows].filter(row =>
+        row.outsideAvailability && ['active', 'temporary_active', 'punctual'].includes(row.status)
+      ),
       summary: {
         activeClasses: uniqueIdsForStatus(['active', 'temporary_active']),
         inactiveClasses: uniqueIdsForStatus(['inactive', 'temporary_inactive']),
-        reservedClasses: uniqueIdsForStatus(['reserved']),
-        offeredHours: offeredMinutes / 60,
-        freeHours: freeMinutes / 60
+        reservedClasses: uniqueIdsForStatus(['reserved'])
       }
     };
   }, [allRecurringClasses, temporaryClassChanges, availability, globalStudents, maintenancePeriods, temporaryRelocations, settings.teachersList, centers]);
@@ -4938,7 +4890,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
             <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Horario</h2>
-                <p className="text-zinc-500 font-medium text-sm">Consulta tu ocupación semanal o modifica las franjas que ofreces a la escuela.</p>
+                <p className="text-zinc-500 font-medium text-sm">Consulta tus clases semanales o modifica las franjas que ofreces a la escuela.</p>
               </div>
             </header>
 
@@ -4953,11 +4905,9 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
 
             {scheduleView === 'schedule' && (
               <div className="space-y-5">
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div className="bg-slate-900 text-white rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.activeClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Clases activas</p></div>
                   <div className="bg-zinc-100 text-zinc-700 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.inactiveClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Inactivas</p></div>
-                  <div className="bg-emerald-50 text-emerald-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.freeHours.toLocaleString('es-ES', { maximumFractionDigits: 2 })}h</p><p className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Libres ofrecidas</p></div>
-                  <div className="bg-blue-50 text-blue-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.offeredHours.toLocaleString('es-ES', { maximumFractionDigits: 2 })}h</p><p className="text-[9px] font-black uppercase tracking-widest text-blue-600">Total ofrecido</p></div>
                   <div className="col-span-2 md:col-span-1 bg-amber-50 text-amber-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.reservedClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-amber-600">Reservadas</p></div>
                 </div>
 
@@ -4981,28 +4931,21 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                   </div>
                 )}
 
-                {teacherScheduleModel.outsideRows.length > 0 && (
-                  <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-rose-600 shrink-0"/>
-                    <div><p className="text-xs font-black uppercase tracking-widest text-rose-900">Hay {teacherScheduleModel.outsideRows.length} clase(s) fuera de tu disponibilidad declarada</p><p className="text-xs font-medium text-rose-700 mt-1">Las clases siguen vigentes. Revisa «Mi disponibilidad» si esas franjas también forman parte de tu horario ofrecido.</p></div>
-                  </div>
-                )}
-
                 <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
-                  <div className="p-4 md:p-5 border-b border-zinc-100"><h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Semana habitual</h3><p className="text-xs text-zinc-500 mt-1">Las filas libres proceden de las horas que has ofrecido. No se muestran nombres de alumnos.</p></div>
+                  <div className="p-4 md:p-5 border-b border-zinc-100"><h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Semana habitual</h3><p className="text-xs text-zinc-500 mt-1">Clases activas e inactivas. No se muestran nombres de alumnos.</p></div>
                   {teacherScheduleModel.weeklyRows.length === 0 ? (
-                    <div className="p-12 text-center text-zinc-400"><Clock className="w-10 h-10 mx-auto mb-3 text-zinc-200"/><p className="text-xs font-black uppercase tracking-widest">No hay clases ni disponibilidad registradas</p></div>
+                    <div className="p-12 text-center text-zinc-400"><Clock className="w-10 h-10 mx-auto mb-3 text-zinc-200"/><p className="text-xs font-black uppercase tracking-widest">No hay clases registradas</p></div>
                   ) : (
                     <div className="divide-y divide-zinc-100">
                       {teacherScheduleModel.weeklyRows.map(row => {
                         const statusConfig = {
-                          free: { label: 'Libre ofrecida', style: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
                           active: { label: 'Activa', style: 'bg-slate-900 text-white border-slate-900' },
                           inactive: { label: 'Inactiva', style: 'bg-zinc-100 text-zinc-600 border-zinc-200' },
                           reserved: { label: 'Reservada hasta regreso', style: 'bg-amber-50 text-amber-800 border-amber-200' },
                           temporary_active: { label: 'Cambio temporal', style: 'bg-violet-100 text-violet-800 border-violet-200' },
                           temporary_inactive: { label: 'Temporal inactiva', style: 'bg-violet-50 text-violet-600 border-violet-100' }
                         }[row.status];
+                        const showOutsideAvailabilityWarning = row.outsideAvailability && ['active', 'temporary_active'].includes(row.status);
                         return (
                           <div key={row.key} className="p-3 md:p-4 grid grid-cols-1 md:grid-cols-[150px_190px_1fr] gap-3 md:items-center hover:bg-zinc-50 transition-colors">
                             <div><p className="font-black text-sm text-slate-900">{getDayName(row.dayOfWeek)}</p><p className="text-xs font-bold text-zinc-400">{row.time}–{row.endTime}h</p></div>
@@ -5011,7 +4954,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                               {row.classData ? (
                                 <>
                                   <p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {getClassCenterName(row.classData)} · {getClassRoomName(row.classData)}</p>
-                                  <p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'}{row.status !== 'reserved' ? ` · ${row.activeCount} activos` : ''}{row.outsideAvailability ? ' · Fuera de disponibilidad declarada' : ''}</p>
+                                  <p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'}{row.status !== 'reserved' ? ` · ${row.activeCount} activos` : ''}</p>
+                                  {showOutsideAvailabilityWarning && <p className="text-[10px] font-bold text-amber-700 mt-1 flex items-center gap-1"><AlertCircle className="w-3 h-3 shrink-0"/> Esta clase está fuera de tu disponibilidad declarada.</p>}
                                   {row.detail && <p className="text-[10px] font-bold text-violet-700 mt-1">{row.detail}</p>}
                                   {row.upcomingChange && <p className="text-[10px] font-bold text-violet-700 mt-1">Cambio programado del {formatDateSpanish(normalizeTemporaryClassChangeDate(row.upcomingChange.from))} al {formatDateSpanish(normalizeTemporaryClassChangeDate(row.upcomingChange.until))}</p>}
                                 </>
@@ -5032,7 +4976,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                         <div key={row.key} className="p-3 md:p-4 grid grid-cols-1 md:grid-cols-[150px_190px_1fr] gap-3 md:items-center">
                           <div><p className="font-black text-sm text-slate-900">{formatDateSpanish(row.date)}</p><p className="text-xs font-bold text-zinc-400">{row.time}–{row.endTime}h</p></div>
                           <div><span className={`inline-flex px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${row.status === 'punctual' ? 'bg-blue-50 text-blue-700 border-blue-100' : 'bg-zinc-100 text-zinc-500 border-zinc-200'}`}>Clase puntual</span></div>
-                          <div><p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {getClassCenterName(row.classData)} · {getClassRoomName(row.classData)}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'} · {row.activeCount} activos</p></div>
+                          <div><p className="text-sm font-black text-slate-900">{row.classData.subject || 'Clase'} · {getClassCenterName(row.classData)} · {getClassRoomName(row.classData)}</p><p className="text-[10px] font-bold text-zinc-400 mt-0.5">Aforo {row.classData.capacity || '—'} · {row.activeCount} activos</p>{row.status === 'punctual' && row.outsideAvailability && <p className="text-[10px] font-bold text-amber-700 mt-1 flex items-center gap-1"><AlertCircle className="w-3 h-3 shrink-0"/> Esta clase está fuera de tu disponibilidad declarada.</p>}</div>
                         </div>
                       ))}
                     </div>

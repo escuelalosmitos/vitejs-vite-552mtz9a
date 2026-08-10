@@ -1413,21 +1413,30 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     };
   }, [user?.uid, db, appId, relevantStudentIds]);
 
+  // Mantenemos una única escucha estable para los resúmenes del profesor.
+  // Antes se desmontaba y recreaba un listener distinto cada vez que cambiaba
+  // `date`. Firestore 12.x puede dejar su contador interno de targets en -1
+  // durante esa sucesión rápida de altas/bajas y lanzar ca9/b815, bloqueando
+  // por completo la interfaz. La fecha seleccionada se filtra después en
+  // memoria, por lo que no necesitamos rotar la suscripción al navegar.
   useEffect(() => {
-    if (!user?.uid || !date) {
+    if (!user?.uid) {
       setDailyReports([]);
       return;
     }
 
     return onSnapshot(
-      doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date),
-      reportSnap => setDailyReports(reportSnap.exists() ? [{ id: reportSnap.id, ...reportSnap.data() }] : []),
+      collection(db, 'artifacts', appId, 'users', user.uid, 'dailyReports'),
+      reportsSnapshot => setDailyReports(reportsSnapshot.docs.map(reportSnap => ({
+        id: reportSnap.id,
+        ...reportSnap.data()
+      }))),
       error => {
-        console.error('No se pudo cargar el resumen diario seleccionado:', error);
+        console.error('No se pudieron cargar los resúmenes diarios del profesor:', error);
         setDailyReports([]);
       }
     );
-  }, [user?.uid, db, appId, date]);
+  }, [user?.uid, db, appId]);
 
   useEffect(() => {
     const reportForDate = dailyReports.find(r => r.id === date);

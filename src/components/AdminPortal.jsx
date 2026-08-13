@@ -6,7 +6,7 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDocs, query, where, runTransaction } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, runTransaction } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -16,6 +16,17 @@ const BI_WEEKS_PER_MONTH = 4.333;
 const MAINTENANCE_MONTHLY_FEE = 15;
 const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 1;
+
+const buildPublicAvailabilitySignature = (classes = []) => {
+  const serialized = JSON.stringify(classes || []);
+  let hash = 2166136261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `v${PUBLIC_AVAILABILITY_SCHEMA_VERSION}-${(hash >>> 0).toString(16)}-${serialized.length}`;
+};
 
 const createPollOption = (label = '') => ({
   id: `option-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1832,11 +1843,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [startupLoadErrors, setStartupLoadErrors] = useState({});
   const [startupRetryVersion, setStartupRetryVersion] = useState(0);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [classesLoaded, setClassesLoaded] = useState(false);
   const [activatedDataAreas, setActivatedDataAreas] = useState({ gestiones: true });
   const [deferredDataStatus, setDeferredDataStatus] = useState({});
   const [deferredRetryVersion, setDeferredRetryVersion] = useState(0);
   const classIndexMigrationRef = useRef(false);
+  const publicAvailabilitySyncRef = useRef({
+    inFlight: false,
+    queued: false,
+    remoteChecked: false,
+    remoteSignature: null,
+    remoteUpdatedAt: ''
+  });
+  const latestPublicAvailabilityRef = useRef({ classes: [], signature: '' });
+  const [publicAvailabilityStatus, setPublicAvailabilityStatus] = useState({
+    phase: 'waiting',
+    message: 'Esperando a cargar alumnos y clases…',
+    updatedAt: '',
+    classesCount: 0
+  });
 
   // --- DATOS GLOBALES ---
   const [gestiones, setGestiones] = useState([]);
@@ -2009,6 +2035,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     setLoading(true);
     setStartupLoadErrors({});
     setSettingsLoaded(false);
+    setStudentsLoaded(false);
     setClassesLoaded(false);
 
     const markSourceSettled = source => {
@@ -2061,6 +2088,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     const unsubStudents = subscribeStartupSource('students', collection(db, 'artifacts', appId, 'students'), snap => {
       setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => String(a.name || '').localeCompare(String(b.name || ''))));
+      if (snap.metadata?.fromCache !== true) setStudentsLoaded(true);
     });
     const unsubSettings = subscribeStartupSource('settings', doc(db, 'artifacts', appId, 'settings', 'global'), docSnap => {
       if (docSnap.exists()) {
@@ -2089,7 +2117,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     const unsubClasses = subscribeStartupSource('classes', collectionGroup(db, 'recurringClasses'), snap => {
       setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
-      setClassesLoaded(true);
+      if (snap.metadata?.fromCache !== true) setClassesLoaded(true);
     });
     const unsubTickets = subscribeStartupSource('tickets', collectionGroup(db, 'tickets'), snap => {
       setAllTickets(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
@@ -2863,6 +2891,177 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const getCommercialCommittedSeatCount = (clase = {}) => getCommercialSeatDataForClass(clase).committedCount;
   const getCommercialFreeSpots = (clase = {}) => getCommercialSeatDataForClass(clase).freeSpots;
+
+  // Publicación segura para la web: este objeto nunca contiene alumnos, nombres,
+  // correos, profesores, notas internas, rutas de Firestore ni IDs de gestiones.
+  const publicAvailabilityPublication = useMemo(() => {
+    const studentById = new Map(students.map(student => [String(student.id || ''), student]));
+    const cancelledStatuses = new Set(['baja', 'cancelled', 'canceled', 'deleted', 'eliminado']);
+    const nonFixedTypes = new Set(['recovery', 'temporary', 'punctual', 'temporary_relocation']);
+
+    const isPublicCommittedSeat = (studentEntry = {}, availabilityDate = '') => {
+      const type = String(studentEntry.type || '').trim().toLowerCase();
+      const status = String(studentEntry.status || '').trim().toLowerCase();
+      if (
+        studentEntry.isRecovery === true ||
+        studentEntry.isTemporary === true ||
+        studentEntry.isPunctual === true ||
+        studentEntry.isTemporaryRelocation === true ||
+        Boolean(studentEntry.temporaryRelocationId) ||
+        nonFixedTypes.has(type) ||
+        status === 'recovery' ||
+        cancelledStatuses.has(status)
+      ) return false;
+
+      const studentInfo = studentById.get(String(studentEntry.id || studentEntry.studentId || '')) || {};
+      if (String(studentInfo.globalStatus || '').trim().toLowerCase() === 'baja') return false;
+
+      const scheduledEndDate = normalizeGestionDateString(
+        studentEntry.classEndDate ||
+        studentEntry.scheduledEndDate ||
+        studentEntry.endDate ||
+        studentInfo.classEndDate ||
+        studentInfo.scheduledEndDate ||
+        studentInfo.endDate ||
+        ''
+      );
+
+      // La fecha final es inclusiva: una baja el 31/08 libera plaza desde el 01/09.
+      return !(scheduledEndDate && availabilityDate && scheduledEndDate < availabilityDate);
+    };
+
+    const classes = recurringClassesOnly
+      .filter(clase => clase?.isWebVisible === true && !isPunctualClass(clase))
+      .map(clase => {
+        const maxCap = parseInt(clase.capacity, 10) || 0;
+        const dayNum = parseInt(clase.dayOfWeek, 10);
+        const timeStr = String(clase.time || '').trim();
+        const instrument = String(clase.subject || '').trim();
+        const publicStartDate = normalizeGestionDateString(clase.startDate || '');
+        const availabilityDate = publicStartDate && publicStartDate > todayStr ? publicStartDate : todayStr;
+        const occupiedSeats = (clase.students || []).filter(studentEntry => (
+          isPublicCommittedSeat(studentEntry, availabilityDate)
+        )).length;
+        const availableSeats = Math.max(maxCap - occupiedSeats, 0);
+
+        if (!maxCap || !instrument || !timeStr || !Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6 || availableSeats <= 0) {
+          return null;
+        }
+
+        return {
+          escuela: String(clase.sede || 'Tarragona').trim() || 'Tarragona',
+          instrumento: instrument,
+          horario: `${getDayName(dayNum)} a las ${timeStr}h`,
+          dayNum,
+          timeStr,
+          maxCap,
+          plazas: availableSeats,
+          url: String(clase.tadosiUrl || '').trim(),
+          precio: String(clase.price || '').trim(),
+          detalles: String(clase.publicDetails || '').trim(),
+          inicio: publicStartDate || null
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => (
+        left.escuela.localeCompare(right.escuela, 'es') ||
+        left.instrumento.localeCompare(right.instrumento, 'es') ||
+        ((left.dayNum === 0 ? 7 : left.dayNum) - (right.dayNum === 0 ? 7 : right.dayNum)) ||
+        left.timeStr.localeCompare(right.timeStr, 'es')
+      ));
+
+    return {
+      classes,
+      signature: buildPublicAvailabilitySignature(classes)
+    };
+  }, [recurringClassesOnly, students, todayStr]);
+
+  latestPublicAvailabilityRef.current = publicAvailabilityPublication;
+
+  const publishPublicAvailability = async ({ force = false } = {}) => {
+    if (!studentsLoaded || !classesLoaded) {
+      setPublicAvailabilityStatus(previous => ({
+        ...previous,
+        phase: 'waiting',
+        message: 'Esperando a cargar alumnos y clases…'
+      }));
+      return;
+    }
+
+    const syncState = publicAvailabilitySyncRef.current;
+    if (syncState.inFlight) {
+      syncState.queued = true;
+      return;
+    }
+
+    syncState.inFlight = true;
+    setPublicAvailabilityStatus(previous => ({
+      ...previous,
+      phase: 'syncing',
+      message: force ? 'Reconstruyendo plazas públicas…' : 'Comprobando plazas públicas…'
+    }));
+
+    try {
+      const publicRef = doc(db, 'publicData', 'classAvailability');
+      if (!syncState.remoteChecked) {
+        const publicSnapshot = await getDoc(publicRef);
+        const remoteData = publicSnapshot.exists() ? publicSnapshot.data() : {};
+        syncState.remoteSignature = String(remoteData.signature || '');
+        syncState.remoteUpdatedAt = String(remoteData.updatedAt || '');
+        syncState.remoteChecked = true;
+      }
+
+      const publication = latestPublicAvailabilityRef.current;
+      if (!force && syncState.remoteSignature === publication.signature) {
+        setPublicAvailabilityStatus({
+          phase: 'synced',
+          message: 'Plazas públicas comprobadas; no había cambios.',
+          updatedAt: syncState.remoteUpdatedAt,
+          classesCount: publication.classes.length
+        });
+        return;
+      }
+
+      const updatedAt = new Date().toISOString();
+      await setDoc(publicRef, {
+        schemaVersion: PUBLIC_AVAILABILITY_SCHEMA_VERSION,
+        updatedAt,
+        generatedForDate: todayStr,
+        signature: publication.signature,
+        classes: publication.classes
+      });
+
+      syncState.remoteSignature = publication.signature;
+      syncState.remoteUpdatedAt = updatedAt;
+      setPublicAvailabilityStatus({
+        phase: 'synced',
+        message: 'Plazas públicas actualizadas correctamente.',
+        updatedAt,
+        classesCount: publication.classes.length
+      });
+    } catch (error) {
+      console.error('No se pudieron publicar las plazas de la web:', error);
+      setPublicAvailabilityStatus(previous => ({
+        ...previous,
+        phase: 'error',
+        message: 'No se pudieron actualizar las plazas. Usa el botón para reintentar.'
+      }));
+    } finally {
+      syncState.inFlight = false;
+      if (syncState.queued) {
+        syncState.queued = false;
+        window.setTimeout(() => publishPublicAvailability(), 0);
+      }
+    }
+  };
+
+  // Se ejecuta sin entrar en ninguna pestaña. Reutiliza los datos que Admin ya
+  // mantiene en memoria y escribe solo cuando cambia el resultado sanitizado.
+  useEffect(() => {
+    if (!studentsLoaded || !classesLoaded) return undefined;
+    const timer = window.setTimeout(() => publishPublicAvailability(), 1200);
+    return () => window.clearTimeout(timer);
+  }, [studentsLoaded, classesLoaded, publicAvailabilityPublication.signature, db]);
 
   // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const currentMonthStartStr = useMemo(() => getMonthStartStringFromDate(todayStr), [todayStr]);
@@ -11984,6 +12183,43 @@ ${startDateWarning}
                 </button>
               </div>
             </header>
+
+            <div className={`border rounded-2xl p-4 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+              publicAvailabilityStatus.phase === 'error'
+                ? 'bg-red-50 border-red-200'
+                : publicAvailabilityStatus.phase === 'synced'
+                  ? 'bg-emerald-50 border-emerald-200'
+                  : 'bg-blue-50 border-blue-200'
+            }`}>
+              <div className="flex items-start gap-3">
+                <div className={`p-2.5 rounded-xl ${
+                  publicAvailabilityStatus.phase === 'error'
+                    ? 'bg-red-100 text-red-700'
+                    : publicAvailabilityStatus.phase === 'synced'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-blue-100 text-blue-700'
+                }`}>
+                  <Globe className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-800">Plazas de la web · datos públicos sin alumnos</p>
+                  <p className="text-xs font-bold text-zinc-600 mt-1">{publicAvailabilityStatus.message}</p>
+                  <p className="text-[10px] font-bold text-zinc-400 mt-1">
+                    {publicAvailabilityPublication.classes.length} turno(s) con plaza
+                    {publicAvailabilityStatus.updatedAt ? ` · Última publicación: ${new Date(publicAvailabilityStatus.updatedAt).toLocaleString('es-ES')}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => publishPublicAvailability({ force: true })}
+                disabled={!studentsLoaded || !classesLoaded || publicAvailabilityStatus.phase === 'syncing'}
+                className="w-full lg:w-auto px-5 py-3 bg-slate-900 hover:bg-black disabled:bg-zinc-300 disabled:cursor-not-allowed text-white rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
+              >
+                <Save className="w-4 h-4" />
+                {publicAvailabilityStatus.phase === 'syncing' ? 'Actualizando…' : 'Actualizar plazas de la web'}
+              </button>
+            </div>
 
             {classesViewMode === 'profesores' && (
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">

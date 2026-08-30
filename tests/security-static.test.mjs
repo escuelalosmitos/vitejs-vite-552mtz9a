@@ -41,6 +41,14 @@ test('el alumno usa proyecciones privadas en lugar de colecciones globales sensi
   assert.match(student, /doc\(db, classPath\)/);
 });
 
+test('administración mantiene sincronizadas las clases privadas de cada alumno', async () => {
+  const admin = await read('src/components/AdminPortal.jsx');
+  assert.match(admin, /classIdsByStudentId/);
+  assert.match(admin, /expectedClassIds/);
+  assert.match(admin, /classes: expectedClassIds/);
+  assert.match(admin, /getClassStudentIds\(classData\.students \|\| \[\]\)/);
+});
+
 test('solo classAvailability declara lectura pública', async () => {
   const rules = await read('firestore.rules');
   const publicReads = rules.match(/allow read: if true;/g) || [];

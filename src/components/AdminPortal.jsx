@@ -1851,6 +1851,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [deferredRetryVersion, setDeferredRetryVersion] = useState(0);
   const classIndexMigrationRef = useRef(false);
   const ticketEmailMigrationRef = useRef(false);
+  const studentClassMembershipSyncRef = useRef(false);
   const publicAvailabilitySyncRef = useRef({
     inFlight: false,
     queued: false,
@@ -2378,6 +2379,62 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     migrateTicketEmails();
   }, [settingsLoaded, studentsLoaded, ticketsLoaded, settings.studentTicketEmailIndexVersion, students, allTickets, appId, db]);
+
+  // La ficha privada del alumno contiene los ids de las clases que StudentPortal
+  // puede abrir directamente. Las listas de alumnos de cada clase siguen siendo
+  // la fuente de verdad: esta conciliación repara datos heredados y mantiene
+  // altas, cambios y bajas sincronizados sin permitir consultas globales.
+  useEffect(() => {
+    if (!studentsLoaded || !classesLoaded) return undefined;
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      if (studentClassMembershipSyncRef.current || cancelled) return;
+      studentClassMembershipSyncRef.current = true;
+
+      try {
+        const classIdsByStudentId = new Map();
+        allClasses.forEach(classData => {
+          const classId = String(classData.id || classData.docId || '').trim();
+          if (!classId) return;
+
+          getClassStudentIds(classData.students || []).forEach(studentId => {
+            const currentClassIds = classIdsByStudentId.get(studentId) || [];
+            currentClassIds.push(classId);
+            classIdsByStudentId.set(studentId, currentClassIds);
+          });
+        });
+
+        const studentsToUpdate = students
+          .map(student => ({
+            student,
+            expectedClassIds: uniqueStrings(classIdsByStudentId.get(String(student.id || '')) || [])
+          }))
+          .filter(({ student, expectedClassIds }) => !haveSameStringValues(student.classes || [], expectedClassIds));
+
+        for (let start = 0; start < studentsToUpdate.length; start += 400) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          studentsToUpdate.slice(start, start + 400).forEach(({ student, expectedClassIds }) => {
+            batch.update(doc(db, 'artifacts', appId, 'students', student.id), {
+              classes: expectedClassIds,
+              classMembershipSyncedAt: new Date().toISOString()
+            });
+          });
+          await batch.commit();
+        }
+      } catch (error) {
+        console.error('No se pudieron conciliar las clases privadas de los alumnos:', error);
+      } finally {
+        studentClassMembershipSyncRef.current = false;
+      }
+    }, 1600);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [studentsLoaded, classesLoaded, students, allClasses, appId, db]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setPollClock(Date.now()), 60000);

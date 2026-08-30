@@ -112,7 +112,7 @@ test('Firestore indexa la consulta segura de tickets del profesor por correo aut
   });
 });
 
-test('los accesos entre profesores exigen una relación operativa explícita', async () => {
+test('los profesores comparten lectura operativa sin adquirir permisos administrativos', async () => {
   const [rules, admin, teacher, student] = await Promise.all([
     read('firestore.rules'),
     read('src/components/AdminPortal.jsx'),
@@ -122,6 +122,11 @@ test('los accesos entre profesores exigen una relación operativa explícita', a
 
   assert.match(rules, /authorizedTeacherEmails/);
   assert.match(rules, /recoveryTeacherEmails/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/gestiones\/\{gestionId\}[\s\S]*allow read: if isAdmin\(\) \|\| isTeacher\(appId\) \|\| studentOwnsResource\(appId\);/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/temporaryRelocations\/\{relocationId\}[\s\S]*allow read: if isAdmin\(\) \|\| isTeacher\(appId\) \|\| studentOwnsResource\(appId\);/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/temporaryClassChanges\/\{changeId\}[\s\S]*allow read: if isAdmin\(\) \|\| isTeacher\(appId\);/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/payrollAdjustments\/\{adjustmentId\}[\s\S]*resource\.data\.teacher\.lower\(\) == get\(staffAccessPath\(appId\)\)\.data\.teacherNameLower/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/roleData\/\{document=\*\*\}[\s\S]*allow read, write: if isAdmin\(\);/);
   assert.match(rules, /resource\.data\.originalTeacherUid != request\.auth\.uid/);
   assert.match(admin, /teacherSecurityAuthorization/);
   assert.match(admin, /teacherEmails/);

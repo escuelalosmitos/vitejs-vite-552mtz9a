@@ -409,7 +409,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         collectionGroup(db, 'recurringClasses'),
         where('studentIds', 'array-contains', STUDENT.id)
       )));
-      await assertFails(getDocs(collectionGroup(db, 'recurringClasses')));
+      await assertSucceeds(getDocs(collectionGroup(db, 'recurringClasses')));
 
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'tickets'),
@@ -561,20 +561,20 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         where('authorizedTeacherEmails', 'array-contains', TEACHER.email)
       )));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`)));
-      await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-other`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-other`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-private`)));
-      await assertFails(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-other`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-other`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-shared`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryRelocations/relocation-shared`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/gestiones/gestion-own`)));
-      await assertFails(getDoc(doc(db, `${ROOT}/gestiones/gestion-other`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/gestiones/gestion-other`)));
       await assertSucceeds(getDocs(query(
         collection(db, `${ROOT}/gestiones`),
         where('teacherEmails', 'array-contains', TEACHER.email)
       )));
-      await assertFails(getDocs(collection(db, `${ROOT}/gestiones`)));
+      await assertSucceeds(getDocs(collection(db, `${ROOT}/gestiones`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/tickets/ticket-own`)));
-      await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`)));
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'tickets'),
         where('teacherEmails', 'array-contains', TEACHER.email)
@@ -583,7 +583,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         collectionGroup(db, 'tickets'),
         where('recoveryTeacherEmails', 'array-contains', TEACHER.email)
       )));
-      await assertFails(getDocs(collectionGroup(db, 'tickets')));
+      await assertSucceeds(getDocs(collectionGroup(db, 'tickets')));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`)));
       await assertSucceeds(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`), {
         notes: 'Trabajo durante el cambio temporal'
@@ -638,7 +638,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         collection(db, `${ROOT}/substitutions`),
         where('originalTeacherUid', '==', TEACHER.uid)
       )));
-      await assertFails(getDocs(collection(db, `${ROOT}/substitutions`)));
+      await assertSucceeds(getDocs(collection(db, `${ROOT}/substitutions`)));
       await assertSucceeds(updateDoc(doc(db, `${ROOT}/substitutions/substitution-cross`), {
         status: 'assigned',
         assumedAt: '2026-08-30T13:00:00.000Z',

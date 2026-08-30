@@ -844,7 +844,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const gestionesCollection = collection(db, 'artifacts', appId, 'gestiones');
     const pendingGestionesRef = query(gestionesCollection, where('status', '==', 'pendiente'));
     const futureRecoveryGestionesRef = query(gestionesCollection, where('recoveryDate', '>=', today));
-    const payrollAdjustmentsRef = collection(db, 'artifacts', appId, 'payrollAdjustments');
+    const payrollAdjustmentsRef = query(
+      collection(db, 'artifacts', appId, 'payrollAdjustments'),
+      where('teacher', '==', myName)
+    );
     const temporaryRelocationsRef = query(
       collection(db, 'artifacts', appId, 'temporaryRelocations'),
       where('until', '>=', operationalLookbackDate)
@@ -994,21 +997,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       recordsLoaded = true;
       checkLoading();
     }, (error) => {
-      console.error('La consulta directa de asistencias falló; se aplica compatibilidad heredada:', error);
-      recordsFallbackUnsub = onSnapshot(collectionGroup(db, 'records'), snapshot => {
-        const recs = snapshot.docs
-          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
-          .filter(record => isSameTeacher(record.teacher, myName))
-          .sort((a, b) => new Date(`${b.date || ''}T${b.time || '00:00'}`) - new Date(`${a.date || ''}T${a.time || '00:00'}`));
-        setRecords(recs);
-        recordsLoaded = true;
-        checkLoading();
-      }, fallbackError => {
-        console.error('No se pudieron cargar las asistencias del profesor:', fallbackError);
-        setRecords([]);
-        recordsLoaded = true;
-        checkLoading();
-      });
+      console.error('La consulta privada de asistencias falló:', error);
+      setRecords([]);
+      recordsLoaded = true;
+      checkLoading();
     });
 
     const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
@@ -3377,8 +3369,12 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           if (isSummerTicket || monthTickets.length < 2) {
             const { validFrom, validUntil, recoveryPolicy } = generateTicketDates(date);
             const ticketId = Date.now().toString() + '-' + s.id;
+            const studentEmail = String(
+              globalStudents.find(student => String(student.id) === String(s.id))?.email || s.email || ''
+            ).trim().toLowerCase();
             await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
               studentId: s.id,
+              studentEmail,
               studentName: s.name,
               subject: currentSession.subject,
               originalDate: date,

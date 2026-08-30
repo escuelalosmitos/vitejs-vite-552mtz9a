@@ -1845,10 +1845,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [classesLoaded, setClassesLoaded] = useState(false);
+  const [ticketsLoaded, setTicketsLoaded] = useState(false);
   const [activatedDataAreas, setActivatedDataAreas] = useState({ gestiones: true });
   const [deferredDataStatus, setDeferredDataStatus] = useState({});
   const [deferredRetryVersion, setDeferredRetryVersion] = useState(0);
   const classIndexMigrationRef = useRef(false);
+  const ticketEmailMigrationRef = useRef(false);
   const publicAvailabilitySyncRef = useRef({
     inFlight: false,
     queued: false,
@@ -2121,6 +2123,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
     const unsubTickets = subscribeStartupSource('tickets', collectionGroup(db, 'tickets'), snap => {
       setAllTickets(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
+      if (snap.metadata?.fromCache !== true) setTicketsLoaded(true);
     });
     const unsubTemporaryRelocations = subscribeStartupSource('temporaryRelocations', collection(db, 'artifacts', appId, 'temporaryRelocations'), snap => {
       setTemporaryRelocations(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
@@ -2332,6 +2335,49 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     migrateClassStudentIndex();
   }, [settingsLoaded, classesLoaded, settings.studentClassIndexVersion, allClasses, appId, db]);
+
+  // Las consultas del alumno se autorizan con el email autenticado. Se completa
+  // una sola vez ese índice en tickets antiguos antes de publicar las reglas.
+  useEffect(() => {
+    if (!settingsLoaded || !studentsLoaded || !ticketsLoaded || ticketEmailMigrationRef.current) return;
+    if (Number(settings.studentTicketEmailIndexVersion || 0) >= 1) return;
+
+    ticketEmailMigrationRef.current = true;
+    const migrateTicketEmails = async () => {
+      try {
+        const emailsByStudentId = new Map(students.map(student => [
+          String(student.id || ''),
+          String(student.email || '').trim().toLowerCase()
+        ]));
+        const ticketsToUpdate = allTickets.filter(ticket => {
+          const expectedEmail = emailsByStudentId.get(String(ticket.studentId || '')) || '';
+          return expectedEmail && String(ticket.studentEmail || '').trim().toLowerCase() !== expectedEmail;
+        });
+
+        for (let start = 0; start < ticketsToUpdate.length; start += 400) {
+          const batch = writeBatch(db);
+          ticketsToUpdate.slice(start, start + 400).forEach(ticket => {
+            if (!ticket.refPath) return;
+            batch.update(doc(db, ticket.refPath), {
+              studentEmail: emailsByStudentId.get(String(ticket.studentId || '')) || ''
+            });
+          });
+          await batch.commit();
+        }
+
+        await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
+          studentTicketEmailIndexVersion: 1,
+          studentTicketEmailIndexedAt: new Date().toISOString(),
+          studentTicketEmailIndexedDocuments: ticketsToUpdate.length
+        }, { merge: true });
+      } catch (error) {
+        ticketEmailMigrationRef.current = false;
+        console.error('No se pudo completar la migración privada de tickets:', error);
+      }
+    };
+
+    migrateTicketEmails();
+  }, [settingsLoaded, studentsLoaded, ticketsLoaded, settings.studentTicketEmailIndexVersion, students, allTickets, appId, db]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setPollClock(Date.now()), 60000);
@@ -2976,6 +3022,71 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     };
   }, [recurringClassesOnly, students, todayStr]);
 
+  // Proyecciones privadas para el Área del Alumno. Contienen únicamente los
+  // campos que esa interfaz necesita y nunca incluyen alumnos de otras clases,
+  // correos ni notas internas. La ruta permite pedir después cada clase por
+  // lectura directa; las reglas siguen comprobando que el alumno pertenezca a ella.
+  const studentClassCatalogPublication = useMemo(() => {
+    const classes = recurringClassesOnly.map(clase => {
+      const seatData = getCommercialSeatDataForClass(clase);
+      return {
+        id: String(clase.id || '').trim(),
+        docId: String(clase.id || '').trim(),
+        refPath: String(clase.refPath || '').trim(),
+        subject: String(clase.subject || '').trim(),
+        teacher: String(clase.teacher || '').trim(),
+        dayOfWeek: Number(clase.dayOfWeek),
+        time: String(clase.time || '').trim(),
+        sede: String(clase.sede || '').trim(),
+        sala: String(clase.sala || '').trim(),
+        centerId: String(clase.centerId || '').trim(),
+        roomId: String(clase.roomId || '').trim(),
+        duration: Number(clase.duration) || 60,
+        capacity: Number(clase.capacity) || seatData.cap || 0,
+        committedSeatCount: seatData.committedCount,
+        activeStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
+        freeSpots: seatData.freeSpots,
+        cancelledDates: Array.isArray(clase.cancelledDates) ? clase.cancelledDates : [],
+        isWebVisible: clase.isWebVisible === true
+      };
+    }).filter(clase => clase.id && clase.subject && clase.time);
+
+    const sanitizedChanges = temporaryClassChanges.map(change => ({
+      id: String(change.id || '').trim(),
+      classId: String(change.classId || '').trim(),
+      from: normalizeTemporaryClassChangeDate(change.from),
+      until: normalizeTemporaryClassChangeDate(change.until),
+      status: String(change.status || '').trim(),
+      dayOfWeek: Number(change.dayOfWeek),
+      time: String(change.time || '').trim(),
+      sede: String(change.sede || '').trim(),
+      sala: String(change.sala || '').trim(),
+      centerId: String(change.centerId || '').trim(),
+      roomId: String(change.roomId || '').trim(),
+      duration: Number(change.duration) || 60,
+      teacher: String(change.teacher || '').trim()
+    })).filter(change => change.id && change.classId);
+
+    return {
+      classes,
+      temporaryClassChanges: sanitizedChanges,
+      signature: buildPublicAvailabilitySignature([...classes, ...sanitizedChanges])
+    };
+  }, [recurringClassesOnly, temporaryClassChanges, students, todayStr]);
+
+  const studentSettingsPublication = useMemo(() => {
+    const data = {
+      contract: String(settings.contract || ''),
+      festivos: Array.isArray(settings.festivos) ? settings.festivos : [],
+      vacaciones: Array.isArray(settings.vacaciones) ? settings.vacaciones : [],
+      festivosTarragona: Array.isArray(settings.festivosTarragona) ? settings.festivosTarragona : [],
+      festivosReus: Array.isArray(settings.festivosReus) ? settings.festivosReus : [],
+      centers: normalizeCenters(settings.centers, settings),
+      studentClassIndexVersion: Number(settings.studentClassIndexVersion || 0)
+    };
+    return { data, signature: buildPublicAvailabilitySignature([data]) };
+  }, [settings]);
+
   latestPublicAvailabilityRef.current = publicAvailabilityPublication;
 
   const publishPublicAvailability = async ({ force = false } = {}) => {
@@ -3062,6 +3173,33 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const timer = window.setTimeout(() => publishPublicAvailability(), 1200);
     return () => window.clearTimeout(timer);
   }, [studentsLoaded, classesLoaded, publicAvailabilityPublication.signature, db]);
+
+  useEffect(() => {
+    if (!studentsLoaded || !classesLoaded) return undefined;
+    const timer = window.setTimeout(() => {
+      setDoc(doc(db, 'artifacts', appId, 'roleData', 'studentClassCatalog'), {
+        schemaVersion: 1,
+        updatedAt: new Date().toISOString(),
+        signature: studentClassCatalogPublication.signature,
+        classes: studentClassCatalogPublication.classes,
+        temporaryClassChanges: studentClassCatalogPublication.temporaryClassChanges
+      }).catch(error => console.error('No se pudo publicar el catálogo privado de clases:', error));
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [studentsLoaded, classesLoaded, studentClassCatalogPublication.signature, db, appId]);
+
+  useEffect(() => {
+    if (!settingsLoaded) return undefined;
+    const timer = window.setTimeout(() => {
+      setDoc(doc(db, 'artifacts', appId, 'roleData', 'studentSettings'), {
+        ...studentSettingsPublication.data,
+        schemaVersion: 1,
+        signature: studentSettingsPublication.signature,
+        updatedAt: new Date().toISOString()
+      }).catch(error => console.error('No se pudo publicar la configuración para alumnos:', error));
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [settingsLoaded, studentSettingsPublication.signature, db, appId]);
 
   // LÓGICA DE INFORMES (BUSINESS INTELLIGENCE MULTI-VISTA)
   const currentMonthStartStr = useMemo(() => getMonthStartStringFromDate(todayStr), [todayStr]);
@@ -3911,6 +4049,65 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const officialName = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
     return `${officialName.toLocaleLowerCase('es-ES').trim().replace(/\s+/g, '.')}@escuelalosmitos.com`;
   };
+
+  const teacherAccessPublication = useMemo(() => {
+    const byEmail = new Map();
+    [...(settings.teachersList || []), ...recurringClassesOnly.map(clase => clase.teacher)]
+      .filter(Boolean)
+      .forEach(teacherName => {
+        const officialName = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
+        const email = getTeacherEmail(officialName);
+        if (!email) return;
+        byEmail.set(email, {
+          role: 'teacher',
+          email,
+          teacherName: officialName,
+          teacherNameLower: String(officialName || '').trim().toLocaleLowerCase('es-ES'),
+          teacherKey: normalizeTeacherKey(officialName)
+        });
+      });
+    return [...byEmail.values()].sort((left, right) => left.email.localeCompare(right.email, 'es'));
+  }, [settings.teachersList, recurringClassesOnly]);
+
+  const teacherAccessSignature = useMemo(
+    () => buildPublicAvailabilitySignature(teacherAccessPublication),
+    [teacherAccessPublication]
+  );
+
+  // Mantiene una lista privada y revocable de cuentas de profesor. El dominio
+  // del correo por sí solo no concede permisos.
+  useEffect(() => {
+    if (!settingsLoaded || !classesLoaded) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const staffCollection = collection(db, 'artifacts', appId, 'staffAccess');
+        const currentSnapshot = await getDocs(staffCollection);
+        if (cancelled) return;
+
+        const desiredEmails = new Set(teacherAccessPublication.map(item => item.email));
+        const batch = writeBatch(db);
+        currentSnapshot.docs.forEach(staffDocument => {
+          if (!desiredEmails.has(staffDocument.id)) batch.delete(staffDocument.ref);
+        });
+        teacherAccessPublication.forEach(item => {
+          batch.set(doc(staffCollection, item.email), {
+            ...item,
+            schemaVersion: 1,
+            updatedAt: new Date().toISOString()
+          });
+        });
+        await batch.commit();
+      } catch (error) {
+        console.error('No se pudo sincronizar la lista privada de profesores:', error);
+      }
+    }, 1600);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [settingsLoaded, classesLoaded, teacherAccessSignature, db, appId]);
 
   const formatClassLine = (clase) => {
     if (!clase) return '';
@@ -6240,6 +6437,7 @@ Coordinación Los Mitos.`
         promises.push(
           setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
             studentId: student.id,
+            studentEmail: String(student.email || '').trim().toLowerCase(),
             studentName: displayName,
             subject: 'Cortesía Escuela',
             originalDate: new Date().toISOString().split('T')[0],

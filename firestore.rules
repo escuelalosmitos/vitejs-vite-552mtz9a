@@ -1,0 +1,407 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null && request.auth.token.email is string;
+    }
+
+    function authEmail() {
+      return signedIn() ? request.auth.token.email.lower() : '';
+    }
+
+    function isAdmin() {
+      return signedIn() && authEmail() == 'paco@escuelalosmitos.com';
+    }
+
+    function staffAccessPath(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/staffAccess/$(authEmail());
+    }
+
+    function isTeacher(appId) {
+      return signedIn()
+        && exists(staffAccessPath(appId))
+        && get(staffAccessPath(appId)).data.role == 'teacher'
+        && get(staffAccessPath(appId)).data.email is string
+        && get(staffAccessPath(appId)).data.email.lower() == authEmail();
+    }
+
+    function teacherMatchesData(appId, data) {
+      return isTeacher(appId) && (
+        ('teacherUid' in data && data.teacherUid is string && data.teacherUid == request.auth.uid)
+        || ('teacherEmail' in data && data.teacherEmail is string && data.teacherEmail.lower() == authEmail())
+        || (
+          'teacherName' in data
+          && 'teacherNameLower' in get(staffAccessPath(appId)).data
+          && data.teacherName is string
+          && data.teacherName.lower() == get(staffAccessPath(appId)).data.teacherNameLower
+        )
+        || (
+          'teacherNameNormalized' in data
+          && 'teacherNameLower' in get(staffAccessPath(appId)).data
+          && data.teacherNameNormalized is string
+          && data.teacherNameNormalized == get(staffAccessPath(appId)).data.teacherNameLower
+        )
+      );
+    }
+
+    function accessPath(appId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/access/$(request.auth.uid);
+    }
+
+    function hasStudentAccess(appId) {
+      return signedIn()
+        && exists(accessPath(appId))
+        && get(accessPath(appId)).data.role == 'student'
+        && get(accessPath(appId)).data.email is string
+        && get(accessPath(appId)).data.email.lower() == authEmail()
+        && get(accessPath(appId)).data.studentId is string
+        && get(accessPath(appId)).data.studentId.matches('^[A-Za-z0-9_-]+$');
+    }
+
+    function ownStudentId(appId) {
+      return hasStudentAccess(appId) ? get(accessPath(appId)).data.studentId : '';
+    }
+
+    function ownsStudentRecord(appId, studentId) {
+      return hasStudentAccess(appId) && ownStudentId(appId) == studentId;
+    }
+
+    function ownStudentEmailRecord() {
+      return signedIn()
+        && resource.data.email is string
+        && resource.data.email.lower() == authEmail();
+    }
+
+    function studentOwnsResource(appId) {
+      return hasStudentAccess(appId) && (
+        (
+          resource.data.studentId is string
+          && resource.data.studentId == ownStudentId(appId)
+        )
+        || (
+          'studentEmail' in resource.data
+          && resource.data.studentEmail is string
+          && resource.data.studentEmail == authEmail()
+        )
+        || (
+          'email' in resource.data
+          && resource.data.email is string
+          && resource.data.email == authEmail()
+        )
+      );
+    }
+
+    function requestEmailMatchesAuth() {
+      return (
+        'studentEmail' in request.resource.data
+        && request.resource.data.studentEmail is string
+        && request.resource.data.studentEmail.lower() == authEmail()
+      ) || (
+        'email' in request.resource.data
+        && request.resource.data.email is string
+        && request.resource.data.email.lower() == authEmail()
+      );
+    }
+
+    function studentCreatesOwnResource(appId) {
+      return hasStudentAccess(appId)
+        && request.resource.data.studentId is string
+        && request.resource.data.studentId == ownStudentId(appId)
+        && requestEmailMatchesAuth();
+    }
+
+    function deterministicIdBelongsToStudent(appId, documentId) {
+      return hasStudentAccess(appId)
+        && documentId.matches('^.*_' + ownStudentId(appId) + '$');
+    }
+
+    function studentCanReadAnnouncement(appId) {
+      return hasStudentAccess(appId)
+        && resource.data.audienceType is string
+        && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'];
+    }
+
+    // Única lectura sin iniciar sesión.
+    match /publicData/classAvailability {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /publicData/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /artifacts/{appId}/staffAccess/{staffEmail} {
+      allow get: if isAdmin() || (
+        signedIn()
+        && staffEmail == authEmail()
+      );
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/access/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow create, update: if isAdmin() || (
+        signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['role', 'studentId', 'email', 'createdAt', 'updatedAt'])
+        && request.resource.data.role == 'student'
+        && request.resource.data.email is string
+        && request.resource.data.email.lower() == authEmail()
+        && request.resource.data.studentId is string
+        && request.resource.data.studentId.matches('^[A-Za-z0-9_-]+$')
+        && exists(/databases/$(database)/documents/artifacts/$(appId)/students/$(request.resource.data.studentId))
+        && get(/databases/$(database)/documents/artifacts/$(appId)/students/$(request.resource.data.studentId)).data.email is string
+        && get(/databases/$(database)/documents/artifacts/$(appId)/students/$(request.resource.data.studentId)).data.email.lower() == authEmail()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/students/{studentId} {
+      allow get, list: if isAdmin() || isTeacher(appId) || ownsStudentRecord(appId, studentId) || ownStudentEmailRecord();
+      allow create: if isAdmin() || (
+        isTeacher(appId)
+        && request.resource.data.keys().hasOnly([
+          'name', 'email', 'claimed', 'instruments', 'classes', 'internalNotes', 'classStartDate'
+        ])
+        && request.resource.data.claimed == false
+      );
+      allow delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isTeacher(appId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['internalNotes'])
+      ) || (
+        (ownsStudentRecord(appId, studentId) || ownStudentEmailRecord())
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'claimed', 'authUid', 'lastSeenTablon', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak'
+        ])
+      );
+    }
+
+    match /artifacts/{appId}/settings/{settingId} {
+      allow read: if isAdmin() || isTeacher(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/announcements/{announcementId} {
+      allow get, list: if isAdmin() || isTeacher(appId) || studentCanReadAnnouncement(appId);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        studentCanReadAnnouncement(appId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'pollVoteCounts', 'pollResponseCount', 'pollLastResponseAt'
+        ])
+      );
+    }
+
+    match /artifacts/{appId}/workshops/{workshopId} {
+      allow read: if isAdmin() || isTeacher(appId) || hasStudentAccess(appId);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        hasStudentAccess(appId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'confirmedCount', 'pendingCount', 'waitlistCount', 'updatedAt'
+        ])
+      );
+    }
+
+    match /artifacts/{appId}/roleData/studentClassCatalog {
+      allow read: if isAdmin() || isTeacher(appId) || hasStudentAccess(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/roleData/studentSettings {
+      allow read: if isAdmin() || isTeacher(appId) || hasStudentAccess(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/roleData/{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/gestiones/{gestionId} {
+      allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
+      allow create: if isAdmin() || isTeacher(appId) || studentCreatesOwnResource(appId);
+      allow update: if isAdmin() || isTeacher(appId) || (
+        studentOwnsResource(appId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['adminCopySentAt', 'adminCopyRecipient'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/temporaryRelocations/{relocationId} {
+      allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/maintenancePeriods/{periodId} {
+      allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/temporaryClassChanges/{changeId} {
+      allow read: if isAdmin() || isTeacher(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/workshopRegistrations/{registrationId} {
+      allow get: if isAdmin() || studentOwnsResource(appId) || deterministicIdBelongsToStudent(appId, registrationId);
+      allow list: if isAdmin() || studentOwnsResource(appId);
+      allow create: if isAdmin() || studentCreatesOwnResource(appId);
+      allow update: if isAdmin() || (
+        studentOwnsResource(appId)
+        && request.resource.data.studentId == resource.data.studentId
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/pollResponses/{responseId} {
+      allow get: if isAdmin() || studentOwnsResource(appId) || deterministicIdBelongsToStudent(appId, responseId);
+      allow list: if isAdmin() || studentOwnsResource(appId);
+      allow create: if studentCreatesOwnResource(appId);
+      allow update: if studentOwnsResource(appId)
+        && request.resource.data.studentId == resource.data.studentId;
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/callResponses/{responseId} {
+      allow get: if isAdmin() || studentOwnsResource(appId) || deterministicIdBelongsToStudent(appId, responseId);
+      allow list: if isAdmin() || studentOwnsResource(appId);
+      allow create: if studentCreatesOwnResource(appId);
+      allow update: if studentOwnsResource(appId)
+        && request.resource.data.studentId == resource.data.studentId;
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/teacherEvaluations/{evaluationId} {
+      allow read: if isAdmin() || studentOwnsResource(appId);
+      allow create: if studentCreatesOwnResource(appId);
+      allow update, delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/teacherNotifications/{notificationId} {
+      allow read: if isAdmin() || teacherMatchesData(appId, resource.data);
+      allow create: if isAdmin() || teacherMatchesData(appId, request.resource.data);
+      allow update: if isAdmin() || (
+        teacherMatchesData(appId, resource.data)
+        && teacherMatchesData(appId, request.resource.data)
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/teacherTasks/{taskId} {
+      allow read: if isAdmin() || teacherMatchesData(appId, resource.data);
+      allow create: if isAdmin() || teacherMatchesData(appId, request.resource.data);
+      allow update: if isAdmin() || (
+        teacherMatchesData(appId, resource.data)
+        && teacherMatchesData(appId, request.resource.data)
+      );
+      allow delete: if isAdmin() || teacherMatchesData(appId, resource.data);
+    }
+
+    match /artifacts/{appId}/availability/{teacherKey} {
+      allow read, write: if isAdmin() || (
+        isTeacher(appId)
+        && teacherKey == get(staffAccessPath(appId)).data.teacherKey
+      );
+    }
+
+    match /artifacts/{appId}/substitutions/{substitutionId} {
+      allow read: if isAdmin() || isTeacher(appId);
+      allow create: if isTeacher(appId)
+        && request.resource.data.originalTeacherUid == request.auth.uid;
+      allow update: if isAdmin() || isTeacher(appId);
+      allow delete: if isAdmin() || (
+        isTeacher(appId) && resource.data.originalTeacherUid == request.auth.uid
+      );
+    }
+
+    match /artifacts/{appId}/payrollAdjustments/{adjustmentId} {
+      allow read: if isAdmin() || (
+        isTeacher(appId)
+        && resource.data.teacher is string
+        && resource.data.teacher.lower() == get(staffAccessPath(appId)).data.teacherNameLower
+      );
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/users/{userId} {
+      allow read, create, update: if isAdmin() || (
+        isTeacher(appId) && request.auth.uid == userId
+      );
+      allow delete: if isAdmin();
+
+      match /records/{recordId} {
+        allow read, write: if isAdmin() || (
+          isTeacher(appId) && request.auth.uid == userId
+        );
+      }
+
+      match /dailyReports/{reportId} {
+        allow read, write: if isAdmin() || (
+          isTeacher(appId) && request.auth.uid == userId
+        );
+      }
+
+      match /recurringClasses/{classId} {
+        allow get: if isAdmin() || isTeacher(appId) || (
+          hasStudentAccess(appId)
+          && 'studentIds' in resource.data
+          && resource.data.studentIds is list
+          && ownStudentId(appId) in resource.data.studentIds
+        );
+        allow list: if isAdmin() || isTeacher(appId);
+        allow create, delete: if isAdmin() || isTeacher(appId);
+        allow update: if isAdmin() || isTeacher(appId) || (
+          hasStudentAccess(appId)
+          && 'studentIds' in resource.data
+          && resource.data.studentIds is list
+          && ownStudentId(appId) in resource.data.studentIds
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['exceptions', 'autoCancelled'])
+        );
+      }
+
+      match /tickets/{ticketId} {
+        allow read: if isAdmin() || isTeacher(appId) || (
+          hasStudentAccess(appId)
+          && resource.data.studentEmail is string
+          && resource.data.studentEmail == authEmail()
+        );
+        allow write: if isAdmin() || isTeacher(appId);
+      }
+    }
+
+    match /{document=**}/recurringClasses/{classId} {
+      allow get: if isAdmin() || isTeacher('default-app-id') || (
+        hasStudentAccess('default-app-id')
+        && 'studentIds' in resource.data
+        && resource.data.studentIds is list
+        && ownStudentId('default-app-id') in resource.data.studentIds
+      );
+      allow list: if isAdmin() || isTeacher('default-app-id');
+    }
+
+    match /{document=**}/tickets/{ticketId} {
+      allow read: if isAdmin() || isTeacher('default-app-id') || (
+        hasStudentAccess('default-app-id')
+        && resource.data.studentEmail is string
+        && resource.data.studentEmail == authEmail()
+      );
+    }
+
+    match /{document=**}/records/{recordId} {
+      allow read: if isAdmin();
+    }
+
+    match /artifacts/{appId}/{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

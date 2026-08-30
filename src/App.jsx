@@ -3,8 +3,8 @@ import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, signOut, sendPasswordResetEmail } from 'firebase/auth';
+import { getFirestore, collection, query, where, limit, getDoc, getDocs, updateDoc, setDoc, doc } from 'firebase/firestore';
 
 // --- MÓDULOS ---
 import TeacherPortal from './components/TeacherPortal.jsx';
@@ -48,6 +48,7 @@ const getFutureAccessBlockMessage = (classStartDate) => (
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [accessRole, setAccessRole] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false); 
@@ -61,10 +62,89 @@ export default function App() {
   const [viewMode, setViewMode] = useState('admin'); // 'admin' o 'teacher'
 
   useEffect(() => {
-    return onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
+    let disposed = false;
+
+    const unsubscribe = onAuthStateChanged(auth, async (authenticatedUser) => {
+      if (disposed) return;
+      setUser(authenticatedUser);
+      setAccessRole(null);
+
+      if (!authenticatedUser) {
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      const authenticatedEmail = String(authenticatedUser.email || '').trim().toLowerCase();
+
+      try {
+        if (authenticatedEmail === ADMIN_EMAIL) {
+          if (!disposed) setAccessRole('admin');
+          return;
+        }
+
+        if (authenticatedEmail.endsWith('@escuelalosmitos.com')) {
+          const staffSnapshot = await getDoc(
+            doc(db, 'artifacts', appId, 'staffAccess', authenticatedEmail)
+          );
+          const staffData = staffSnapshot.exists() ? staffSnapshot.data() : {};
+          const isAuthorizedTeacher = staffData.role === 'teacher'
+            && String(staffData.email || '').trim().toLowerCase() === authenticatedEmail;
+          if (!disposed) setAccessRole(isAuthorizedTeacher ? 'teacher' : 'denied');
+          return;
+        }
+
+        const studentQuery = query(
+          collection(db, 'artifacts', appId, 'students'),
+          where('email', '==', authenticatedEmail),
+          limit(1)
+        );
+        const studentSnapshot = await getDocs(studentQuery);
+        if (disposed) return;
+
+        if (studentSnapshot.empty) {
+          setAccessRole('denied');
+          return;
+        }
+
+        const studentDocument = studentSnapshot.docs[0];
+        const studentData = studentDocument.data();
+        const classStartDate = String(studentData.classStartDate || '').trim();
+        if (classStartDate && classStartDate > getTodayLocalString()) {
+          setAuthError(getFutureAccessBlockMessage(classStartDate));
+          await signOut(auth);
+          return;
+        }
+
+        const nowIso = new Date().toISOString();
+        await updateDoc(doc(db, 'artifacts', appId, 'students', studentDocument.id), {
+          claimed: true,
+          authUid: authenticatedUser.uid
+        });
+        await setDoc(doc(db, 'artifacts', appId, 'access', authenticatedUser.uid), {
+          role: 'student',
+          studentId: studentDocument.id,
+          email: authenticatedEmail,
+          updatedAt: nowIso,
+          ...(studentData.authUid ? {} : { createdAt: nowIso })
+        }, { merge: true });
+
+        if (!disposed) setAccessRole('student');
+      } catch (error) {
+        console.error('No se pudo resolver el acceso del usuario:', error);
+        if (!disposed) {
+          setAuthError('No se ha podido verificar tu acceso. Reintenta en unos instantes.');
+          setAccessRole('denied');
+        }
+      } finally {
+        if (!disposed) setLoading(false);
+      }
     });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
   }, []);
 
   const handleAuth = async (e) => {
@@ -75,59 +155,25 @@ export default function App() {
 
     try {
       if (isLoginMode) {
-        // --- MODO LOGIN NORMAL ---
         await signInWithEmailAndPassword(auth, cleanEmail, password);
-
-        // AUTOCURACIÓN: Si es un alumno y su cuenta sigue constando como "no activada" en el CRM, la marcamos como activada silenciosamente.
-        // Si tiene fecha futura de inicio, bloqueamos el acceso hasta ese día.
-        if (cleanEmail !== ADMIN_EMAIL && !cleanEmail.endsWith('@escuelalosmitos.com')) {
-          const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            const studentDoc = snap.docs[0];
-            const studentData = studentDoc.data();
-            const classStartDate = String(studentData.classStartDate || '').trim();
-            if (classStartDate && classStartDate > getTodayLocalString()) {
-              await signOut(auth);
-              setAuthError(getFutureAccessBlockMessage(classStartDate));
-              return;
-            }
-            if (studentData.claimed !== true) {
-              await updateDoc(doc(db, 'artifacts', appId, 'students', studentDoc.id), { 
-                claimed: true 
-              });
-            }
-          }
-        }
-
       } else {
-        // --- MODO REGISTRO REAL (ACTIVAR CUENTA) ---
-        const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", cleanEmail));
-        const snapshot = await getDocs(q);
-
-        if (snapshot.empty && cleanEmail !== ADMIN_EMAIL) {
-          setAuthError("Acceso denegado: Este email no consta en la base de datos de alumnos activos.");
+        if (cleanEmail === ADMIN_EMAIL || cleanEmail.endsWith('@escuelalosmitos.com')) {
+          setAuthError('Las cuentas del equipo se crean desde Administración. Usa “Inicia sesión”.');
           return;
         }
 
-        if (!snapshot.empty) {
-          const studentData = snapshot.docs[0].data();
-          const classStartDate = String(studentData.classStartDate || '').trim();
-          if (classStartDate && classStartDate > getTodayLocalString()) {
-            setAuthError(getFutureAccessBlockMessage(classStartDate));
-            return;
-          }
-        }
+        const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+        const studentQuery = query(
+          collection(db, 'artifacts', appId, 'students'),
+          where('email', '==', cleanEmail),
+          limit(1)
+        );
+        const studentSnapshot = await getDocs(studentQuery);
 
-        // 1. Creamos la cuenta y contraseña en Firebase Auth
-        await createUserWithEmailAndPassword(auth, cleanEmail, password);
-
-        // 2. Marcamos la ficha del alumno como "Activada" (claimed: true) en la base de datos
-        if (!snapshot.empty) {
-          const studentDoc = snapshot.docs[0];
-          await updateDoc(doc(db, 'artifacts', appId, 'students', studentDoc.id), { 
-            claimed: true 
-          });
+        if (studentSnapshot.empty) {
+          await deleteUser(credential.user);
+          setAuthError('Acceso denegado: este correo no consta en la base de datos de alumnos.');
+          return;
         }
       }
     } catch (err) {
@@ -167,7 +213,21 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = async () => {
+    setLoading(true);
+    setAccessRole(null);
+    setViewMode('admin');
+    setPassword('');
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('No se pudo cerrar la sesión:', error);
+      setAuthError('No se ha podido cerrar la sesión. Reintenta.');
+    } finally {
+      setUser(null);
+      setLoading(false);
+    }
+  };
 
   if (loading) return (
     <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
@@ -266,9 +326,20 @@ export default function App() {
     );
   }
 
-  // --- RUTEO INTELIGENTE POR DOMINIO CORPORATIVO ---
-  const isPaco = user.email === ADMIN_EMAIL;
-  const isTeacher = user.email.toLowerCase().endsWith('@escuelalosmitos.com');
+  if (accessRole === 'denied') {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center p-4">
+        <div className="bg-white border border-zinc-200 rounded-3xl shadow-xl p-8 max-w-md w-full text-center">
+          <h1 className="text-2xl font-black uppercase tracking-tight mb-3">Acceso denegado</h1>
+          <p className="text-zinc-500 font-medium mb-6">Este correo no tiene un perfil autorizado en la escuela.</p>
+          <button onClick={handleLogout} className="w-full bg-black text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs">Cerrar sesión</button>
+        </div>
+      </div>
+    );
+  }
+
+  const isPaco = accessRole === 'admin';
+  const isTeacher = accessRole === 'teacher' || accessRole === 'admin';
 
   if (isPaco && viewMode === 'admin') {
     return (

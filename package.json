@@ -7,23 +7,31 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:static": "node --test tests/security-static.test.mjs",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-escuela-seguridad \"node --test --test-concurrency=1 tests/firestore-rules.test.mjs\"",
+    "test:security": "npm run test:static && npm run test:rules"
   },
   "dependencies": {
-    "firebase": "^12.12.1",
+    "firebase": "^12.18.0",
     "lucide-react": "^1.14.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^10.2.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "firebase-tools": "^15.28.2",
     "globals": "^17.5.0",
     "vite": "^8.0.10"
+  },
+  "overrides": {
+    "protobufjs": "7.6.6"
   }
 }

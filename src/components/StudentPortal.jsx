@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
-import { collection, query, where, getDocs, getDoc, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -845,11 +845,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return !(endDate && endDate < dateStr);
   };
 
-  const getCommittedSeatCountForClass = (clase = {}, dateStr = todayStr) => (
-    (clase.students || []).filter(studentEntry =>
+  const getCommittedSeatCountForClass = (clase = {}, dateStr = todayStr) => {
+    if (Number.isFinite(Number(clase.committedSeatCount))) return Number(clase.committedSeatCount);
+    return (clase.students || []).filter(studentEntry =>
       isFixedClassStudent(studentEntry) && isStudentEntryCommittedOnDate(studentEntry, {}, dateStr)
-    ).length
-  );
+    ).length;
+  };
 
   const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
     const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
@@ -1695,24 +1696,14 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const period = getTeacherEvaluationPeriod(todayStr);
     const classId = String(clase.id || '').trim();
-    const deterministicEvaluationId = buildTeacherEvaluationId({
-      studentId: profile.id,
-      classId: classId || 'clase',
-      period
-    });
-
-    const deterministicRef = doc(db, 'artifacts', appId, 'teacherEvaluations', deterministicEvaluationId);
-    const deterministicSnap = await getDoc(deterministicRef);
-    if (deterministicSnap.exists()) {
-      return { id: deterministicSnap.id, ...deterministicSnap.data() };
-    }
 
     // Compatibilidad con evaluaciones guardadas antes de imponer el límite trimestral.
-    // Así una evaluación antigua con ID temporal también bloquea repetir en el mismo trimestre.
+    // La consulta incluye también el ID determinista actual y evita leer documentos
+    // de evaluaciones pertenecientes a otros alumnos.
     if (classId) {
       const existingQuery = query(
         collection(db, 'artifacts', appId, 'teacherEvaluations'),
-        where('studentId', '==', profile.id),
+        where('studentEmail', '==', String(user.email || profile.email || '').trim().toLowerCase()),
         where('classId', '==', classId),
         where('period', '==', period)
       );
@@ -1807,7 +1798,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       await setDoc(doc(db, 'artifacts', appId, 'teacherEvaluations', evaluationId), {
         studentId: profile.id,
         studentName: profile.name || '',
-        studentEmail: profile.email || user.email || '',
+        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         teacherName: teacherEvaluationClass.teacher || '',
         classId: teacherEvaluationClass.id || '',
         classRefPath: teacherEvaluationClass.refPath || '',
@@ -2093,14 +2084,18 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setSettingsLoaded(false);
     setSettingsLoadError('');
 
-    const unsubAnnouncements = onSnapshot(collection(db, 'artifacts', appId, 'announcements'), (snapshot) => {
-      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const studentAnnouncementsQuery = query(
+      collection(db, 'artifacts', appId, 'announcements'),
+      where('audienceType', 'in', ['all', 'sede', 'instrumento', 'profesor'])
+    );
+    const unsubAnnouncements = onSnapshot(studentAnnouncementsQuery, (snapshot) => {
+      const data = snapshot.docs.map(announcementDoc => ({ id: announcementDoc.id, ...announcementDoc.data() }));
       data.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
       setAnnouncements(data);
     });
 
     const unsubSettings = onSnapshot(
-      doc(db, 'artifacts', appId, 'settings', 'global'),
+      doc(db, 'artifacts', appId, 'roleData', 'studentSettings'),
       (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
@@ -2172,7 +2167,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   }, [globalSettings, effectiveMyClasses, temporaryClassChanges, profile, todayStr, centers]);
 
   useEffect(() => {
-    if (!profile?.id || !settingsLoaded) return;
+    if (!profile?.id || !settingsLoaded || !isStudentClassIndexReady || !classCatalogLoaded) return;
     setClassesLoaded(false);
     setClassesLoadError('');
     setWorkshopsLoaded(false);
@@ -2191,10 +2186,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
       }
     );
 
-    const extractClassesSnapshot = (snapshot) => {
+    const publishClassDocuments = (classDocuments) => {
       const all = [];
       const mine = [];
-      snapshot.forEach(classDoc => {
+      classDocuments.forEach(classDoc => {
         const data = classDoc.data();
         const classObj = {
           ...data,
@@ -2208,15 +2203,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
           mine.push(classObj); 
         }
       });
-      return { all, mine };
-    };
-
-    const publishClassesSnapshot = (snapshot, { publishCatalog = false } = {}) => {
-      const { all, mine } = extractClassesSnapshot(snapshot);
-      if (publishCatalog) {
-        setClassCatalog(all);
-        setClassCatalogLoaded(true);
-      }
       setMyClasses(mine);
       setClassesLoadError('');
       setClassesLoaded(true);
@@ -2224,10 +2210,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
 
     let cancelled = false;
-    let legacyVerificationStarted = false;
-    let legacySubscribed = false;
-    let unsubIndexedClasses = () => {};
-    let unsubLegacyClasses = () => {};
+    let unsubClassDocuments = () => {};
 
     const failClassesLoad = (error) => {
       if (cancelled) return;
@@ -2237,80 +2220,51 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setClassesLoaded(true);
     };
 
-    const subscribeLegacyClasses = ({ publishCatalog = false } = {}) => {
-      if (cancelled || legacySubscribed) return;
-      legacySubscribed = true;
-      unsubIndexedClasses();
-      unsubLegacyClasses = onSnapshot(collectionGroup(db, 'recurringClasses'), (snapshot) => {
-        if (cancelled) return;
-        publishClassesSnapshot(snapshot, { publishCatalog });
-      }, (legacyError) => {
-        console.error('Error al cargar las clases del alumno mediante compatibilidad', legacyError);
-        setMyClasses([]);
-        if (publishCatalog) {
-          setClassCatalog([]);
-          setClassCatalogLoaded(false);
-        }
-        failClassesLoad(legacyError);
-      });
-    };
+    const assignedClassIds = new Set((profile.classes || [])
+      .map(classValue => String(classValue?.id || classValue?.classId || classValue || '').trim())
+      .filter(Boolean));
+    const assignedClassPaths = [...new Set(classCatalog
+      .filter(classData => assignedClassIds.has(String(classData.id || classData.docId || '')))
+      .map(classData => String(classData.refPath || '').trim())
+      .filter(Boolean))];
 
-    const verifyLegacyClassesAfterEmptyIndex = async () => {
-      if (cancelled || legacyVerificationStarted || legacySubscribed) return;
-      legacyVerificationStarted = true;
-      try {
-        const legacySnapshot = await getDocs(collectionGroup(db, 'recurringClasses'));
-        if (cancelled || legacySubscribed) return;
-        const { mine } = extractClassesSnapshot(legacySnapshot);
-        if (mine.length > 0) {
-          // El índice ha omitido clases reales: el respaldo queda activo durante toda la sesión.
-          setMyClasses(mine);
-          setClassesLoadError('');
-          setClassesLoaded(true);
-          subscribeLegacyClasses({ publishCatalog: false });
-          return;
-        }
-
-        // Solo ahora podemos afirmar que el alumno no tiene ninguna clase en el sistema heredado.
-        setMyClasses([]);
-        setClassesLoadError('');
-        setClassesLoaded(true);
-      } catch (legacyError) {
-        failClassesLoad(legacyError);
-      } finally {
-        if (!legacySubscribed) legacyVerificationStarted = false;
-      }
-    };
-
-    if (isStudentClassIndexReady) {
-      const indexedClassesQuery = query(
-        collectionGroup(db, 'recurringClasses'),
-        where('studentIds', 'array-contains', profile.id)
-      );
-      unsubIndexedClasses = onSnapshot(indexedClassesQuery, (snapshot) => {
-        if (cancelled || legacySubscribed) return;
-        const { mine } = extractClassesSnapshot(snapshot);
-        if (snapshot.empty || mine.length === 0) {
-          verifyLegacyClassesAfterEmptyIndex();
-          return;
-        }
-        publishClassesSnapshot(snapshot);
-      }, (error) => {
-        console.error('La consulta studentIds no está disponible; se activa compatibilidad temporal', error);
-        subscribeLegacyClasses({ publishCatalog: false });
-      });
+    if (assignedClassIds.size === 0) {
+      setMyClasses([]);
+      setClassesLoadError('');
+      setClassesLoaded(true);
+    } else if (assignedClassPaths.length !== assignedClassIds.size) {
+      failClassesLoad(new Error('El catálogo privado no contiene todas las clases asignadas.'));
     } else {
-      subscribeLegacyClasses({ publishCatalog: true });
+      const classSnapshots = new Map();
+      const loadedPaths = new Set();
+      const subscriptions = assignedClassPaths.map(classPath => onSnapshot(
+        doc(db, classPath),
+        classSnapshot => {
+          if (cancelled) return;
+          loadedPaths.add(classPath);
+          if (classSnapshot.exists()) classSnapshots.set(classPath, classSnapshot);
+          else classSnapshots.delete(classPath);
+          if (loadedPaths.size !== assignedClassPaths.length) return;
+          if (classSnapshots.size !== assignedClassPaths.length) {
+            failClassesLoad(new Error('Alguna clase asignada ya no existe o no es accesible.'));
+            return;
+          }
+          publishClassDocuments([...classSnapshots.values()]);
+        },
+        failClassesLoad
+      ));
+      unsubClassDocuments = () => subscriptions.forEach(unsubscribe => unsubscribe());
     }
 
-    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentId', '==', profile.id));
+    const studentEmail = String(user.email || profile.email || '').trim().toLowerCase();
+    const q = query(collection(db, 'artifacts', appId, 'gestiones'), where('studentEmail', '==', studentEmail));
     const unsubGestiones = onSnapshot(q, (snapshot) => {
       setMyGestiones(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
 
     const temporaryRelocationsQuery = query(
       collection(db, 'artifacts', appId, 'temporaryRelocations'),
-      where('studentId', '==', profile.id)
+      where('studentEmail', '==', studentEmail)
     );
     const unsubTemporaryRelocations = onSnapshot(
       temporaryRelocationsQuery,
@@ -2320,7 +2274,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => failClassesLoad(error)
     );
 
-    const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentId', '==', profile.id));
+    const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentEmail', '==', studentEmail));
     const unsubMaintenancePeriods = onSnapshot(
       maintenanceQuery,
       (snapshot) => {
@@ -2343,7 +2297,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const workshopRegistrationsQuery = query(
       collection(db, 'artifacts', appId, 'workshopRegistrations'),
-      where('studentId', '==', profile.id)
+      where('studentEmail', '==', studentEmail)
     );
     const unsubWorkshopRegistrations = onSnapshot(
       workshopRegistrationsQuery,
@@ -2353,7 +2307,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const pollResponsesQuery = query(
       collection(db, 'artifacts', appId, 'pollResponses'),
-      where('studentId', '==', profile.id)
+      where('studentEmail', '==', studentEmail)
     );
     const unsubPollResponses = onSnapshot(
       pollResponsesQuery,
@@ -2363,7 +2317,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     const callResponsesQuery = query(
       collection(db, 'artifacts', appId, 'callResponses'),
-      where('studentId', '==', profile.id)
+      where('studentEmail', '==', studentEmail)
     );
     const unsubCallResponses = onSnapshot(
       callResponsesQuery,
@@ -2371,7 +2325,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => console.error('Error al cargar candidaturas de convocatorias', error)
     );
 
-    const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentId', '==', profile.id));
+    const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentEmail', '==', studentEmail));
     const processTicketsSnapshot = (snapshot, filterLegacyResults = false) => {
       let validTicketsCount = 0;
       let futureSummerTicketsCount = 0;
@@ -2406,16 +2360,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const subscribeLegacyTickets = (queryError) => {
       if (legacyTicketsStarted) return;
       legacyTicketsStarted = true;
-      console.error('La consulta optimizada de tickets falló; se activa compatibilidad temporal', queryError);
-      unsubFilteredTickets();
-      unsubLegacyTickets = onSnapshot(
-        collectionGroup(db, 'tickets'),
-        snapshot => processTicketsSnapshot(snapshot, true),
-        legacyError => {
-          console.error('No se pudieron comprobar los tickets del alumno', legacyError);
-          setNotification({ text: 'No se han podido comprobar tus tickets de recuperación. Reintenta recargando la página.', type: 'error' });
-        }
-      );
+      console.error('La consulta privada de tickets falló', queryError);
+      setNotification({ text: 'No se han podido comprobar tus tickets de recuperación. Reintenta recargando la página.', type: 'error' });
     };
     unsubFilteredTickets = onSnapshot(
       ticketsQuery,
@@ -2430,8 +2376,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return () => {
       cancelled = true;
       unsubProfile();
-      unsubIndexedClasses();
-      unsubLegacyClasses();
+      unsubClassDocuments();
       unsubGestiones();
       unsubTemporaryRelocations();
       unsubMaintenancePeriods();
@@ -2441,10 +2386,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubCallResponses();
       unsubTickets(); 
     };
-  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, classesRetryNonce, db, appId]);
+  }, [profile?.id, profile?.classes, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, classCatalog, classesRetryNonce, db, appId, user.email]);
 
-  // Una recolocación puede llevar al alumno a una clase que no forma parte de su plaza fija.
-  // Escuchamos solo esas clases destino, utilizando la ruta exacta guardada por Admin.
+  // Una recolocación puede llevar al alumno a una clase que no forma parte de su
+  // plaza fija. Se resuelve desde el catálogo privado sin leer la ficha completa
+  // de otra clase (que contiene datos de otros alumnos).
   useEffect(() => {
     if (!profile?.id || !isStudentClassIndexReady) {
       setRelocationTargetClasses([]);
@@ -2454,165 +2400,44 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const activeRelocations = temporaryRelocations.filter(relocation => (
       String(relocation.studentId || '') === String(profile.id) && isTemporaryRelocationActiveForDate(relocation, todayStr)
     ));
-    const targetPaths = [...new Set(activeRelocations.map(relocation => relocation.targetClassRefPath).filter(Boolean))];
-    const missingTargetIds = [...new Set(
-      activeRelocations
-        .filter(relocation => !relocation.targetClassRefPath)
-        .map(relocation => relocation.targetClassId)
-        .filter(Boolean)
-    )];
-
-    if (targetPaths.length === 0 && missingTargetIds.length === 0) {
+    const targetIds = [...new Set(activeRelocations.map(relocation => String(relocation.targetClassId || '')).filter(Boolean))];
+    if (targetIds.length === 0) {
       setRelocationTargetClasses([]);
       return;
     }
 
-    let cancelled = false;
-    const classesByReference = new Map();
-    const publish = () => {
-      if (!cancelled) setRelocationTargetClasses([...classesByReference.values()]);
-    };
-    const unsubs = targetPaths.map(refPath => onSnapshot(
-      doc(db, refPath),
-      (classSnap) => {
-        if (classSnap.exists()) {
-          const classData = classSnap.data();
-          classesByReference.set(refPath, {
-            ...classData,
-            id: classData.id || classSnap.id,
-            docId: classSnap.id,
-            refPath: classSnap.ref.path
-          });
-        } else {
-          classesByReference.delete(refPath);
-          setClassesLoadError('Una clase de recolocación temporal ya no existe. Se conservará visible la clase oficial hasta que Administración revise el destino.');
-          setClassesLoaded(true);
-        }
-        publish();
-      },
-      (error) => {
-        console.error('Error al cargar una clase de recolocación', error);
-        setClassesLoadError('No se ha podido comprobar una recolocación temporal. Reintenta antes de consultar tu horario.');
-        setClassesLoaded(true);
-      }
-    ));
-
-    // Compatibilidad excepcional con recolocaciones antiguas sin targetClassRefPath.
-    if (missingTargetIds.length > 0) {
-      getDocs(collectionGroup(db, 'recurringClasses')).then(snapshot => {
-        snapshot.forEach(classDoc => {
-          if (missingTargetIds.includes(classDoc.id)) {
-            const classData = classDoc.data();
-            classesByReference.set(classDoc.ref.path, {
-              ...classData,
-              id: classData.id || classDoc.id,
-              docId: classDoc.id,
-              refPath: classDoc.ref.path
-            });
-          }
-        });
-        publish();
-      }).catch(error => {
-        if (cancelled) return;
-        console.error('Error al recuperar una clase de recolocación antigua', error);
-        setClassesLoadError('No se ha podido comprobar una recolocación temporal antigua. Reintenta antes de consultar tu horario.');
-        setClassesLoaded(true);
-      });
-    }
-
-    return () => {
-      cancelled = true;
-      unsubs.forEach(unsub => unsub());
-    };
-  }, [profile?.id, isStudentClassIndexReady, temporaryRelocations, todayStr, classesRetryNonce, db]);
-
-  // Los cambios temporales ordinarios se limitan a las clases propias y de recolocación.
-  // Antes de que Admin active el índice, se conserva automáticamente el listener global heredado.
-  useEffect(() => {
-    if (!profile?.id || !settingsLoaded) return;
-
-    if (!isStudentClassIndexReady) {
-      const unsubLegacyChanges = onSnapshot(
-        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-        snapshot => setStudentTemporaryClassChanges(snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))),
-        error => {
-          console.error('Error al cargar los cambios temporales de clase', error);
-          setStudentTemporaryClassChanges([]);
-          setClassesLoadError('No se han podido comprobar los cambios temporales de tus clases. Reintenta antes de consultar tu horario.');
-          setClassesLoaded(true);
-        }
-      );
-      return () => unsubLegacyChanges();
-    }
-
-    const relevantClasses = [...myClasses, ...relocationTargetClasses];
-    const relevantClassIds = [...new Set(
-      relevantClasses.flatMap(classData => getClassIdentityIds(classData)).filter(Boolean)
-    )];
-    if (relevantClassIds.length === 0) {
-      setStudentTemporaryClassChanges([]);
+    if (!classCatalogLoaded) {
+      setRelocationTargetClasses([]);
       return;
     }
 
-    const chunks = [];
-    for (let index = 0; index < relevantClassIds.length; index += 10) {
-      chunks.push(relevantClassIds.slice(index, index + 10));
+    const classesById = new Map(classCatalog.map(classData => [String(classData.id || classData.docId || ''), classData]));
+    const resolvedClasses = targetIds.map(classId => classesById.get(classId)).filter(Boolean);
+    setRelocationTargetClasses(resolvedClasses);
+    if (resolvedClasses.length !== targetIds.length) {
+      setClassesLoadError('Una clase de recolocación temporal ya no existe. Se conservará visible la clase oficial hasta que Administración revise el destino.');
+      setClassesLoaded(true);
+    }
+  }, [profile?.id, isStudentClassIndexReady, temporaryRelocations, todayStr, classCatalog, classCatalogLoaded]);
+
+  // Los cambios temporales ordinarios se limitan a las clases propias y de recolocación.
+  useEffect(() => {
+    if (!profile?.id || !settingsLoaded) return;
+
+    if (!isStudentClassIndexReady || !classCatalogLoaded) {
+      setStudentTemporaryClassChanges([]);
+      return undefined;
     }
 
-    const snapshotsByChunk = new Map();
-    let fallbackUnsub = null;
-    let fallbackStarted = false;
-    const unsubs = [];
-    const publish = () => {
-      const byId = new Map();
-      snapshotsByChunk.forEach(items => items.forEach(item => byId.set(item.id, item)));
-      setStudentTemporaryClassChanges([...byId.values()]);
-    };
-    const startFallback = (error) => {
-      if (fallbackStarted) return;
-      fallbackStarted = true;
-      console.error('La consulta optimizada de cambios temporales falló; se aplica compatibilidad heredada', error);
-      unsubs.forEach(unsub => unsub());
-      fallbackUnsub = onSnapshot(
-        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-        snapshot => {
-          setStudentTemporaryClassChanges(snapshot.docs
-            .map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() }))
-            .filter(change => relevantClasses.some(classData => doesTemporaryChangeBelongToClass(change, classData))));
-        },
-        fallbackError => {
-          console.error('Error al cargar los cambios temporales de clase', fallbackError);
-          setStudentTemporaryClassChanges([]);
-          setClassesLoadError('No se han podido comprobar los cambios temporales de tus clases. Reintenta antes de consultar tu horario.');
-          setClassesLoaded(true);
-        }
-      );
-    };
+    const relevantClasses = [...myClasses, ...relocationTargetClasses];
+    setStudentTemporaryClassChanges(catalogTemporaryClassChanges.filter(change => (
+      relevantClasses.some(classData => doesTemporaryChangeBelongToClass(change, classData))
+    )));
+    return undefined;
+  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, myClasses, relocationTargetClasses, catalogTemporaryClassChanges]);
 
-    chunks.forEach((classIds, chunkIndex) => {
-      const changesQuery = query(
-        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-        where('classId', 'in', classIds)
-      );
-      const unsub = onSnapshot(
-        changesQuery,
-        snapshot => {
-          snapshotsByChunk.set(chunkIndex, snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() })));
-          publish();
-        },
-        startFallback
-      );
-      unsubs.push(unsub);
-    });
-
-    return () => {
-      unsubs.forEach(unsub => unsub());
-      if (fallbackUnsub) fallbackUnsub();
-    };
-  }, [profile?.id, settingsLoaded, isStudentClassIndexReady, myClasses, relocationTargetClasses, classesRetryNonce, db, appId]);
-
-  // El catálogo completo solo es necesario para buscar plazas o calcular disponibilidad Mitobox.
-  // Se abre en tiempo real mientras el modal correspondiente está visible y se libera al cerrarlo.
+  // Catálogo privado sin nombres, correos ni notas de otros alumnos. También se
+  // usa para resolver recolocaciones sin abrir fichas completas de otras clases.
   useEffect(() => {
     if (!settingsLoaded) return;
     if (!isStudentClassIndexReady) {
@@ -2620,75 +2445,32 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setClassCatalogError('');
       return;
     }
-    if (!needsFullClassCatalog) {
-      setClassCatalogLoading(false);
-      setClassCatalogLoaded(false);
-      setClassCatalogError('');
-      setClassCatalog([]);
-      setCatalogTemporaryClassChanges([]);
-      return;
-    }
 
     setClassCatalogLoading(true);
     setClassCatalogLoaded(false);
     setClassCatalogError('');
-    let classesReady = false;
-    let changesReady = false;
-    const finishIfReady = () => {
-      if (classesReady && changesReady) {
+    return onSnapshot(
+      doc(db, 'artifacts', appId, 'roleData', 'studentClassCatalog'),
+      snapshot => {
+        const data = snapshot.exists() ? snapshot.data() : {};
+        setClassCatalog(Array.isArray(data.classes) ? data.classes : []);
+        setCatalogTemporaryClassChanges(Array.isArray(data.temporaryClassChanges) ? data.temporaryClassChanges : []);
         setClassCatalogLoading(false);
-        setClassCatalogLoaded(true);
-      }
-    };
-
-    const unsubClassCatalog = onSnapshot(
-      collectionGroup(db, 'recurringClasses'),
-      snapshot => {
-        setClassCatalog(snapshot.docs.map(classDoc => {
-          const classData = classDoc.data();
-          return {
-            ...classData,
-            id: classData.id || classDoc.id,
-            docId: classDoc.id,
-            refPath: classDoc.ref.path
-          };
-        }));
-        classesReady = true;
-        finishIfReady();
+        setClassCatalogLoaded(snapshot.exists());
+        if (!snapshot.exists()) setClassCatalogError('Administración todavía no ha publicado el catálogo privado de clases.');
       },
       error => {
-        console.error('Error al cargar el catálogo de clases', error);
+        console.error('Error al cargar el catálogo privado de clases', error);
         setClassCatalog([]);
-        setSelectedNewClass(null);
-        setMboxSelectedSlot(null);
-        setClassCatalogError('No se ha podido consultar la disponibilidad. Reintenta antes de elegir una plaza o una sala.');
-        classesReady = true;
-        finishIfReady();
-      }
-    );
-    const unsubCatalogChanges = onSnapshot(
-      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-      snapshot => {
-        setCatalogTemporaryClassChanges(snapshot.docs.map(changeDoc => ({ id: changeDoc.id, ...changeDoc.data() })));
-        changesReady = true;
-        finishIfReady();
-      },
-      error => {
-        console.error('Error al cargar los cambios temporales del catálogo', error);
         setCatalogTemporaryClassChanges([]);
         setSelectedNewClass(null);
         setMboxSelectedSlot(null);
-        setClassCatalogError('No se ha podido comprobar la disponibilidad completa. Reintenta antes de elegir una plaza o una sala.');
-        changesReady = true;
-        finishIfReady();
+        setClassCatalogLoading(false);
+        setClassCatalogLoaded(false);
+        setClassCatalogError('No se ha podido consultar la disponibilidad. Reintenta antes de elegir una plaza o una sala.');
       }
     );
-
-    return () => {
-      unsubClassCatalog();
-      unsubCatalogChanges();
-    };
-  }, [settingsLoaded, isStudentClassIndexReady, needsFullClassCatalog, classCatalogRetryNonce, db, appId]);
+  }, [settingsLoaded, isStudentClassIndexReady, classCatalogRetryNonce, db, appId]);
 
   useEffect(() => {
     let timer;
@@ -2795,7 +2577,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
           pollId: poll.id,
           studentId: profile.id,
           studentName: profile.useAlias && profile.alias ? profile.alias : (profile.name || ''),
-          studentEmail: profile.email || user.email || '',
+          studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
           answerType: currentPoll.pollAnswerType || 'single',
           selectedOptionIds: currentPoll.pollAnswerType === 'text' ? [] : selectedOptionIds,
           textAnswer: currentPoll.pollAnswerType === 'text' ? textAnswer : '',
@@ -2898,7 +2680,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
           callTitle: currentCall.title || call.title || '',
           studentId: profile.id,
           studentName: profile.useAlias && profile.alias ? profile.alias : (profile.name || ''),
-          studentEmail: profile.email || user.email || '',
+          studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
           instrument: studentContext.instrument,
           site: studentContext.site,
           teacher: studentContext.teacher,
@@ -3050,7 +2832,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
           workshopTitle: workshopData.title || currentWorkshop.title,
           studentId: profile.id,
           studentName: profile.name || '',
-          studentEmail: profile.email || user.email || '',
+          studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
           status,
           answers,
           price: Number(workshopData.price || 0),
@@ -3269,11 +3051,12 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
         studentName: profile.name,
-        studentEmail: profile.email,
+        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         type: 'aviso_ausencia',
         title: `Falta a clase: ${absenceModal.clase.subject}`,
         details: `El alumno no asistirá el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
-        requestedClass: absenceModal.clase.id, 
+        requestedClass: absenceModal.clase.id,
+        requestedTeacher: absenceModal.clase.teacher || '',
         status: 'pendiente',
         date: new Date().toISOString()
       });
@@ -3356,7 +3139,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       const payload = {
         studentId: profile.id,
         studentName: profile.name,
-        studentEmail: profile.email,
+        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         sourceClassId: resolvedSourceClass ? resolvedSourceClass.id : null,
         sourceClass: resolvedSourceClass ? resolvedSourceClass.id : null,
         sourceClassLine: resolvedSourceClass ? formatClassLineForAdminCopy(resolvedSourceClass) : '',
@@ -3473,7 +3256,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       const payload = {
         studentId: profile.id,
         studentName: profile.name,
-        studentEmail: profile.email,
+        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         type: serviceConfig.type,
         title: serviceConfig.title,
         details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente y que después se aplique la cuota mensual de ${serviceConfig.monthlyFee}€. Administración debe activar el acceso manualmente y preparar la domiciliación en Tadosi.`,
@@ -3528,7 +3311,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
         studentName: profile.name,
-        studentEmail: profile.email,
+        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         type: 'reserva_mitobox',
         title: 'Reserva de Sala (Mitobox)',
         details: `Reserva para ensayar: ${mboxInst}. Fecha: ${formatDateSpanish(mboxDate)}. Sede: ${selectedCenterName}. Hora: ${mboxSelectedSlot.time}h en ${selectedRoomName}`,
@@ -3992,16 +3775,18 @@ END:VCALENDAR`;
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
         
-        const activeStudents = (c.students || []).filter(s => {
-          if (!isStudentEntryActiveOnDate(s, {}, todayStr)) return false;
-          return !isStudentInMaintenanceForDate(getStudentEntryId(s), todayStr);
-        }).length;
+        const activeStudents = Number.isFinite(Number(c.activeStudentCount))
+          ? Number(c.activeStudentCount)
+          : (c.students || []).filter(s => {
+              if (!isStudentEntryActiveOnDate(s, {}, todayStr)) return false;
+              return !isStudentInMaintenanceForDate(getStudentEntryId(s), todayStr);
+            }).length;
         if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
         const currentStudents = getCommittedSeatCountForClass(c, todayStr);
         if (currentStudents >= maxCap) return false;
-        if (getStudentEntryInClass(c, profile.id)) return false;
+        if (myClasses.some(ownClass => getClassDocumentId(ownClass) === getClassDocumentId(c))) return false;
         
         if (isTicketRedemption && targetInstrument === 'Guitarra') {
           if (maxCap !== 8) return false; 
@@ -4405,6 +4190,7 @@ END:VCALENDAR`;
 
       const aliveClasses = allScheduledClasses.filter(c => {
         if (c.cancelledDates?.includes(mboxDate)) return false; 
+        if (Number.isFinite(Number(c.activeStudentCount))) return Number(c.activeStudentCount) > 0;
         const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
         const activeStudents = (c.students || []).filter(s => {
           const entryStudentId = getStudentEntryId(s);

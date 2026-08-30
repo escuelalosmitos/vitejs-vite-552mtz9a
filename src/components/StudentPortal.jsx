@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
-import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -17,6 +17,13 @@ const ticketMatchesSubject = (ticket = {}, subject = '') => (
   isFlexibleRecoveryTicket(ticket)
   || normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es') === normalizeTicketSubject(subject).toLocaleLowerCase('es')
 );
+
+const normalizeTeacherKey = (name = '') => String(name || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .trim()
+  .toLocaleLowerCase('es-ES')
+  .replace(/[^a-z0-9]+/g, '-');
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
 
@@ -3093,6 +3100,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         details: `El alumno no asistirá el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
         requestedClass: absenceModal.clase.id,
         requestedTeacher: absenceModal.clase.teacher || '',
+        teacherKeys: [normalizeTeacherKey(absenceModal.clase.teacher)],
         status: 'pendiente',
         date: new Date().toISOString()
       });
@@ -3216,6 +3224,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
         requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
         requestedTeacher: selectedNewClass?.teacher || '',
+        teacherKeys: uniqueStrings([
+          normalizeTeacherKey(resolvedSourceClass?.teacher),
+          normalizeTeacherKey(selectedNewClass?.teacher)
+        ]),
         requestedSede: selectedNewClass ? getClassCenterName(selectedNewClass) : '',
         requestedSala: selectedNewClass ? getClassRoomName(selectedNewClass) : '',
         requestedCenterId: selectedNewClass ? (getClassCenter(selectedNewClass)?.id || selectedNewClass.centerId || '') : '',
@@ -3237,7 +3249,16 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         date: new Date().toISOString()
       };
 
-      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
+      const gestionBatch = writeBatch(db);
+      gestionBatch.set(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
+      if (isTicketRedemption && selectedRecoveryTicket?.refPath && selectedNewClass?.teacher) {
+        gestionBatch.update(doc(db, selectedRecoveryTicket.refPath), {
+          recoveryTeacherKeys: arrayUnion(normalizeTeacherKey(selectedNewClass.teacher)),
+          recoveryGestionIds: arrayUnion(gestionId),
+          recoveryAuthorizedAt: new Date().toISOString()
+        });
+      }
+      await gestionBatch.commit();
       if (ADMIN_COPY_GESTION_TYPES.has(payload.type)) {
         const sent = await sendAdminGestionCopy({ gestionId, payload, selectedClass: selectedNewClass, phase: 'recibida', status: 'pendiente' });
         if (sent) {

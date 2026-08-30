@@ -143,6 +143,12 @@ const uniqueStrings = (values = []) => [...new Set((values || [])
   .map(value => String(value || '').trim())
   .filter(Boolean))];
 
+const sameStringSet = (left = [], right = []) => {
+  const a = uniqueStrings(left).sort();
+  const b = uniqueStrings(right).sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+};
+
 const getClassStudentIds = (classStudents = []) => uniqueStrings((classStudents || [])
   .map(studentEntry => studentEntry?.id || studentEntry?.studentId));
 
@@ -1251,6 +1257,10 @@ const TemporaryRelocationModalOverlay = ({
       targetClassRefPath: targetClass.refPath || '',
       targetClassLine: formatClassLine(targetClass),
       targetTeacher: targetClass.teacher || '',
+      teacherKeys: uniqueStrings([
+        normalizeTeacherKey(sourceClass.teacher),
+        normalizeTeacherKey(targetClass.teacher)
+      ]),
       from: fromDate,
       until: untilDate,
       status: 'active',
@@ -4147,12 +4157,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const officialName = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
         const email = getTeacherEmail(officialName);
         if (!email) return;
+        const classOwnerIds = uniqueStrings(recurringClassesOnly
+          .filter(clase => isSameTeacher(clase.teacher, officialName))
+          .map(clase => {
+            const parts = String(clase.refPath || '').split('/');
+            const usersIndex = parts.indexOf('users');
+            return usersIndex >= 0 ? parts[usersIndex + 1] : '';
+          }));
         byEmail.set(email, {
           role: 'teacher',
           email,
           teacherName: officialName,
           teacherNameLower: String(officialName || '').trim().toLocaleLowerCase('es-ES'),
-          teacherKey: normalizeTeacherKey(officialName)
+          teacherKey: normalizeTeacherKey(officialName),
+          classOwnerIds
         });
       });
     return [...byEmail.values()].sort((left, right) => left.email.localeCompare(right.email, 'es'));
@@ -4182,7 +4200,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         teacherAccessPublication.forEach(item => {
           batch.set(doc(staffCollection, item.email), {
             ...item,
-            schemaVersion: 1,
+            schemaVersion: 2,
             updatedAt: new Date().toISOString()
           });
         });
@@ -4197,6 +4215,179 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       window.clearTimeout(timer);
     };
   }, [settingsLoaded, classesLoaded, teacherAccessSignature, db, appId]);
+
+  // Publica relaciones operativas explícitas. Un profesor conserva sus datos
+  // propios, pero también recibe acceso cuando participa en una recuperación,
+  // una recolocación o un cambio temporal. Las sustituciones usan su colección
+  // compartida y, al asumirse, crean una clase puntual bajo el profesor sustituto.
+  const teacherSecurityAuthorization = useMemo(() => {
+    const classById = new Map(recurringClassesOnly.map(clase => [String(clase.id || ''), clase]));
+    const classByPath = new Map(recurringClassesOnly
+      .filter(clase => clase.refPath)
+      .map(clase => [String(clase.refPath), clase]));
+    const classKeys = new Map();
+
+    recurringClassesOnly.forEach(clase => {
+      const keys = [normalizeTeacherKey(clase.teacher)];
+      temporaryClassChanges
+        .filter(change => change.status !== 'cancelled' && normalizeTemporaryClassChangeDate(change.until) >= todayStr && (
+          String(change.classId || '') === String(clase.id || '')
+          || (change.classRefPath && change.classRefPath === clase.refPath)
+        ))
+        .forEach(change => keys.push(normalizeTeacherKey(change.teacher)));
+      classKeys.set(String(clase.id || clase.refPath || ''), uniqueStrings(keys));
+    });
+
+    const keysForClass = (classId = '', classPath = '') => {
+      const clase = classById.get(String(classId || '')) || classByPath.get(String(classPath || ''));
+      return clase ? (classKeys.get(String(clase.id || clase.refPath || '')) || []) : [];
+    };
+
+    const classAuthorizations = recurringClassesOnly
+      .filter(clase => clase.refPath)
+      .map(clase => ({
+        refPath: clase.refPath,
+        current: clase.authorizedTeacherKeys || [],
+        desired: classKeys.get(String(clase.id || clase.refPath || '')) || [normalizeTeacherKey(clase.teacher)]
+      }));
+
+    const relocationAuthorizations = temporaryRelocations.map(relocation => ({
+      id: relocation.id,
+      current: relocation.teacherKeys || [],
+      desired: uniqueStrings([
+        ...keysForClass(relocation.sourceClassId, relocation.sourceClassRefPath),
+        ...keysForClass(relocation.targetClassId, relocation.targetClassRefPath),
+        normalizeTeacherKey(relocation.sourceTeacher),
+        normalizeTeacherKey(relocation.targetTeacher)
+      ])
+    }));
+
+    const changeAuthorizations = temporaryClassChanges.map(change => {
+      const clase = classById.get(String(change.classId || '')) || classByPath.get(String(change.classRefPath || ''));
+      return {
+        id: change.id,
+        current: change.teacherKeys || [],
+        desired: uniqueStrings([
+          normalizeTeacherKey(change.officialSchedule?.teacher || clase?.teacher),
+          normalizeTeacherKey(change.teacher)
+        ]),
+        currentRefPath: change.classRefPath || '',
+        desiredRefPath: change.classRefPath || clase?.refPath || ''
+      };
+    });
+
+    const gestionAuthorizations = gestiones.map(gestion => ({
+      id: gestion.id,
+      current: gestion.teacherKeys || [],
+      desired: uniqueStrings([
+        ...keysForClass(gestion.sourceClassId || gestion.sourceClass, gestion.sourceClassRefPath),
+        ...keysForClass(gestion.requestedClass || gestion.targetClassId, gestion.requestedClassRefPath || gestion.targetClassRefPath),
+        normalizeTeacherKey(gestion.sourceTeacher),
+        normalizeTeacherKey(gestion.requestedTeacher),
+        normalizeTeacherKey(gestion.targetTeacher),
+        normalizeTeacherKey(gestion.teacherName),
+        normalizeTeacherKey(gestion.teacher)
+      ])
+    }));
+
+    const ticketAuthorizations = allTickets
+      .filter(ticket => ticket.refPath)
+      .map(ticket => {
+        const studentClasses = recurringClassesOnly.filter(clase => (
+          (clase.studentIds || []).map(String).includes(String(ticket.studentId || ''))
+          && (isFlexibleRecoveryTicket(ticket) || ticketMatchesSubject(ticket, clase.subject))
+        ));
+        const matchingGestiones = gestiones.filter(gestion => (
+          gestion.type === 'recuperacion'
+          && (
+            (gestion.ticketRefPath && gestion.ticketRefPath === ticket.refPath)
+            || (gestion.ticketId && String(gestion.ticketId) === String(ticket.id))
+          )
+        ));
+        return {
+          refPath: ticket.refPath,
+          currentTeacherKeys: ticket.teacherKeys || [],
+          desiredTeacherKeys: uniqueStrings(studentClasses.map(clase => normalizeTeacherKey(clase.teacher))),
+          currentRecoveryTeacherKeys: ticket.recoveryTeacherKeys || [],
+          desiredRecoveryTeacherKeys: uniqueStrings(matchingGestiones.flatMap(gestion => [
+            normalizeTeacherKey(gestion.requestedTeacher),
+            ...(gestion.teacherKeys || [])
+          ]))
+        };
+      });
+
+    return {
+      classAuthorizations,
+      relocationAuthorizations,
+      changeAuthorizations,
+      gestionAuthorizations,
+      ticketAuthorizations
+    };
+  }, [recurringClassesOnly, temporaryClassChanges, temporaryRelocations, gestiones, allTickets, todayStr]);
+
+  useEffect(() => {
+    const requiredSources = ['gestiones', 'classes', 'tickets', 'temporaryRelocations', 'temporaryClassChanges'];
+    const hasRequiredSourceError = requiredSources.some(source => startupLoadErrors[source]);
+    if (loading || hasRequiredSourceError || !classesLoaded || !ticketsLoaded) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const operations = [];
+      teacherSecurityAuthorization.classAuthorizations.forEach(item => {
+        if (!sameStringSet(item.current, item.desired)) {
+          operations.push(batch => batch.update(doc(db, item.refPath), { authorizedTeacherKeys: item.desired }));
+        }
+      });
+      teacherSecurityAuthorization.relocationAuthorizations.forEach(item => {
+        if (item.id && !sameStringSet(item.current, item.desired)) {
+          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'temporaryRelocations', item.id), { teacherKeys: item.desired }));
+        }
+      });
+      teacherSecurityAuthorization.changeAuthorizations.forEach(item => {
+        const payload = {};
+        if (!sameStringSet(item.current, item.desired)) payload.teacherKeys = item.desired;
+        if (!item.currentRefPath && item.desiredRefPath) payload.classRefPath = item.desiredRefPath;
+        if (item.id && Object.keys(payload).length > 0) {
+          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'temporaryClassChanges', item.id), payload));
+        }
+      });
+      teacherSecurityAuthorization.gestionAuthorizations.forEach(item => {
+        if (item.id && !sameStringSet(item.current, item.desired)) {
+          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'gestiones', item.id), { teacherKeys: item.desired }));
+        }
+      });
+      teacherSecurityAuthorization.ticketAuthorizations.forEach(item => {
+        const payload = {};
+        if (!sameStringSet(item.currentTeacherKeys, item.desiredTeacherKeys)) payload.teacherKeys = item.desiredTeacherKeys;
+        if (!sameStringSet(item.currentRecoveryTeacherKeys, item.desiredRecoveryTeacherKeys)) payload.recoveryTeacherKeys = item.desiredRecoveryTeacherKeys;
+        if (Object.keys(payload).length > 0) operations.push(batch => batch.update(doc(db, item.refPath), payload));
+      });
+
+      const needsMigrationMarker = settings.teacherSecurityAuthorizationVersion !== 1;
+      if (operations.length === 0 && !needsMigrationMarker) return;
+
+      try {
+        for (let start = 0; start < operations.length; start += 350) {
+          if (cancelled) return;
+          const batch = writeBatch(db);
+          operations.slice(start, start + 350).forEach(operation => operation(batch));
+          await batch.commit();
+        }
+        if (!cancelled) {
+          await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
+            teacherSecurityAuthorizationVersion: 1,
+            teacherSecurityAuthorizationSyncedAt: new Date().toISOString()
+          }, { merge: true });
+        }
+      } catch (error) {
+        console.error('No se pudieron sincronizar las autorizaciones operativas de profesores:', error);
+      }
+    }, 2200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [loading, startupLoadErrors, classesLoaded, ticketsLoaded, teacherSecurityAuthorization, settings.teacherSecurityAuthorizationVersion, db, appId]);
 
   const formatClassLine = (clase) => {
     if (!clase) return '';
@@ -8225,6 +8416,7 @@ Coordinación Los Mitos.`
       ...temporaryClassData,
       ...temporaryLocation,
       teacher: cleanTeacher,
+      teacherKeys: [normalizeTeacherKey(cleanTeacher)],
       dayOfWeek: Number(temporaryClassData.dayOfWeek),
       duration: Number(temporaryClassData.duration) || 60
     };
@@ -8321,6 +8513,10 @@ Coordinación Los Mitos.`
       centerId: payload.centerId,
       roomId: payload.roomId,
       teacher: cleanTeacher,
+      teacherKeys: uniqueStrings([
+        normalizeTeacherKey(officialTeacher),
+        normalizeTeacherKey(cleanTeacher)
+      ]),
       duration: payload.duration,
       notes: payload.notes || '',
       status: 'scheduled',
@@ -8392,6 +8588,9 @@ Coordinación Los Mitos.`
 
     const { refPath, ...currentClassData } = editClassModal;
     const editedLocation = getLocationIdentity(editClassData.centerId || editClassData.sede, editClassData.roomId || editClassData.sala);
+    const activeTemporaryTeacherKeys = getClassTemporaryChanges(editClassModal)
+      .filter(change => change.status !== 'cancelled' && normalizeTemporaryClassChangeDate(change.until) >= todayStr)
+      .map(change => normalizeTeacherKey(change.teacher));
     const updatedClassData = {
       ...currentClassData,
       studentIds: getClassStudentIds(currentClassData.students || []),
@@ -8404,6 +8603,10 @@ Coordinación Los Mitos.`
       centerId: editedLocation.centerId,
       roomId: editedLocation.roomId,
       teacher: cleanTeacher,
+      authorizedTeacherKeys: uniqueStrings([
+        normalizeTeacherKey(cleanTeacher),
+        ...activeTemporaryTeacherKeys
+      ]),
       subject: editClassData.subject,
       capacity: editClassData.capacity,
       duration: Number(editClassData.duration) || 60,
@@ -8507,6 +8710,7 @@ Coordinación Los Mitos.`
         ...newClassData,
         ...newLocation,
         teacher: officialTeacherName,
+        authorizedTeacherKeys: [normalizeTeacherKey(officialTeacherName)],
         ...baseWebConfig,
         cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
         id: classId,

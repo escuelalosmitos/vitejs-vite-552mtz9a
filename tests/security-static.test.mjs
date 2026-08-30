@@ -98,15 +98,36 @@ test('Firestore indexa la consulta privada de tickets del alumno', async () => {
 test('Firestore indexa la consulta optimizada de tickets del profesor', async () => {
   const teacher = await read('src/components/TeacherPortal.jsx');
   const indexConfig = JSON.parse(await read('firestore.indexes.json'));
-  const ticketStudentIdOverride = indexConfig.fieldOverrides.find(field => (
-    field.collectionGroup === 'tickets' && field.fieldPath === 'studentId'
-  ));
+  const teacherKeyFields = ['teacherKeys', 'recoveryTeacherKeys'];
 
-  assert.match(teacher, /where\('studentId', 'in', studentIds\)/);
-  assert.ok(ticketStudentIdOverride);
-  assert.ok(ticketStudentIdOverride.indexes.some(index => (
-    index.order === 'ASCENDING' && index.queryScope === 'COLLECTION_GROUP'
-  )));
+  teacherKeyFields.forEach(fieldPath => {
+    assert.match(teacher, new RegExp(`where\\('${fieldPath}', 'array-contains', teacherKey\\)`));
+    const override = indexConfig.fieldOverrides.find(field => (
+      field.collectionGroup === 'tickets' && field.fieldPath === fieldPath
+    ));
+    assert.ok(override);
+    assert.ok(override.indexes.some(index => (
+      index.arrayConfig === 'CONTAINS' && index.queryScope === 'COLLECTION_GROUP'
+    )));
+  });
+});
+
+test('los accesos entre profesores exigen una relación operativa explícita', async () => {
+  const [rules, admin, teacher, student] = await Promise.all([
+    read('firestore.rules'),
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/TeacherPortal.jsx'),
+    read('src/components/StudentPortal.jsx')
+  ]);
+
+  assert.match(rules, /authorizedTeacherKeys/);
+  assert.match(rules, /recoveryTeacherKeys/);
+  assert.match(rules, /resource\.data\.originalTeacherUid != request\.auth\.uid/);
+  assert.match(admin, /teacherSecurityAuthorization/);
+  assert.match(admin, /teacherKeys: uniqueStrings/);
+  assert.match(teacher, /where\('authorizedTeacherKeys', 'array-contains', myTeacherKey\)/);
+  assert.match(teacher, /where\('teacherKeys', 'array-contains', myTeacherKey\)/);
+  assert.match(student, /recoveryTeacherKeys: arrayUnion/);
 });
 
 test('Firestore indexa la localización de clases por alumno', async () => {

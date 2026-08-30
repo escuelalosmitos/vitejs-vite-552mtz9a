@@ -49,6 +49,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [accessRole, setAccessRole] = useState(null);
+  const [staffProfile, setStaffProfile] = useState(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false); 
@@ -68,6 +69,7 @@ export default function App() {
       if (disposed) return;
       setUser(authenticatedUser);
       setAccessRole(null);
+      setStaffProfile(null);
 
       if (!authenticatedUser) {
         setLoading(false);
@@ -90,7 +92,10 @@ export default function App() {
           const staffData = staffSnapshot.exists() ? staffSnapshot.data() : {};
           const isAuthorizedTeacher = staffData.role === 'teacher'
             && String(staffData.email || '').trim().toLowerCase() === authenticatedEmail;
-          if (!disposed) setAccessRole(isAuthorizedTeacher ? 'teacher' : 'denied');
+          if (!disposed) {
+            setStaffProfile(isAuthorizedTeacher ? staffData : null);
+            setAccessRole(isAuthorizedTeacher ? 'teacher' : 'denied');
+          }
           return;
         }
 
@@ -216,6 +221,7 @@ export default function App() {
   const handleLogout = async () => {
     setLoading(true);
     setAccessRole(null);
+    setStaffProfile(null);
     setViewMode('admin');
     setPassword('');
     try {
@@ -363,6 +369,7 @@ export default function App() {
         appId={appId} 
         ADMIN_EMAIL={ADMIN_EMAIL}
         APPS_SCRIPT_URL={APPS_SCRIPT_URL}
+        staffProfile={staffProfile}
         switchToAdmin={() => setViewMode('admin')}
       />
     );

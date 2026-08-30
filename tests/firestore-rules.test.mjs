@@ -64,13 +64,15 @@ async function seed(testEnv) {
         role: 'teacher',
         email: TEACHER.email,
         teacherNameLower: 'norman',
-        teacherKey: 'norman'
+        teacherKey: 'norman',
+        classOwnerIds: [TEACHER.uid]
       }],
       [`${ROOT}/staffAccess/${OTHER_TEACHER.email}`, {
         role: 'teacher',
         email: OTHER_TEACHER.email,
         teacherNameLower: 'dago',
-        teacherKey: 'dago'
+        teacherKey: 'dago',
+        classOwnerIds: [OTHER_TEACHER.uid]
       }],
 
       [`${ROOT}/students/${STUDENT.id}`, {
@@ -117,17 +119,44 @@ async function seed(testEnv) {
       [`${ROOT}/gestiones/gestion-own`, {
         studentId: STUDENT.id,
         studentEmail: STUDENT.email,
+        teacherKeys: ['norman'],
         status: 'pendiente'
       }],
       [`${ROOT}/gestiones/gestion-other`, {
         studentId: OTHER_STUDENT.id,
         studentEmail: OTHER_STUDENT.email,
+        teacherKeys: ['dago'],
         status: 'pendiente'
       }],
-      [`${ROOT}/temporaryRelocations/relocation-own`, { studentId: STUDENT.id, studentEmail: STUDENT.email }],
-      [`${ROOT}/temporaryRelocations/relocation-other`, { studentId: OTHER_STUDENT.id, studentEmail: OTHER_STUDENT.email }],
+      [`${ROOT}/temporaryRelocations/relocation-own`, { studentId: STUDENT.id, studentEmail: STUDENT.email, teacherKeys: ['norman'] }],
+      [`${ROOT}/temporaryRelocations/relocation-other`, { studentId: OTHER_STUDENT.id, studentEmail: OTHER_STUDENT.email, teacherKeys: ['dago'] }],
+      [`${ROOT}/temporaryRelocations/relocation-shared`, { studentId: STUDENT.id, studentEmail: STUDENT.email, teacherKeys: ['dago', 'norman'] }],
       [`${ROOT}/maintenancePeriods/maintenance-own`, { studentId: STUDENT.id, studentEmail: STUDENT.email }],
-      [`${ROOT}/temporaryClassChanges/change-private`, { teacherName: 'Norman' }],
+      [`${ROOT}/temporaryClassChanges/change-private`, { teacherName: 'Norman', teacherKeys: ['norman'] }],
+      [`${ROOT}/temporaryClassChanges/change-other`, { teacherName: 'Dago', teacherKeys: ['dago'] }],
+      [`${ROOT}/temporaryClassChanges/change-shared`, { teacherName: 'Dago', teacherKeys: ['dago', 'norman'] }],
+
+      [`${ROOT}/substitutions/substitution-cross`, {
+        status: 'open',
+        originalTeacherUid: OTHER_TEACHER.uid,
+        originalTeacherName: 'Dago',
+        date: '2026-09-01',
+        subject: 'Guitarra'
+      }],
+      [`${ROOT}/substitutions/substitution-forged`, {
+        status: 'open',
+        originalTeacherUid: OTHER_TEACHER.uid,
+        originalTeacherName: 'Dago',
+        date: '2026-09-02',
+        subject: 'Batería'
+      }],
+      [`${ROOT}/substitutions/substitution-own`, {
+        status: 'open',
+        originalTeacherUid: TEACHER.uid,
+        originalTeacherName: 'Norman',
+        date: '2026-09-03',
+        subject: 'Piano'
+      }],
 
       [`${ROOT}/workshops/workshop-1`, {
         title: 'Taller',
@@ -208,26 +237,57 @@ async function seed(testEnv) {
 
       [`${ROOT}/users/${TEACHER.uid}`, { displayName: 'Norman' }],
       [`${ROOT}/users/${OTHER_TEACHER.uid}`, { displayName: 'Dago' }],
+      [`${ROOT}/users/${TEACHER.uid}/records/record-own`, { date: '2026-08-30' }],
+      [`${ROOT}/users/${OTHER_TEACHER.uid}/records/record-other`, { date: '2026-08-30' }],
+      [`${ROOT}/users/${TEACHER.uid}/dailyReports/report-own`, { date: '2026-08-30' }],
+      [`${ROOT}/users/${OTHER_TEACHER.uid}/dailyReports/report-other`, { date: '2026-08-30' }],
       [`${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`, {
+        teacher: 'Norman',
         teacherName: 'Norman',
+        authorizedTeacherKeys: ['norman'],
         studentIds: [STUDENT.id],
         students: [{ id: STUDENT.id, name: 'Alumna Uno' }],
         exceptions: []
       }],
       [`${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-other`, {
+        teacher: 'Dago',
         teacherName: 'Dago',
+        authorizedTeacherKeys: ['dago'],
         studentIds: [OTHER_STUDENT.id],
         students: [{ id: OTHER_STUDENT.id, name: 'Alumno Dos' }],
+        exceptions: []
+      }],
+      [`${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`, {
+        teacher: 'Dago',
+        teacherName: 'Dago',
+        authorizedTeacherKeys: ['dago', 'norman'],
+        studentIds: [STUDENT.id],
+        students: [{ id: STUDENT.id, name: 'Alumna Uno' }],
         exceptions: []
       }],
       [`${ROOT}/users/${TEACHER.uid}/tickets/ticket-own`, {
         studentId: STUDENT.id,
         studentEmail: STUDENT.email,
+        subject: 'Guitarra',
+        teacherKeys: ['norman'],
+        recoveryTeacherKeys: [],
         status: 'pending'
       }],
       [`${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`, {
         studentId: OTHER_STUDENT.id,
         studentEmail: OTHER_STUDENT.email,
+        subject: 'Batería',
+        teacherKeys: ['dago'],
+        recoveryTeacherKeys: [],
+        status: 'pending'
+      }],
+      [`${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-recovery-shared`, {
+        studentId: STUDENT.id,
+        studentEmail: STUDENT.email,
+        subject: 'Guitarra',
+        teacherKeys: ['dago'],
+        recoveryTeacherKeys: ['norman'],
+        isUsed: false,
         status: 'pending'
       }]
     ];
@@ -430,6 +490,26 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       )));
     });
 
+    await t.test('alumno: puede autorizar su ticket exacto para una recuperación, pero no consumirlo ni tocar tickets ajenos', async () => {
+      const db = authenticated(testEnv, STUDENT);
+      const ownTicket = doc(db, `${ROOT}/users/${TEACHER.uid}/tickets/ticket-own`);
+
+      await assertSucceeds(updateDoc(ownTicket, {
+        recoveryTeacherKeys: ['dago'],
+        recoveryGestionIds: ['recovery-own'],
+        recoveryAuthorizedAt: '2026-08-30T12:00:00.000Z'
+      }));
+      await assertFails(updateDoc(ownTicket, {
+        isUsed: true,
+        usedAt: '2026-08-30T12:05:00.000Z'
+      }));
+      await assertFails(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`), {
+        recoveryTeacherKeys: ['norman'],
+        recoveryGestionIds: ['forged'],
+        recoveryAuthorizedAt: '2026-08-30T12:00:00.000Z'
+      }));
+    });
+
     await t.test('alta de alumno: solo puede reclamar una ficha con su propio email', async () => {
       const identity = {
         uid: 'new-student-uid',
@@ -462,8 +542,50 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertSucceeds(getDoc(doc(db, `${ROOT}/staffAccess/${TEACHER.email}`)));
       await assertSucceeds(getDocs(collection(db, `${ROOT}/students`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/settings/global`)));
-      await assertSucceeds(getDocs(collectionGroup(db, 'recurringClasses')));
+      await assertFails(getDocs(collectionGroup(db, 'recurringClasses')));
+      await assertSucceeds(getDocs(query(
+        collectionGroup(db, 'recurringClasses'),
+        where('authorizedTeacherKeys', 'array-contains', 'norman')
+      )));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-other`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-private`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-other`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryClassChanges/change-shared`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/temporaryRelocations/relocation-shared`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/gestiones/gestion-own`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/gestiones/gestion-other`)));
+      await assertSucceeds(getDocs(query(
+        collection(db, `${ROOT}/gestiones`),
+        where('teacherKeys', 'array-contains', 'norman')
+      )));
+      await assertFails(getDocs(collection(db, `${ROOT}/gestiones`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/tickets/ticket-own`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`)));
+      await assertSucceeds(getDocs(query(
+        collectionGroup(db, 'tickets'),
+        where('teacherKeys', 'array-contains', 'norman')
+      )));
+      await assertSucceeds(getDocs(query(
+        collectionGroup(db, 'tickets'),
+        where('recoveryTeacherKeys', 'array-contains', 'norman')
+      )));
+      await assertFails(getDocs(collectionGroup(db, 'tickets')));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`)));
+      await assertSucceeds(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`), {
+        notes: 'Trabajo durante el cambio temporal'
+      }));
+      await assertFails(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`), {
+        capacity: 99
+      }));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-recovery-shared`)));
+      await assertSucceeds(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-recovery-shared`), {
+        isUsed: true,
+        usedAt: '2026-09-01T18:00:00.000Z',
+        usedOn: '2026-09-01',
+        usedInSubject: 'Guitarra',
+        usedInClassId: 'class-own'
+      }));
 
       await assertSucceeds(updateDoc(doc(db, `${ROOT}/students/${STUDENT.id}`), {
         internalNotes: 'Nota docente actualizada'
@@ -476,6 +598,54 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(setDoc(doc(db, `${ROOT}/staffAccess/intruso@escuelalosmitos.com`), {
         role: 'teacher',
         email: 'intruso@escuelalosmitos.com'
+      }));
+      await assertFails(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-other`), {
+        notes: 'Intento sobre otra lista'
+      }));
+      await assertFails(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`), {
+        isUsed: true,
+        usedAt: '2026-09-01T18:00:00.000Z',
+        usedOn: '2026-09-01',
+        usedInSubject: 'Batería',
+        usedInClassId: 'class-other'
+      }));
+      await assertSucceeds(updateDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`), {
+        notes: 'Nota de la clase propia'
+      }));
+    });
+
+    await t.test('profesor autorizado: comparte la bolsa de sustituciones sin poder alterar ofertas ajenas', async () => {
+      const db = authenticated(testEnv, TEACHER);
+
+      await assertSucceeds(getDocs(query(
+        collection(db, `${ROOT}/substitutions`),
+        where('status', '==', 'open')
+      )));
+      await assertSucceeds(getDocs(query(
+        collection(db, `${ROOT}/substitutions`),
+        where('originalTeacherUid', '==', TEACHER.uid)
+      )));
+      await assertFails(getDocs(collection(db, `${ROOT}/substitutions`)));
+      await assertSucceeds(updateDoc(doc(db, `${ROOT}/substitutions/substitution-cross`), {
+        status: 'assigned',
+        assumedAt: '2026-08-30T13:00:00.000Z',
+        assumedByUid: TEACHER.uid,
+        assumedByEmail: TEACHER.email,
+        assumedTeacherName: 'Norman',
+        assumedClassId: 'assumed-substitution-cross',
+        assumedClassRefPath: `${ROOT}/users/${TEACHER.uid}/recurringClasses/assumed-substitution-cross`
+      }));
+      await assertFails(updateDoc(doc(db, `${ROOT}/substitutions/substitution-forged`), {
+        subject: 'Contenido manipulado'
+      }));
+      await assertFails(updateDoc(doc(db, `${ROOT}/substitutions/substitution-own`), {
+        status: 'assigned',
+        assumedAt: '2026-08-30T13:00:00.000Z',
+        assumedByUid: TEACHER.uid,
+        assumedByEmail: TEACHER.email,
+        assumedTeacherName: 'Norman',
+        assumedClassId: 'assumed-own',
+        assumedClassRefPath: `${ROOT}/users/${TEACHER.uid}/recurringClasses/assumed-own`
       }));
     });
 
@@ -517,6 +687,11 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(setDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}`), {
         displayName: 'Intento de acceso'
       }));
+
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/records/record-own`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/records/record-other`)));
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/dailyReports/report-own`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/dailyReports/report-other`)));
     });
 
     await t.test('administrador: conserva acceso completo y publica disponibilidad', async () => {

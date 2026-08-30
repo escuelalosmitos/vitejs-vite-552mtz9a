@@ -681,7 +681,7 @@ const NotesModalComponent = ({ notesModal, onClose, globalStudents, db, appId, s
   );
 };
 
-export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL, switchToAdmin }) {
+export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMAIL, APPS_SCRIPT_URL, switchToAdmin, staffProfile = null }) {
   const [loadingData, setLoadingData] = useState(true);
   const [recurringClasses, setRecurringClasses] = useState([]);
   const [externalRecurringClasses, setExternalRecurringClasses] = useState([]);
@@ -808,6 +808,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   );
   
   const getTeacherName = () => {
+    if (staffProfile?.teacherName) return cleanTeacherDisplayName(staffProfile.teacherName);
+    if (isAdmin) return 'Paco';
     if (!user || !user.email) return 'Profesor';
     return cleanTeacherDisplayName(user.email.split('@')[0]);
   };
@@ -823,6 +825,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     setLoadingData(true);
     const myName = getTeacherName();
+    const myTeacherKey = normalizeTeacherKey(myName);
     const teacherEmail = String(user.email || '').trim().toLowerCase();
     const today = getTodayLocalString();
     const operationalLookbackDate = shiftLocalDateString(today, -3);
@@ -830,42 +833,43 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     // Las clases creadas desde Admin no siempre viven bajo el UID de Auth del
     // profesor. Históricamente también se han guardado bajo una clave derivada
     // de su correo (por ejemplo, profesor_escuelalosmitos_com). Escuchamos
-    // ambas rutas conocidas y solo usamos la consulta global heredada si las
-    // rutas directas no resuelven ninguna clase o alguna no puede consultarse.
+    // ambas rutas conocidas y las rutas privadas publicadas por Administración.
+    // Nunca abrimos una consulta global de clases de otros profesores.
     const teacherSchoolEmail = `${String(myName || '')
       .trim()
       .toLocaleLowerCase('es-ES')
       .replace(/\s+/g, '.')}@escuelalosmitos.com`;
     const recurringOwnerUids = [...new Set([
       user.uid,
+      ...(Array.isArray(staffProfile?.classOwnerIds) ? staffProfile.classOwnerIds : []),
       teacherEmail ? teacherEmail.replace(/[@.]/g, '_') : '',
       teacherSchoolEmail.replace(/[@.]/g, '_')
     ].filter(Boolean))];
     const recurringRefs = recurringOwnerUids.map(ownerUid => ({
       ownerUid,
-      ref: collection(db, 'artifacts', appId, 'users', ownerUid, 'recurringClasses')
+      ref: query(
+        collection(db, 'artifacts', appId, 'users', ownerUid, 'recurringClasses'),
+        where('authorizedTeacherKeys', 'array-contains', myTeacherKey)
+      )
     }));
     const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
     const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
-    const substitutionsRef = query(
-      collection(db, 'artifacts', appId, 'substitutions'),
-      where('date', '>=', today)
-    );
+    const substitutionsCollection = collection(db, 'artifacts', appId, 'substitutions');
+    const substitutionSources = isAdmin
+      ? [substitutionsCollection]
+      : [
+          query(substitutionsCollection, where('status', '==', 'open')),
+          query(substitutionsCollection, where('originalTeacherUid', '==', user.uid)),
+          query(substitutionsCollection, where('assumedByUid', '==', user.uid))
+        ];
     const gestionesCollection = collection(db, 'artifacts', appId, 'gestiones');
-    const pendingGestionesRef = query(gestionesCollection, where('status', '==', 'pendiente'));
-    const futureRecoveryGestionesRef = query(gestionesCollection, where('recoveryDate', '>=', today));
+    const teacherGestionesRef = query(gestionesCollection, where('teacherKeys', 'array-contains', myTeacherKey));
     const payrollAdjustmentsRef = query(
       collection(db, 'artifacts', appId, 'payrollAdjustments'),
       where('teacher', '==', myName)
     );
-    const temporaryRelocationsRef = query(
-      collection(db, 'artifacts', appId, 'temporaryRelocations'),
-      where('until', '>=', operationalLookbackDate)
-    );
-    const temporaryClassChangesRef = query(
-      collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-      where('until', '>=', operationalLookbackDate)
-    );
+    const temporaryRelocationsRef = query(collection(db, 'artifacts', appId, 'temporaryRelocations'), where('teacherKeys', 'array-contains', myTeacherKey));
+    const temporaryClassChangesRef = query(collection(db, 'artifacts', appId, 'temporaryClassChanges'), where('teacherKeys', 'array-contains', myTeacherKey));
     const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
     const teacherNotificationsCollection = collection(db, 'artifacts', appId, 'teacherNotifications');
     const teacherTasksCollection = collection(db, 'artifacts', appId, 'teacherTasks');
@@ -919,10 +923,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       return () => unsubs.forEach(unsub => unsub());
     };
 
-    let recurringFallbackUnsub = null;
-    let recurringFallbackActive = false;
     let recordsFallbackUnsub = null;
-    let substitutionsFallbackUnsub = null;
     let temporaryRelocationsFallbackUnsub = null;
     let temporaryClassChangesFallbackUnsub = null;
 
@@ -939,27 +940,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const recurringBuckets = new Map();
     const recurringReadySources = new Set();
 
-    const startRecurringFallback = (reason) => {
-      if (recurringFallbackActive) return;
-      recurringFallbackActive = true;
-      console.warn(`Se aplica compatibilidad heredada para las clases del profesor: ${reason}`);
-      recurringFallbackUnsub = onSnapshot(collectionGroup(db, 'recurringClasses'), snapshot => {
-        const myClasses = snapshot.docs
-          .map(docSnap => ({ id: docSnap.id, refPath: docSnap.ref.path, ...docSnap.data() }))
-          .filter(classData => isSameTeacher(classData.teacher, myName) || classData.originalTeacherUid === user.uid);
-        setRecurringClasses(myClasses);
-        recurringLoaded = true;
-        checkLoading();
-      }, fallbackError => {
-        console.error('No se pudieron cargar las clases del profesor:', fallbackError);
-        setRecurringClasses([]);
-        recurringLoaded = true;
-        checkLoading();
-      });
-    };
-
     const publishDirectRecurringClasses = () => {
-      if (recurringFallbackActive) return;
       const byPath = new Map();
       recurringBuckets.forEach(classes => classes.forEach(classData => {
         byPath.set(classData.refPath || classData.id, classData);
@@ -971,11 +952,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       ));
 
       if (recurringReadySources.size < recurringRefs.length) return;
-      if (myClasses.length === 0) {
-        startRecurringFallback('las rutas directas devolvieron cero clases');
-        return;
-      }
-
       setRecurringClasses(myClasses);
       recurringLoaded = true;
       checkLoading();
@@ -995,8 +971,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       },
       error => {
         console.error(`La consulta directa de clases en ${ownerUid} falló:`, error);
+        recurringBuckets.set(sourceIndex, []);
         recurringReadySources.add(sourceIndex);
-        startRecurringFallback('una ruta directa no se pudo consultar');
+        publishDirectRecurringClasses();
       }
     ));
 
@@ -1026,39 +1003,28 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       checkLoading();
     });
 
-    const unsubSubs = onSnapshot(substitutionsRef, (snapshot) => {
-      setSubstitutions(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
-      subsLoaded = true;
-      checkLoading();
-    }, error => {
-      console.error('La consulta optimizada de sustituciones falló; se aplica compatibilidad heredada:', error);
-      substitutionsFallbackUnsub = onSnapshot(
-        collection(db, 'artifacts', appId, 'substitutions'),
-        snapshot => {
-          setSubstitutions(snapshot.docs
-            .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
-            .filter(substitution => String(substitution.date || '') >= today));
-          subsLoaded = true;
-          checkLoading();
-        },
-        fallbackError => {
-          console.error('No se pudieron cargar las sustituciones vigentes:', fallbackError);
-          setSubstitutions([]);
-          subsLoaded = true;
-          checkLoading();
-        }
-      );
-    });
-
-    const unsubGestiones = subscribeMergedQueries(
-      [pendingGestionesRef, futureRecoveryGestionesRef],
-      setGestiones,
+    const unsubSubs = subscribeMergedQueries(
+      substitutionSources,
+      data => setSubstitutions(data.filter(substitution => String(substitution.date || '') >= today)),
       () => {
-        gestionesLoaded = true;
+        subsLoaded = true;
         checkLoading();
       },
-      'los trámites operativos'
+      'las sustituciones disponibles o relacionadas con el profesor'
     );
+
+    const unsubGestiones = onSnapshot(teacherGestionesRef, snapshot => {
+      setGestiones(snapshot.docs
+        .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter(gestion => gestion.status === 'pendiente' || String(gestion.recoveryDate || '') >= today));
+      gestionesLoaded = true;
+      checkLoading();
+    }, error => {
+      console.error('No se pudieron cargar los trámites asignados al profesor:', error);
+      setGestiones([]);
+      gestionesLoaded = true;
+      checkLoading();
+    });
 
     const unsubPayrollAdjustments = onSnapshot(payrollAdjustmentsRef, (snapshot) => {
       setPayrollAdjustments(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
@@ -1067,51 +1033,29 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     const unsubTemporaryRelocations = onSnapshot(temporaryRelocationsRef, (snapshot) => {
-      setTemporaryRelocations(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
+      setTemporaryRelocations(snapshot.docs
+        .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter(relocation => String(relocation.until || '') >= operationalLookbackDate));
       temporaryRelocationsLoaded = true;
       checkLoading();
     }, error => {
-      console.error('La consulta optimizada de recolocaciones falló; se aplica compatibilidad heredada:', error);
-      temporaryRelocationsFallbackUnsub = onSnapshot(
-        collection(db, 'artifacts', appId, 'temporaryRelocations'),
-        snapshot => {
-          setTemporaryRelocations(snapshot.docs
-            .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
-            .filter(relocation => String(relocation.until || '') >= operationalLookbackDate));
-          temporaryRelocationsLoaded = true;
-          checkLoading();
-        },
-        fallbackError => {
-          console.error('No se pudieron cargar las recolocaciones temporales:', fallbackError);
-          setTemporaryRelocations([]);
-          temporaryRelocationsLoaded = true;
-          checkLoading();
-        }
-      );
+      console.error('No se pudieron cargar las recolocaciones del profesor:', error);
+      setTemporaryRelocations([]);
+      temporaryRelocationsLoaded = true;
+      checkLoading();
     });
 
     const unsubTemporaryClassChanges = onSnapshot(temporaryClassChangesRef, (snapshot) => {
-      setTemporaryClassChanges(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })));
+      setTemporaryClassChanges(snapshot.docs
+        .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+        .filter(change => normalizeTemporaryClassChangeDate(change.until) >= operationalLookbackDate));
       temporaryClassChangesLoaded = true;
       checkLoading();
     }, (error) => {
-      console.error('La consulta optimizada de cambios temporales falló; se aplica compatibilidad heredada:', error);
-      temporaryClassChangesFallbackUnsub = onSnapshot(
-        collection(db, 'artifacts', appId, 'temporaryClassChanges'),
-        snapshot => {
-          setTemporaryClassChanges(snapshot.docs
-            .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
-            .filter(change => normalizeTemporaryClassChangeDate(change.until) >= operationalLookbackDate));
-          temporaryClassChangesLoaded = true;
-          checkLoading();
-        },
-        fallbackError => {
-          console.error('No se pudieron cargar los cambios temporales de clase:', fallbackError);
-          setTemporaryClassChanges([]);
-          temporaryClassChangesLoaded = true;
-          checkLoading();
-        }
-      );
+      console.error('No se pudieron cargar los cambios temporales del profesor:', error);
+      setTemporaryClassChanges([]);
+      temporaryClassChangesLoaded = true;
+      checkLoading();
     });
 
     const unsubAnnouncements = onSnapshot(announcementsRef, (snapshot) => {
@@ -1179,13 +1123,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       unsubTeacherTasks();
       unsubAvail();
       unsubUserDoc();
-      if (recurringFallbackUnsub) recurringFallbackUnsub();
       if (recordsFallbackUnsub) recordsFallbackUnsub();
-      if (substitutionsFallbackUnsub) substitutionsFallbackUnsub();
       if (temporaryRelocationsFallbackUnsub) temporaryRelocationsFallbackUnsub();
       if (temporaryClassChangesFallbackUnsub) temporaryClassChangesFallbackUnsub();
     };
-  }, [user, db, appId]);
+  }, [user, db, appId, staffProfile]);
 
   // Las clases propias se resuelven desde las rutas directas conocidas del profesor.
   // Solo añadimos clases externas cuando un cambio temporal se las asigna.
@@ -1234,16 +1176,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     ));
 
     if (missingExternalIds.length > 0) {
-      // Compatibilidad excepcional con cambios antiguos que aún no guardaban classRefPath.
-      getDocs(collectionGroup(db, 'recurringClasses')).then(snapshot => {
-        if (cancelled) return;
-        snapshot.forEach(classSnap => {
-          if (missingExternalIds.includes(classSnap.id)) {
-            byReference.set(classSnap.ref.path, { id: classSnap.id, refPath: classSnap.ref.path, ...classSnap.data() });
-          }
-        });
-        publish();
-      }).catch(error => console.error('No se pudo resolver una clase temporal antigua:', error));
+      console.error('Hay cambios temporales antiguos sin classRefPath. Administración debe sincronizarlos antes de usarlos.', missingExternalIds);
     }
 
     return () => {
@@ -1295,14 +1228,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const relevantIds = new Set(relevantStudentIds);
     const chunks = chunkValues(relevantStudentIds, 10);
     const studentBuckets = new Map();
-    const ticketBuckets = new Map();
     const maintenanceBuckets = new Map();
     const unsubs = [];
     let studentsFallbackUnsub = null;
-    let ticketsFallbackUnsub = null;
     let maintenanceFallbackUnsub = null;
     let studentsFallbackStarted = false;
-    let ticketsFallbackStarted = false;
     let maintenanceFallbackStarted = false;
 
     const publishBuckets = (buckets, setter, getKey = item => item.id) => {
@@ -1323,22 +1253,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         fallbackError => {
           console.error('No se pudieron cargar los alumnos relacionados:', fallbackError);
           setGlobalStudents([]);
-        }
-      );
-    };
-
-    const startTicketsFallback = error => {
-      if (ticketsFallbackStarted) return;
-      ticketsFallbackStarted = true;
-      console.error('La consulta optimizada de tickets falló; se aplica compatibilidad heredada:', error);
-      ticketsFallbackUnsub = onSnapshot(
-        collectionGroup(db, 'tickets'),
-        snapshot => setTickets(snapshot.docs
-          .map(ticketDoc => ({ id: ticketDoc.id, refPath: ticketDoc.ref.path, ...ticketDoc.data() }))
-          .filter(ticket => relevantIds.has(String(ticket.studentId || '')))),
-        fallbackError => {
-          console.error('No se pudieron cargar los tickets relacionados:', fallbackError);
-          setTickets([]);
         }
       );
     };
@@ -1374,17 +1288,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         startStudentsFallback
       ));
 
-      const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentId', 'in', studentIds));
-      unsubs.push(onSnapshot(
-        ticketsQuery,
-        snapshot => {
-          if (ticketsFallbackStarted) return;
-          ticketBuckets.set(chunkIndex, snapshot.docs.map(ticketDoc => ({ id: ticketDoc.id, refPath: ticketDoc.ref.path, ...ticketDoc.data() })));
-          publishBuckets(ticketBuckets, setTickets, ticket => ticket.refPath || ticket.id);
-        },
-        startTicketsFallback
-      ));
-
       const maintenanceQuery = query(
         collection(db, 'artifacts', appId, 'maintenancePeriods'),
         where('studentId', 'in', studentIds)
@@ -1400,10 +1303,30 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       ));
     });
 
+    const teacherKey = normalizeTeacherKey(getTeacherName());
+    const ticketSources = [
+      query(collectionGroup(db, 'tickets'), where('teacherKeys', 'array-contains', teacherKey)),
+      query(collectionGroup(db, 'tickets'), where('recoveryTeacherKeys', 'array-contains', teacherKey))
+    ];
+    const secureTicketBuckets = new Map();
+    ticketSources.forEach((ticketSource, sourceIndex) => {
+      unsubs.push(onSnapshot(ticketSource, snapshot => {
+        secureTicketBuckets.set(sourceIndex, snapshot.docs
+          .map(ticketDoc => ({ id: ticketDoc.id, refPath: ticketDoc.ref.path, ...ticketDoc.data() })));
+        const byPath = new Map();
+        secureTicketBuckets.forEach(items => items.forEach(ticket => {
+          if (relevantIds.has(String(ticket.studentId || ''))) byPath.set(ticket.refPath || ticket.id, ticket);
+        }));
+        setTickets([...byPath.values()]);
+      }, error => {
+        console.error('No se pudieron cargar los tickets autorizados del profesor:', error);
+        secureTicketBuckets.set(sourceIndex, []);
+      }));
+    });
+
     return () => {
       unsubs.forEach(unsub => unsub());
       if (studentsFallbackUnsub) studentsFallbackUnsub();
-      if (ticketsFallbackUnsub) ticketsFallbackUnsub();
       if (maintenanceFallbackUnsub) maintenanceFallbackUnsub();
     };
   }, [user?.uid, db, appId, relevantStudentIds]);
@@ -3012,6 +2935,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           centerId: latestSub.centerId || assumedLocation.centerId,
           roomId: latestSub.roomId || assumedLocation.roomId,
           teacher: getOfficialTeacherName(),
+          authorizedTeacherKeys: [normalizeTeacherKey(getOfficialTeacherName())],
           subject: latestSub.subject,
           capacity: latestSub.capacity || '',
           duration: latestSub.duration || 60,
@@ -3329,6 +3253,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
             teacherName,
             teacherNameNormalized: String(teacherName || '').trim().toLowerCase(),
             teacherEmail,
+            teacherKeys: [normalizeTeacherKey(teacherName)],
             title: `4 faltas sin avisar: ${student.name}`,
             body: details,
             type: 'falta_reiterada',
@@ -3368,6 +3293,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
             requestedClass: savedRecord.classId,
             requestedClassLine: classLine,
             requestedTeacher: teacherName,
+            teacherKeys: [normalizeTeacherKey(teacherName)],
             streakStartDate,
             streakCount: streakRecords.length,
             absenceDates,
@@ -3429,6 +3355,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               studentName: s.name,
               subject: currentSession.subject,
               subjectScope: 'specific',
+              teacherKeys: [normalizeTeacherKey(getOfficialTeacherName())],
+              recoveryTeacherKeys: [],
+              createdByUid: user.uid,
+              createdByEmail: String(user.email || '').trim().toLowerCase(),
               originalDate: date,
               originalMonth: currentMonth,
               validFrom,

@@ -31,6 +31,12 @@ service cloud.firestore {
         ('teacherUid' in data && data.teacherUid is string && data.teacherUid == request.auth.uid)
         || ('teacherEmail' in data && data.teacherEmail is string && data.teacherEmail.lower() == authEmail())
         || (
+          'teacher' in data
+          && 'teacherNameLower' in get(staffAccessPath(appId)).data
+          && data.teacher is string
+          && data.teacher.lower() == get(staffAccessPath(appId)).data.teacherNameLower
+        )
+        || (
           'teacherName' in data
           && 'teacherNameLower' in get(staffAccessPath(appId)).data
           && data.teacherName is string
@@ -43,6 +49,33 @@ service cloud.firestore {
           && data.teacherNameNormalized == get(staffAccessPath(appId)).data.teacherNameLower
         )
       );
+    }
+
+    function teacherKey(appId) {
+      return isTeacher(appId) && get(staffAccessPath(appId)).data.teacherKey is string
+        ? get(staffAccessPath(appId)).data.teacherKey
+        : '';
+    }
+
+    function teacherKeyIn(appId, data, fieldName) {
+      return isTeacher(appId)
+        && fieldName in data
+        && data[fieldName] is list
+        && teacherKey(appId) in data[fieldName];
+    }
+
+    function teacherOwnsNamespace(appId, userId) {
+      return isTeacher(appId) && request.auth.uid == userId;
+    }
+
+    function teacherCanReadClass(appId, userId, data) {
+      return teacherMatchesData(appId, data)
+        || teacherKeyIn(appId, data, 'authorizedTeacherKeys');
+    }
+
+    function teacherCanReadTicket(appId, data) {
+      return teacherKeyIn(appId, data, 'teacherKeys')
+        || teacherKeyIn(appId, data, 'recoveryTeacherKeys');
     }
 
     function accessPath(appId) {
@@ -223,9 +256,15 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/gestiones/{gestionId} {
-      allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
-      allow create: if isAdmin() || isTeacher(appId) || studentCreatesOwnResource(appId);
-      allow update: if isAdmin() || isTeacher(appId) || (
+      allow read: if isAdmin() || teacherKeyIn(appId, resource.data, 'teacherKeys') || studentOwnsResource(appId);
+      allow create: if isAdmin() || teacherKeyIn(appId, request.resource.data, 'teacherKeys') || studentCreatesOwnResource(appId);
+      allow update: if isAdmin() || (
+        teacherKeyIn(appId, resource.data, 'teacherKeys')
+        && teacherKeyIn(appId, request.resource.data, 'teacherKeys')
+        && request.resource.data.teacherKeys == resource.data.teacherKeys
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.studentEmail == resource.data.studentEmail
+      ) || (
         studentOwnsResource(appId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['adminCopySentAt', 'adminCopyRecipient'])
       );
@@ -233,7 +272,7 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/temporaryRelocations/{relocationId} {
-      allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
+      allow read: if isAdmin() || teacherKeyIn(appId, resource.data, 'teacherKeys') || studentOwnsResource(appId);
       allow write: if isAdmin();
     }
 
@@ -243,7 +282,7 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/temporaryClassChanges/{changeId} {
-      allow read: if isAdmin() || isTeacher(appId);
+      allow read: if isAdmin() || teacherKeyIn(appId, resource.data, 'teacherKeys');
       allow write: if isAdmin();
     }
 
@@ -310,10 +349,28 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/substitutions/{substitutionId} {
-      allow read: if isAdmin() || isTeacher(appId);
+      allow read: if isAdmin() || (
+        isTeacher(appId) && (
+          ('status' in resource.data && resource.data.status == 'open')
+          || ('originalTeacherUid' in resource.data && resource.data.originalTeacherUid == request.auth.uid)
+          || ('assumedByUid' in resource.data && resource.data.assumedByUid == request.auth.uid)
+        )
+      );
       allow create: if isTeacher(appId)
-        && request.resource.data.originalTeacherUid == request.auth.uid;
-      allow update: if isAdmin() || isTeacher(appId);
+        && request.resource.data.originalTeacherUid == request.auth.uid
+        && request.resource.data.status == 'open';
+      allow update: if isAdmin() || (
+        isTeacher(appId)
+        && resource.data.status == 'open'
+        && request.resource.data.status == 'assigned'
+        && request.resource.data.originalTeacherUid == resource.data.originalTeacherUid
+        && resource.data.originalTeacherUid != request.auth.uid
+        && request.resource.data.assumedByUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'assumedAt', 'assumedByUid', 'assumedByEmail',
+          'assumedTeacherName', 'assumedClassId', 'assumedClassRefPath'
+        ])
+      );
       allow delete: if isAdmin() || (
         isTeacher(appId) && resource.data.originalTeacherUid == request.auth.uid
       );
@@ -347,15 +404,35 @@ service cloud.firestore {
       }
 
       match /recurringClasses/{classId} {
-        allow get: if isAdmin() || isTeacher(appId) || (
+        allow get: if isAdmin() || teacherCanReadClass(appId, userId, resource.data) || (
           hasStudentAccess(appId)
           && 'studentIds' in resource.data
           && resource.data.studentIds is list
           && ownStudentId(appId) in resource.data.studentIds
         );
-        allow list: if isAdmin() || isTeacher(appId);
-        allow create, delete: if isAdmin() || isTeacher(appId);
-        allow update: if isAdmin() || isTeacher(appId) || (
+        allow list: if isAdmin() || teacherKeyIn(appId, resource.data, 'authorizedTeacherKeys');
+        allow create: if isAdmin() || (
+          teacherOwnsNamespace(appId, userId)
+          && teacherMatchesData(appId, request.resource.data)
+          && teacherKeyIn(appId, request.resource.data, 'authorizedTeacherKeys')
+        );
+        allow delete: if isAdmin();
+        allow update: if isAdmin() || (
+          teacherMatchesData(appId, resource.data)
+          && teacherMatchesData(appId, request.resource.data)
+          && request.resource.data.teacher == resource.data.teacher
+          && request.resource.data.authorizedTeacherKeys == resource.data.authorizedTeacherKeys
+        ) || (
+          teacherKeyIn(appId, resource.data, 'authorizedTeacherKeys')
+          && teacherKeyIn(appId, request.resource.data, 'authorizedTeacherKeys')
+          && request.resource.data.teacher == resource.data.teacher
+          && request.resource.data.authorizedTeacherKeys == resource.data.authorizedTeacherKeys
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'students', 'studentIds', 'exceptions', 'autoCancelled', 'cancelledDates',
+            'notes', 'originalNotes', 'resources', 'notesUpdatedAt',
+            'notesUpdatedBy', 'notesUpdatedByName'
+          ])
+        ) || (
           hasStudentAccess(appId)
           && 'studentIds' in resource.data
           && resource.data.studentIds is list
@@ -365,27 +442,48 @@ service cloud.firestore {
       }
 
       match /tickets/{ticketId} {
-        allow read: if isAdmin() || isTeacher(appId) || (
+        allow read: if isAdmin() || teacherCanReadTicket(appId, resource.data) || (
           hasStudentAccess(appId)
           && resource.data.studentEmail is string
           && resource.data.studentEmail == authEmail()
         );
-        allow write: if isAdmin() || isTeacher(appId);
+        allow create: if isAdmin() || (
+          teacherOwnsNamespace(appId, userId)
+          && teacherKeyIn(appId, request.resource.data, 'teacherKeys')
+        );
+        allow update: if isAdmin() || (
+          teacherCanReadTicket(appId, resource.data)
+          && teacherCanReadTicket(appId, request.resource.data)
+          && request.resource.data.studentId == resource.data.studentId
+          && request.resource.data.studentEmail == resource.data.studentEmail
+          && request.resource.data.subject == resource.data.subject
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'isUsed', 'usedAt', 'usedOn', 'usedInSubject', 'usedInClassId'
+          ])
+        ) || (
+          studentOwnsResource(appId)
+          && request.resource.data.studentId == resource.data.studentId
+          && request.resource.data.studentEmail == resource.data.studentEmail
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'recoveryTeacherKeys', 'recoveryGestionIds', 'recoveryAuthorizedAt'
+          ])
+        );
+        allow delete: if isAdmin();
       }
     }
 
     match /{document=**}/recurringClasses/{classId} {
-      allow get: if isAdmin() || isTeacher('default-app-id') || (
+      allow get: if isAdmin() || teacherMatchesData('default-app-id', resource.data) || teacherKeyIn('default-app-id', resource.data, 'authorizedTeacherKeys') || (
         hasStudentAccess('default-app-id')
         && 'studentIds' in resource.data
         && resource.data.studentIds is list
         && ownStudentId('default-app-id') in resource.data.studentIds
       );
-      allow list: if isAdmin() || isTeacher('default-app-id');
+      allow list: if isAdmin() || teacherKeyIn('default-app-id', resource.data, 'authorizedTeacherKeys');
     }
 
     match /{document=**}/tickets/{ticketId} {
-      allow read: if isAdmin() || isTeacher('default-app-id') || (
+      allow read: if isAdmin() || teacherCanReadTicket('default-app-id', resource.data) || (
         hasStudentAccess('default-app-id')
         && resource.data.studentEmail is string
         && resource.data.studentEmail == authEmail()

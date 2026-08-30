@@ -57,6 +57,44 @@ test('el portal del alumno no reinicia sus listeners por identidad del array de 
   assert.match(student, /setClassesLoadError\('No se ha podido cargar el catálogo privado necesario/);
 });
 
+test('Firestore indexa la consulta privada de tickets del alumno', async () => {
+  const indexConfig = JSON.parse(await read('firestore.indexes.json'));
+  const ticketEmailOverride = indexConfig.fieldOverrides.find(field => (
+    field.collectionGroup === 'tickets' && field.fieldPath === 'studentEmail'
+  ));
+
+  assert.ok(ticketEmailOverride);
+  assert.ok(ticketEmailOverride.indexes.some(index => (
+    index.order === 'ASCENDING' && index.queryScope === 'COLLECTION_GROUP'
+  )));
+});
+
+test('Firestore indexa la consulta optimizada de tickets del profesor', async () => {
+  const teacher = await read('src/components/TeacherPortal.jsx');
+  const indexConfig = JSON.parse(await read('firestore.indexes.json'));
+  const ticketStudentIdOverride = indexConfig.fieldOverrides.find(field => (
+    field.collectionGroup === 'tickets' && field.fieldPath === 'studentId'
+  ));
+
+  assert.match(teacher, /where\('studentId', 'in', studentIds\)/);
+  assert.ok(ticketStudentIdOverride);
+  assert.ok(ticketStudentIdOverride.indexes.some(index => (
+    index.order === 'ASCENDING' && index.queryScope === 'COLLECTION_GROUP'
+  )));
+});
+
+test('Firestore indexa la localización de clases por alumno', async () => {
+  const indexConfig = JSON.parse(await read('firestore.indexes.json'));
+  const classStudentIdsOverride = indexConfig.fieldOverrides.find(field => (
+    field.collectionGroup === 'recurringClasses' && field.fieldPath === 'studentIds'
+  ));
+
+  assert.ok(classStudentIdsOverride);
+  assert.ok(classStudentIdsOverride.indexes.some(index => (
+    index.arrayConfig === 'CONTAINS' && index.queryScope === 'COLLECTION_GROUP'
+  )));
+});
+
 test('solo classAvailability declara lectura pública', async () => {
   const rules = await read('firestore.rules');
   const publicReads = rules.match(/allow read: if true;/g) || [];

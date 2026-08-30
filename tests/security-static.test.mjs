@@ -44,9 +44,35 @@ test('el alumno usa proyecciones privadas en lugar de colecciones globales sensi
 test('administración mantiene sincronizadas las clases privadas de cada alumno', async () => {
   const admin = await read('src/components/AdminPortal.jsx');
   assert.match(admin, /classIdsByStudentId/);
+  assert.match(admin, /classSubjectsByStudentId/);
   assert.match(admin, /expectedClassIds/);
+  assert.match(admin, /expectedInstruments/);
   assert.match(admin, /classes: expectedClassIds/);
+  assert.match(admin, /instruments: expectedInstruments/);
   assert.match(admin, /getClassStudentIds\(classData\.students \|\| \[\]\)/);
+});
+
+test('las recuperaciones quedan vinculadas al ticket y a su instrumento', async () => {
+  const [student, admin, teacher] = await Promise.all([
+    read('src/components/StudentPortal.jsx'),
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/TeacherPortal.jsx')
+  ]);
+
+  assert.doesNotMatch(student, /profile\.instruments\s*&&\s*profile\.instruments\[0\]/);
+  assert.match(student, /ticketId: isTicketRedemption \? selectedRecoveryTicket\.id/);
+  assert.match(student, /ticketRefPath: isTicketRedemption \? selectedRecoveryTicket\.refPath/);
+  assert.match(student, /requestedSubject: isTicketRedemption \? resolvedRecoverySubject/);
+  assert.match(student, /ticketMatchesSubject\(selectedRecoveryTicket, selectedNewClass\.subject\)/);
+
+  assert.match(admin, /matchedRecoveryTicket/);
+  assert.match(admin, /ticketMatchesSubject\(matchedRecoveryTicket, targetClass\.subject\)/);
+  assert.match(admin, /recoveryTicketRefPath/);
+  assert.match(admin, /subjectScope: 'specific'/);
+
+  assert.match(teacher, /recoveryTicketRefPath/);
+  assert.match(teacher, /ticketMatchesSubject\(ticketToUse, currentSession\.subject\)/);
+  assert.match(teacher, /usedInSubject: currentSession\.subject/);
 });
 
 test('el portal del alumno no reinicia sus listeners por identidad del array de clases', async () => {

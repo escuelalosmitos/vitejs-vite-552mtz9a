@@ -13,6 +13,16 @@ const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukele
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
 const LEGACY_ROOM_NAMES = ["Sala 1", "Sala 2", "Sala 3"];
 
+const normalizeTicketSubject = (value = '') => String(value || '').trim();
+const isFlexibleRecoveryTicket = (ticket = {}) => {
+  const subject = normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es');
+  return ticket.isGift === true || ticket.subjectScope === 'any' || !subject || subject === 'cortesía escuela';
+};
+const ticketMatchesSubject = (ticket = {}, subject = '') => (
+  isFlexibleRecoveryTicket(ticket)
+  || normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es') === normalizeTicketSubject(subject).toLocaleLowerCase('es')
+);
+
 const normalizeConfigId = (value = '', fallback = 'item') => {
   const normalized = String(value || '')
     .normalize('NFD')
@@ -2442,13 +2452,20 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const getRecoveryTicketInfo = (gestion = {}) => {
     const recoveryDate = gestion.recoveryDate || date;
     const today = new Date().toISOString().split('T')[0];
+    const targetClass = getRecoveryClass(gestion);
+    const requestedSubject = normalizeTicketSubject(gestion.requestedSubject || gestion.ticketSubject || targetClass?.subject || '');
+    const requestedTicketId = String(gestion.ticketId || '').trim();
+    const requestedTicketRefPath = String(gestion.ticketRefPath || '').trim();
 
     const validTickets = tickets.filter(t =>
       t.studentId === gestion.studentId &&
       !t.isUsed &&
       !t.voided &&
       (!t.validFrom || t.validFrom <= recoveryDate) &&
-      (!t.validUntil || t.validUntil >= recoveryDate)
+      (!t.validUntil || t.validUntil >= recoveryDate) &&
+      (!requestedSubject || ticketMatchesSubject(t, requestedSubject)) &&
+      (!requestedTicketRefPath || t.refPath === requestedTicketRefPath) &&
+      (!requestedTicketId || String(t.id || '') === requestedTicketId)
     );
 
     const committedRequests = gestiones.filter(g =>
@@ -2456,13 +2473,28 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       g.studentId === gestion.studentId &&
       g.type === 'recuperacion' &&
       (g.status === 'pendiente' || g.status === 'completado') &&
-      (!g.recoveryDate || g.recoveryDate >= today)
+      (!g.recoveryDate || g.recoveryDate >= today) &&
+      (!requestedSubject || !g.requestedSubject || normalizeTicketSubject(g.requestedSubject).toLocaleLowerCase('es') === requestedSubject.toLocaleLowerCase('es'))
     ).length;
+    const exactTicketCommitted = Boolean(requestedTicketId || requestedTicketRefPath) && gestiones.some(g => (
+      g.id !== gestion.id
+      && g.studentId === gestion.studentId
+      && g.type === 'recuperacion'
+      && (g.status === 'pendiente' || (g.status === 'completado' && (!g.recoveryDate || g.recoveryDate >= today)))
+      && (
+        (requestedTicketRefPath && g.ticketRefPath === requestedTicketRefPath)
+        || (requestedTicketId && g.ticketId === requestedTicketId)
+      )
+    ));
 
     return {
       valid: validTickets.length,
       committed: committedRequests,
-      free: Math.max(validTickets.length - committedRequests, 0)
+      free: requestedTicketId || requestedTicketRefPath
+        ? (exactTicketCommitted ? 0 : validTickets.length)
+        : Math.max(validTickets.length - committedRequests, 0),
+      ticket: validTickets[0] || null,
+      subject: requestedSubject
     };
   };
 
@@ -2515,6 +2547,14 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       showNotification({ type: 'error', text: 'El alumno no tiene tickets libres válidos para esa fecha.' });
       return;
     }
+    if (!ticketInfo.subject || normalizeTicketSubject(targetClass.subject).toLocaleLowerCase('es') !== ticketInfo.subject.toLocaleLowerCase('es')) {
+      showNotification({ type: 'error', text: 'La asignatura del ticket no coincide con la clase de destino.' });
+      return;
+    }
+    if (!ticketInfo.ticket || !ticketMatchesSubject(ticketInfo.ticket, targetClass.subject)) {
+      showNotification({ type: 'error', text: 'No se ha localizado el ticket concreto correspondiente a este instrumento.' });
+      return;
+    }
 
     const occupancy = getClassOccupancyForDate(targetClass, recoveryDate);
     if (occupancy.fixedStudentIds.has(gestion.studentId)) {
@@ -2553,7 +2593,10 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
           isPaused: false,
           status: 'present',
           isRecovery: true,
-          recoveryDate
+          recoveryDate,
+          recoveryTicketId: ticketInfo.ticket.id || gestion.ticketId || '',
+          recoveryTicketRefPath: ticketInfo.ticket.refPath || gestion.ticketRefPath || '',
+          recoveryTicketSubject: normalizeTicketSubject(ticketInfo.ticket.subject || ticketInfo.subject)
         };
 
         const updatedTargetStudents = [
@@ -3060,17 +3103,22 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       }
     }
 
+    let matchedRecoveryTicket = null;
     if (currentSession.isAddingRecovery) {
       const selectedClassDate = date; 
-      const hasValidTicket = tickets.some(t => 
-        t.studentId === studentId && 
-        !t.isUsed && 
-        selectedClassDate >= t.validFrom && 
-        selectedClassDate <= t.validUntil
-      );
+      matchedRecoveryTicket = tickets
+        .filter(t =>
+          t.studentId === studentId &&
+          !t.isUsed &&
+          !t.voided &&
+          (!t.validFrom || selectedClassDate >= t.validFrom) &&
+          (!t.validUntil || selectedClassDate <= t.validUntil) &&
+          ticketMatchesSubject(t, currentSession.subject)
+        )
+        .sort((a, b) => String(a.validUntil || '9999-12-31').localeCompare(String(b.validUntil || '9999-12-31')))[0] || null;
       
-      if (!hasValidTicket) {
-        showNotification({ type: 'error', text: 'Este alumno no tiene recuperaciones pendientes válidas para la fecha seleccionada.' });
+      if (!matchedRecoveryTicket) {
+        showNotification({ type: 'error', text: `Este alumno no tiene tickets de ${currentSession.subject} válidos para la fecha seleccionada.` });
         return; 
       }
     }
@@ -3087,6 +3135,9 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           status: 'present',
           isRecovery: currentSession.isAddingRecovery || false,
           recoveryDate: currentSession.isAddingRecovery ? date : null, 
+          recoveryTicketId: currentSession.isAddingRecovery ? (matchedRecoveryTicket?.id || '') : '',
+          recoveryTicketRefPath: currentSession.isAddingRecovery ? (matchedRecoveryTicket?.refPath || '') : '',
+          recoveryTicketSubject: currentSession.isAddingRecovery ? normalizeTicketSubject(matchedRecoveryTicket?.subject || currentSession.subject) : '',
           isPaused: false,
           ...enrichStudentMaintenanceState({ id: studentId }, date)
         }
@@ -3377,6 +3428,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               studentEmail,
               studentName: s.name,
               subject: currentSession.subject,
+              subjectScope: 'specific',
               originalDate: date,
               originalMonth: currentMonth,
               validFrom,
@@ -3390,19 +3442,42 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         }
         
         if (s.isRecovery && s.status === 'present') {
+          const linkedTicket = tickets.find(t => (
+            t.studentId === s.id
+            && (
+              (s.recoveryTicketRefPath && t.refPath === s.recoveryTicketRefPath)
+              || (s.recoveryTicketId && String(t.id || '') === String(s.recoveryTicketId))
+            )
+          )) || null;
+          if (linkedTicket?.isUsed && linkedTicket.usedOn === date) return;
+
           const pending = tickets.filter(t =>
             t.studentId === s.id &&
             !t.isUsed &&
             !t.voided &&
             (!t.validFrom || t.validFrom <= date) &&
-            (!t.validUntil || t.validUntil >= date)
-          ).sort((a, b) => new Date(a.validFrom || '1900-01-01') - new Date(b.validFrom || '1900-01-01'));
-          if (pending.length > 0) {
-            const ticketRef = pending[0].refPath
-              ? doc(db, pending[0].refPath)
-              : doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', pending[0].id);
-            await setDoc(ticketRef, { isUsed: true, usedAt: new Date().toISOString(), usedOn: date }, { merge: true });
+            (!t.validUntil || t.validUntil >= date) &&
+            ticketMatchesSubject(t, currentSession.subject)
+          ).sort((a, b) => String(a.validUntil || '9999-12-31').localeCompare(String(b.validUntil || '9999-12-31')));
+          const ticketToUse = linkedTicket || pending[0] || null;
+          if (!ticketToUse
+            || ticketToUse.isUsed
+            || ticketToUse.voided
+            || (ticketToUse.validFrom && ticketToUse.validFrom > date)
+            || (ticketToUse.validUntil && ticketToUse.validUntil < date)
+            || !ticketMatchesSubject(ticketToUse, currentSession.subject)) {
+            throw new Error(`No se puede consumir la recuperación de ${s.name}: falta un ticket válido de ${currentSession.subject}.`);
           }
+          const ticketRef = ticketToUse.refPath
+            ? doc(db, ticketToUse.refPath)
+            : doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketToUse.id);
+          await setDoc(ticketRef, {
+            isUsed: true,
+            usedAt: new Date().toISOString(),
+            usedOn: date,
+            usedInSubject: currentSession.subject,
+            usedInClassId: currentSession.classId || ''
+          }, { merge: true });
         }
       });
       await Promise.all(ticketPromises);

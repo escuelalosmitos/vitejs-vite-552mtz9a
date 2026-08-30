@@ -8,6 +8,16 @@ const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_pl
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
+const normalizeTicketSubject = (value = '') => String(value || '').trim();
+const isFlexibleRecoveryTicket = (ticket = {}) => {
+  const subject = normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es');
+  return ticket.isGift === true || ticket.subjectScope === 'any' || !subject || subject === 'cortesía escuela';
+};
+const ticketMatchesSubject = (ticket = {}, subject = '') => (
+  isFlexibleRecoveryTicket(ticket)
+  || normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es') === normalizeTicketSubject(subject).toLocaleLowerCase('es')
+);
+
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
 
 const getDayOfYear = () => {
@@ -606,6 +616,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
   const [selectedSourceClass, setSelectedSourceClass] = useState(null);
+  const [recoveryTickets, setRecoveryTickets] = useState([]);
+  const [selectedRecoveryTicketId, setSelectedRecoveryTicketId] = useState('');
+  const [selectedRecoverySubject, setSelectedRecoverySubject] = useState('');
   const [bajaTotalRequested, setBajaTotalRequested] = useState(false);
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [maintenanceMonths, setMaintenanceMonths] = useState(1);
@@ -2337,6 +2350,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       let validTicketsCount = 0;
       let futureSummerTicketsCount = 0;
       let activeSummerTicketsCount = 0;
+      const activeTicketDetails = [];
       snapshot.forEach(ticketDoc => {
         const data = ticketDoc.data();
         if (filterLegacyResults && String(data.studentId || '') !== String(profile.id)) return;
@@ -2349,10 +2363,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
         if (isPending && isAlreadyValid && isNotExpired) {
           validTicketsCount++;
           if (isSummerTicket) activeSummerTicketsCount++;
+          activeTicketDetails.push({
+            id: ticketDoc.id,
+            refPath: ticketDoc.ref.path,
+            ...data
+          });
         } else if (isPending && isFuture && isSummerTicket) {
           futureSummerTicketsCount++;
         }
       });
+      activeTicketDetails.sort((a, b) => String(a.validUntil || '9999-12-31').localeCompare(String(b.validUntil || '9999-12-31')));
+      setRecoveryTickets(activeTicketDetails);
       setProfile(prev => prev ? {
         ...prev,
         activeTickets: validTicketsCount,
@@ -2368,6 +2389,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       if (legacyTicketsStarted) return;
       legacyTicketsStarted = true;
       console.error('La consulta privada de tickets falló', queryError);
+      setRecoveryTickets([]);
       setNotification({ text: 'No se han podido comprobar tus tickets de recuperación. Reintenta recargando la página.', type: 'error' });
     };
     unsubFilteredTickets = onSnapshot(
@@ -3146,6 +3168,25 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       showToast('Ya tienes tantas recuperaciones solicitadas o programadas como tickets disponibles.', 'error');
       return;
     }
+    if (isTicketRedemption && !selectedRecoveryTicket) {
+      showToast('Elige el ticket concreto que quieres canjear.', 'error');
+      return;
+    }
+    if (isTicketRedemption && !resolvedRecoverySubject) {
+      showToast('Elige el instrumento al que quieres aplicar este ticket.', 'error');
+      return;
+    }
+    if (isTicketRedemption && (!selectedNewClass || !ticketMatchesSubject(selectedRecoveryTicket, selectedNewClass.subject) || selectedNewClass.subject !== resolvedRecoverySubject)) {
+      showToast('La clase elegida no corresponde al instrumento del ticket.', 'error');
+      return;
+    }
+    if (isTicketRedemption && (
+      (selectedRecoveryTicket.validFrom && selectedRecoveryDate < selectedRecoveryTicket.validFrom)
+      || (selectedRecoveryTicket.validUntil && selectedRecoveryDate > selectedRecoveryTicket.validUntil)
+    )) {
+      showToast('La fecha elegida queda fuera de la validez del ticket.', 'error');
+      return;
+    }
     
     setIsSendingGestion(true);
     try {
@@ -3180,6 +3221,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedCenterId: selectedNewClass ? (getClassCenter(selectedNewClass)?.id || selectedNewClass.centerId || '') : '',
         requestedRoomId: selectedNewClass ? (getClassRoom(selectedNewClass)?.id || selectedNewClass.roomId || '') : '',
         recoveryDate: isTicketRedemption ? selectedRecoveryDate : null, 
+        ticketId: isTicketRedemption ? selectedRecoveryTicket.id : null,
+        ticketRefPath: isTicketRedemption ? selectedRecoveryTicket.refPath : '',
+        ticketSubject: isTicketRedemption ? normalizeTicketSubject(selectedRecoveryTicket.subject) : '',
+        requestedSubject: isTicketRedemption ? resolvedRecoverySubject : (selectedNewClass?.subject || ''),
         maintenanceMonths: isMaintenanceRequest ? selectedMaintenanceOption.months : null,
         maintenanceFee: isMaintenanceRequest ? selectedMaintenanceOption.fee : null,
         maintenanceFrom: isMaintenanceRequest ? selectedMaintenanceOption.from : null,
@@ -3206,6 +3251,8 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       setGestionText('');
       setSelectedNewClass(null);
       setSelectedSourceClass(null);
+      setSelectedRecoveryTicketId('');
+      setSelectedRecoverySubject('');
       setBajaTotalRequested(false);
       setSelectedRecoveryDate('');
       setMaintenanceMonths(1);
@@ -3520,8 +3567,19 @@ END:VCALENDAR`;
   );
 
   const committedRecoveryCount = pendingRecoveryGestiones.length + scheduledRecoveryGestiones.length;
-  const availableRecoveryTickets = profile?.activeTickets || 0;
-  const hasReachedRecoveryLimit = committedRecoveryCount >= availableRecoveryTickets;
+  const committedRecoveryTicketIds = new Set(
+    [...pendingRecoveryGestiones, ...scheduledRecoveryGestiones]
+      .map(gestion => String(gestion.ticketId || '').trim())
+      .filter(Boolean)
+  );
+  const selectableRecoveryTickets = recoveryTickets.filter(ticket => !committedRecoveryTicketIds.has(String(ticket.id || '')));
+  const availableRecoveryTicketCount = profile?.activeTickets || 0;
+  const hasReachedRecoveryLimit = committedRecoveryCount >= availableRecoveryTicketCount || selectableRecoveryTickets.length === 0;
+  const selectedRecoveryTicket = selectableRecoveryTickets.find(ticket => String(ticket.id || '') === selectedRecoveryTicketId) || null;
+  const activeFixedSubjects = [...new Set(fixedSeatClasses.map(clase => normalizeTicketSubject(clase.subject)).filter(Boolean))];
+  const resolvedRecoverySubject = selectedRecoveryTicket
+    ? (isFlexibleRecoveryTicket(selectedRecoveryTicket) ? selectedRecoverySubject : normalizeTicketSubject(selectedRecoveryTicket.subject))
+    : '';
   const isStudentFrozen = Boolean(activeMaintenancePeriod);
   const maintenancePeriodText = activeMaintenancePeriod ? formatMaintenancePeriodLine(activeMaintenancePeriod) : '';
   const frozenRestrictedGestionTypes = ['recuperacion', 'cambio_horario', 'ampliar_clases'];
@@ -3637,11 +3695,20 @@ END:VCALENDAR`;
 
     setSelectedNewClass(null);
     setSelectedRecoveryDate('');
+    setSelectedRecoveryTicketId('');
+    setSelectedRecoverySubject('');
     setBajaTotalRequested(false);
     setSelectedSourceClass(isSourceClassGestion && availableSourceClasses.length === 1 ? availableSourceClasses[0] : null);
 
     if (gestionPayload.type === 'mantenimiento') {
       setMaintenanceMonths(1);
+    }
+    if (gestionPayload.type === 'recuperacion' && selectableRecoveryTickets.length === 1) {
+      const onlyTicket = selectableRecoveryTickets[0];
+      setSelectedRecoveryTicketId(String(onlyTicket.id || ''));
+      if (isFlexibleRecoveryTicket(onlyTicket) && activeFixedSubjects.length === 1) {
+        setSelectedRecoverySubject(activeFixedSubjects[0]);
+      }
     }
     setGestionModal(gestionPayload);
   };
@@ -3664,24 +3731,30 @@ END:VCALENDAR`;
     });
   }
 
-  const getValidRecoveryDates = (dayOfWeekStr) => {
+  const getValidRecoveryDates = (dayOfWeekStr, recoveryTicket = null) => {
     const targetDay = parseInt(dayOfWeekStr);
     const validDates = [];
     let currentDate = new Date();
     currentDate.setDate(currentDate.getDate() + 1); 
+    let checkedDays = 0;
     
-    while (validDates.length < 4 && validDates.length < 30) { 
+    while (validDates.length < 4 && checkedDays < 120) { 
       if (currentDate.getDay() === targetDay) {
         const dateStr = currentDate.toISOString().split('T')[0];
         const isGlobalBlocked = globalSettings.festivos.includes(dateStr) || globalSettings.vacaciones.includes(dateStr);
         const targetCenter = getClassCenter(selectedNewClass || {});
         const isLocalBlocked = Boolean(targetCenter?.holidays?.includes(dateStr));
+        const isTicketValid = !recoveryTicket || (
+          (!recoveryTicket.validFrom || recoveryTicket.validFrom <= dateStr)
+          && (!recoveryTicket.validUntil || recoveryTicket.validUntil >= dateStr)
+        );
 
-        if (!isGlobalBlocked && !isLocalBlocked) {
+        if (!isGlobalBlocked && !isLocalBlocked && isTicketValid) {
           validDates.push(dateStr);
         }
       }
       currentDate.setDate(currentDate.getDate() + 1);
+      checkedDays++;
     }
     return validDates;
   };
@@ -3782,7 +3855,7 @@ END:VCALENDAR`;
       ? selectedInst
       : gestionModal.type === 'cambio_horario'
         ? resolvedSourceClass?.subject
-        : (profile.instruments && profile.instruments[0]);
+        : resolvedRecoverySubject;
 
     let availableClasses = [];
     if (isClassSearch && targetInstrument && (gestionModal.type !== 'cambio_horario' || resolvedSourceClass)) {
@@ -3817,6 +3890,7 @@ END:VCALENDAR`;
       (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) ||
       (isClassSearch && (!classCatalogLoaded || classCatalogLoading)) ||
       (isClassSearch && Boolean(classCatalogError)) ||
+      (isTicketRedemption && (!selectedRecoveryTicket || !resolvedRecoverySubject)) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
       isMaintenanceChoiceInvalid;
@@ -3824,7 +3898,7 @@ END:VCALENDAR`;
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedSourceClass(null); setBajaTotalRequested(false); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setGestionModal(null); setSelectedNewClass(null); setSelectedSourceClass(null); setSelectedRecoveryTicketId(''); setSelectedRecoverySubject(''); setBajaTotalRequested(false); setSelectedRecoveryDate(''); setMaintenanceMonths(1); setAcceptLatePenalty(false); setSelectedInst('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-black mb-2">
             <gestionModal.icon className={`w-8 h-8 ${gestionModal.color}`} />
             <h2 className="text-xl font-black uppercase tracking-tight leading-tight text-black">{modalTitle}</h2>
@@ -3975,7 +4049,57 @@ END:VCALENDAR`;
           
           {isClassSearch && (
             <div className="mb-6 space-y-4 border-t border-b border-zinc-100 py-4">
-              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '1. Elige grupo con disponibilidad' : gestionModal.type === 'cambio_horario' && requiresSourceClassChoice ? '2. Grupos disponibles para esa plaza' : (gestionUiCopy.searchLabel || '1. Busca disponibilidad en directo')}</p>
+              {isTicketRedemption && (
+                <div className="space-y-3">
+                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400">1. Elige el ticket que quieres canjear</p>
+                  {selectableRecoveryTickets.length > 0 ? (
+                    <select
+                      value={selectedRecoveryTicketId}
+                      onChange={e => {
+                        const ticketId = e.target.value;
+                        const ticket = selectableRecoveryTickets.find(item => String(item.id || '') === ticketId) || null;
+                        setSelectedRecoveryTicketId(ticketId);
+                        setSelectedRecoverySubject(ticket && isFlexibleRecoveryTicket(ticket) && activeFixedSubjects.length === 1 ? activeFixedSubjects[0] : '');
+                        setSelectedNewClass(null);
+                        setSelectedRecoveryDate('');
+                      }}
+                      className="w-full p-3 bg-amber-50 border-2 border-amber-200 rounded-xl outline-none font-bold text-sm"
+                    >
+                      <option value="">Selecciona una recuperación...</option>
+                      {selectableRecoveryTickets.map(ticket => (
+                        <option key={ticket.refPath || ticket.id} value={ticket.id}>
+                          {isFlexibleRecoveryTicket(ticket) ? 'Ticket de cortesía' : normalizeTicketSubject(ticket.subject)}
+                          {ticket.originalDate ? ` · Falta ${formatDateSpanish(ticket.originalDate)}` : ''}
+                          {ticket.validUntil ? ` · Válido hasta ${formatDateSpanish(ticket.validUntil)}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
+                      <p className="text-xs font-bold text-red-700">No tienes ningún ticket libre para solicitar otra recuperación.</p>
+                    </div>
+                  )}
+
+                  {selectedRecoveryTicket && isFlexibleRecoveryTicket(selectedRecoveryTicket) && (
+                    <select
+                      value={selectedRecoverySubject}
+                      onChange={e => { setSelectedRecoverySubject(e.target.value); setSelectedNewClass(null); setSelectedRecoveryDate(''); }}
+                      className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm"
+                    >
+                      <option value="">Elige para qué instrumento...</option>
+                      {activeFixedSubjects.map(subject => <option key={subject} value={subject}>{subject}</option>)}
+                    </select>
+                  )}
+
+                  {selectedRecoveryTicket && !isFlexibleRecoveryTicket(selectedRecoveryTicket) && (
+                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs font-black text-blue-900 uppercase tracking-widest">
+                      Recuperación de {normalizeTicketSubject(selectedRecoveryTicket.subject)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <p className="text-xs font-black uppercase tracking-widest text-zinc-400">{isTicketRedemption ? '2. Elige grupo con disponibilidad' : gestionModal.type === 'cambio_horario' && requiresSourceClassChoice ? '2. Grupos disponibles para esa plaza' : (gestionUiCopy.searchLabel || '1. Busca disponibilidad en directo')}</p>
               
               {gestionModal.type === 'ampliar_clases' && (
                 <select value={selectedInst} onChange={e => {setSelectedInst(e.target.value); setSelectedNewClass(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
@@ -4025,9 +4149,9 @@ END:VCALENDAR`;
 
               {isTicketRedemption && selectedNewClass && (
                 <div className="mt-6 pt-4 border-t border-zinc-100 animate-in fade-in zoom-in-95">
-                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">2. Elige el día exacto de recuperación</p>
+                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">3. Elige el día exacto de recuperación</p>
                   <div className="space-y-2">
-                    {getValidRecoveryDates(selectedNewClass.dayOfWeek).map(d => (
+                    {getValidRecoveryDates(selectedNewClass.dayOfWeek, selectedRecoveryTicket).map(d => (
                       <div 
                         key={d} 
                         onClick={() => setSelectedRecoveryDate(d)} 
@@ -4037,6 +4161,11 @@ END:VCALENDAR`;
                         {selectedRecoveryDate === d && <CheckCircle className="w-5 h-5 text-amber-500"/>}
                       </div>
                     ))}
+                    {getValidRecoveryDates(selectedNewClass.dayOfWeek, selectedRecoveryTicket).length === 0 && (
+                      <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-xs font-bold text-red-700">
+                        No hay fechas disponibles en este grupo dentro de la validez del ticket.
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

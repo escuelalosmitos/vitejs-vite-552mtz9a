@@ -18,6 +18,16 @@ const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
 const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 1;
 
+const normalizeTicketSubject = (value = '') => String(value || '').trim();
+const isFlexibleRecoveryTicket = (ticket = {}) => {
+  const subject = normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es');
+  return ticket.isGift === true || ticket.subjectScope === 'any' || !subject || subject === 'cortesía escuela';
+};
+const ticketMatchesSubject = (ticket = {}, subject = '') => (
+  isFlexibleRecoveryTicket(ticket)
+  || normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es') === normalizeTicketSubject(subject).toLocaleLowerCase('es')
+);
+
 const buildPublicAvailabilitySignature = (classes = []) => {
   const serialized = JSON.stringify(classes || []);
   let hash = 2166136261;
@@ -2393,7 +2403,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       studentClassMembershipSyncRef.current = true;
 
       try {
+        const membershipSyncDate = getTodayLocalString();
         const classIdsByStudentId = new Map();
+        const classSubjectsByStudentId = new Map();
+        const studentsById = new Map(students.map(student => [String(student.id || ''), student]));
         allClasses.forEach(classData => {
           const classId = String(classData.id || classData.docId || '').trim();
           if (!classId) return;
@@ -2403,22 +2416,41 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
             currentClassIds.push(classId);
             classIdsByStudentId.set(studentId, currentClassIds);
           });
+
+          if (!isPunctualClass(classData)) {
+            (classData.students || []).forEach(studentEntry => {
+              const studentId = String(studentEntry?.id || studentEntry?.studentId || '').trim();
+              if (!studentId || studentEntry?.isRecovery || studentEntry?.isTemporaryRelocation) return;
+              if (!isStudentClassCommittedOnDate(studentEntry, studentsById.get(studentId) || {}, membershipSyncDate)) return;
+              const subject = normalizeTicketSubject(classData.subject);
+              if (!subject) return;
+              const currentSubjects = classSubjectsByStudentId.get(studentId) || [];
+              currentSubjects.push(subject);
+              classSubjectsByStudentId.set(studentId, currentSubjects);
+            });
+          }
         });
 
         const studentsToUpdate = students
           .map(student => ({
             student,
-            expectedClassIds: uniqueStrings(classIdsByStudentId.get(String(student.id || '')) || [])
+            expectedClassIds: uniqueStrings(classIdsByStudentId.get(String(student.id || '')) || []),
+            expectedInstruments: uniqueStrings(classSubjectsByStudentId.get(String(student.id || '')) || [])
           }))
-          .filter(({ student, expectedClassIds }) => !haveSameStringValues(student.classes || [], expectedClassIds));
+          .filter(({ student, expectedClassIds, expectedInstruments }) => (
+            !haveSameStringValues(student.classes || [], expectedClassIds)
+            || !haveSameStringValues(student.instruments || [], expectedInstruments)
+          ));
 
         for (let start = 0; start < studentsToUpdate.length; start += 400) {
           if (cancelled) return;
           const batch = writeBatch(db);
-          studentsToUpdate.slice(start, start + 400).forEach(({ student, expectedClassIds }) => {
+          studentsToUpdate.slice(start, start + 400).forEach(({ student, expectedClassIds, expectedInstruments }) => {
             batch.update(doc(db, 'artifacts', appId, 'students', student.id), {
               classes: expectedClassIds,
-              classMembershipSyncedAt: new Date().toISOString()
+              instruments: expectedInstruments,
+              classMembershipSyncedAt: new Date().toISOString(),
+              instrumentMembershipSyncedAt: new Date().toISOString()
             });
           });
           await batch.commit();
@@ -5008,7 +5040,7 @@ Coordinación Los Mitos.`;
     });
   };
 
-  const getTicketStatsForDate = (studentId, targetDate, excludeGestionId = null) => {
+  const getTicketStatsForDate = (studentId, targetDate, excludeGestionId = null, subject = '') => {
     const today = new Date().toISOString().split('T')[0];
     const dateToCheck = targetDate || today;
     const activeForDate = allTickets.filter(t =>
@@ -5016,13 +5048,15 @@ Coordinación Los Mitos.`;
       !t.isUsed &&
       !t.voided &&
       (!t.validFrom || t.validFrom <= dateToCheck) &&
-      (!t.validUntil || t.validUntil >= dateToCheck)
+      (!t.validUntil || t.validUntil >= dateToCheck) &&
+      (!subject || ticketMatchesSubject(t, subject))
     );
 
     const committed = gestiones.filter(g =>
       g.studentId === studentId &&
       g.id !== excludeGestionId &&
       g.type === 'recuperacion' &&
+      (!subject || !g.requestedSubject || normalizeTicketSubject(g.requestedSubject).toLocaleLowerCase('es') === normalizeTicketSubject(subject).toLocaleLowerCase('es')) &&
       (
         g.status === 'pendiente' ||
         (g.status === 'completado' && g.recoveryDate && g.recoveryDate >= today)
@@ -5557,19 +5591,6 @@ Coordinación Los Mitos.`
 ${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(activeMaintenance)}. Primero debe finalizar ese periodo o aprobarse un fin anticipado.`);
         }
 
-        if (type === 'recuperacion') {
-          const recoveryTicketStats = getTicketStatsForDate(studentId, recoveryDate, gestionId);
-          if (recoveryTicketStats.free <= 0) {
-            return fail(`⚠️ No se puede aprobar esta recuperación.
-
-${displayName} no tiene tickets libres válidos para la fecha elegida (${formatDateSpanish(recoveryDate)}).
-
-Tickets válidos ese día: ${recoveryTicketStats.active}
-Recuperaciones comprometidas: ${recoveryTicketStats.committed}
-Tickets libres: ${recoveryTicketStats.free}`);
-          }
-        }
-
         if (!requestedClass) {
           await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Archivado sin clase destino');
           return notify("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se ha archivado el ticket.");
@@ -5577,6 +5598,67 @@ Tickets libres: ${recoveryTicketStats.free}`);
         const targetClass = operationalClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
           return fail(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
+        }
+
+        let matchedRecoveryTicket = null;
+        if (type === 'recuperacion') {
+          const requestedSubject = normalizeTicketSubject(gestionData.requestedSubject || gestionData.ticketSubject || targetClass.subject);
+          if (!requestedSubject || requestedSubject.toLocaleLowerCase('es') !== normalizeTicketSubject(targetClass.subject).toLocaleLowerCase('es')) {
+            return fail(`⚠️ No se puede aprobar esta recuperación.\n\nLa asignatura solicitada (${requestedSubject || 'sin asignatura'}) no coincide con la clase de destino (${targetClass.subject || 'sin asignatura'}).`);
+          }
+
+          const requestedTicketId = String(gestionData.ticketId || '').trim();
+          const requestedTicketRefPath = String(gestionData.ticketRefPath || '').trim();
+          matchedRecoveryTicket = allTickets.find(ticket => (
+            requestedTicketRefPath && ticket.refPath === requestedTicketRefPath
+          )) || allTickets.find(ticket => (
+            requestedTicketId
+            && String(ticket.id || '') === requestedTicketId
+            && String(ticket.studentId || '') === String(studentId)
+          )) || allTickets
+            .filter(ticket => (
+              String(ticket.studentId || '') === String(studentId)
+              && !ticket.isUsed
+              && !ticket.voided
+              && (!ticket.validFrom || ticket.validFrom <= recoveryDate)
+              && (!ticket.validUntil || ticket.validUntil >= recoveryDate)
+              && ticketMatchesSubject(ticket, targetClass.subject)
+            ))
+            .sort((a, b) => String(a.validUntil || '9999-12-31').localeCompare(String(b.validUntil || '9999-12-31')))[0] || null;
+
+          if (!matchedRecoveryTicket
+            || String(matchedRecoveryTicket.studentId || '') !== String(studentId)
+            || matchedRecoveryTicket.isUsed
+            || matchedRecoveryTicket.voided
+            || (matchedRecoveryTicket.validFrom && matchedRecoveryTicket.validFrom > recoveryDate)
+            || (matchedRecoveryTicket.validUntil && matchedRecoveryTicket.validUntil < recoveryDate)
+            || !ticketMatchesSubject(matchedRecoveryTicket, targetClass.subject)) {
+            return fail(`⚠️ No se puede aprobar esta recuperación.\n\nEl ticket elegido ya no está disponible, no es válido para la fecha o pertenece a otro instrumento.`);
+          }
+
+          const ticketAlreadyCommitted = gestiones.some(gestion => (
+            gestion.id !== gestionId
+            && gestion.type === 'recuperacion'
+            && (gestion.status === 'pendiente' || (gestion.status === 'completado' && (!gestion.recoveryDate || gestion.recoveryDate >= todayStr)))
+            && (
+              (matchedRecoveryTicket.refPath && gestion.ticketRefPath === matchedRecoveryTicket.refPath)
+              || (matchedRecoveryTicket.id && gestion.ticketId === matchedRecoveryTicket.id)
+            )
+          ));
+          if (ticketAlreadyCommitted) {
+            return fail('⚠️ No se puede aprobar esta recuperación.\n\nEse ticket ya está reservado por otra solicitud pendiente o programada.');
+          }
+
+          const recoveryTicketStats = getTicketStatsForDate(studentId, recoveryDate, gestionId, targetClass.subject);
+          if (recoveryTicketStats.free <= 0) {
+            return fail(`⚠️ No se puede aprobar esta recuperación.
+
+${displayName} no tiene tickets libres de ${targetClass.subject} para la fecha elegida (${formatDateSpanish(recoveryDate)}).
+
+Tickets válidos de ${targetClass.subject}: ${recoveryTicketStats.active}
+Recuperaciones comprometidas: ${recoveryTicketStats.committed}
+Tickets libres: ${recoveryTicketStats.free}`);
+          }
         }
 
         let logMessage = `Iniciando proceso para ${displayName}:\n\n`;
@@ -5706,7 +5788,10 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           isPaused: false,
           status: 'present',
           isRecovery: type === 'recuperacion',
-          recoveryDate: type === 'recuperacion' ? recoveryDate : null
+          recoveryDate: type === 'recuperacion' ? recoveryDate : null,
+          recoveryTicketId: type === 'recuperacion' ? (matchedRecoveryTicket?.id || gestionData.ticketId || '') : '',
+          recoveryTicketRefPath: type === 'recuperacion' ? (matchedRecoveryTicket?.refPath || gestionData.ticketRefPath || '') : '',
+          recoveryTicketSubject: type === 'recuperacion' ? normalizeTicketSubject(matchedRecoveryTicket?.subject || gestionData.ticketSubject || targetClass.subject) : ''
         };
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
         await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
@@ -6483,9 +6568,28 @@ Coordinación Los Mitos.`
   const grantRecoveryTicket = async (student) => {
     const num = window.prompt(`¿Cuántos tickets de recuperación quieres otorgarle a ${student.name} como cortesía?\n\n(Disponibles desde hoy por ser regalo de administración)`, "1");
     if (!num || isNaN(num) || parseInt(num) <= 0) return;
+
+    const activeClasses = getFixedStudentClasses(student.id);
+    const activeSubjects = uniqueStrings(activeClasses.map(classData => classData.subject));
+    if (activeSubjects.length === 0) {
+      alert('No se puede regalar el ticket: el alumno no tiene ninguna clase fija activa que determine el instrumento.');
+      return;
+    }
+
+    let selectedSubject = activeSubjects[0];
+    if (activeSubjects.length > 1) {
+      const answer = window.prompt(`¿Para qué instrumento es el ticket?\n\nEscribe exactamente uno de estos valores:\n${activeSubjects.join('\n')}`, activeSubjects[0]);
+      if (answer === null) return;
+      selectedSubject = activeSubjects.find(subject => subject.toLocaleLowerCase('es') === String(answer || '').trim().toLocaleLowerCase('es')) || '';
+      if (!selectedSubject) {
+        alert('El instrumento indicado no coincide con ninguna clase fija activa del alumno.');
+        return;
+      }
+    }
+
     try {
       const { validFrom, validUntil } = generateImmediateGiftTicketDates();
-      const mainClass = recurringClassesOnly.find(c => c.students && c.students.some(s => s.id === student.id));
+      const mainClass = activeClasses.find(classData => classData.subject === selectedSubject) || activeClasses[0];
       const targetUid = mainClass ? mainClass.refPath.split('/')[3] : 'admin_pool';
       const promises = [];
       const displayName = student.useAlias && student.alias ? student.alias : student.name;
@@ -6496,7 +6600,8 @@ Coordinación Los Mitos.`
             studentId: student.id,
             studentEmail: String(student.email || '').trim().toLowerCase(),
             studentName: displayName,
-            subject: 'Cortesía Escuela',
+            subject: selectedSubject,
+            subjectScope: 'specific',
             originalDate: new Date().toISOString().split('T')[0],
             validFrom,
             validUntil,
@@ -6507,7 +6612,7 @@ Coordinación Los Mitos.`
         );
       }
       await Promise.all(promises);
-      alert(`🎁 Se han otorgado ${num} tickets a ${student.name}. Ya están disponibles desde hoy.`);
+      alert(`🎁 Se han otorgado ${num} tickets de ${selectedSubject} a ${student.name}. Ya están disponibles desde hoy.`);
     } catch(e) {
       alert("Error al otorgar tickets.");
     }

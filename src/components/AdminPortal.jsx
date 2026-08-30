@@ -1143,6 +1143,7 @@ const TemporaryRelocationModalOverlay = ({
   formatClassLine,
   sendTeacherNotification,
   sendStudentNotification,
+  getTeacherEmail,
   db,
   appId,
   user,
@@ -1260,6 +1261,10 @@ const TemporaryRelocationModalOverlay = ({
       teacherKeys: uniqueStrings([
         normalizeTeacherKey(sourceClass.teacher),
         normalizeTeacherKey(targetClass.teacher)
+      ]),
+      teacherEmails: uniqueStrings([
+        getTeacherEmail(sourceClass.teacher),
+        getTeacherEmail(targetClass.teacher)
       ]),
       from: fromDate,
       until: untilDate,
@@ -4146,7 +4151,14 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const getTeacherEmail = (teacherName) => {
     if (!teacherName) return '';
     const officialName = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
-    return `${officialName.toLocaleLowerCase('es-ES').trim().replace(/\s+/g, '.')}@escuelalosmitos.com`;
+    const localPart = String(officialName || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLocaleLowerCase('es-ES')
+      .trim()
+      .replace(/[^a-z0-9]+/g, '.')
+      .replace(/^\.+|\.+$/g, '');
+    return localPart ? `${localPart}@escuelalosmitos.com` : '';
   };
 
   const teacherAccessPublication = useMemo(() => {
@@ -4226,16 +4238,22 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       .filter(clase => clase.refPath)
       .map(clase => [String(clase.refPath), clase]));
     const classKeys = new Map();
+    const classEmails = new Map();
 
     recurringClassesOnly.forEach(clase => {
       const keys = [normalizeTeacherKey(clase.teacher)];
+      const emails = [getTeacherEmail(clase.teacher)];
       temporaryClassChanges
         .filter(change => change.status !== 'cancelled' && normalizeTemporaryClassChangeDate(change.until) >= todayStr && (
           String(change.classId || '') === String(clase.id || '')
           || (change.classRefPath && change.classRefPath === clase.refPath)
         ))
-        .forEach(change => keys.push(normalizeTeacherKey(change.teacher)));
+        .forEach(change => {
+          keys.push(normalizeTeacherKey(change.teacher));
+          emails.push(getTeacherEmail(change.teacher));
+        });
       classKeys.set(String(clase.id || clase.refPath || ''), uniqueStrings(keys));
+      classEmails.set(String(clase.id || clase.refPath || ''), uniqueStrings(emails));
     });
 
     const keysForClass = (classId = '', classPath = '') => {
@@ -4243,12 +4261,19 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       return clase ? (classKeys.get(String(clase.id || clase.refPath || '')) || []) : [];
     };
 
+    const emailsForClass = (classId = '', classPath = '') => {
+      const clase = classById.get(String(classId || '')) || classByPath.get(String(classPath || ''));
+      return clase ? (classEmails.get(String(clase.id || clase.refPath || '')) || []) : [];
+    };
+
     const classAuthorizations = recurringClassesOnly
       .filter(clase => clase.refPath)
       .map(clase => ({
         refPath: clase.refPath,
         current: clase.authorizedTeacherKeys || [],
-        desired: classKeys.get(String(clase.id || clase.refPath || '')) || [normalizeTeacherKey(clase.teacher)]
+        desired: classKeys.get(String(clase.id || clase.refPath || '')) || [normalizeTeacherKey(clase.teacher)],
+        currentEmails: clase.authorizedTeacherEmails || [],
+        desiredEmails: classEmails.get(String(clase.id || clase.refPath || '')) || [getTeacherEmail(clase.teacher)]
       }));
 
     const relocationAuthorizations = temporaryRelocations.map(relocation => ({
@@ -4259,6 +4284,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         ...keysForClass(relocation.targetClassId, relocation.targetClassRefPath),
         normalizeTeacherKey(relocation.sourceTeacher),
         normalizeTeacherKey(relocation.targetTeacher)
+      ]),
+      currentEmails: relocation.teacherEmails || [],
+      desiredEmails: uniqueStrings([
+        ...emailsForClass(relocation.sourceClassId, relocation.sourceClassRefPath),
+        ...emailsForClass(relocation.targetClassId, relocation.targetClassRefPath),
+        getTeacherEmail(relocation.sourceTeacher),
+        getTeacherEmail(relocation.targetTeacher)
       ])
     }));
 
@@ -4270,6 +4302,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         desired: uniqueStrings([
           normalizeTeacherKey(change.officialSchedule?.teacher || clase?.teacher),
           normalizeTeacherKey(change.teacher)
+        ]),
+        currentEmails: change.teacherEmails || [],
+        desiredEmails: uniqueStrings([
+          getTeacherEmail(change.officialSchedule?.teacher || clase?.teacher),
+          getTeacherEmail(change.teacher)
         ]),
         currentRefPath: change.classRefPath || '',
         desiredRefPath: change.classRefPath || clase?.refPath || ''
@@ -4287,6 +4324,16 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         normalizeTeacherKey(gestion.targetTeacher),
         normalizeTeacherKey(gestion.teacherName),
         normalizeTeacherKey(gestion.teacher)
+      ]),
+      currentEmails: gestion.teacherEmails || [],
+      desiredEmails: uniqueStrings([
+        ...emailsForClass(gestion.sourceClassId || gestion.sourceClass, gestion.sourceClassRefPath),
+        ...emailsForClass(gestion.requestedClass || gestion.targetClassId, gestion.requestedClassRefPath || gestion.targetClassRefPath),
+        getTeacherEmail(gestion.sourceTeacher),
+        getTeacherEmail(gestion.requestedTeacher),
+        getTeacherEmail(gestion.targetTeacher),
+        getTeacherEmail(gestion.teacherName),
+        getTeacherEmail(gestion.teacher)
       ])
     }));
 
@@ -4308,10 +4355,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           refPath: ticket.refPath,
           currentTeacherKeys: ticket.teacherKeys || [],
           desiredTeacherKeys: uniqueStrings(studentClasses.map(clase => normalizeTeacherKey(clase.teacher))),
+          currentTeacherEmails: ticket.teacherEmails || [],
+          desiredTeacherEmails: uniqueStrings(studentClasses.map(clase => getTeacherEmail(clase.teacher))),
           currentRecoveryTeacherKeys: ticket.recoveryTeacherKeys || [],
           desiredRecoveryTeacherKeys: uniqueStrings(matchingGestiones.flatMap(gestion => [
             normalizeTeacherKey(gestion.requestedTeacher),
             ...(gestion.teacherKeys || [])
+          ])),
+          currentRecoveryTeacherEmails: ticket.recoveryTeacherEmails || [],
+          desiredRecoveryTeacherEmails: uniqueStrings(matchingGestiones.flatMap(gestion => [
+            getTeacherEmail(gestion.requestedTeacher),
+            ...(gestion.teacherEmails || [])
           ]))
         };
       });
@@ -4333,36 +4387,48 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const timer = window.setTimeout(async () => {
       const operations = [];
       teacherSecurityAuthorization.classAuthorizations.forEach(item => {
-        if (!sameStringSet(item.current, item.desired)) {
-          operations.push(batch => batch.update(doc(db, item.refPath), { authorizedTeacherKeys: item.desired }));
+        const payload = {};
+        if (!sameStringSet(item.current, item.desired)) payload.authorizedTeacherKeys = item.desired;
+        if (!sameStringSet(item.currentEmails, item.desiredEmails)) payload.authorizedTeacherEmails = item.desiredEmails;
+        if (Object.keys(payload).length > 0) {
+          operations.push(batch => batch.update(doc(db, item.refPath), payload));
         }
       });
       teacherSecurityAuthorization.relocationAuthorizations.forEach(item => {
-        if (item.id && !sameStringSet(item.current, item.desired)) {
-          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'temporaryRelocations', item.id), { teacherKeys: item.desired }));
+        const payload = {};
+        if (!sameStringSet(item.current, item.desired)) payload.teacherKeys = item.desired;
+        if (!sameStringSet(item.currentEmails, item.desiredEmails)) payload.teacherEmails = item.desiredEmails;
+        if (item.id && Object.keys(payload).length > 0) {
+          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'temporaryRelocations', item.id), payload));
         }
       });
       teacherSecurityAuthorization.changeAuthorizations.forEach(item => {
         const payload = {};
         if (!sameStringSet(item.current, item.desired)) payload.teacherKeys = item.desired;
+        if (!sameStringSet(item.currentEmails, item.desiredEmails)) payload.teacherEmails = item.desiredEmails;
         if (!item.currentRefPath && item.desiredRefPath) payload.classRefPath = item.desiredRefPath;
         if (item.id && Object.keys(payload).length > 0) {
           operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'temporaryClassChanges', item.id), payload));
         }
       });
       teacherSecurityAuthorization.gestionAuthorizations.forEach(item => {
-        if (item.id && !sameStringSet(item.current, item.desired)) {
-          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'gestiones', item.id), { teacherKeys: item.desired }));
+        const payload = {};
+        if (!sameStringSet(item.current, item.desired)) payload.teacherKeys = item.desired;
+        if (!sameStringSet(item.currentEmails, item.desiredEmails)) payload.teacherEmails = item.desiredEmails;
+        if (item.id && Object.keys(payload).length > 0) {
+          operations.push(batch => batch.update(doc(db, 'artifacts', appId, 'gestiones', item.id), payload));
         }
       });
       teacherSecurityAuthorization.ticketAuthorizations.forEach(item => {
         const payload = {};
         if (!sameStringSet(item.currentTeacherKeys, item.desiredTeacherKeys)) payload.teacherKeys = item.desiredTeacherKeys;
+        if (!sameStringSet(item.currentTeacherEmails, item.desiredTeacherEmails)) payload.teacherEmails = item.desiredTeacherEmails;
         if (!sameStringSet(item.currentRecoveryTeacherKeys, item.desiredRecoveryTeacherKeys)) payload.recoveryTeacherKeys = item.desiredRecoveryTeacherKeys;
+        if (!sameStringSet(item.currentRecoveryTeacherEmails, item.desiredRecoveryTeacherEmails)) payload.recoveryTeacherEmails = item.desiredRecoveryTeacherEmails;
         if (Object.keys(payload).length > 0) operations.push(batch => batch.update(doc(db, item.refPath), payload));
       });
 
-      const needsMigrationMarker = settings.teacherSecurityAuthorizationVersion !== 1;
+      const needsMigrationMarker = settings.teacherSecurityAuthorizationVersion !== 2;
       if (operations.length === 0 && !needsMigrationMarker) return;
 
       try {
@@ -4374,7 +4440,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         }
         if (!cancelled) {
           await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
-            teacherSecurityAuthorizationVersion: 1,
+            teacherSecurityAuthorizationVersion: 2,
             teacherSecurityAuthorizationSyncedAt: new Date().toISOString()
           }, { merge: true });
         }
@@ -8417,6 +8483,7 @@ Coordinación Los Mitos.`
       ...temporaryLocation,
       teacher: cleanTeacher,
       teacherKeys: [normalizeTeacherKey(cleanTeacher)],
+      teacherEmails: [getTeacherEmail(cleanTeacher)],
       dayOfWeek: Number(temporaryClassData.dayOfWeek),
       duration: Number(temporaryClassData.duration) || 60
     };
@@ -8517,6 +8584,10 @@ Coordinación Los Mitos.`
         normalizeTeacherKey(officialTeacher),
         normalizeTeacherKey(cleanTeacher)
       ]),
+      teacherEmails: uniqueStrings([
+        getTeacherEmail(officialTeacher),
+        getTeacherEmail(cleanTeacher)
+      ]),
       duration: payload.duration,
       notes: payload.notes || '',
       status: 'scheduled',
@@ -8591,6 +8662,9 @@ Coordinación Los Mitos.`
     const activeTemporaryTeacherKeys = getClassTemporaryChanges(editClassModal)
       .filter(change => change.status !== 'cancelled' && normalizeTemporaryClassChangeDate(change.until) >= todayStr)
       .map(change => normalizeTeacherKey(change.teacher));
+    const activeTemporaryTeacherEmails = getClassTemporaryChanges(editClassModal)
+      .filter(change => change.status !== 'cancelled' && normalizeTemporaryClassChangeDate(change.until) >= todayStr)
+      .map(change => getTeacherEmail(change.teacher));
     const updatedClassData = {
       ...currentClassData,
       studentIds: getClassStudentIds(currentClassData.students || []),
@@ -8606,6 +8680,10 @@ Coordinación Los Mitos.`
       authorizedTeacherKeys: uniqueStrings([
         normalizeTeacherKey(cleanTeacher),
         ...activeTemporaryTeacherKeys
+      ]),
+      authorizedTeacherEmails: uniqueStrings([
+        getTeacherEmail(cleanTeacher),
+        ...activeTemporaryTeacherEmails
       ]),
       subject: editClassData.subject,
       capacity: editClassData.capacity,
@@ -8711,6 +8789,7 @@ Coordinación Los Mitos.`
         ...newLocation,
         teacher: officialTeacherName,
         authorizedTeacherKeys: [normalizeTeacherKey(officialTeacherName)],
+        authorizedTeacherEmails: [getTeacherEmail(officialTeacherName)],
         ...baseWebConfig,
         cuotaBase: Number(newClassData.cuotaBase) || 0, // 👈 Cuota para Informes
         id: classId,
@@ -11444,6 +11523,7 @@ ${startDateWarning}
         formatClassLine={formatClassLine}
         sendTeacherNotification={sendTeacherNotification}
         sendStudentNotification={sendStudentNotification}
+        getTeacherEmail={getTeacherEmail}
         db={db}
         appId={appId}
         user={user}

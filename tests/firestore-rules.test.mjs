@@ -120,21 +120,23 @@ async function seed(testEnv) {
         studentId: STUDENT.id,
         studentEmail: STUDENT.email,
         teacherKeys: ['norman'],
+        teacherEmails: [TEACHER.email],
         status: 'pendiente'
       }],
       [`${ROOT}/gestiones/gestion-other`, {
         studentId: OTHER_STUDENT.id,
         studentEmail: OTHER_STUDENT.email,
         teacherKeys: ['dago'],
+        teacherEmails: [OTHER_TEACHER.email],
         status: 'pendiente'
       }],
-      [`${ROOT}/temporaryRelocations/relocation-own`, { studentId: STUDENT.id, studentEmail: STUDENT.email, teacherKeys: ['norman'] }],
-      [`${ROOT}/temporaryRelocations/relocation-other`, { studentId: OTHER_STUDENT.id, studentEmail: OTHER_STUDENT.email, teacherKeys: ['dago'] }],
-      [`${ROOT}/temporaryRelocations/relocation-shared`, { studentId: STUDENT.id, studentEmail: STUDENT.email, teacherKeys: ['dago', 'norman'] }],
+      [`${ROOT}/temporaryRelocations/relocation-own`, { studentId: STUDENT.id, studentEmail: STUDENT.email, teacherKeys: ['norman'], teacherEmails: [TEACHER.email] }],
+      [`${ROOT}/temporaryRelocations/relocation-other`, { studentId: OTHER_STUDENT.id, studentEmail: OTHER_STUDENT.email, teacherKeys: ['dago'], teacherEmails: [OTHER_TEACHER.email] }],
+      [`${ROOT}/temporaryRelocations/relocation-shared`, { studentId: STUDENT.id, studentEmail: STUDENT.email, teacherKeys: ['dago', 'norman'], teacherEmails: [OTHER_TEACHER.email, TEACHER.email] }],
       [`${ROOT}/maintenancePeriods/maintenance-own`, { studentId: STUDENT.id, studentEmail: STUDENT.email }],
-      [`${ROOT}/temporaryClassChanges/change-private`, { teacherName: 'Norman', teacherKeys: ['norman'] }],
-      [`${ROOT}/temporaryClassChanges/change-other`, { teacherName: 'Dago', teacherKeys: ['dago'] }],
-      [`${ROOT}/temporaryClassChanges/change-shared`, { teacherName: 'Dago', teacherKeys: ['dago', 'norman'] }],
+      [`${ROOT}/temporaryClassChanges/change-private`, { teacherName: 'Norman', teacherKeys: ['norman'], teacherEmails: [TEACHER.email] }],
+      [`${ROOT}/temporaryClassChanges/change-other`, { teacherName: 'Dago', teacherKeys: ['dago'], teacherEmails: [OTHER_TEACHER.email] }],
+      [`${ROOT}/temporaryClassChanges/change-shared`, { teacherName: 'Dago', teacherKeys: ['dago', 'norman'], teacherEmails: [OTHER_TEACHER.email, TEACHER.email] }],
 
       [`${ROOT}/substitutions/substitution-cross`, {
         status: 'open',
@@ -245,6 +247,7 @@ async function seed(testEnv) {
         teacher: 'Norman',
         teacherName: 'Norman',
         authorizedTeacherKeys: ['norman'],
+        authorizedTeacherEmails: [TEACHER.email],
         studentIds: [STUDENT.id],
         students: [{ id: STUDENT.id, name: 'Alumna Uno' }],
         exceptions: []
@@ -253,6 +256,7 @@ async function seed(testEnv) {
         teacher: 'Dago',
         teacherName: 'Dago',
         authorizedTeacherKeys: ['dago'],
+        authorizedTeacherEmails: [OTHER_TEACHER.email],
         studentIds: [OTHER_STUDENT.id],
         students: [{ id: OTHER_STUDENT.id, name: 'Alumno Dos' }],
         exceptions: []
@@ -261,6 +265,7 @@ async function seed(testEnv) {
         teacher: 'Dago',
         teacherName: 'Dago',
         authorizedTeacherKeys: ['dago', 'norman'],
+        authorizedTeacherEmails: [OTHER_TEACHER.email, TEACHER.email],
         studentIds: [STUDENT.id],
         students: [{ id: STUDENT.id, name: 'Alumna Uno' }],
         exceptions: []
@@ -271,6 +276,8 @@ async function seed(testEnv) {
         subject: 'Guitarra',
         teacherKeys: ['norman'],
         recoveryTeacherKeys: [],
+        teacherEmails: [TEACHER.email],
+        recoveryTeacherEmails: [],
         status: 'pending'
       }],
       [`${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`, {
@@ -279,6 +286,8 @@ async function seed(testEnv) {
         subject: 'Batería',
         teacherKeys: ['dago'],
         recoveryTeacherKeys: [],
+        teacherEmails: [OTHER_TEACHER.email],
+        recoveryTeacherEmails: [],
         status: 'pending'
       }],
       [`${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-recovery-shared`, {
@@ -287,6 +296,8 @@ async function seed(testEnv) {
         subject: 'Guitarra',
         teacherKeys: ['dago'],
         recoveryTeacherKeys: ['norman'],
+        teacherEmails: [OTHER_TEACHER.email],
+        recoveryTeacherEmails: [TEACHER.email],
         isUsed: false,
         status: 'pending'
       }]
@@ -496,6 +507,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
 
       await assertSucceeds(updateDoc(ownTicket, {
         recoveryTeacherKeys: ['dago'],
+        recoveryTeacherEmails: [OTHER_TEACHER.email],
         recoveryGestionIds: ['recovery-own'],
         recoveryAuthorizedAt: '2026-08-30T12:00:00.000Z'
       }));
@@ -505,6 +517,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       }));
       await assertFails(updateDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`), {
         recoveryTeacherKeys: ['norman'],
+        recoveryTeacherEmails: [TEACHER.email],
         recoveryGestionIds: ['forged'],
         recoveryAuthorizedAt: '2026-08-30T12:00:00.000Z'
       }));
@@ -545,7 +558,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(getDocs(collectionGroup(db, 'recurringClasses')));
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'recurringClasses'),
-        where('authorizedTeacherKeys', 'array-contains', 'norman')
+        where('authorizedTeacherEmails', 'array-contains', TEACHER.email)
       )));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`)));
       await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-other`)));
@@ -557,18 +570,18 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(getDoc(doc(db, `${ROOT}/gestiones/gestion-other`)));
       await assertSucceeds(getDocs(query(
         collection(db, `${ROOT}/gestiones`),
-        where('teacherKeys', 'array-contains', 'norman')
+        where('teacherEmails', 'array-contains', TEACHER.email)
       )));
       await assertFails(getDocs(collection(db, `${ROOT}/gestiones`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/tickets/ticket-own`)));
       await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/tickets/ticket-other`)));
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'tickets'),
-        where('teacherKeys', 'array-contains', 'norman')
+        where('teacherEmails', 'array-contains', TEACHER.email)
       )));
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'tickets'),
-        where('recoveryTeacherKeys', 'array-contains', 'norman')
+        where('recoveryTeacherEmails', 'array-contains', TEACHER.email)
       )));
       await assertFails(getDocs(collectionGroup(db, 'tickets')));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/class-temporary-shared`)));

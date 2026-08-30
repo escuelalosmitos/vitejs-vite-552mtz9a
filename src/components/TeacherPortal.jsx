@@ -825,7 +825,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
     setLoadingData(true);
     const myName = getTeacherName();
-    const myTeacherKey = normalizeTeacherKey(myName);
     const teacherEmail = String(user.email || '').trim().toLowerCase();
     const today = getTodayLocalString();
     const operationalLookbackDate = shiftLocalDateString(today, -3);
@@ -849,7 +848,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       ownerUid,
       ref: query(
         collection(db, 'artifacts', appId, 'users', ownerUid, 'recurringClasses'),
-        where('authorizedTeacherKeys', 'array-contains', myTeacherKey)
+        where('authorizedTeacherEmails', 'array-contains', teacherEmail)
       )
     }));
     const recordsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
@@ -863,13 +862,13 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
           query(substitutionsCollection, where('assumedByUid', '==', user.uid))
         ];
     const gestionesCollection = collection(db, 'artifacts', appId, 'gestiones');
-    const teacherGestionesRef = query(gestionesCollection, where('teacherKeys', 'array-contains', myTeacherKey));
+    const teacherGestionesRef = query(gestionesCollection, where('teacherEmails', 'array-contains', teacherEmail));
     const payrollAdjustmentsRef = query(
       collection(db, 'artifacts', appId, 'payrollAdjustments'),
       where('teacher', '==', myName)
     );
-    const temporaryRelocationsRef = query(collection(db, 'artifacts', appId, 'temporaryRelocations'), where('teacherKeys', 'array-contains', myTeacherKey));
-    const temporaryClassChangesRef = query(collection(db, 'artifacts', appId, 'temporaryClassChanges'), where('teacherKeys', 'array-contains', myTeacherKey));
+    const temporaryRelocationsRef = query(collection(db, 'artifacts', appId, 'temporaryRelocations'), where('teacherEmails', 'array-contains', teacherEmail));
+    const temporaryClassChangesRef = query(collection(db, 'artifacts', appId, 'temporaryClassChanges'), where('teacherEmails', 'array-contains', teacherEmail));
     const announcementsRef = collection(db, 'artifacts', appId, 'announcements');
     const teacherNotificationsCollection = collection(db, 'artifacts', appId, 'teacherNotifications');
     const teacherTasksCollection = collection(db, 'artifacts', appId, 'teacherTasks');
@@ -1303,10 +1302,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       ));
     });
 
-    const teacherKey = normalizeTeacherKey(getTeacherName());
+    const teacherEmail = String(user?.email || '').trim().toLowerCase();
     const ticketSources = [
-      query(collectionGroup(db, 'tickets'), where('teacherKeys', 'array-contains', teacherKey)),
-      query(collectionGroup(db, 'tickets'), where('recoveryTeacherKeys', 'array-contains', teacherKey))
+      query(collectionGroup(db, 'tickets'), where('teacherEmails', 'array-contains', teacherEmail)),
+      query(collectionGroup(db, 'tickets'), where('recoveryTeacherEmails', 'array-contains', teacherEmail))
     ];
     const secureTicketBuckets = new Map();
     ticketSources.forEach((ticketSource, sourceIndex) => {
@@ -2936,6 +2935,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           roomId: latestSub.roomId || assumedLocation.roomId,
           teacher: getOfficialTeacherName(),
           authorizedTeacherKeys: [normalizeTeacherKey(getOfficialTeacherName())],
+          authorizedTeacherEmails: [String(user.email || '').trim().toLowerCase()],
           subject: latestSub.subject,
           capacity: latestSub.capacity || '',
           duration: latestSub.duration || 60,
@@ -3254,6 +3254,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
             teacherNameNormalized: String(teacherName || '').trim().toLowerCase(),
             teacherEmail,
             teacherKeys: [normalizeTeacherKey(teacherName)],
+            teacherEmails: [teacherEmail],
             title: `4 faltas sin avisar: ${student.name}`,
             body: details,
             type: 'falta_reiterada',
@@ -3294,6 +3295,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
             requestedClassLine: classLine,
             requestedTeacher: teacherName,
             teacherKeys: [normalizeTeacherKey(teacherName)],
+            teacherEmails: [teacherEmail],
             streakStartDate,
             streakCount: streakRecords.length,
             absenceDates,
@@ -3357,6 +3359,8 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               subjectScope: 'specific',
               teacherKeys: [normalizeTeacherKey(getOfficialTeacherName())],
               recoveryTeacherKeys: [],
+              teacherEmails: [String(user.email || '').trim().toLowerCase()],
+              recoveryTeacherEmails: [],
               createdByUid: user.uid,
               createdByEmail: String(user.email || '').trim().toLowerCase(),
               originalDate: date,

@@ -25,6 +25,17 @@ const normalizeTeacherKey = (name = '') => String(name || '')
   .toLocaleLowerCase('es-ES')
   .replace(/[^a-z0-9]+/g, '-');
 
+const getTeacherOperationalEmail = (name = '') => {
+  const localPart = String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLocaleLowerCase('es-ES')
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.+|\.+$/g, '');
+  return localPart ? `${localPart}@escuelalosmitos.com` : '';
+};
+
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
 
 const getDayOfYear = () => {
@@ -3101,6 +3112,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedClass: absenceModal.clase.id,
         requestedTeacher: absenceModal.clase.teacher || '',
         teacherKeys: [normalizeTeacherKey(absenceModal.clase.teacher)],
+        teacherEmails: [getTeacherOperationalEmail(absenceModal.clase.teacher)],
         status: 'pendiente',
         date: new Date().toISOString()
       });
@@ -3228,6 +3240,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
           normalizeTeacherKey(resolvedSourceClass?.teacher),
           normalizeTeacherKey(selectedNewClass?.teacher)
         ]),
+        teacherEmails: uniqueStrings([
+          getTeacherOperationalEmail(resolvedSourceClass?.teacher),
+          getTeacherOperationalEmail(selectedNewClass?.teacher)
+        ]),
         requestedSede: selectedNewClass ? getClassCenterName(selectedNewClass) : '',
         requestedSala: selectedNewClass ? getClassRoomName(selectedNewClass) : '',
         requestedCenterId: selectedNewClass ? (getClassCenter(selectedNewClass)?.id || selectedNewClass.centerId || '') : '',
@@ -3254,6 +3270,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       if (isTicketRedemption && selectedRecoveryTicket?.refPath && selectedNewClass?.teacher) {
         gestionBatch.update(doc(db, selectedRecoveryTicket.refPath), {
           recoveryTeacherKeys: arrayUnion(normalizeTeacherKey(selectedNewClass.teacher)),
+          recoveryTeacherEmails: arrayUnion(getTeacherOperationalEmail(selectedNewClass.teacher)),
           recoveryGestionIds: arrayUnion(gestionId),
           recoveryAuthorizedAt: new Date().toISOString()
         });

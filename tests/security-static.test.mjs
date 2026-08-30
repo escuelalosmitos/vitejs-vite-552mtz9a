@@ -49,6 +49,14 @@ test('administración mantiene sincronizadas las clases privadas de cada alumno'
   assert.match(admin, /getClassStudentIds\(classData\.students \|\| \[\]\)/);
 });
 
+test('el portal del alumno no reinicia sus listeners por identidad del array de clases', async () => {
+  const student = await read('src/components/StudentPortal.jsx');
+  assert.match(student, /const profileClassIdsSignature =/);
+  assert.match(student, /\[profile\?\.id, profileClassIdsSignature,/);
+  assert.doesNotMatch(student, /\[profile\?\.id, profile\?\.classes,/);
+  assert.match(student, /setClassesLoadError\('No se ha podido cargar el catálogo privado necesario/);
+});
+
 test('solo classAvailability declara lectura pública', async () => {
   const rules = await read('firestore.rules');
   const publicReads = rules.match(/allow read: if true;/g) || [];

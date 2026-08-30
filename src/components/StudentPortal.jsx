@@ -654,6 +654,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
   const centers = useMemo(() => normalizeCenters(globalSettings.centers, globalSettings), [globalSettings]);
   const isStudentClassIndexReady = Number(globalSettings.studentClassIndexVersion || 0) >= 1;
+  const profileClassIdsSignature = (profile?.classes || [])
+    .map(classValue => String(classValue?.id || classValue?.classId || classValue || '').trim())
+    .filter(Boolean)
+    .sort()
+    .join('|');
   const allClasses = useMemo(() => {
     const byReference = new Map();
     [...myClasses, ...relocationTargetClasses, ...classCatalog].forEach(classData => {
@@ -2115,6 +2120,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => {
         console.error('Error al cargar la configuración global', error);
         setSettingsLoadError('No se ha podido consultar el calendario escolar.');
+        setClassesLoadError('No se ha podido cargar la configuración necesaria para comprobar tus clases. Reintenta en unos instantes.');
+        setClassesLoaded(true);
         setSettingsLoaded(true);
       }
     );
@@ -2386,7 +2393,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubCallResponses();
       unsubTickets(); 
     };
-  }, [profile?.id, profile?.classes, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, classCatalog, classesRetryNonce, db, appId, user.email]);
+  }, [profile?.id, profileClassIdsSignature, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, classCatalog, classesRetryNonce, db, appId, user.email]);
 
   // Una recolocación puede llevar al alumno a una clase que no forma parte de su
   // plaza fija. Se resuelve desde el catálogo privado sin leer la ficha completa
@@ -2449,6 +2456,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setClassCatalogLoading(true);
     setClassCatalogLoaded(false);
     setClassCatalogError('');
+    setClassesLoadError('');
     return onSnapshot(
       doc(db, 'artifacts', appId, 'roleData', 'studentClassCatalog'),
       snapshot => {
@@ -2457,7 +2465,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
         setCatalogTemporaryClassChanges(Array.isArray(data.temporaryClassChanges) ? data.temporaryClassChanges : []);
         setClassCatalogLoading(false);
         setClassCatalogLoaded(snapshot.exists());
-        if (!snapshot.exists()) setClassCatalogError('Administración todavía no ha publicado el catálogo privado de clases.');
+        if (!snapshot.exists()) {
+          setClassCatalogError('Administración todavía no ha publicado el catálogo privado de clases.');
+          setClassesLoadError('Administración todavía no ha publicado el catálogo privado necesario para comprobar tus clases.');
+          setClassesLoaded(true);
+        }
       },
       error => {
         console.error('Error al cargar el catálogo privado de clases', error);
@@ -2468,6 +2480,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
         setClassCatalogLoading(false);
         setClassCatalogLoaded(false);
         setClassCatalogError('No se ha podido consultar la disponibilidad. Reintenta antes de elegir una plaza o una sala.');
+        setClassesLoadError('No se ha podido cargar el catálogo privado necesario para comprobar tus clases. Reintenta en unos instantes.');
+        setClassesLoaded(true);
       }
     );
   }, [settingsLoaded, isStudentClassIndexReady, classCatalogRetryNonce, db, appId]);

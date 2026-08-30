@@ -9,6 +9,8 @@ hace por fases para que la plataforma en producción no se quede sin servicio.
 2. En Firebase Console, abre **Firestore Database > Rules** y guarda una copia
    del contenido actualmente publicado.
 3. No borres ningún índice existente durante el proceso.
+4. Comprueba en Vercel que la versión actual de `main` sigue marcada como
+   **Production** y que la rama de seguridad aparece únicamente como **Preview**.
 
 ## 2. Instalar y compilar
 
@@ -28,7 +30,9 @@ No continúes con los pasos siguientes mientras exista un test fallido.
 
 ## 3. Preparar los datos privados antes de cambiar las reglas
 
-Arranca temporalmente la versión nueva en el ordenador:
+Abre el despliegue **Preview** de la rama de seguridad en Vercel e inicia sesión
+como administrador. Como alternativa, arranca temporalmente la versión nueva en
+el ordenador:
 
 ```bash
 npm run dev
@@ -43,9 +47,10 @@ Espera a que el portal termine de cargar. Este acceso prepara automáticamente:
 - el campo `studentIds` de las clases que todavía no lo tuvieran
 - el campo normalizado `studentEmail` de los tickets antiguos
 
-En Firebase Console comprueba que existen esos documentos y que
-`settings/global.studentTicketEmailIndexVersion` vale `1`. Después detén Vite
-con `Ctrl+C`.
+En Firebase Console comprueba que existen esos documentos y que los campos
+`settings/global.studentClassIndexVersion` y
+`settings/global.studentTicketEmailIndexVersion` valen `1`. Si utilizaste Vite,
+detén el proceso con `Ctrl+C`.
 
 ## 4. Publicar
 
@@ -62,11 +67,13 @@ existentes, responde **No**:
 npx firebase-tools deploy --project escuela-musica-app --only firestore:indexes
 ```
 
-Publica la aplicación compilada:
+Cuando el índice esté habilitado, incorpora la rama probada a `main`. La
+integración Git de Vercel creará automáticamente el despliegue **Production**.
+Espera a que Vercel indique **Ready** y comprueba que Administración carga y que
+el cierre de sesión vuelve a la pantalla de acceso.
 
-```bash
-npx firebase-tools deploy --project escuela-musica-app --only hosting
-```
+No ejecutes `firebase deploy --only hosting`: la aplicación está alojada en
+Vercel y `firebase.json` configura únicamente Firestore.
 
 Finalmente publica las reglas:
 
@@ -74,7 +81,7 @@ Finalmente publica las reglas:
 npx firebase-tools deploy --project escuela-musica-app --only firestore:rules
 ```
 
-No se despliegan Cloud Functions.
+No se despliegan Firebase Hosting ni Cloud Functions.
 
 ## 5. Verificación posterior
 
@@ -86,6 +93,7 @@ Comprueba en una ventana privada del navegador:
 4. Administración mantiene acceso completo.
 5. Al cerrar sesión se muestra de nuevo la pantalla de acceso.
 
-Si falla la web, restaura la versión anterior desde **Firebase Hosting > Release
-history**. Si fallan los permisos, vuelve a publicar la copia anterior de las
-reglas que guardaste en el primer paso.
+Si falla la web, restaura la versión **Production** anterior desde el historial
+de despliegues de Vercel. Si fallan los permisos, vuelve a publicar la copia
+anterior de las reglas que guardaste en el primer paso y después investiga el
+rol afectado antes de intentarlo de nuevo.

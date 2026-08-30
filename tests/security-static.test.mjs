@@ -49,10 +49,10 @@ test('solo classAvailability declara lectura pública', async () => {
   assert.match(rules, /match \/publicData\/\{document=\*\*\}[\s\S]*allow read, write: if false;/);
 });
 
-test('Firebase se despliega sin Cloud Functions', async () => {
+test('Firebase solo despliega Firestore; Vercel aloja la aplicación', async () => {
   const config = JSON.parse(await read('firebase.json'));
   assert.ok(config.firestore);
-  assert.ok(config.hosting);
+  assert.equal('hosting' in config, false);
   assert.equal('functions' in config, false);
 });
 

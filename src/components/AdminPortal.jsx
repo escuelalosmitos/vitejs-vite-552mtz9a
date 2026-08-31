@@ -16,7 +16,7 @@ const BI_WEEKS_PER_MONTH = 4.333;
 const MAINTENANCE_MONTHLY_FEE = 15;
 const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
-const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 1;
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 2;
 
 const normalizeTicketSubject = (value = '') => String(value || '').trim();
 const isFlexibleRecoveryTicket = (ticket = {}) => {
@@ -756,6 +756,43 @@ const normalizeGestionDateString = (value = '') => {
 const getDateDayIndex = (dateString) => {
   const date = parseLocalDateString(dateString);
   return date ? date.getDay() : null;
+};
+
+const formatLocalDateString = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Mantiene un grupo en formación siempre en una fecha futura. Cada vez que
+// vence su fecha, salta al primer día de clase correspondiente del mes
+// siguiente. Si Administración no se abrió durante varios meses, avanza las
+// veces necesarias hasta alcanzar una fecha vigente.
+const getAutoAdvancedClassStartDate = (startDate, classDayOfWeek, todayStr = getTodayLocalString()) => {
+  const cleanStartDate = normalizeGestionDateString(startDate);
+  const cleanToday = normalizeGestionDateString(todayStr) || getTodayLocalString();
+  if (!cleanStartDate || cleanStartDate >= cleanToday) return cleanStartDate;
+
+  const targetDay = Number(classDayOfWeek);
+  if (!Number.isInteger(targetDay) || targetDay < 0 || targetDay > 6) return cleanStartDate;
+
+  let cursor = parseLocalDateString(cleanStartDate);
+  if (!cursor) return cleanStartDate;
+
+  let effectiveDate = cleanStartDate;
+  let safetyCounter = 0;
+  while (effectiveDate < cleanToday && safetyCounter < 120) {
+    const firstDayNextMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    const offset = (targetDay - firstDayNextMonth.getDay() + 7) % 7;
+    firstDayNextMonth.setDate(1 + offset);
+    cursor = firstDayNextMonth;
+    effectiveDate = formatLocalDateString(cursor);
+    safetyCounter += 1;
+  }
+
+  return effectiveDate || cleanStartDate;
 };
 
 const formatDateWithWeekday = (dateString) => {
@@ -1877,6 +1914,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const classIndexMigrationRef = useRef(false);
   const ticketEmailMigrationRef = useRef(false);
   const studentClassMembershipSyncRef = useRef(false);
+  const autoStartDateAdvanceRef = useRef({ inFlight: false, signature: '' });
   const publicAvailabilitySyncRef = useRef({
     inFlight: false,
     queued: false,
@@ -2533,6 +2571,63 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return allClasses.filter(c => !isPunctualClass(c));
   }, [allClasses]);
 
+  // Al abrir Administración, pone al día de una sola vez todos los grupos que
+  // continúan marcados como "en formación". La proyección pública usa además
+  // el mismo cálculo, por lo que la web no llega a publicar una fecha vencida.
+  useEffect(() => {
+    if (!classesLoaded || autoStartDateAdvanceRef.current.inFlight) return undefined;
+
+    const pendingUpdates = recurringClassesOnly
+      .filter(clase => clase.autoAdvanceStartDate === true && clase.startDate && clase.refPath)
+      .map(clase => {
+        const currentStartDate = normalizeGestionDateString(clase.startDate);
+        const nextStartDate = getAutoAdvancedClassStartDate(currentStartDate, clase.dayOfWeek, todayStr);
+        return { clase, currentStartDate, nextStartDate };
+      })
+      .filter(item => item.currentStartDate && item.nextStartDate && item.nextStartDate !== item.currentStartDate);
+
+    if (pendingUpdates.length === 0) {
+      autoStartDateAdvanceRef.current.signature = '';
+      return undefined;
+    }
+
+    const signature = pendingUpdates
+      .map(item => `${item.clase.refPath}:${item.currentStartDate}>${item.nextStartDate}`)
+      .sort()
+      .join('|');
+    if (autoStartDateAdvanceRef.current.signature === signature) return undefined;
+
+    autoStartDateAdvanceRef.current.inFlight = true;
+    autoStartDateAdvanceRef.current.signature = signature;
+    let cancelled = false;
+
+    const persistAdvancedDates = async () => {
+      try {
+        const batch = writeBatch(db);
+        const advancedAt = new Date().toISOString();
+        pendingUpdates.forEach(({ clase, currentStartDate, nextStartDate }) => {
+          batch.update(doc(db, clase.refPath), {
+            startDate: nextStartDate,
+            startDateAutoAdvancedAt: advancedAt,
+            startDateAutoAdvancedFrom: currentStartDate
+          });
+        });
+        await batch.commit();
+        if (!cancelled) {
+          console.info(`Fechas de inicio actualizadas automáticamente: ${pendingUpdates.length}`);
+        }
+      } catch (error) {
+        console.error('No se pudieron actualizar automáticamente las fechas de inicio:', error);
+        autoStartDateAdvanceRef.current.signature = '';
+      } finally {
+        autoStartDateAdvanceRef.current.inFlight = false;
+      }
+    };
+
+    persistAdvancedDates();
+    return () => { cancelled = true; };
+  }, [classesLoaded, recurringClassesOnly, todayStr, db]);
+
   const centerNamesForReporting = useMemo(() => {
     const configuredNames = centers.map(center => center.name);
     const historicalNames = recurringClassesOnly.map(classData => getClassCenterName(classData));
@@ -3087,7 +3182,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const dayNum = parseInt(clase.dayOfWeek, 10);
         const timeStr = String(clase.time || '').trim();
         const instrument = String(clase.subject || '').trim();
-        const publicStartDate = normalizeGestionDateString(clase.startDate || '');
+        const storedStartDate = normalizeGestionDateString(clase.startDate || '');
+        const autoAdvanceStartDate = clase.autoAdvanceStartDate === true;
+        const publicStartDate = autoAdvanceStartDate
+          ? getAutoAdvancedClassStartDate(storedStartDate, dayNum, todayStr)
+          : storedStartDate;
         const availabilityDate = publicStartDate && publicStartDate > todayStr ? publicStartDate : todayStr;
         const occupiedSeats = (clase.students || []).filter(studentEntry => (
           isPublicCommittedSeat(studentEntry, availabilityDate)
@@ -3109,7 +3208,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           url: String(clase.tadosiUrl || '').trim(),
           precio: String(clase.price || '').trim(),
           detalles: String(clase.publicDetails || '').trim(),
-          inicio: publicStartDate || null
+          inicio: publicStartDate || null,
+          autoAdvanceStartDate
         };
       })
       .filter(Boolean)
@@ -10418,6 +10518,7 @@ ${valueOrDash(comments.privateNote)}`,
       isWebVisible: editWebModal.isWebVisible || false,
       tadosiUrl: editWebModal.tadosiUrl || '',
       startDate: editWebModal.startDate || '',
+      autoAdvanceStartDate: editWebModal.autoAdvanceStartDate === true,
       price: editWebModal.price || '',
       cuotaBase: editWebModal.cuotaBase || 60, 
       publicDetails: editWebModal.publicDetails || '',
@@ -10430,8 +10531,12 @@ ${valueOrDash(comments.privateNote)}`,
 
       setSaving(true);
       try {
+        const effectiveStartDate = formData.autoAdvanceStartDate
+          ? getAutoAdvancedClassStartDate(formData.startDate, editWebModal.dayOfWeek, todayStr)
+          : formData.startDate;
         await updateDoc(doc(db, editWebModal.refPath), {
           ...formData,
+          startDate: effectiveStartDate,
           whatsappGroupUrl: cleanWhatsappUrl || '',
           cuotaBase: Number(formData.cuotaBase) || 0
         });
@@ -10487,7 +10592,20 @@ ${valueOrDash(comments.privateNote)}`,
                     </div>
                     <div>
                       <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Día exacto de Inicio</label>
-                      <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                      <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value, autoAdvanceStartDate: e.target.value ? formData.autoAdvanceStartDate : false})} className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                      <label className="mt-3 flex items-start gap-2 cursor-pointer rounded-xl border border-blue-100 bg-blue-50 p-3">
+                        <input
+                          type="checkbox"
+                          checked={formData.autoAdvanceStartDate}
+                          onChange={e => setFormData({...formData, autoAdvanceStartDate: e.target.checked})}
+                          disabled={!formData.startDate}
+                          className="mt-0.5 w-4 h-4 accent-blue-600 disabled:opacity-40"
+                        />
+                        <span>
+                          <span className="block text-[10px] font-black uppercase tracking-widest text-blue-800">Aplazar automáticamente mientras el grupo esté en formación</span>
+                          <span className="block mt-1 text-[9px] font-bold leading-relaxed text-blue-700">Si la fecha vence, pasará al primer día correspondiente de la clase del mes siguiente. Desactívalo cuando confirmes el inicio.</span>
+                        </span>
+                      </label>
                     </div>
                   </div>
                   <div>

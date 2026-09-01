@@ -16,7 +16,7 @@ const BI_WEEKS_PER_MONTH = 4.333;
 const MAINTENANCE_MONTHLY_FEE = 15;
 const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
-const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 2;
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 3;
 
 const normalizeTicketSubject = (value = '') => String(value || '').trim();
 const isFlexibleRecoveryTicket = (ticket = {}) => {
@@ -36,6 +36,24 @@ const buildPublicAvailabilitySignature = (classes = []) => {
     hash = Math.imul(hash, 16777619);
   }
   return `v${PUBLIC_AVAILABILITY_SCHEMA_VERSION}-${(hash >>> 0).toString(16)}-${serialized.length}`;
+};
+
+// Identificador público opaco y estable para distinguir turnos que comparten
+// sede, instrumento y horario sin exponer su ruta interna de Firestore.
+const buildPublicClassSelectionId = (value = '') => {
+  const source = String(value || '').trim();
+  if (!source) return '';
+
+  let hashA = 2166136261;
+  let hashB = 5381;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    hashA ^= code;
+    hashA = Math.imul(hashA, 16777619);
+    hashB = Math.imul(hashB, 33) ^ code;
+  }
+
+  return `class-${(hashA >>> 0).toString(36)}-${(hashB >>> 0).toString(36)}`;
 };
 
 const createPollOption = (label = '') => ({
@@ -3178,6 +3196,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     const classes = recurringClassesOnly
       .filter(clase => clase?.isWebVisible === true && !isPunctualClass(clase))
       .map(clase => {
+        const selectionId = buildPublicClassSelectionId(clase.refPath || clase.id);
         const maxCap = parseInt(clase.capacity, 10) || 0;
         const dayNum = parseInt(clase.dayOfWeek, 10);
         const timeStr = String(clase.time || '').trim();
@@ -3193,11 +3212,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         )).length;
         const availableSeats = Math.max(maxCap - occupiedSeats, 0);
 
-        if (!maxCap || !instrument || !timeStr || !Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6 || availableSeats <= 0) {
+        if (!selectionId || !maxCap || !instrument || !timeStr || !Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6 || availableSeats <= 0) {
           return null;
         }
 
         return {
+          selectionId,
           escuela: String(clase.sede || 'Tarragona').trim() || 'Tarragona',
           instrumento: instrument,
           horario: `${getDayName(dayNum)} a las ${timeStr}h`,

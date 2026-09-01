@@ -2372,20 +2372,22 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
   }, [needsCallResponsesData, appId, db, deferredRetryVersion]);
 
-  // Migra una sola vez las clases antiguas. StudentPortal no activa la consulta optimizada
-  // hasta que todas las clases contienen un índice studentIds coherente.
+  // Mantiene coherente el índice privado de alumnos de cada clase. La primera
+  // ejecución activa la versión del índice y las siguientes reparan cualquier
+  // clase antigua o modificada por un flujo que no hubiese actualizado studentIds.
   useEffect(() => {
     if (!settingsLoaded || !classesLoaded || classIndexMigrationRef.current) return;
-    if (Number(settings.studentClassIndexVersion || 0) >= 1) return;
+
+    const classesToUpdate = allClasses.filter(classData => {
+      const expectedStudentIds = getClassStudentIds(classData.students || []);
+      return !haveSameStringValues(classData.studentIds || [], expectedStudentIds);
+    });
+    const needsInitialActivation = Number(settings.studentClassIndexVersion || 0) < 1;
+    if (!needsInitialActivation && classesToUpdate.length === 0) return;
 
     classIndexMigrationRef.current = true;
     const migrateClassStudentIndex = async () => {
       try {
-        const classesToUpdate = allClasses.filter(classData => {
-          const expectedStudentIds = getClassStudentIds(classData.students || []);
-          return !haveSameStringValues(classData.studentIds || [], expectedStudentIds);
-        });
-
         for (let start = 0; start < classesToUpdate.length; start += 400) {
           const batch = writeBatch(db);
           classesToUpdate.slice(start, start + 400).forEach(classData => {
@@ -2397,21 +2399,24 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           await batch.commit();
         }
 
-        // No se activa la versión optimizada hasta comprobar que Firestore acepta
-        // la consulta de grupo necesaria (reglas e índice de studentIds incluidos).
-        await getDocs(query(
-          collectionGroup(db, 'recurringClasses'),
-          where('studentIds', 'array-contains', '__student_index_probe__')
-        ));
+        if (needsInitialActivation) {
+          // No se activa la versión optimizada hasta comprobar que Firestore acepta
+          // la consulta de grupo necesaria (reglas e índice de studentIds incluidos).
+          await getDocs(query(
+            collectionGroup(db, 'recurringClasses'),
+            where('studentIds', 'array-contains', '__student_index_probe__')
+          ));
 
-        await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
-          studentClassIndexVersion: 1,
-          studentClassIndexMigratedAt: new Date().toISOString(),
-          studentClassIndexMigratedClasses: classesToUpdate.length
-        }, { merge: true });
+          await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), {
+            studentClassIndexVersion: 1,
+            studentClassIndexMigratedAt: new Date().toISOString(),
+            studentClassIndexMigratedClasses: classesToUpdate.length
+          }, { merge: true });
+        }
       } catch (error) {
-        classIndexMigrationRef.current = false;
         console.error('No se pudo completar la migración de studentIds:', error);
+      } finally {
+        classIndexMigrationRef.current = false;
       }
     };
 
@@ -2478,7 +2483,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const classIdsByStudentId = new Map();
         const classSubjectsByStudentId = new Map();
         const studentsById = new Map(students.map(student => [String(student.id || ''), student]));
-        allClasses.forEach(classData => {
+        const studentOperationalClasses = allClasses.filter(classData => (
+          isOperationalClass(classData, membershipSyncDate)
+        ));
+
+        studentOperationalClasses.forEach(classData => {
           const classId = String(classData.id || classData.docId || '').trim();
           if (!classId) return;
 
@@ -3251,7 +3260,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   // correos ni notas internas. La ruta permite pedir después cada clase por
   // lectura directa; las reglas siguen comprobando que el alumno pertenezca a ella.
   const studentClassCatalogPublication = useMemo(() => {
-    const classes = recurringClassesOnly.map(clase => {
+    const classes = operationalClasses.map(clase => {
       const seatData = getCommercialSeatDataForClass(clase);
       return {
         id: String(clase.id || '').trim(),
@@ -3266,6 +3275,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         centerId: String(clase.centerId || '').trim(),
         roomId: String(clase.roomId || '').trim(),
         duration: Number(clase.duration) || 60,
+        date: String(clase.date || '').trim(),
+        specificDate: String(clase.specificDate || '').trim(),
+        isRecurring: clase.isRecurring !== false,
         capacity: Number(clase.capacity) || seatData.cap || 0,
         committedSeatCount: seatData.committedCount,
         activeStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
@@ -3296,7 +3308,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       temporaryClassChanges: sanitizedChanges,
       signature: buildPublicAvailabilitySignature([...classes, ...sanitizedChanges])
     };
-  }, [recurringClassesOnly, temporaryClassChanges, students, todayStr]);
+  }, [operationalClasses, temporaryClassChanges, students, todayStr]);
 
   const studentSettingsPublication = useMemo(() => {
     const data = {
@@ -3402,7 +3414,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (!studentsLoaded || !classesLoaded) return undefined;
     const timer = window.setTimeout(() => {
       setDoc(doc(db, 'artifacts', appId, 'roleData', 'studentClassCatalog'), {
-        schemaVersion: 1,
+        schemaVersion: 2,
         updatedAt: new Date().toISOString(),
         signature: studentClassCatalogPublication.signature,
         classes: studentClassCatalogPublication.classes,

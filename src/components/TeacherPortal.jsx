@@ -12,6 +12,7 @@ import { collection, query, where, documentId, getDocs, onSnapshot, doc, setDoc,
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
 const LEGACY_ROOM_NAMES = ["Sala 1", "Sala 2", "Sala 3"];
+const CLOSING_CHECKLIST_START_DATE = '2026-09-01';
 
 const normalizeTicketSubject = (value = '') => String(value || '').trim();
 const isFlexibleRecoveryTicket = (ticket = {}) => {
@@ -706,6 +707,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [announcements, setAnnouncements] = useState([]);
   const [teacherNotifications, setTeacherNotifications] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
+  const [closingScheduleCatalog, setClosingScheduleCatalog] = useState({ classes: [], temporaryClassChanges: [] });
+  const [closingScheduleLoaded, setClosingScheduleLoaded] = useState(false);
   
   const [lastReportSentDate, setLastReportSentDate] = useState('');
   const [lastSeenTeacherTablon, setLastSeenTeacherTablon] = useState('');
@@ -761,7 +764,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     incidents: '',
     newStudents: '',
     materialIssues: '',
-    hoursTaught: ''
+    hoursTaught: '',
+    equipmentAndRoomChecked: false,
+    closingChecked: false
   });
 
   const isAdmin = user?.email === ADMIN_EMAIL;
@@ -1128,6 +1133,35 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     };
   }, [user, db, appId, staffProfile]);
 
+  // Catálogo saneado de horarios: solo contiene datos operativos de las clases
+  // (sin alumnos, correos ni notas). Se usa para saber quién termina el último
+  // turno de cada sede en la fecha seleccionada.
+  useEffect(() => {
+    if (!user) {
+      setClosingScheduleCatalog({ classes: [], temporaryClassChanges: [] });
+      setClosingScheduleLoaded(false);
+      return undefined;
+    }
+
+    setClosingScheduleLoaded(false);
+    return onSnapshot(
+      doc(db, 'artifacts', appId, 'roleData', 'studentClassCatalog'),
+      catalogSnapshot => {
+        const catalogData = catalogSnapshot.exists() ? catalogSnapshot.data() : {};
+        setClosingScheduleCatalog({
+          classes: Array.isArray(catalogData.classes) ? catalogData.classes : [],
+          temporaryClassChanges: Array.isArray(catalogData.temporaryClassChanges) ? catalogData.temporaryClassChanges : []
+        });
+        setClosingScheduleLoaded(true);
+      },
+      error => {
+        console.error('No se pudo cargar el horario necesario para determinar el cierre de sede:', error);
+        setClosingScheduleCatalog({ classes: [], temporaryClassChanges: [] });
+        setClosingScheduleLoaded(false);
+      }
+    );
+  }, [user, db, appId]);
+
   // Las clases propias se resuelven desde las rutas directas conocidas del profesor.
   // Solo añadimos clases externas cuando un cambio temporal se las asigna.
   useEffect(() => {
@@ -1363,7 +1397,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         incidents: reportForDate.incidents || '',
         newStudents: reportForDate.newStudents || '',
         materialIssues: reportForDate.materialIssues || '',
-        hoursTaught: reportForDate.hoursTaught || ''
+        hoursTaught: reportForDate.hoursTaught || '',
+        equipmentAndRoomChecked: reportForDate.equipmentAndRoomChecked === true,
+        closingChecked: reportForDate.closingChecked === true
       });
     } else {
       setDailyForm({
@@ -1371,7 +1407,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         incidents: '',
         newStudents: '',
         materialIssues: '',
-        hoursTaught: ''
+        hoursTaught: '',
+        equipmentAndRoomChecked: false,
+        closingChecked: false
       });
     }
   }, [date, dailyReports]);
@@ -1847,6 +1885,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return dailyReports.find(report => report.id === date);
   }, [dailyReports, date]);
 
+  const isDailyReportSubmitted = Boolean(
+    selectedDailyReport?.submittedAt || lastReportSentDate === date
+  );
+
   const monthlyPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth; 
     const prevMonth = getPreviousMonthStr(targetMonth);
@@ -2125,6 +2167,125 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         (!s.isRecovery || s.recoveryDate === targetDate);
     });
   };
+
+  const closingChecklistApplies = date >= CLOSING_CHECKLIST_START_DATE;
+
+  const closingDuty = useMemo(() => {
+    if (!closingChecklistApplies || !closingScheduleLoaded || !date) return null;
+
+    const selectedDayOfWeek = getDayOfWeek(date);
+    const myTeacherName = getTeacherName();
+    const catalogChanges = closingScheduleCatalog.temporaryClassChanges || [];
+    const rows = [];
+
+    const findSubstitutionForClass = classData => substitutions.find(substitution => {
+      if (String(substitution.date || '') !== date) return false;
+      return String(substitution.originalClassId || '') === String(classData.id || '')
+        || Boolean(
+          substitution.originalClassRefPath
+          && classData.refPath
+          && String(substitution.originalClassRefPath) === String(classData.refPath)
+        );
+    }) || null;
+
+    const addScheduleRow = (classData = {}, source = 'catalog') => {
+      const range = getClassTimeRange(classData.time, classData.duration);
+      if (!range) return;
+      const location = getLocationIdentity(
+        classData.centerId || classData.sede || 'Tarragona',
+        classData.roomId || classData.sala || 'Sala 1'
+      );
+      rows.push({
+        id: String(classData.id || `${source}-${rows.length}`),
+        centerId: location.centerId,
+        centerName: getClassCenterName(classData),
+        teacher: classData.teacher,
+        endMinutes: range.end,
+        endTime: formatMinutesToTime(range.end),
+        source
+      });
+    };
+
+    (closingScheduleCatalog.classes || []).forEach(baseClass => {
+      if (Number(baseClass.activeStudentCount || 0) <= 0) return;
+
+      const activeChange = catalogChanges.find(change => (
+        String(change.classId || '') === String(baseClass.id || '')
+        && isTemporaryClassChangeActiveForDate(change, date)
+      ));
+      let effectiveClass = activeChange
+        ? {
+            ...baseClass,
+            dayOfWeek: Number(activeChange.dayOfWeek),
+            time: activeChange.time || baseClass.time,
+            sede: activeChange.sede || baseClass.sede,
+            sala: activeChange.sala || baseClass.sala,
+            centerId: activeChange.centerId || baseClass.centerId,
+            roomId: activeChange.roomId || baseClass.roomId,
+            duration: Number(activeChange.duration) || Number(baseClass.duration) || 60,
+            teacher: activeChange.teacher || baseClass.teacher
+          }
+        : baseClass;
+
+      if (Number(effectiveClass.dayOfWeek) !== Number(selectedDayOfWeek)) return;
+      if ((baseClass.cancelledDates || []).includes(date)) return;
+      if (isClassBlockedForDate(effectiveClass, date)) return;
+
+      const substitution = findSubstitutionForClass(baseClass);
+      if (substitution) {
+        const substitutionStatus = String(
+          substitution.status || (substitution.assumedByUid ? 'assigned' : 'open')
+        ).toLowerCase();
+        if (substitutionStatus === 'open') return;
+        if (substitutionStatus === 'assigned') {
+          effectiveClass = {
+            ...effectiveClass,
+            teacher: substitution.assumedTeacherName || substitution.assumedByEmail || effectiveClass.teacher
+          };
+        }
+      }
+
+      addScheduleRow(effectiveClass, 'catalog');
+    });
+
+    // Las clases puntuales (incluidas las sustituciones asumidas) viven en la
+    // agenda privada del profesor y no forman parte del catálogo recurrente.
+    allRecurringClasses
+      .filter(isPunctualClass)
+      .filter(classData => (classData.date || classData.specificDate || '') === date)
+      .filter(classData => !(classData.cancelledDates || []).includes(date))
+      .filter(classData => !isClassBlockedForDate(classData, date))
+      .filter(classData => getEffectiveActiveStudentsForClass(classData, date).length > 0)
+      .forEach(classData => addScheduleRow(classData, 'punctual'));
+
+    if (rows.length === 0) return null;
+
+    const latestEndByCenter = new Map();
+    rows.forEach(row => {
+      latestEndByCenter.set(
+        row.centerId,
+        Math.max(latestEndByCenter.get(row.centerId) ?? -1, row.endMinutes)
+      );
+    });
+
+    return rows
+      .filter(row => isSameTeacher(row.teacher, myTeacherName))
+      .filter(row => row.endMinutes === latestEndByCenter.get(row.centerId))
+      .sort((left, right) => right.endMinutes - left.endMinutes)[0] || null;
+  }, [
+    closingChecklistApplies,
+    closingScheduleLoaded,
+    closingScheduleCatalog,
+    substitutions,
+    allRecurringClasses,
+    globalStudents,
+    temporaryRelocations,
+    maintenancePeriods,
+    settings,
+    centers,
+    date,
+    user
+  ]);
 
   const teacherScheduleModel = useMemo(() => {
     const todayStr = getTodayLocalString();
@@ -2637,6 +2798,16 @@ ${report?.newStudents?.trim() || 'No se han indicado alumnos nuevos.'}
 
 Material roto o cosas a mejorar:
 ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
+
+Comprobación de aula, material y aparatos:
+${report?.equipmentAndRoomChecked === true ? 'Confirmada por el profesor.' : 'No confirmada.'}
+
+Comprobación final de sede:
+${report?.closingDutyRequired === true
+  ? (report?.closingChecked === true
+      ? `Confirmada para ${report?.closingDutyCenterName || 'la sede correspondiente'}.`
+      : 'No confirmada.')
+  : 'No correspondía a este profesor según el horario del día.'}
     `.trim();
   };
 
@@ -2688,6 +2859,18 @@ ${report?.materialIssues?.trim() || 'No se han indicado problemas de material.'}
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload)
       });
+
+      const submittedAt = new Date().toISOString();
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), {
+        ...report,
+        date,
+        submittedAt,
+        submittedByEmail: user.email || '',
+        submittedByName: getOfficialTeacherName(),
+        checklistVersion: closingChecklistApplies ? 1 : 0,
+        equipmentAndRoomConfirmedAt: report?.equipmentAndRoomChecked === true ? submittedAt : null,
+        closingConfirmedAt: report?.closingDutyRequired === true && report?.closingChecked === true ? submittedAt : null
+      }, { merge: true });
       
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid), {
         lastReportSentDate: date
@@ -3579,7 +3762,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
     }
   };
 
-  const saveDailyReport = async (silent = false) => {
+  const saveDailyReport = async (silent = false, extraData = {}) => {
     if (!user) return false;
     
     if (!dailyForm.generalFeedback.trim()) {
@@ -3590,8 +3773,9 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
     try {
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'dailyReports', date), {
         ...dailyForm,
+        ...extraData,
         date
-      });
+      }, { merge: true });
       if (!silent) showNotification({ type: 'success', text: 'Resumen del día guardado con éxito.' });
       return true;
     } catch (error) {
@@ -3602,9 +3786,33 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
   };
 
   const saveAndSendDailyReport = async () => {
-    const saved = await saveDailyReport(true);
+    if (closingChecklistApplies && !closingScheduleLoaded) {
+      showNotification({ type: 'error', text: 'Espera: todavía se está comprobando si te corresponde el cierre de la sede.' });
+      return;
+    }
+
+    if (closingChecklistApplies && dailyForm.equipmentAndRoomChecked !== true) {
+      showNotification({ type: 'error', text: 'Debes confirmar que has apagado los aparatos y dejado ordenados el aula y el material.' });
+      return;
+    }
+
+    if (closingChecklistApplies && closingDuty && dailyForm.closingChecked !== true) {
+      showNotification({ type: 'error', text: `Como profesor del último turno en ${closingDuty.centerName}, debes confirmar la comprobación final de la sede.` });
+      return;
+    }
+
+    const submissionData = {
+      equipmentAndRoomChecked: closingChecklistApplies ? dailyForm.equipmentAndRoomChecked === true : false,
+      closingDutyRequired: closingChecklistApplies && Boolean(closingDuty),
+      closingChecked: closingChecklistApplies && Boolean(closingDuty) ? dailyForm.closingChecked === true : false,
+      closingDutyCenterId: closingDuty?.centerId || '',
+      closingDutyCenterName: closingDuty?.centerName || '',
+      closingDutyEndTime: closingDuty?.endTime || ''
+    };
+
+    const saved = await saveDailyReport(true, submissionData);
     if (!saved) return;
-    await sendReportByEmail(dailyForm);
+    await sendReportByEmail({ ...dailyForm, ...submissionData });
   };
 
   const getResourceAssignableStudents = (session = currentSession) => {
@@ -5299,6 +5507,53 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                     <label className="block text-sm font-black uppercase tracking-wide text-slate-800">4. Estado del material</label>
                     <textarea value={dailyForm.materialIssues} onChange={(e) => setDailyForm({ ...dailyForm, materialIssues: e.target.value })} className="w-full p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl focus:border-black outline-none min-h-[80px] resize-y text-slate-700 font-medium transition-colors" placeholder="Atriles rotos, cables fallando..." />
                   </div>
+
+                  {closingChecklistApplies && (
+                    <div className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-5 md:p-6 space-y-4">
+                      <div>
+                        <h3 className="text-sm font-black uppercase tracking-widest text-amber-950 flex items-center gap-2">
+                          <CheckCircle className="w-5 h-5" /> Comprobaciones obligatorias
+                        </h3>
+                        <p className="text-xs font-bold text-amber-800 mt-2 leading-relaxed">Realiza estas comprobaciones físicamente antes de enviar el informe a Coordinación.</p>
+                      </div>
+
+                      <label className={`flex items-start gap-3 rounded-xl border p-4 transition-colors ${dailyForm.equipmentAndRoomChecked ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-amber-200'} ${isDailyReportSubmitted ? 'cursor-default' : 'cursor-pointer'}`}>
+                        <input
+                          type="checkbox"
+                          required
+                          checked={dailyForm.equipmentAndRoomChecked}
+                          disabled={isDailyReportSubmitted}
+                          onChange={event => setDailyForm({ ...dailyForm, equipmentAndRoomChecked: event.target.checked })}
+                          className="mt-0.5 w-5 h-5 accent-emerald-600 disabled:opacity-70"
+                        />
+                        <span className="text-sm font-bold text-slate-800 leading-relaxed">He dejado apagados los aparatos que he utilizado, he ordenado el aula y he colocado el material en su sitio. <span className="text-red-500">*</span></span>
+                      </label>
+
+                      {!closingScheduleLoaded && (
+                        <div className="flex items-center gap-2 text-xs font-bold text-amber-800">
+                          <RefreshCw className="w-4 h-4 animate-spin shrink-0" /> Comprobando quién tiene el último turno de cada sede…
+                        </div>
+                      )}
+
+                      {closingDuty && (
+                        <label className={`flex items-start gap-3 rounded-xl border p-4 transition-colors ${dailyForm.closingChecked ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-orange-300'} ${isDailyReportSubmitted ? 'cursor-default' : 'cursor-pointer'}`}>
+                          <input
+                            type="checkbox"
+                            required
+                            checked={dailyForm.closingChecked}
+                            disabled={isDailyReportSubmitted}
+                            onChange={event => setDailyForm({ ...dailyForm, closingChecked: event.target.checked })}
+                            className="mt-0.5 w-5 h-5 accent-emerald-600 disabled:opacity-70"
+                          />
+                          <span className="text-sm font-bold text-slate-800 leading-relaxed">Como profesor del último turno de hoy en {closingDuty.centerName}, confirmo que he realizado la comprobación final de la sede: climatización, luces, equipos comunes y cierre de puertas. <span className="text-red-500">*</span></span>
+                        </label>
+                      )}
+
+                      {isDailyReportSubmitted && (
+                        <p className="text-xs font-black uppercase tracking-widest text-emerald-700 flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Comprobaciones registradas con el informe</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="pt-8 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-zinc-100">
@@ -5306,7 +5561,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                     <Save className="w-5 h-5" /> Guardar Borrador
                   </button>
                   
-                  {lastReportSentDate === date ? (
+                  {isDailyReportSubmitted ? (
                     <div className="w-full bg-emerald-50 text-emerald-600 border-2 border-emerald-200 font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 shadow-sm text-center">
                       <CheckCircle className="w-5 h-5 shrink-0" /> Ya enviado a coordinación
                     </div>

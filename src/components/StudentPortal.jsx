@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
 import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
 
@@ -400,6 +400,25 @@ const buildTeacherEvaluationId = ({ studentId = '', classId = '', period = '' } 
 
 const isPunctualClass = (clase = {}) => Boolean(clase?.date) || clase?.isRecurring === false;
 
+const TRANSIENT_FIRESTORE_ERROR_CODES = new Set([
+  'aborted',
+  'cancelled',
+  'deadline-exceeded',
+  'internal',
+  'resource-exhausted',
+  'unavailable',
+  'unknown'
+]);
+
+const getFirestoreErrorCode = (error = {}) => String(error?.code || '')
+  .trim()
+  .toLowerCase()
+  .replace(/^firestore\//, '');
+
+const isTransientFirestoreError = (error = {}) => (
+  TRANSIENT_FIRESTORE_ERROR_CODES.has(getFirestoreErrorCode(error))
+);
+
 const isAssumedSubstitutionClass = (clase = {}) => Boolean(
   clase?.sourceSubstitutionId
   || String(clase?.id || clase?.docId || '').startsWith('assumed-')
@@ -591,6 +610,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [myClasses, setMyClasses] = useState([]);
   const [classesLoaded, setClassesLoaded] = useState(false);
   const [classesLoadError, setClassesLoadError] = useState('');
+  const [classesLoadWarning, setClassesLoadWarning] = useState('');
   const [classesRetryNonce, setClassesRetryNonce] = useState(0);
   const [classCatalog, setClassCatalog] = useState([]);
   const [relocationTargetClasses, setRelocationTargetClasses] = useState([]);
@@ -621,6 +641,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
+  const classLoadRetryRef = useRef({ attempts: 0, timer: null });
+  const classCatalogRetryRef = useRef({ attempts: 0, timer: null });
 
   const [absenceModal, setAbsenceModal] = useState(null);
   const [showRules, setShowRules] = useState(false);
@@ -2208,6 +2230,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (!profile?.id || !settingsLoaded || !isStudentClassIndexReady || !classCatalogLoaded) return;
     setClassesLoaded(false);
     setClassesLoadError('');
+    setClassesLoadWarning('');
     setWorkshopsLoaded(false);
     if (!isStudentClassIndexReady) setClassCatalogLoaded(false);
     
@@ -2242,6 +2265,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         }
       });
       setMyClasses(mine);
+      classLoadRetryRef.current.attempts = 0;
       setClassesLoadError('');
       setClassesLoaded(true);
       return { all, mine };
@@ -2250,17 +2274,36 @@ export default function StudentPortal({ user, logout, db, appId }) {
     let cancelled = false;
     let unsubClassDocuments = () => {};
 
+    const scheduleAutomaticClassesRetry = (error) => {
+      if (!isTransientFirestoreError(error) || classLoadRetryRef.current.attempts >= 2) return false;
+      classLoadRetryRef.current.attempts += 1;
+      const delay = 900 * classLoadRetryRef.current.attempts;
+      if (classLoadRetryRef.current.timer) window.clearTimeout(classLoadRetryRef.current.timer);
+      setClassesLoadError('');
+      setClassesLoaded(false);
+      classLoadRetryRef.current.timer = window.setTimeout(() => {
+        if (!cancelled) setClassesRetryNonce(value => value + 1);
+      }, delay);
+      return true;
+    };
+
     const failClassesLoad = (error) => {
       if (cancelled) return;
       console.error('Error al cargar las clases del alumno', error);
-      setClassesLoadError('No se han podido comprobar tus clases y su estado actual. No se mostrará “Sin clase asignada” hasta verificarlo correctamente.');
-      setMyClasses([]);
+      if (scheduleAutomaticClassesRetry(error)) return;
+      const errorCode = getFirestoreErrorCode(error) || 'sin-codigo';
+      setClassesLoadError(`No se han podido comprobar tus clases y su estado actual. No se mostrará “Sin clase asignada” hasta verificarlo correctamente. Código: CLASES-${errorCode}.`);
       setClassesLoaded(true);
     };
 
     const assignedClassIds = new Set((profile.classes || [])
       .map(classValue => String(classValue?.id || classValue?.classId || classValue || '').trim())
       .filter(Boolean));
+    const catalogClassIds = new Set(classCatalog
+      .map(classData => String(classData.id || classData.docId || '').trim())
+      .filter(Boolean));
+    const unresolvedAssignedClassIds = [...assignedClassIds]
+      .filter(classId => !catalogClassIds.has(classId));
     const assignedClassPaths = [...new Set(classCatalog
       .filter(classData => assignedClassIds.has(String(classData.id || classData.docId || '')))
       .map(classData => String(classData.refPath || '').trim())
@@ -2270,26 +2313,53 @@ export default function StudentPortal({ user, logout, db, appId }) {
       setMyClasses([]);
       setClassesLoadError('');
       setClassesLoaded(true);
-    } else if (assignedClassPaths.length !== assignedClassIds.size) {
-      failClassesLoad(new Error('El catálogo privado no contiene todas las clases asignadas.'));
+    } else if (assignedClassPaths.length === 0) {
+      failClassesLoad(Object.assign(
+        new Error('El catálogo privado no contiene ninguna de las clases asignadas.'),
+        { code: 'catalog-out-of-sync' }
+      ));
     } else {
       const classSnapshots = new Map();
       const loadedPaths = new Set();
+      const failedPaths = new Set();
+
+      const finishClassDocumentsLoad = () => {
+        if (loadedPaths.size !== assignedClassPaths.length) return;
+        if (classSnapshots.size === 0) {
+          failClassesLoad(Object.assign(
+            new Error('Ninguna clase asignada existe o es accesible.'),
+            { code: 'assigned-classes-unavailable' }
+          ));
+          return;
+        }
+
+        publishClassDocuments([...classSnapshots.values()]);
+        if (unresolvedAssignedClassIds.length > 0 || failedPaths.size > 0) {
+          setClassesLoadWarning('Estamos mostrando las clases que se han podido verificar. Hay alguna referencia antigua o temporal pendiente de sincronización con Administración.');
+        }
+      };
+
       const subscriptions = assignedClassPaths.map(classPath => onSnapshot(
         doc(db, classPath),
         classSnapshot => {
           if (cancelled) return;
           loadedPaths.add(classPath);
           if (classSnapshot.exists()) classSnapshots.set(classPath, classSnapshot);
-          else classSnapshots.delete(classPath);
-          if (loadedPaths.size !== assignedClassPaths.length) return;
-          if (classSnapshots.size !== assignedClassPaths.length) {
-            failClassesLoad(new Error('Alguna clase asignada ya no existe o no es accesible.'));
-            return;
+          else {
+            classSnapshots.delete(classPath);
+            failedPaths.add(classPath);
           }
-          publishClassDocuments([...classSnapshots.values()]);
+          finishClassDocumentsLoad();
         },
-        failClassesLoad
+        error => {
+          if (cancelled) return;
+          console.error(`No se pudo cargar la clase asignada ${classPath}`, error);
+          if (scheduleAutomaticClassesRetry(error)) return;
+          loadedPaths.add(classPath);
+          failedPaths.add(classPath);
+          classSnapshots.delete(classPath);
+          finishClassDocumentsLoad();
+        }
       ));
       unsubClassDocuments = () => subscriptions.forEach(unsubscribe => unsubscribe());
     }
@@ -2309,7 +2379,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (snapshot) => {
         setTemporaryRelocations(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       },
-      (error) => failClassesLoad(error)
+      (error) => {
+        console.error('No se pudieron cargar las recolocaciones temporales del alumno', error);
+        setTemporaryRelocations([]);
+        setClassesLoadWarning('Tus clases principales están disponibles, pero no se ha podido comprobar una posible recolocación temporal.');
+      }
     );
 
     const maintenanceQuery = query(collection(db, 'artifacts', appId, 'maintenancePeriods'), where('studentEmail', '==', studentEmail));
@@ -2318,7 +2392,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (snapshot) => {
         setMaintenancePeriods(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       },
-      (error) => failClassesLoad(error)
+      (error) => {
+        console.error('No se pudieron cargar los periodos de mantenimiento del alumno', error);
+        setMaintenancePeriods([]);
+        setClassesLoadWarning('Tus clases principales están disponibles, pero no se ha podido comprobar un posible periodo de mantenimiento.');
+      }
     );
 
     const unsubWorkshops = onSnapshot(
@@ -2422,6 +2500,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     return () => {
       cancelled = true;
+      if (classLoadRetryRef.current.timer) {
+        window.clearTimeout(classLoadRetryRef.current.timer);
+        classLoadRetryRef.current.timer = null;
+      }
       unsubProfile();
       unsubClassDocuments();
       unsubGestiones();
@@ -2497,14 +2579,18 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setClassCatalogLoaded(false);
     setClassCatalogError('');
     setClassesLoadError('');
-    return onSnapshot(
+    let cancelled = false;
+    let retryTimer = null;
+    const unsubscribe = onSnapshot(
       doc(db, 'artifacts', appId, 'roleData', 'studentClassCatalog'),
       snapshot => {
+        if (cancelled) return;
         const data = snapshot.exists() ? snapshot.data() : {};
         setClassCatalog(Array.isArray(data.classes) ? data.classes : []);
         setCatalogTemporaryClassChanges(Array.isArray(data.temporaryClassChanges) ? data.temporaryClassChanges : []);
         setClassCatalogLoading(false);
         setClassCatalogLoaded(snapshot.exists());
+        classCatalogRetryRef.current.attempts = 0;
         if (!snapshot.exists()) {
           setClassCatalogError('Administración todavía no ha publicado el catálogo privado de clases.');
           setClassesLoadError('Administración todavía no ha publicado el catálogo privado necesario para comprobar tus clases.');
@@ -2512,7 +2598,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
         }
       },
       error => {
+        if (cancelled) return;
         console.error('Error al cargar el catálogo privado de clases', error);
+        if (isTransientFirestoreError(error) && classCatalogRetryRef.current.attempts < 2) {
+          classCatalogRetryRef.current.attempts += 1;
+          const delay = 900 * classCatalogRetryRef.current.attempts;
+          setClassCatalogLoading(true);
+          setClassCatalogError('');
+          setClassesLoadError('');
+          retryTimer = window.setTimeout(() => {
+            if (!cancelled) setClassCatalogRetryNonce(value => value + 1);
+          }, delay);
+          return;
+        }
         setClassCatalog([]);
         setCatalogTemporaryClassChanges([]);
         setSelectedNewClass(null);
@@ -2524,6 +2622,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
         setClassesLoaded(true);
       }
     );
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      unsubscribe();
+    };
   }, [settingsLoaded, isStudentClassIndexReady, classCatalogRetryNonce, db, appId]);
 
   useEffect(() => {
@@ -4853,6 +4957,21 @@ END:VCALENDAR`;
       </header>
 
       <main className="max-w-3xl mx-auto p-4 md:p-8 space-y-6 animate-in fade-in duration-300">
+        {classesLoadWarning && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              <p className="text-xs font-bold leading-relaxed">{classesLoadWarning}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setClassesRetryNonce(value => value + 1)}
+              className="shrink-0 bg-amber-900 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[9px] hover:bg-amber-950 transition-colors flex items-center justify-center gap-2"
+            >
+              <RefreshCcw className="w-3.5 h-3.5" /> Comprobar de nuevo
+            </button>
+          </div>
+        )}
         
         {activeTab === 'home' && (
           <div className="space-y-6">

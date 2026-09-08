@@ -4,7 +4,7 @@ import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react';
 // --- FIREBASE IMPORTS ---
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, signOut, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, collection, query, where, limit, getDoc, getDocs, updateDoc, setDoc, doc } from 'firebase/firestore';
+import { getFirestore, collection, query, where, getDoc, getDocs, updateDoc, setDoc, doc } from 'firebase/firestore';
 
 // --- MÓDULOS ---
 import TeacherPortal from './components/TeacherPortal.jsx';
@@ -44,6 +44,27 @@ const formatDateSpanish = (dateString) => {
 const getFutureAccessBlockMessage = (classStartDate) => (
   `Tu plaza está reservada. Podrás activar y usar tu Área del Alumno a partir del ${formatDateSpanish(classStartDate)}.`
 );
+
+const getStudentDocumentPriority = (studentDocument, authenticatedUser) => {
+  const data = studentDocument.data();
+  const status = String(data.globalStatus || 'activo').toLowerCase();
+  const hasClasses = Array.isArray(data.classes) && data.classes.length > 0;
+  return [
+    data.authUid === authenticatedUser.uid ? 1 : 0,
+    status !== 'baja' ? 1 : 0,
+    hasClasses ? 1 : 0,
+    Date.parse(data.updatedAt || data.classMembershipSyncedAt || 0) || 0
+  ];
+};
+
+const chooseStudentDocument = (documents = [], authenticatedUser) => [...documents].sort((left, right) => {
+  const leftPriority = getStudentDocumentPriority(left, authenticatedUser);
+  const rightPriority = getStudentDocumentPriority(right, authenticatedUser);
+  for (let index = 0; index < leftPriority.length; index += 1) {
+    if (leftPriority[index] !== rightPriority[index]) return rightPriority[index] - leftPriority[index];
+  }
+  return String(left.id).localeCompare(String(right.id));
+})[0] || null;
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -99,20 +120,44 @@ export default function App() {
           return;
         }
 
-        const studentQuery = query(
-          collection(db, 'artifacts', appId, 'students'),
-          where('email', '==', authenticatedEmail),
-          limit(1)
-        );
-        const studentSnapshot = await getDocs(studentQuery);
+        const accessRef = doc(db, 'artifacts', appId, 'access', authenticatedUser.uid);
+        const accessSnapshot = await getDoc(accessRef);
+        const accessData = accessSnapshot.exists() ? accessSnapshot.data() : {};
+        let studentDocument = null;
+
+        if (
+          accessData.role === 'student'
+          && String(accessData.email || '').trim().toLowerCase() === authenticatedEmail
+          && accessData.studentId
+        ) {
+          const linkedStudent = await getDoc(doc(db, 'artifacts', appId, 'students', accessData.studentId));
+          if (
+            linkedStudent.exists()
+            && String(linkedStudent.data().email || '').trim().toLowerCase() === authenticatedEmail
+          ) {
+            const linkedData = linkedStudent.data();
+            const linkedIsUsable = String(linkedData.globalStatus || 'activo').toLowerCase() !== 'baja'
+              && Array.isArray(linkedData.classes)
+              && linkedData.classes.length > 0;
+            if (linkedIsUsable) studentDocument = linkedStudent;
+          }
+        }
+
+        if (!studentDocument) {
+          const studentQuery = query(
+            collection(db, 'artifacts', appId, 'students'),
+            where('email', '==', authenticatedEmail)
+          );
+          const studentSnapshot = await getDocs(studentQuery);
+          studentDocument = chooseStudentDocument(studentSnapshot.docs, authenticatedUser);
+        }
         if (disposed) return;
 
-        if (studentSnapshot.empty) {
+        if (!studentDocument) {
           setAccessRole('denied');
           return;
         }
 
-        const studentDocument = studentSnapshot.docs[0];
         const studentData = studentDocument.data();
         const classStartDate = String(studentData.classStartDate || '').trim();
         if (classStartDate && classStartDate > getTodayLocalString()) {
@@ -170,8 +215,7 @@ export default function App() {
         const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
         const studentQuery = query(
           collection(db, 'artifacts', appId, 'students'),
-          where('email', '==', cleanEmail),
-          limit(1)
+          where('email', '==', cleanEmail)
         );
         const studentSnapshot = await getDocs(studentQuery);
 
@@ -179,6 +223,19 @@ export default function App() {
           await deleteUser(credential.user);
           setAuthError('Acceso denegado: este correo no consta en la base de datos de alumnos.');
           return;
+        }
+
+        const studentDocument = chooseStudentDocument(studentSnapshot.docs, credential.user);
+        if (studentDocument) {
+          const nowIso = new Date().toISOString();
+          await updateDoc(studentDocument.ref, { claimed: true, authUid: credential.user.uid });
+          await setDoc(doc(db, 'artifacts', appId, 'access', credential.user.uid), {
+            role: 'student',
+            studentId: studentDocument.id,
+            email: cleanEmail,
+            createdAt: nowIso,
+            updatedAt: nowIso
+          }, { merge: true });
         }
       }
     } catch (err) {

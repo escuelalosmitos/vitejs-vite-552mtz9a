@@ -6,7 +6,7 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, runTransaction } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, runTransaction } from 'firebase/firestore';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -484,7 +484,7 @@ const createEmptyWorkshop = () => ({
   level: 'all',
   customLevel: '',
   registrationMode: 'automatic',
-  cancellationMode: 'contact_admin',
+  cancellationMode: 'allowed_until_start',
   cancellationDeadline: '',
   questions: [],
   whatToBring: '',
@@ -1557,7 +1557,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
   const validateWorkshop = (workshopData = form, targetStatus = workshopData.status) => {
     if (!String(workshopData.title || '').trim()) return 'Escribe el nombre del taller.';
-    if (targetStatus === 'draft') return '';
+    if (['draft', 'cancelled'].includes(targetStatus)) return '';
     if (!String(workshopData.shortDescription || '').trim()) return 'Escribe una descripción breve para la tarjeta de Extras.';
     if (!String(workshopData.description || '').trim()) return 'Escribe la descripción completa del taller.';
     if (!workshopData.sessions?.length || workshopData.sessions.some(session => !session.date || !session.startTime || !session.endTime)) return 'Completa la fecha y el horario de todas las sesiones.';
@@ -1571,7 +1571,6 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
     if (workshopData.priceType === 'paid' && (!Number.isFinite(Number(workshopData.price)) || Number(workshopData.price) < 0)) return 'Indica un precio válido.';
     if (['sede', 'instrument', 'teacher', 'class'].includes(workshopData.audienceType) && !workshopData.audienceValue) return 'Completa a qué alumnos va dirigido el taller.';
     if (workshopData.audienceType === 'manual' && !(workshopData.manualStudentIds || []).length) return 'Selecciona al menos un alumno.';
-    if (workshopData.cancellationMode === 'allowed_until' && !workshopData.cancellationDeadline) return 'Indica hasta cuándo puede cancelar el alumno.';
     if (workshopData.imageUrl && !/^https?:\/\//i.test(String(workshopData.imageUrl).trim())) return 'La imagen debe ser una URL que empiece por http:// o https://.';
     if (workshopData.resourceUrl && !/^https?:\/\//i.test(String(workshopData.resourceUrl).trim())) return 'El enlace adjunto debe empezar por http:// o https://.';
     if ((workshopData.questions || []).some(question => !String(question.label || '').trim())) return 'Todas las preguntas adicionales deben tener texto.';
@@ -1614,6 +1613,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
         ageMax: form.ageMax ? Number(form.ageMax) : null,
         sessions,
         questions,
+        cancellationMode: 'allowed_until_start',
+        cancellationDeadline: '',
         centerId: payloadCenter?.id || '',
         roomId: payloadRoom?.id || '',
         audienceLabel: form.audienceType === 'all'
@@ -1659,8 +1660,45 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
       return;
     }
     try {
-      const update = { status, updatedAt: new Date().toISOString(), updatedBy: user?.email || user?.uid || 'admin' };
-      if (status === 'published' && !workshop.publishedAt) update.publishedAt = new Date().toISOString();
+      const now = new Date().toISOString();
+      const activeRegistrations = getWorkshopRegistrations(workshop.id)
+        .filter(registration => ['confirmed', 'pending', 'waitlist'].includes(registration.status));
+
+      if (
+        status === 'cancelled'
+        && !window.confirm(`¿Cancelar “${workshop.title}”?\n\nSe cancelarán también ${activeRegistrations.length} inscripción(es) activas y el taller desaparecerá del panel del alumnado.`)
+      ) return;
+
+      if (status === 'cancelled') {
+        for (let start = 0; start < activeRegistrations.length; start += 400) {
+          const batch = writeBatch(db);
+          activeRegistrations.slice(start, start + 400).forEach(registration => {
+            batch.update(doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id), {
+              status: 'cancelled',
+              cancelledAt: now,
+              cancelledBy: user?.email || user?.uid || 'admin',
+              cancellationReason: 'Taller cancelado por Administración',
+              billingPending: false,
+              updatedAt: now
+            });
+          });
+          await batch.commit();
+        }
+      }
+
+      const update = {
+        status,
+        updatedAt: now,
+        updatedBy: user?.email || user?.uid || 'admin',
+        ...(status === 'cancelled' ? {
+          cancelledAt: now,
+          cancelledBy: user?.email || user?.uid || 'admin',
+          confirmedCount: 0,
+          pendingCount: 0,
+          waitlistCount: 0
+        } : {})
+      };
+      if (status === 'published' && !workshop.publishedAt) update.publishedAt = now;
       await updateDoc(doc(db, 'artifacts', appId, 'workshops', workshop.id), update);
     } catch (error) {
       console.error(error);
@@ -1670,9 +1708,21 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
   const deleteWorkshop = async workshop => {
     const linkedRegistrations = getWorkshopRegistrations(workshop.id);
-    if (linkedRegistrations.length > 0) return alert('Este taller ya tiene inscripciones. Cancélalo para conservar el historial; no puede eliminarse.');
-    if (!window.confirm(`¿Eliminar definitivamente el taller “${workshop.title}”?`)) return;
+    if (linkedRegistrations.length > 0 && workshop.status !== 'cancelled') {
+      return alert('Este taller tiene inscripciones. Primero debes cancelarlo; después podrás eliminarlo definitivamente junto con sus inscripciones.');
+    }
+    const registrationsNotice = linkedRegistrations.length > 0
+      ? `\n\nTambién se eliminarán definitivamente ${linkedRegistrations.length} inscripción(es) asociadas.`
+      : '';
+    if (!window.confirm(`¿Eliminar definitivamente el taller “${workshop.title}”?${registrationsNotice}`)) return;
     try {
+      for (let start = 0; start < linkedRegistrations.length; start += 400) {
+        const batch = writeBatch(db);
+        linkedRegistrations.slice(start, start + 400).forEach(registration => {
+          batch.delete(doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id));
+        });
+        await batch.commit();
+      }
       await deleteDoc(doc(db, 'artifacts', appId, 'workshops', workshop.id));
     } catch (error) {
       console.error(error);
@@ -1867,8 +1917,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
                 <div><label className={labelClass}>¿A quién se ofrece?</label><select className={fieldClass} value={form.audienceType} onChange={e => setForm({ ...form, audienceType: e.target.value, audienceValue: '', manualStudentIds: [] })}><option value="all">Todos los alumnos</option><option value="sede">Solo una sede</option><option value="instrument">Solo un instrumento</option><option value="teacher">Alumnos de un profesor</option><option value="class">Una clase concreta</option><option value="manual">Selección manual</option></select></div>
                 {['sede', 'instrument', 'teacher', 'class'].includes(form.audienceType) && <div className="md:col-span-2"><label className={labelClass}>Selección *</label><select className={fieldClass} value={form.audienceValue} onChange={e => setForm({ ...form, audienceValue: e.target.value })}><option value="">Selecciona...</option>{audienceOptions.map(option => typeof option === 'string' ? <option key={option} value={option}>{option}</option> : <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>}
                 <div><label className={labelClass}>Confirmación</label><select className={fieldClass} value={form.registrationMode} onChange={e => setForm({ ...form, registrationMode: e.target.value })}><option value="automatic">Automática si hay plaza</option><option value="manual_review">Pendiente de revisión</option></select></div>
-                <div><label className={labelClass}>Cancelación del alumno</label><select className={fieldClass} value={form.cancellationMode} onChange={e => setForm({ ...form, cancellationMode: e.target.value })}><option value="contact_admin">Debe contactar con Administración</option><option value="allowed_until">Puede cancelar hasta una fecha</option><option value="not_allowed">No puede cancelar desde Student</option></select></div>
-                {form.cancellationMode === 'allowed_until' && <div><label className={labelClass}>Límite de cancelación</label><input type="datetime-local" className={fieldClass} value={form.cancellationDeadline} onChange={e => setForm({ ...form, cancellationDeadline: e.target.value })}/></div>}
+                <div className="sm:col-span-2 bg-violet-50 border border-violet-100 rounded-xl p-4"><label className={labelClass}>Cancelación del alumno</label><p className="text-xs font-bold text-violet-800 leading-relaxed">El alumno podrá cancelar su inscripción desde StudentPortal hasta el comienzo de la primera sesión. Al hacerlo, la plaza y cualquier cobro pendiente quedarán liberados.</p></div>
               </div>
               {form.audienceType === 'manual' && <div className="mt-4 bg-zinc-50 border border-zinc-200 rounded-2xl p-4"><p className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-3">Selecciona alumnos ({form.manualStudentIds.length})</p><div className="max-h-56 overflow-y-auto grid sm:grid-cols-2 lg:grid-cols-3 gap-2 pr-1">{students.map(student => <label key={student.id} className="flex items-center gap-2 bg-white border border-zinc-200 rounded-xl p-3 cursor-pointer"><input type="checkbox" checked={form.manualStudentIds.includes(student.id)} onChange={() => toggleManualStudent(student.id)} className="accent-violet-600"/><span className="text-xs font-bold text-slate-700 truncate">{student.name}</span></label>)}</div></div>}
             </section>
@@ -1932,6 +1981,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const classIndexMigrationRef = useRef(false);
   const ticketEmailMigrationRef = useRef(false);
   const studentClassMembershipSyncRef = useRef(false);
+  const maintenanceReconciliationRef = useRef({ inFlight: false, signature: '' });
   const autoStartDateAdvanceRef = useRef({ inFlight: false, signature: '' });
   const publicAvailabilitySyncRef = useRef({
     inFlight: false,
@@ -1970,7 +2020,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
     hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 },
-    generalTasks: [], prizes: { mensual: '', trimestral: '', anual: '' }, teachersList: [], teacherColors: {},
+    generalTasks: [], prizes: { mensual: '', trimestral: '', anual: '' }, teachersList: [], teacherColors: {}, teacherEmails: {},
     roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos,
     centers: normalizeCenters([], {})
   });
@@ -2838,6 +2888,83 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const isStudentInMaintenanceRange = (studentId, fromDate = todayStr, untilDate = todayStr) => getStudentMaintenancePeriodsInRange(studentId, fromDate, untilDate).length > 0;
 
   const getActiveStudentMaintenancePeriod = (studentId, dateStr = todayStr) => getActiveStudentMaintenancePeriods(studentId, dateStr)[0] || null;
+
+  // Los periodos vencidos dejan de tener efecto por fecha en todos los portales.
+  // Esta conciliación, ejecutada solo al cargar Admin, limpia además las marcas
+  // heredadas para que un mantenimiento terminado no pueda bloquear un regreso.
+  useEffect(() => {
+    if (loading || !studentsLoaded || !classesLoaded) return undefined;
+    const closedStatuses = new Set(['cancelled', 'cancelada', 'finalizada', 'expired']);
+    const expiredPeriods = maintenancePeriods.filter(period => (
+      !closedStatuses.has(String(period.status || 'active').toLowerCase())
+      && period.until
+      && period.until < todayStr
+    ));
+    const activeOrFutureStudentIds = new Set(maintenancePeriods
+      .filter(period => (
+        !closedStatuses.has(String(period.status || 'active').toLowerCase())
+        && (!period.until || period.until >= todayStr)
+      ))
+      .map(period => String(period.studentId || '')));
+    const staleClassPaths = allClasses
+      .filter(classData => classData.refPath && (classData.students || []).some(entry => (
+        entry.isPaused === true && !activeOrFutureStudentIds.has(String(entry.id || ''))
+      )))
+      .map(classData => classData.refPath);
+    const staleStudents = students.filter(student => (
+      student.globalStatus === 'congelado'
+      && !activeOrFutureStudentIds.has(String(student.id || ''))
+    ));
+    const signature = JSON.stringify({
+      expired: expiredPeriods.map(period => period.id).sort(),
+      classes: staleClassPaths.sort(),
+      students: staleStudents.map(student => student.id).sort()
+    });
+    if (
+      (expiredPeriods.length === 0 && staleClassPaths.length === 0 && staleStudents.length === 0)
+      || maintenanceReconciliationRef.current.inFlight
+      || maintenanceReconciliationRef.current.signature === signature
+    ) return undefined;
+
+    const timer = window.setTimeout(async () => {
+      maintenanceReconciliationRef.current = { inFlight: true, signature };
+      try {
+        const now = new Date().toISOString();
+        const operations = [];
+        expiredPeriods.forEach(period => operations.push(batch => batch.update(
+          doc(db, 'artifacts', appId, 'maintenancePeriods', period.id),
+          { status: 'finalizada', finalizedAt: now, finalizedBy: 'admin_auto_reconciliation' }
+        )));
+        allClasses
+          .filter(classData => staleClassPaths.includes(classData.refPath))
+          .forEach(classData => operations.push(batch => batch.update(
+            doc(db, classData.refPath),
+            withClassStudentIndex((classData.students || []).map(entry => (
+              entry.isPaused === true && !activeOrFutureStudentIds.has(String(entry.id || ''))
+                ? { ...entry, isPaused: false }
+                : entry
+            )))
+          )));
+        staleStudents.forEach(student => operations.push(batch => batch.update(
+          doc(db, 'artifacts', appId, 'students', student.id),
+          { globalStatus: 'activo', legacyMaintenanceReconciledAt: now }
+        )));
+
+        for (let start = 0; start < operations.length; start += 350) {
+          const batch = writeBatch(db);
+          operations.slice(start, start + 350).forEach(operation => operation(batch));
+          await batch.commit();
+        }
+      } catch (error) {
+        maintenanceReconciliationRef.current.signature = '';
+        console.error('No se pudieron conciliar los mantenimientos vencidos:', error);
+      } finally {
+        maintenanceReconciliationRef.current.inFlight = false;
+      }
+    }, 1800);
+
+    return () => window.clearTimeout(timer);
+  }, [loading, studentsLoaded, classesLoaded, maintenancePeriods, allClasses, students, todayStr, db, appId]);
 
   const formatLocalDateStringFromDate = (date) => {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
@@ -4283,6 +4410,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const getTeacherEmail = (teacherName) => {
     if (!teacherName) return '';
     const officialName = getOfficialTeacherName(teacherName, cleanTeacherDisplayName(teacherName));
+    const configuredEmailEntry = Object.entries(settings.teacherEmails || {})
+      .find(([configuredName]) => isSameTeacher(configuredName, officialName));
+    const configuredEmail = String(configuredEmailEntry?.[1] || '').trim().toLowerCase();
+    if (/^[^\s@]+@escuelalosmitos\.com$/i.test(configuredEmail)) return configuredEmail;
     const localPart = String(officialName || '')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
@@ -4318,7 +4449,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         });
       });
     return [...byEmail.values()].sort((left, right) => left.email.localeCompare(right.email, 'es'));
-  }, [settings.teachersList, recurringClassesOnly]);
+  }, [settings.teachersList, settings.teacherEmails, recurringClassesOnly]);
 
   const teacherAccessSignature = useMemo(
     () => buildPublicAvailabilitySignature(teacherAccessPublication),
@@ -5375,26 +5506,32 @@ Coordinación Los Mitos.`;
   const voidStudentTickets = async (studentId, reason = 'baja') => {
     if (!studentId) return 0;
 
-    const ticketsSnapshot = await getDocs(collectionGroup(db, 'tickets'));
-    const batch = writeBatch(db);
-    let count = 0;
-
-    ticketsSnapshot.forEach((ticketDoc) => {
+    const studentEmail = normalizeEmail(students.find(student => student.id === studentId)?.email || '');
+    const ticketReference = studentEmail
+      ? query(collectionGroup(db, 'tickets'), where('studentEmail', '==', studentEmail))
+      : collectionGroup(db, 'tickets');
+    const ticketsSnapshot = await getDocs(ticketReference);
+    const ticketsToVoid = ticketsSnapshot.docs.filter(ticketDoc => {
       const ticket = ticketDoc.data();
-      if (ticket.studentId === studentId && !ticket.isUsed) {
+      return ticket.studentId === studentId && !ticket.isUsed;
+    });
+    const now = new Date().toISOString();
+
+    for (let start = 0; start < ticketsToVoid.length; start += 400) {
+      const batch = writeBatch(db);
+      ticketsToVoid.slice(start, start + 400).forEach(ticketDoc => {
         batch.set(ticketDoc.ref, {
           isUsed: true,
           voided: true,
           voidReason: reason,
-          voidedAt: new Date().toISOString(),
+          voidedAt: now,
           voidedBy: user?.email || 'admin'
         }, { merge: true });
-        count++;
-      }
-    });
+      });
+      await batch.commit();
+    }
 
-    if (count > 0) await batch.commit();
-    return count;
+    return ticketsToVoid.length;
   };
 
   const syncStudentPauseStateInClasses = async (studentId, isPaused) => {
@@ -6348,9 +6485,10 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const now = new Date().toISOString();
     const closedRelocationStatuses = new Set(['cancelled', 'cancelada', 'expired', 'finalizada']);
 
+    const closedMaintenanceStatuses = new Set(['cancelled', 'cancelada', 'finalizada', 'expired']);
     const periodsToCancel = maintenancePeriods.filter(period =>
       period.studentId === studentId &&
-      String(period.status || 'active').toLowerCase() !== 'cancelled' &&
+      !closedMaintenanceStatuses.has(String(period.status || 'active').toLowerCase()) &&
       (!period.until || period.until >= effectiveDate)
     );
 
@@ -6408,6 +6546,125 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       temporaryRelocations: relocationsToCancel.length,
       gestiones: gestionesToCancel.length
     };
+  };
+
+  const cancelStudentWorkshopRegistrationsForFinalBaja = async studentId => {
+    const registrationsToCancel = workshopRegistrations.filter(registration => (
+      registration.studentId === studentId
+      && ['confirmed', 'pending', 'waitlist'].includes(registration.status)
+    ));
+    const now = new Date().toISOString();
+
+    for (const registration of registrationsToCancel) {
+      const registrationRef = doc(db, 'artifacts', appId, 'workshopRegistrations', registration.id);
+      const workshopRef = doc(db, 'artifacts', appId, 'workshops', registration.workshopId);
+      await runTransaction(db, async transaction => {
+        const [registrationSnapshot, workshopSnapshot] = await Promise.all([
+          transaction.get(registrationRef),
+          transaction.get(workshopRef)
+        ]);
+        if (!registrationSnapshot.exists()) return;
+        const registrationData = registrationSnapshot.data();
+        if (!['confirmed', 'pending', 'waitlist'].includes(registrationData.status)) return;
+
+        transaction.update(registrationRef, {
+          status: 'cancelled',
+          cancelledAt: now,
+          cancelledBy: user?.email || 'admin',
+          cancellationReason: 'Baja inmediata del alumno',
+          billingPending: false,
+          updatedAt: now
+        });
+
+        if (workshopSnapshot.exists()) {
+          const workshopData = workshopSnapshot.data();
+          const counterField = registrationData.status === 'confirmed'
+            ? 'confirmedCount'
+            : registrationData.status === 'pending' ? 'pendingCount' : 'waitlistCount';
+          transaction.update(workshopRef, {
+            [counterField]: Math.max(0, Number(workshopData[counterField] || 0) - 1),
+            updatedAt: now
+          });
+        }
+      });
+    }
+
+    return registrationsToCancel.length;
+  };
+
+  const executeImmediateFinalBajaFromCrm = async (studentId, studentName) => {
+    const studentInfo = students.find(student => student.id === studentId);
+    if (!studentInfo) return alert('No se ha encontrado la ficha del alumno.');
+    const displayName = studentInfo.useAlias && studentInfo.alias ? studentInfo.alias : (studentName || studentInfo.name || 'Alumno');
+    const affectedClasses = allClasses.filter(classData => (
+      classData.refPath && (classData.students || []).some(entry => entry.id === studentId)
+    ));
+
+    if (!window.confirm(`¿Dar de BAJA INMEDIATA Y DEFINITIVA a ${displayName}?\n\nEsta acción prevalece sobre impago, mantenimiento, falta de plaza o cualquier baja programada. Eliminará sus plazas, anulará tickets, cancelará trámites temporales e inscripciones activas en talleres y bloqueará el portal.\n\nNo se puede deshacer automáticamente.`)) return;
+
+    try {
+      const now = new Date().toISOString();
+      for (const classData of affectedClasses) {
+        const updatedStudents = (classData.students || []).filter(entry => entry.id !== studentId);
+        await updateDoc(doc(db, classData.refPath), withClassStudentIndex(updatedStudents));
+      }
+
+      const [ticketsVoided, cancelledStates, workshopRegistrationsCancelled] = await Promise.all([
+        voidStudentTickets(studentId, 'baja_inmediata_admin'),
+        cancelStudentStatesForFinalBaja(studentId, '', todayStr),
+        cancelStudentWorkshopRegistrationsForFinalBaja(studentId)
+      ]);
+      await resetStudentTrivia(studentId);
+
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+        globalStatus: 'baja',
+        classes: [],
+        instruments: [],
+        hasMitoverso: false,
+        hasMitobox: false,
+        scheduledBaja: false,
+        immediateBajaAt: now,
+        immediateBajaBy: user?.email || 'admin',
+        bajaEffectiveDate: todayStr,
+        bajaClassEndDate: todayStr,
+        bajaSourceGestionId: deleteField(),
+        scheduledBajaAt: deleteField(),
+        scheduledBajaBy: deleteField(),
+        scheduledBajaClassEndDate: deleteField(),
+        scheduledBajaEffectiveDate: deleteField(),
+        scheduledBajaScope: deleteField(),
+        scheduledBajaSourceGestionId: deleteField(),
+        updatedAt: now
+      });
+
+      const gestionRef = doc(collection(db, 'artifacts', appId, 'gestiones'));
+      await setDoc(gestionRef, {
+        type: 'baja',
+        status: 'completado',
+        workflowStatus: 'baja_inmediata_consolidada',
+        title: 'Baja inmediata desde Alumnos CRM',
+        details: `Baja definitiva aplicada inmediatamente. Clases eliminadas: ${affectedClasses.length}. Tickets anulados: ${ticketsVoided}. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Gestiones canceladas: ${cancelledStates.gestiones}. Talleres cancelados: ${workshopRegistrationsCancelled}.`,
+        studentId,
+        studentName: displayName,
+        studentEmail: normalizeEmail(studentInfo.email || ''),
+        date: now,
+        completedAt: now,
+        completedBy: user?.email || 'admin',
+        source: 'manual_admin_crm',
+        immediate: true
+      });
+
+      await sendStudentNotification({
+        studentEmail: studentInfo.email,
+        subject: 'Confirmación de baja - Escuela Los Mitos',
+        body: `Hola ${studentInfo.name || displayName},\n\nTe confirmamos que tu baja en Escuela Los Mitos se ha hecho efectiva hoy. Tu acceso al Área del Alumno ha quedado desactivado y ya no conservas plazas ni inscripciones activas en talleres.\n\nSi consideras que se trata de un error, responde a este correo para que podamos revisarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+      });
+
+      alert(`✅ Baja inmediata completada para ${displayName}.\n\nPlazas eliminadas: ${affectedClasses.length}\nTickets anulados: ${ticketsVoided}\nInscripciones en talleres canceladas: ${workshopRegistrationsCancelled}`);
+    } catch (error) {
+      console.error('No se pudo completar la baja inmediata:', error);
+      alert(`La baja inmediata no se ha podido completar por completo: ${error.message}`);
+    }
   };
 
   const consolidateScheduledBajaGestion = async (gestion = {}) => {
@@ -6841,7 +7098,33 @@ Coordinación Los Mitos.`
     try {
       const studentInfo = students.find(s => s.id === studentId);
       const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : studentName;
-      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { globalStatus: newStatus });
+      const now = new Date().toISOString();
+      const statusUpdate = newStatus === 'activo' ? {
+        globalStatus: 'activo',
+        scheduledBaja: false,
+        scheduledBajaAt: deleteField(),
+        scheduledBajaBy: deleteField(),
+        scheduledBajaClassEndDate: deleteField(),
+        scheduledBajaEffectiveDate: deleteField(),
+        scheduledBajaScope: deleteField(),
+        scheduledBajaSourceGestionId: deleteField(),
+        bajaClassEndDate: deleteField(),
+        bajaEffectiveDate: deleteField(),
+        bajaSourceGestionId: deleteField(),
+        classEndDate: deleteField(),
+        endDate: deleteField(),
+        reactivatedAt: now,
+        reactivatedBy: user?.email || 'admin',
+        updatedAt: now
+      } : {
+        globalStatus: newStatus,
+        ...(newStatus === 'impago' ? {
+          impagoAt: now,
+          impagoBy: user?.email || 'admin',
+          updatedAt: now
+        } : {})
+      };
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), statusUpdate);
       if (newStatus === 'activo') {
         const activeOrFutureMaintenance = getStudentMaintenancePeriods(studentId).filter(period => period.until >= todayStr);
         for (let period of activeOrFutureMaintenance) {
@@ -6856,7 +7139,18 @@ Coordinación Los Mitos.`
         alert(`✅ Estado de ${studentName} cambiado a ACTIVO.${activeOrFutureMaintenance.length ? ` Mantenimientos cancelados: ${activeOrFutureMaintenance.length}.` : ''}${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
       } else if (newStatus === 'impago') {
         const clasesActualizadas = studentInfo?.globalStatus === 'congelado' ? await syncStudentPauseStateInClasses(studentId, false) : 0;
-        alert(`⚠️ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
+        const emailQueued = await sendStudentNotification({
+          studentEmail: studentInfo?.email,
+          subject: 'Pago pendiente y acceso temporalmente bloqueado - Escuela Los Mitos',
+          body: `Hola ${studentInfo?.name || displayName},\n\nHemos detectado una incidencia en el pago de tu cuota de Escuela Los Mitos. Para poder regularizarla, te pedimos que dejes fondos suficientes disponibles en la cuenta bancaria asociada; volveremos a intentar el cobro dentro de los próximos días.\n\nMientras el pago permanezca pendiente, tu acceso al Área del Alumno estará temporalmente bloqueado. Te recordamos también que la prestación del servicio está regulada por el contrato firmado por ambas partes.\n\nSi ya has realizado el pago por otro medio o consideras que se trata de un error, responde a este correo para que podamos comprobarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), emailQueued ? {
+          impagoNotificationQueuedAt: new Date().toISOString(),
+          impagoNotificationEmail: normalizeEmail(studentInfo?.email || '')
+        } : {
+          impagoNotificationFailedAt: new Date().toISOString()
+        });
+        alert(`⚠️ Estado de ${studentName} cambiado a IMPAGO. Conserva sus clases y el BI lo sigue tratando como alumno activo; el acceso del alumno a la app queda bloqueado temporalmente.${emailQueued ? ' Se ha enviado el aviso de pago al alumno.' : ' No se pudo enviar el aviso porque falta un correo válido.'}${clasesActualizadas ? ` Limpieza de marca antigua en ${clasesActualizadas} clase(s).` : ''}`);
       } else {
         alert(`Estado de ${studentName} cambiado a ${newStatus.toUpperCase()}.`);
       }
@@ -8350,6 +8644,37 @@ Coordinación Los Mitos.`
     await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), payload, { merge: true });
     setSettings(previous => ({ ...previous, ...payload }));
     if (successMessage) alert(successMessage);
+  };
+
+  const addConfiguredTeacher = async () => {
+    const nameInput = document.getElementById('adminTeacherInput');
+    const emailInput = document.getElementById('adminTeacherEmailInput');
+    const teacherName = cleanTeacherDisplayName(nameInput?.value);
+    const teacherEmail = String(emailInput?.value || '').trim().toLowerCase();
+
+    if (!teacherName) return alert('Escribe el nombre del profesor.');
+    if (!/^[^\s@]+@escuelalosmitos\.com$/i.test(teacherEmail)) {
+      return alert('Escribe el correo corporativo exacto del profesor, terminado en @escuelalosmitos.com.');
+    }
+    if ((settings.teachersList || []).some(name => isSameTeacher(name, teacherName))) {
+      return alert(`${getOfficialTeacherName(teacherName, teacherName)} ya figura en la plantilla.`);
+    }
+    if (Object.values(settings.teacherEmails || {}).some(email => String(email).trim().toLowerCase() === teacherEmail)) {
+      return alert('Ese correo ya está asignado a otro profesor de la plantilla.');
+    }
+
+    const nextSettings = {
+      ...settings,
+      teachersList: [...(settings.teachersList || []), teacherName],
+      teacherEmails: {
+        ...(settings.teacherEmails || {}),
+        [teacherName]: teacherEmail
+      }
+    };
+    setSettings(nextSettings);
+    await saveGlobalSettings(nextSettings, 'Profesor añadido y permisos internos preparados.');
+    if (nameInput) nameInput.value = '';
+    if (emailInput) emailInput.value = '';
   };
 
   const createEmptyCenterEditor = () => ({
@@ -11148,7 +11473,24 @@ ${startDateWarning}
         if (existingStudent) {
           const studentUpdate = {
             email: existingStudent.email || email.trim().toLowerCase(),
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
+            ...(existingStudent.globalStatus === 'baja' ? {
+              globalStatus: 'activo',
+              scheduledBaja: false,
+              scheduledBajaAt: deleteField(),
+              scheduledBajaBy: deleteField(),
+              scheduledBajaClassEndDate: deleteField(),
+              scheduledBajaEffectiveDate: deleteField(),
+              scheduledBajaScope: deleteField(),
+              scheduledBajaSourceGestionId: deleteField(),
+              bajaClassEndDate: deleteField(),
+              bajaEffectiveDate: deleteField(),
+              bajaSourceGestionId: deleteField(),
+              classEndDate: deleteField(),
+              endDate: deleteField(),
+              reactivatedAt: new Date().toISOString(),
+              reactivatedBy: user?.email || 'admin'
+            } : {})
           };
           await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), studentUpdate);
         } else {
@@ -11366,7 +11708,24 @@ ${startDateWarning}
         if (existingStudent) {
           const studentUpdate = {
             email: existingStudent.email || emailInput.trim().toLowerCase(),
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
+            ...(existingStudent.globalStatus === 'baja' ? {
+              globalStatus: 'activo',
+              scheduledBaja: false,
+              scheduledBajaAt: deleteField(),
+              scheduledBajaBy: deleteField(),
+              scheduledBajaClassEndDate: deleteField(),
+              scheduledBajaEffectiveDate: deleteField(),
+              scheduledBajaScope: deleteField(),
+              scheduledBajaSourceGestionId: deleteField(),
+              bajaClassEndDate: deleteField(),
+              bajaEffectiveDate: deleteField(),
+              bajaSourceGestionId: deleteField(),
+              classEndDate: deleteField(),
+              endDate: deleteField(),
+              reactivatedAt: new Date().toISOString(),
+              reactivatedBy: user?.email || 'admin'
+            } : {})
           };
           await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), studentUpdate);
         } else {
@@ -12867,6 +13226,11 @@ ${startDateWarning}
                               <button onClick={() => resetStudentTickets(student)} className="p-2.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-600 hover:text-white transition-colors" title="Anular tickets pendientes">
                                 <Ticket className="w-4 h-4"/>
                               </button>
+                              {['sin_plaza', 'impago', 'mantenimiento'].includes(operationalStatus) && (
+                                <button onClick={() => executeImmediateFinalBajaFromCrm(student.id, student.name)} className="p-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors" title="Baja inmediata y definitiva">
+                                  <UserMinus className="w-4 h-4"/>
+                                </button>
+                              )}
                             </div>
                           </td>
                           <td className="p-4 text-right">
@@ -14622,10 +14986,12 @@ ${startDateWarning}
 
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
-              <div className="flex gap-2 mb-4">
-                <input id="adminTeacherInput" type="text" placeholder="Ej: Tano" className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
-                <button onClick={() => { const input = document.getElementById('adminTeacherInput'); const val = cleanTeacherDisplayName(input?.value); if (!val) return; if ((settings.teachersList || []).some(name => isSameTeacher(name, val))) { alert(`${getOfficialTeacherName(val, val)} ya figura en la plantilla. No se añadirá otra variante del mismo nombre.`); return; } const s = {...settings, teachersList: [...(settings.teachersList||[]), val]}; setSettings(s); saveGlobalSettings(s); if (input) input.value = ''; }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.35fr_auto] gap-2 mb-2">
+                <input id="adminTeacherInput" type="text" placeholder="Nombre: Èlia" className="p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
+                <input id="adminTeacherEmailInput" type="email" placeholder="Correo exacto: elia@escuelalosmitos.com" className="p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
+                <button onClick={addConfiguredTeacher} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 flex items-center justify-center"><Plus className="w-4 h-4"/></button>
               </div>
+              <p className="text-[10px] text-zinc-500 font-bold leading-relaxed mb-4">El nombre se utilizará en clases, bolsa de horas, nóminas y listados. El correo exacto genera sus permisos privados de profesor. La cuenta con ese mismo correo debe existir también en Firebase Authentication para que pueda iniciar sesión.</p>
               <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
                 {configuredTeacherNames.map((t) => {
                   const matchingColorKey = Object.keys(settings.teacherColors || {}).find(name => isSameTeacher(name, t));
@@ -14634,9 +15000,22 @@ ${startDateWarning}
                     <div key={normalizeTeacherKey(t)} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 p-3 text-xs bg-zinc-50 border border-zinc-100 rounded-xl">
                       <div className="flex items-center gap-3 min-w-0">
                         <span className="w-4 h-4 rounded-full border border-white shadow-sm shrink-0" style={{ background: currentColor }} />
-                        <span className="font-black uppercase tracking-widest text-slate-700 truncate">{t}</span>
+                        <div className="min-w-0"><span className="font-black uppercase tracking-widest text-slate-700 truncate block">{t}</span><span className="text-[10px] font-bold text-zinc-400 truncate block">{getTeacherEmail(t)}</span></div>
                       </div>
                       <div className="flex items-center gap-2 justify-between sm:justify-end">
+                        <button onClick={() => {
+                          const currentEmail = getTeacherEmail(t);
+                          const nextEmail = window.prompt(`Correo corporativo exacto de ${t}:`, currentEmail);
+                          if (nextEmail === null) return;
+                          const cleanEmail = String(nextEmail).trim().toLowerCase();
+                          if (!/^[^\s@]+@escuelalosmitos\.com$/i.test(cleanEmail)) return alert('El correo debe terminar en @escuelalosmitos.com.');
+                          const nextTeacherEmails = { ...(settings.teacherEmails || {}) };
+                          Object.keys(nextTeacherEmails).filter(name => isSameTeacher(name, t)).forEach(name => delete nextTeacherEmails[name]);
+                          nextTeacherEmails[t] = cleanEmail;
+                          const nextSettings = { ...settings, teacherEmails: nextTeacherEmails };
+                          setSettings(nextSettings);
+                          saveGlobalSettings(nextSettings, 'Correo del profesor actualizado.');
+                        }} className="text-blue-600 hover:bg-blue-50 p-1.5 rounded transition-colors" title="Editar correo corporativo"><Mail className="w-4 h-4"/></button>
                         <label className="m-0 text-[9px] font-black uppercase tracking-widest text-zinc-400">Color</label>
                         <input
                           type="color"
@@ -14665,10 +15044,13 @@ ${startDateWarning}
                         <button onClick={() => {
                           const nextColors = { ...(settings.teacherColors || {}) };
                           Object.keys(nextColors).filter(name => isSameTeacher(name, t)).forEach(name => delete nextColors[name]);
+                          const nextTeacherEmails = { ...(settings.teacherEmails || {}) };
+                          Object.keys(nextTeacherEmails).filter(name => isSameTeacher(name, t)).forEach(name => delete nextTeacherEmails[name]);
                           const s = {
                             ...settings,
                             teachersList: settings.teachersList.filter(name => !isSameTeacher(name, t)),
-                            teacherColors: nextColors
+                            teacherColors: nextColors,
+                            teacherEmails: nextTeacherEmails
                           };
                           setSettings(s);
                           saveGlobalSettings(s);

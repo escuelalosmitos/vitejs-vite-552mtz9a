@@ -83,6 +83,52 @@ test('el portal del alumno no reinicia sus listeners por identidad del array de 
   assert.match(student, /setClassesLoadError\('No se ha podido cargar el catálogo privado necesario/);
 });
 
+test('una baja programada antigua no invalida una reincorporación ya reactivada', async () => {
+  const [app, student, admin] = await Promise.all([
+    read('src/App.jsx'),
+    read('src/components/StudentPortal.jsx'),
+    read('src/components/AdminPortal.jsx')
+  ]);
+  assert.match(app, /chooseStudentDocument/);
+  assert.match(app, /accessData\.studentId/);
+  assert.match(student, /studentInfo\.scheduledBaja === true \? studentInfo\.scheduledBajaClassEndDate : ''/);
+  assert.match(admin, /scheduledBajaClassEndDate: deleteField\(\)/);
+  assert.match(admin, /maintenanceReconciliationRef/);
+});
+
+test('impago y baja inmediata aplican el flujo administrativo completo', async () => {
+  const admin = await read('src/components/AdminPortal.jsx');
+  assert.match(admin, /Pago pendiente y acceso temporalmente bloqueado/);
+  assert.match(admin, /executeImmediateFinalBajaFromCrm/);
+  assert.match(admin, /baja_inmediata_consolidada/);
+  assert.match(admin, /cancelStudentWorkshopRegistrationsForFinalBaja/);
+  assert.match(admin, /where\('studentEmail', '==', studentEmail\)/);
+});
+
+test('los talleres cancelados desaparecen y el alumno puede revocar su inscripción', async () => {
+  const [admin, student] = await Promise.all([
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/StudentPortal.jsx')
+  ]);
+  assert.match(admin, /cancellationMode: 'allowed_until_start'/);
+  assert.match(admin, /cancellationReason: 'Taller cancelado por Administración'/);
+  assert.match(admin, /workshop\.status !== 'cancelled'/);
+  assert.match(student, /if \(workshop\.status === 'cancelled'\) return false/);
+  assert.match(student, /canStudentCancelWorkshop/);
+  assert.match(student, /cancelledBy: 'student'/);
+  assert.match(student, /billingPending: false/);
+});
+
+test('la plantilla docente conserva nombre normalizado y correo corporativo explícito', async () => {
+  const admin = await read('src/components/AdminPortal.jsx');
+  assert.match(admin, /teacherEmails: \{\}/);
+  assert.match(admin, /addConfiguredTeacher/);
+  assert.match(admin, /adminTeacherEmailInput/);
+  assert.match(admin, /settings\.teacherEmails/);
+  assert.match(admin, /teacherAccessPublication/);
+  assert.match(admin, /\(settings\.teachersList \|\| \[\]\)\.forEach\(t => ensureTeacher\(t\)\)/);
+});
+
 test('Firestore indexa la consulta privada de tickets del alumno', async () => {
   const indexConfig = JSON.parse(await read('firestore.indexes.json'));
   const ticketEmailOverride = indexConfig.fieldOverrides.find(field => (

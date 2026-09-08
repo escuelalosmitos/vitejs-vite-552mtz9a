@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
-import { collection, query, where, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -204,6 +204,17 @@ const CALL_RESPONSE_STATUS_STYLE = {
 const getLocalDateTimeString = (date = new Date()) => {
   const offset = date.getTimezoneOffset();
   return new Date(date.getTime() - (offset * 60000)).toISOString().slice(0, 16);
+};
+
+const getWorkshopFirstSessionStart = (workshop = {}) => (workshop.sessions || [])
+  .map(session => session?.date && session?.startTime ? `${session.date}T${session.startTime}` : '')
+  .filter(Boolean)
+  .sort()[0] || '';
+
+const canStudentCancelWorkshop = (workshop = {}, nowLocal = getLocalDateTimeString()) => {
+  const firstSessionStart = getWorkshopFirstSessionStart(workshop);
+  return ['published', 'registration_closed'].includes(workshop.status)
+    && Boolean(firstSessionStart && firstSessionStart > nowLocal);
 };
 
 const formatWorkshopDate = (dateString = '') => {
@@ -884,7 +895,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     studentEntry.scheduledEndDate ||
     studentEntry.endDate ||
     studentEntry.until ||
-    studentInfo.scheduledBajaClassEndDate ||
+    (studentInfo.scheduledBaja === true ? studentInfo.scheduledBajaClassEndDate : '') ||
     studentInfo.classEndDate ||
     studentInfo.endDate ||
     ''
@@ -1357,7 +1368,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     });
 
     return deduplicateStudentClasses(displayedClasses);
-  }, [myClasses, allClasses, temporaryRelocations, temporaryClassChanges, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBajaClassEndDate, todayStr]);
+  }, [myClasses, allClasses, temporaryRelocations, temporaryClassChanges, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBaja, profile?.scheduledBajaClassEndDate, todayStr]);
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
@@ -1512,6 +1523,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const nowLocal = getLocalDateTimeString();
     return workshops
       .filter(workshop => {
+        if (workshop.status === 'cancelled') return false;
         const registration = workshopRegistrationsByWorkshop.get(workshop.id);
         const hasActiveHistory = registration && registration.status !== 'cancelled';
         if (hasActiveHistory && ['published', 'registration_closed', 'completed', 'cancelled'].includes(workshop.status)) return true;
@@ -2335,7 +2347,10 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
         publishClassDocuments([...classSnapshots.values()]);
         if (unresolvedAssignedClassIds.length > 0 || failedPaths.size > 0) {
-          setClassesLoadWarning('Estamos mostrando las clases que se han podido verificar. Hay alguna referencia antigua o temporal pendiente de sincronización con Administración.');
+          console.warn('Se omitieron referencias de clase obsoletas o inaccesibles.', {
+            unresolvedAssignedClassIds,
+            failedPaths: [...failedPaths]
+          });
         }
       };
 
@@ -3033,7 +3048,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const cancelWorkshopRegistration = async (workshop) => {
     const registration = getWorkshopRegistration(workshop.id);
     if (!registration || !['confirmed', 'pending', 'waitlist'].includes(registration.status)) return;
-    if (workshop.cancellationMode !== 'allowed_until' || !workshop.cancellationDeadline || workshop.cancellationDeadline <= getLocalDateTimeString()) {
+    if (!canStudentCancelWorkshop(workshop)) {
       showToast('Esta inscripción ya no puede cancelarse desde el portal.', 'error');
       return;
     }
@@ -3052,7 +3067,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
         if (!['confirmed', 'pending', 'waitlist'].includes(currentRegistration.status)) return;
         const workshopData = workshopSnap.data();
         const counterField = currentRegistration.status === 'confirmed' ? 'confirmedCount' : currentRegistration.status === 'pending' ? 'pendingCount' : 'waitlistCount';
-        transaction.update(registrationRef, { status: 'cancelled', cancelledAt: nowIso, updatedAt: nowIso });
+        transaction.update(registrationRef, {
+          status: 'cancelled',
+          cancelledAt: nowIso,
+          cancelledBy: 'student',
+          billingPending: false,
+          updatedAt: nowIso
+        });
         transaction.update(workshopRef, { [counterField]: Math.max(0, Number(workshopData[counterField] || 0) - 1), updatedAt: nowIso });
       });
       setWorkshopModal(null);
@@ -3070,13 +3091,45 @@ export default function StudentPortal({ user, logout, db, appId }) {
     setProfileLoadError('');
     setProfile(null);
     try {
-      const q = query(collection(db, 'artifacts', appId, 'students'), where("email", "==", user.email));
-      const snapshot = await getDocs(q);
+      const studentEmail = String(user.email || '').trim().toLowerCase();
+      const accessSnapshot = await getDoc(doc(db, 'artifacts', appId, 'access', user.uid));
+      const accessData = accessSnapshot.exists() ? accessSnapshot.data() : {};
+      let studentDocument = null;
 
-      if (!snapshot.empty) {
-        const studentData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
-        setProfile(studentData);
+      if (
+        accessData.role === 'student'
+        && String(accessData.email || '').trim().toLowerCase() === studentEmail
+        && accessData.studentId
+      ) {
+        const linkedStudent = await getDoc(doc(db, 'artifacts', appId, 'students', accessData.studentId));
+        if (
+          linkedStudent.exists()
+          && String(linkedStudent.data().email || '').trim().toLowerCase() === studentEmail
+        ) {
+          const linkedData = linkedStudent.data();
+          const linkedIsUsable = String(linkedData.globalStatus || 'activo').toLowerCase() !== 'baja'
+            && Array.isArray(linkedData.classes)
+            && linkedData.classes.length > 0;
+          if (linkedIsUsable) studentDocument = linkedStudent;
+        }
       }
+
+      if (!studentDocument) {
+        const q = query(collection(db, 'artifacts', appId, 'students'), where('email', '==', studentEmail));
+        const snapshot = await getDocs(q);
+        studentDocument = [...snapshot.docs].sort((left, right) => {
+          const leftData = left.data();
+          const rightData = right.data();
+          const score = data => (
+            (data.authUid === user.uid ? 100 : 0)
+            + (String(data.globalStatus || 'activo').toLowerCase() !== 'baja' ? 10 : 0)
+            + (Array.isArray(data.classes) && data.classes.length > 0 ? 1 : 0)
+          );
+          return score(rightData) - score(leftData);
+        })[0] || null;
+      }
+
+      if (studentDocument) setProfile({ id: studentDocument.id, ...studentDocument.data() });
     } catch (error) {
       console.error('Error al localizar el perfil del alumno', error);
       setProfileLoadError('No se ha podido consultar tu perfil. Puede ser un problema temporal de conexión o permisos.');
@@ -4388,10 +4441,7 @@ END:VCALENDAR`;
     const registrationOpen = isWorkshopRegistrationOpen(workshop);
     const freeSeats = getWorkshopFreeSeats(workshop);
     const isFull = !workshop.unlimitedCapacity && freeSeats === 0;
-    const canCancel = activeRegistration
-      && workshop.cancellationMode === 'allowed_until'
-      && workshop.cancellationDeadline
-      && workshop.cancellationDeadline > getLocalDateTimeString();
+    const canCancel = activeRegistration && canStudentCancelWorkshop(workshop);
     const safeResourceUrl = getSafeAnnouncementUrl(workshop.resourceUrl || '');
 
     return (
@@ -4444,7 +4494,7 @@ END:VCALENDAR`;
             {!activeRegistration && registrationOpen && registration?.status !== 'rejected' && (workshop.questions || []).length > 0 && <div className="mt-7 border-t border-zinc-100 pt-6"><h3 className="text-xs font-black uppercase tracking-widest text-slate-800 mb-4">Antes de apuntarte</h3><div className="space-y-4">{workshop.questions.map(question => <div key={question.id}><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1.5">{question.label}{question.required ? ' *' : ''}</label>{question.type === 'choice' ? <select value={workshopAnswers[question.id] || ''} onChange={e => setWorkshopAnswers({ ...workshopAnswers, [question.id]: e.target.value })} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm focus:border-violet-500"><option value="">Selecciona...</option>{(question.options || []).map(option => <option key={option} value={option}>{option}</option>)}</select> : <textarea value={workshopAnswers[question.id] || ''} onChange={e => setWorkshopAnswers({ ...workshopAnswers, [question.id]: e.target.value })} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-medium text-sm min-h-[90px] resize-y focus:border-violet-500"/>}</div>)}</div></div>}
 
             <div className="mt-7 border-t border-zinc-100 pt-6">
-              {activeRegistration ? <div className="space-y-3"><div className={`p-4 rounded-2xl border ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}><p className="font-black uppercase tracking-widest text-xs">{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</p><p className="text-xs font-bold mt-1 opacity-80">{activeRegistration.status === 'confirmed' ? 'Tu plaza está reservada.' : activeRegistration.status === 'pending' ? 'Administración revisará tu solicitud.' : 'Te avisaremos si queda una plaza disponible.'}</p></div>{canCancel && <button onClick={() => cancelWorkshopRegistration(workshop)} disabled={isSendingWorkshopRegistration} className="w-full bg-zinc-100 text-zinc-600 hover:bg-red-50 hover:text-red-700 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-50">Cancelar inscripción</button>}{!canCancel && workshop.cancellationMode === 'contact_admin' && <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`Inscripción taller: ${workshop.title}`)}`} className="w-full bg-zinc-100 text-zinc-700 hover:bg-zinc-200 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Consultar cambios con Administración</a>}</div> : registration?.status === 'rejected' ? <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`Solicitud taller: ${workshop.title}`)}`} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Contactar con Administración</a> : registrationOpen ? <><div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4"><div><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block">Inscripción abierta hasta</span><span className="text-sm font-black text-slate-800">{formatWorkshopDeadline(workshop.registrationDeadline)}</span></div><span className={`text-[10px] font-black uppercase tracking-widest ${isFull ? 'text-blue-700' : 'text-emerald-700'}`}>{workshop.unlimitedCapacity ? 'Plazas sin límite' : isFull && workshop.waitlistEnabled ? 'Lista de espera disponible' : `${freeSeats} ${freeSeats === 1 ? 'plaza libre' : 'plazas libres'}`}</span></div>{workshop.priceType === 'paid' && <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3 mb-4 text-xs font-bold text-zinc-600">{workshop.paymentMethod === 'next_debit' ? 'El importe se incluirá en la próxima domiciliación.' : workshop.paymentMethod === 'manual_admin' ? 'Administración gestionará el cobro después de la inscripción.' : 'El pago se realizará mediante el sistema externo indicado por la escuela.'}</div>}<button onClick={sendWorkshopRegistration} disabled={isSendingWorkshopRegistration || (isFull && !workshop.waitlistEnabled)} className="w-full bg-violet-600 hover:bg-violet-700 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSendingWorkshopRegistration ? 'Procesando...' : isFull && workshop.waitlistEnabled ? <><Clock className="w-4 h-4"/> Apuntarme a la lista de espera</> : workshop.registrationMode === 'manual_review' ? <><Send className="w-4 h-4"/> Enviar solicitud</> : <><CheckCircle className="w-4 h-4"/> Apuntarme al taller</>}</button></> : <div className="p-4 bg-zinc-100 border border-zinc-200 rounded-2xl text-center"><p className="font-black uppercase tracking-widest text-xs text-zinc-600">Inscripción cerrada</p>{workshop.registrationDeadline && <p className="text-[10px] font-bold text-zinc-400 mt-1">Finalizó el {formatWorkshopDeadline(workshop.registrationDeadline)}</p>}</div>}
+              {activeRegistration ? <div className="space-y-3"><div className={`p-4 rounded-2xl border ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}><p className="font-black uppercase tracking-widest text-xs">{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</p><p className="text-xs font-bold mt-1 opacity-80">{activeRegistration.status === 'confirmed' ? 'Tu plaza está reservada.' : activeRegistration.status === 'pending' ? 'Administración revisará tu solicitud.' : 'Te avisaremos si queda una plaza disponible.'}</p></div>{canCancel && <button onClick={() => cancelWorkshopRegistration(workshop)} disabled={isSendingWorkshopRegistration} className="w-full bg-zinc-100 text-zinc-600 hover:bg-red-50 hover:text-red-700 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-50">Cancelar inscripción</button>}</div> : registration?.status === 'rejected' ? <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`Solicitud taller: ${workshop.title}`)}`} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Contactar con Administración</a> : registrationOpen ? <><div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4"><div><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block">Inscripción abierta hasta</span><span className="text-sm font-black text-slate-800">{formatWorkshopDeadline(workshop.registrationDeadline)}</span></div><span className={`text-[10px] font-black uppercase tracking-widest ${isFull ? 'text-blue-700' : 'text-emerald-700'}`}>{workshop.unlimitedCapacity ? 'Plazas sin límite' : isFull && workshop.waitlistEnabled ? 'Lista de espera disponible' : `${freeSeats} ${freeSeats === 1 ? 'plaza libre' : 'plazas libres'}`}</span></div>{workshop.priceType === 'paid' && <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3 mb-4 text-xs font-bold text-zinc-600">{workshop.paymentMethod === 'next_debit' ? 'El importe se incluirá en la próxima domiciliación.' : workshop.paymentMethod === 'manual_admin' ? 'Administración gestionará el cobro después de la inscripción.' : 'El pago se realizará mediante el sistema externo indicado por la escuela.'}</div>}<button onClick={sendWorkshopRegistration} disabled={isSendingWorkshopRegistration || (isFull && !workshop.waitlistEnabled)} className="w-full bg-violet-600 hover:bg-violet-700 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSendingWorkshopRegistration ? 'Procesando...' : isFull && workshop.waitlistEnabled ? <><Clock className="w-4 h-4"/> Apuntarme a la lista de espera</> : workshop.registrationMode === 'manual_review' ? <><Send className="w-4 h-4"/> Enviar solicitud</> : <><CheckCircle className="w-4 h-4"/> Apuntarme al taller</>}</button></> : <div className="p-4 bg-zinc-100 border border-zinc-200 rounded-2xl text-center"><p className="font-black uppercase tracking-widest text-xs text-zinc-600">Inscripción cerrada</p>{workshop.registrationDeadline && <p className="text-[10px] font-bold text-zinc-400 mt-1">Finalizó el {formatWorkshopDeadline(workshop.registrationDeadline)}</p>}</div>}
             </div>
           </div>
         </div>

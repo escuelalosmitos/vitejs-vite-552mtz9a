@@ -5193,7 +5193,7 @@ END:VCALENDAR`;
                 return (
                   <div key={idx} className={`rounded-3xl p-6 shadow-xl relative overflow-hidden mb-4 transition-all ${isCongelado ? 'bg-zinc-200 text-zinc-500 border-2 border-zinc-300' : 'bg-black text-white'}`}>
                       <p className={`${isCongelado ? 'text-zinc-500' : 'text-zinc-400'} font-bold uppercase text-[10px] tracking-widest mb-1`}>Clase de {clase.subject}</p>
-                      <h2 className={`text-3xl font-black uppercase tracking-tighter ${isCongelado ? 'text-zinc-400' : ''}`}>{getDayName(clase.dayOfWeek)}</h2>
+                      <h2 className={`text-3xl font-black uppercase tracking-tighter ${isCongelado ? 'text-zinc-700' : 'text-white'}`}>{getDayName(clase.dayOfWeek)}</h2>
                       <p className={`text-lg font-medium mb-6 ${isCongelado ? 'text-zinc-500' : 'text-zinc-300'}`}>{clase.time}h</p>
                       {announcedTemporaryClassChange && (
                         <div className={`mb-5 rounded-2xl border p-4 ${isCongelado ? 'bg-violet-100/60 border-violet-200 text-violet-900' : 'bg-violet-950/70 border-violet-700 text-violet-100'}`}>

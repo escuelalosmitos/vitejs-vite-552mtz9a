@@ -66,6 +66,8 @@ const createEmptyAnnouncementDraft = () => ({
   title: '',
   content: '',
   url: '',
+  pinned: false,
+  pinnedUntil: '',
   pollAnswerType: 'single',
   pollOptions: [createPollOption(), createPollOption()],
   pollDeadline: '',
@@ -7573,6 +7575,19 @@ Coordinación Los Mitos.`
     }
     const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
     if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
+    const pinned = Boolean(newAnnounce.pinned);
+    const pinnedUntil = pinned ? String(newAnnounce.pinnedUntil || '').trim() : '';
+    if (pinnedUntil && new Date(pinnedUntil).getTime() <= Date.now()) {
+      return alert('La fecha de finalización de la fijación debe ser futura. También puedes dejarla vacía para mantener la publicación fijada hasta que la desmarques.');
+    }
+    const activePinnedCount = announcements.filter(item => (
+      item.id !== editingAnnouncementId
+      && item.pinned === true
+      && (!item.pinnedUntil || new Date(item.pinnedUntil).getTime() > Date.now())
+    )).length;
+    if (pinned && activePinnedCount >= 3) {
+      return alert('Ya hay tres publicaciones fijadas. Desfija una o espera a que venza antes de fijar otra.');
+    }
 
     const audienceOptions = {
       targetType: announceEmailOptions.targetType || 'all',
@@ -7636,6 +7651,8 @@ Coordinación Los Mitos.`
       title: newAnnounce.title.trim(),
       content: String(newAnnounce.content || '').trim(),
       url: cleanUrl || '',
+      pinned,
+      pinnedUntil,
       audienceType: audienceOptions.targetType,
       audienceValue: audienceOptions.targetType === 'teachers' ? '' : (audienceOptions.targetValue || ''),
       audienceLabel,
@@ -7712,6 +7729,8 @@ Coordinación Los Mitos.`
       title: ann.title || '',
       content: ann.content || '',
       url: normalizeAnnouncementUrl(ann.url) || '',
+      pinned: ann.pinned === true,
+      pinnedUntil: ann.pinnedUntil || '',
       pollAnswerType: ann.pollAnswerType || 'single',
       pollOptions: (ann.pollOptions || []).map(option => ({ ...option })),
       pollDeadline: ann.pollDeadline || '',
@@ -14347,6 +14366,32 @@ ${startDateWarning}
                 <textarea placeholder={newAnnounce.type === 'poll' ? 'Explicación opcional...' : (newAnnounce.type === 'call' ? 'Explica la actividad, compromisos, ensayos y criterios relevantes...' : 'Detalles del aviso...')} value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
                 <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
+                {announceEmailOptions.targetType !== 'teachers' && <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+                  <label className="flex items-start gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={newAnnounce.pinned === true}
+                      onChange={e => setNewAnnounce(prev => ({ ...prev, pinned: e.target.checked, pinnedUntil: e.target.checked ? prev.pinnedUntil : '' }))}
+                      className="mt-1 w-4 h-4 accent-amber-500"
+                    />
+                    <span>
+                      <span className="block text-xs font-black uppercase tracking-widest text-amber-900">Fijar arriba en el tablón</span>
+                      <span className="block text-xs text-amber-800 font-semibold mt-1">Se mostrará después de las publicaciones que el alumno tenga pendientes de responder y antes del resto de noticias.</span>
+                    </span>
+                  </label>
+                  {newAnnounce.pinned === true && (
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-amber-900 mb-2">Fijar hasta (opcional)</label>
+                      <input
+                        type="datetime-local"
+                        value={newAnnounce.pinnedUntil || ''}
+                        onChange={e => setNewAnnounce(prev => ({ ...prev, pinnedUntil: e.target.value }))}
+                        className="w-full p-3 bg-white border border-amber-200 rounded-xl outline-none font-bold text-sm"
+                      />
+                      <p className="text-[10px] text-amber-800 font-semibold mt-2">Si no indicas fecha, seguirá fijada hasta que la edites y desmarques esta opción. Puede haber un máximo de tres publicaciones fijadas.</p>
+                    </div>
+                  )}
+                </div>}
                 {newAnnounce.type === 'poll' && (
                   <div className="bg-violet-50 border border-violet-100 rounded-2xl p-4 space-y-4">
                     <div className="grid md:grid-cols-2 gap-3">
@@ -14429,7 +14474,11 @@ ${startDateWarning}
                   <div className="grid md:grid-cols-2 gap-3">
                     <select
                       value={announceEmailOptions.targetType}
-                      onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetType: e.target.value, targetValue: '' })}
+                      onChange={e => {
+                        const targetType = e.target.value;
+                        setAnnounceEmailOptions({ ...announceEmailOptions, targetType, targetValue: '' });
+                        if (targetType === 'teachers') setNewAnnounce(prev => ({ ...prev, pinned: false, pinnedUntil: '' }));
+                      }}
                       disabled={hasProtectedAnnouncementResponses(editingAnnouncementId)}
                       className="p-3 bg-white border border-sky-200 rounded-xl outline-none font-black text-xs uppercase tracking-widest text-sky-900"
                     >
@@ -14498,6 +14547,11 @@ ${startDateWarning}
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap gap-2 mb-2">
                           <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isPoll ? 'bg-violet-100 text-violet-800' : isCall ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-600'}`}>{isPoll ? 'Encuesta' : isCall ? 'Convocatoria' : 'Aviso'}</span>
+                          {ann.pinned === true && (
+                            <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${!ann.pinnedUntil || new Date(ann.pinnedUntil).getTime() > pollClock ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-500'}`}>
+                              <Star className="w-3 h-3"/> {!ann.pinnedUntil || new Date(ann.pinnedUntil).getTime() > pollClock ? 'Fijada arriba' : 'Fijación vencida'}
+                            </span>
+                          )}
                           {isPoll && <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isPollClosed(ann) ? 'bg-zinc-100 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{getPollStatusLabel(ann)}</span>}
                           {isCall && <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isCallClosed(ann) ? 'bg-zinc-100 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{getCallStatusLabel(ann)}</span>}
                         </div>

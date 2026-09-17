@@ -638,6 +638,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [selectedCalendarDay, setSelectedCalendarDay] = useState('');
   const [announcements, setAnnouncements] = useState([]); 
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
+  const [expandedAnnouncementId, setExpandedAnnouncementId] = useState(null);
   const [myPollResponses, setMyPollResponses] = useState([]);
   const [pollDrafts, setPollDrafts] = useState({});
   const [savingPollId, setSavingPollId] = useState(null);
@@ -1537,7 +1538,33 @@ export default function StudentPortal({ user, logout, db, appId }) {
         if (Boolean(a.featured) !== Boolean(b.featured)) return a.featured ? -1 : 1;
         return String(a.sessions?.[0]?.date || '2999-12-31').localeCompare(String(b.sessions?.[0]?.date || '2999-12-31'));
       });
-  }, [workshops, workshopRegistrationsByWorkshop, fixedMyClasses, effectiveMyClasses, profile?.id, todayStr]);
+  }, [workshops, workshopRegistrationsByWorkshop, fixedMyClasses, effectiveMyClasses, profile?.id, todayStr, pollClock]);
+
+  const latestVisibleWorkshopKey = useMemo(() => {
+    const activeWorkshopKeys = visibleWorkshops
+      .filter(workshop => (
+        workshop.status === 'published'
+        && (!workshop.registrationDeadline || new Date(workshop.registrationDeadline).getTime() > pollClock)
+      ))
+      .map(workshop => `${workshop.publishedAt || workshop.createdAt || workshop.publishAt || ''}|${workshop.id}`)
+      .sort((a, b) => b.localeCompare(a));
+    return activeWorkshopKeys[0] || '';
+  }, [visibleWorkshops, pollClock]);
+
+  const hasUnreadExtras = Boolean(
+    workshopsLoaded
+    && latestVisibleWorkshopKey
+    && latestVisibleWorkshopKey > String(profile?.lastSeenExtras || '')
+  );
+
+  useEffect(() => {
+    if (activeTab !== 'extras' || !hasUnreadExtras || !profile?.id || !latestVisibleWorkshopKey) return;
+
+    setProfile(previous => previous ? ({ ...previous, lastSeenExtras: latestVisibleWorkshopKey }) : previous);
+    updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+      lastSeenExtras: latestVisibleWorkshopKey
+    }).catch(error => console.error('No se pudo marcar Extras como visto:', error));
+  }, [activeTab, hasUnreadExtras, profile?.id, latestVisibleWorkshopKey, db, appId]);
 
   const classWhatsappLinks = useMemo(() => {
     const byUrl = new Map();
@@ -2785,6 +2812,63 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (['closed', 'archived'].includes(call.callStatus)) return true;
     if (!call.callDeadline) return false;
     return new Date(call.callDeadline).getTime() <= pollClock;
+  };
+
+  const isAnnouncementPending = (announcement = {}) => {
+    if (announcement.type === 'poll') {
+      return !isStudentPollClosed(announcement) && !getMyPollResponse(announcement.id);
+    }
+    if (announcement.type === 'call') {
+      return !isStudentCallClosed(announcement) && !getMyCallResponse(announcement.id);
+    }
+    return false;
+  };
+
+  const isAnnouncementPinned = (announcement = {}) => (
+    announcement.pinned === true
+    && (!announcement.pinnedUntil || new Date(announcement.pinnedUntil).getTime() > pollClock)
+  );
+
+  const pendingAnnouncements = visibleAnnouncements
+    .filter(isAnnouncementPending)
+    .sort((a, b) => {
+      const aDeadline = a.type === 'poll' ? a.pollDeadline : a.callDeadline;
+      const bDeadline = b.type === 'poll' ? b.pollDeadline : b.callDeadline;
+      return String(aDeadline || '9999-12-31').localeCompare(String(bDeadline || '9999-12-31'));
+    });
+  const pendingAnnouncementIds = new Set(pendingAnnouncements.map(announcement => announcement.id));
+  const pinnedAnnouncements = visibleAnnouncements.filter(announcement => (
+    !pendingAnnouncementIds.has(announcement.id) && isAnnouncementPinned(announcement)
+  ));
+  const pinnedAnnouncementIds = new Set(pinnedAnnouncements.map(announcement => announcement.id));
+  const regularAnnouncements = visibleAnnouncements.filter(announcement => (
+    !pendingAnnouncementIds.has(announcement.id) && !pinnedAnnouncementIds.has(announcement.id)
+  ));
+  const orderedVisibleAnnouncements = [...pendingAnnouncements, ...pinnedAnnouncements, ...regularAnnouncements];
+  const firstPendingAnnouncementId = pendingAnnouncements[0]?.id || null;
+  const firstPinnedAnnouncementId = pinnedAnnouncements[0]?.id || null;
+  const firstRegularAnnouncementId = regularAnnouncements[0]?.id || null;
+
+  const renderAnnouncementSectionHeading = (announcement = {}) => {
+    if (announcement.id === firstPendingAnnouncementId) {
+      return (
+        <div className="bg-red-50 border border-red-100 rounded-2xl px-5 py-4 flex items-center gap-3">
+          <span className="relative flex h-3 w-3 shrink-0"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span></span>
+          <div><h3 className="text-xs font-black uppercase tracking-widest text-red-800">Pendientes para ti</h3><p className="text-xs font-semibold text-red-700 mt-1">Encuestas y convocatorias que todavía necesitan tu respuesta.</p></div>
+        </div>
+      );
+    }
+    if (announcement.id === firstPinnedAnnouncementId) {
+      return <h3 className="text-xs font-black uppercase tracking-widest text-amber-700 px-2 pt-2 flex items-center gap-2"><Star className="w-4 h-4"/> Fijado por la escuela</h3>;
+    }
+    if (announcement.id === firstRegularAnnouncementId) {
+      return <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 px-2 pt-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Últimas publicaciones</h3>;
+    }
+    return null;
+  };
+
+  const toggleAnnouncementExpanded = announcementId => {
+    setExpandedAnnouncementId(current => current === announcementId ? null : announcementId);
   };
 
   const getCallDraft = (call) => {
@@ -5726,14 +5810,14 @@ END:VCALENDAR`;
               </div>
             </div>
 
-            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Últimas Noticias</h3>
+            <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-4 px-2 flex items-center gap-2"><Bell className="w-4 h-4"/> Publicaciones</h3>
             {visibleAnnouncements.length === 0 ? (
                <div className="p-10 bg-white rounded-3xl border border-zinc-200 text-center shadow-sm">
                 <p className="font-black text-slate-800 uppercase tracking-widest text-sm">El tablón está vacío</p>
               </div>
             ) : (
               <div className="space-y-4">
-                {visibleAnnouncements.slice(0, visibleAnnouncementsCount).map(ann => {
+                {orderedVisibleAnnouncements.slice(0, visibleAnnouncementsCount).map(ann => {
                   if (ann.type === 'call') {
                     const response = getMyCallResponse(ann.id);
                     const responseStatus = response?.status || 'pending';
@@ -5743,11 +5827,18 @@ END:VCALENDAR`;
                     const canWithdraw = Boolean(response && ['pending', 'confirmed', 'waitlist'].includes(responseStatus));
                     const capacity = Number(ann.callCapacity || 0);
                     const isSaving = savingCallId === ann.id;
+                    const isExpanded = expandedAnnouncementId === ann.id;
 
                     return (
-                      <div key={ann.id} className="bg-white rounded-3xl shadow-sm border-2 border-amber-200 overflow-hidden">
+                      <React.Fragment key={ann.id}>
+                      {renderAnnouncementSectionHeading(ann)}
+                      {isExpanded && <button type="button" aria-label="Cerrar convocatoria" onClick={() => toggleAnnouncementExpanded(ann.id)} className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"/>}
+                      <div className={`bg-white rounded-3xl shadow-sm border-2 border-amber-200 overflow-hidden ${isExpanded ? 'fixed inset-x-4 top-4 bottom-4 z-[60] max-w-2xl mx-auto overflow-y-auto shadow-2xl' : ''}`}>
                         <div className="bg-amber-50 px-6 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-amber-100">
-                          <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Convocatoria</span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-amber-800">Convocatoria</span>
+                            {isAnnouncementPinned(ann) && <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-800 bg-amber-100 px-2 py-1 rounded-lg"><Star className="w-3 h-3"/> Fijada</span>}
+                          </div>
                           <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${closed ? 'bg-zinc-200 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>
                             {closed ? 'Finalizada' : `Abierta hasta ${ann.callDeadline ? new Date(ann.callDeadline).toLocaleString('es-ES') : 'nuevo aviso'}`}
                           </span>
@@ -5756,9 +5847,14 @@ END:VCALENDAR`;
                         <div className="p-6">
                           <h3 className="font-black text-slate-800 tracking-tight text-xl leading-tight mb-2">{ann.title}</h3>
                           <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">Publicada el {formatDateSpanish(ann.date)}</p>
-                          {ann.content && <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap mb-5">{ann.content}</p>}
+                          {ann.content && <p className={`text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap ${isExpanded ? 'mb-5' : 'line-clamp-3 mb-4'}`}>{ann.content}</p>}
 
-                          <div className="flex flex-wrap gap-2 mb-5">
+                          <button onClick={() => toggleAnnouncementExpanded(ann.id)} className="inline-flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-colors shadow-sm">
+                            {isExpanded ? 'Mostrar menos' : isAnnouncementPending(ann) ? 'Responder convocatoria' : 'Leer más'} <ArrowRight className={`w-4 h-4 transition-transform ${isExpanded ? '-rotate-90' : 'rotate-90'}`}/>
+                          </button>
+
+                          {isExpanded && <>
+                          <div className="flex flex-wrap gap-2 mt-5 mb-5">
                             {capacity > 0 && <span className="px-3 py-2 bg-amber-50 border border-amber-100 rounded-xl text-[10px] font-black uppercase tracking-widest text-amber-800">{capacity} plaza(s) orientativas</span>}
                             <span className="px-3 py-2 bg-zinc-50 border border-zinc-100 rounded-xl text-[10px] font-black uppercase tracking-widest text-zinc-600">Selección por Administración</span>
                           </div>
@@ -5820,23 +5916,37 @@ END:VCALENDAR`;
                               <LinkIcon className="w-4 h-4"/> Abrir enlace
                             </a>
                           )}
+                          </>}
                         </div>
                       </div>
+                      </React.Fragment>
                     );
                   }
 
                   if (ann.type !== 'poll') {
+                    const isExpanded = expandedAnnouncementId === ann.id;
                     return (
-                      <div key={ann.id} className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200">
+                      <React.Fragment key={ann.id}>
+                      {renderAnnouncementSectionHeading(ann)}
+                      {isExpanded && <button type="button" aria-label="Cerrar aviso" onClick={() => toggleAnnouncementExpanded(ann.id)} className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"/>}
+                      <div className={`bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-200 ${isExpanded ? 'fixed inset-x-4 top-4 bottom-4 z-[60] max-w-2xl mx-auto overflow-y-auto shadow-2xl' : ''}`}>
+                        <div className="flex flex-wrap items-center gap-2 mb-3">
+                          <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600 bg-zinc-100 px-2 py-1 rounded-lg">Aviso</span>
+                          {isAnnouncementPinned(ann) && <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-800 bg-amber-100 px-2 py-1 rounded-lg"><Star className="w-3 h-3"/> Fijado</span>}
+                        </div>
                         <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg leading-none mb-1">{ann.title}</h3>
                         <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">{formatDateSpanish(ann.date)}</p>
-                        <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap">{ann.content}</p>
-                        {getSafeAnnouncementUrl(ann.url) && (
+                        <p className={`text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap ${isExpanded ? '' : 'line-clamp-3'}`}>{ann.content}</p>
+                        <button onClick={() => toggleAnnouncementExpanded(ann.id)} className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
+                          {isExpanded ? 'Mostrar menos' : 'Leer más'} <ArrowRight className={`w-4 h-4 transition-transform ${isExpanded ? '-rotate-90' : 'rotate-90'}`}/>
+                        </button>
+                        {isExpanded && getSafeAnnouncementUrl(ann.url) && (
                           <a href={getSafeAnnouncementUrl(ann.url)} target="_blank" rel="noopener noreferrer" className="mt-5 inline-flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-colors shadow-sm">
                             <LinkIcon className="w-4 h-4"/> Abrir enlace
                           </a>
                         )}
                       </div>
+                      </React.Fragment>
                     );
                   }
 
@@ -5846,18 +5956,30 @@ END:VCALENDAR`;
                   const canEdit = !closed && (!response || ann.pollAllowEdit !== false);
                   const showResults = shouldShowPollResults(ann, response);
                   const totalResponses = Number(ann.pollResponseCount || 0);
+                  const isExpanded = expandedAnnouncementId === ann.id;
                   return (
-                    <div key={ann.id} className="bg-white rounded-3xl shadow-sm border-2 border-violet-200 overflow-hidden">
+                    <React.Fragment key={ann.id}>
+                    {renderAnnouncementSectionHeading(ann)}
+                    {isExpanded && <button type="button" aria-label="Cerrar encuesta" onClick={() => toggleAnnouncementExpanded(ann.id)} className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"/>}
+                    <div className={`bg-white rounded-3xl shadow-sm border-2 border-violet-200 overflow-hidden ${isExpanded ? 'fixed inset-x-4 top-4 bottom-4 z-[60] max-w-2xl mx-auto overflow-y-auto shadow-2xl' : ''}`}>
                       <div className="bg-violet-50 px-6 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-violet-100">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-violet-700">Encuesta</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-violet-700">Encuesta</span>
+                          {isAnnouncementPinned(ann) && <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-800 bg-amber-100 px-2 py-1 rounded-lg"><Star className="w-3 h-3"/> Fijada</span>}
+                        </div>
                         <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-lg ${closed ? 'bg-zinc-200 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{closed ? 'Finalizada' : `Abierta hasta ${ann.pollDeadline ? new Date(ann.pollDeadline).toLocaleString('es-ES') : 'nuevo aviso'}`}</span>
                       </div>
                       <div className="p-6">
                         <h3 className="font-black text-slate-800 tracking-tight text-xl leading-tight mb-2">{ann.title}</h3>
                         <p className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-4">Publicada el {formatDateSpanish(ann.date)}</p>
-                        {ann.content && <p className="text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap mb-5">{ann.content}</p>}
+                        {ann.content && <p className={`text-sm font-medium text-slate-600 leading-relaxed whitespace-pre-wrap ${isExpanded ? 'mb-5' : 'line-clamp-3 mb-4'}`}>{ann.content}</p>}
 
-                        <div className="space-y-3">
+                        <button onClick={() => toggleAnnouncementExpanded(ann.id)} className="inline-flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-700 text-white px-4 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-colors shadow-sm">
+                          {isExpanded ? 'Mostrar menos' : isAnnouncementPending(ann) ? 'Responder encuesta' : 'Leer más'} <ArrowRight className={`w-4 h-4 transition-transform ${isExpanded ? '-rotate-90' : 'rotate-90'}`}/>
+                        </button>
+
+                        {isExpanded && <>
+                        <div className="space-y-3 mt-5">
                           {ann.pollAnswerType === 'text' ? (
                             <textarea
                               value={draft.textAnswer || ''}
@@ -5912,11 +6034,13 @@ END:VCALENDAR`;
                             <LinkIcon className="w-4 h-4"/> Abrir enlace
                           </a>
                         )}
+                        </>}
                       </div>
                     </div>
+                    </React.Fragment>
                   );
                 })}
-                {visibleAnnouncementsCount < visibleAnnouncements.length && (
+                {visibleAnnouncementsCount < orderedVisibleAnnouncements.length && (
                   <button onClick={() => setVisibleAnnouncementsCount(c => c + 5)} className="w-full py-4 rounded-2xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
                     Cargar más avisos
                   </button>
@@ -6051,6 +6175,12 @@ END:VCALENDAR`;
                 <t.i className="w-6 h-6"/>
                 {/* 👇 LA BOLITA ROJA (Aparece en el ícono de 'news' si hay avisos sin leer y no estás en la pestaña) */}
                 {t.id === 'news' && hasUnreadNews && activeTab !== 'news' && (
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border-2 border-white"></span>
+                  </span>
+                )}
+                {t.id === 'extras' && hasUnreadExtras && activeTab !== 'extras' && (
                   <span className="absolute -top-1 -right-1 flex h-3 w-3">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border-2 border-white"></span>

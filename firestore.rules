@@ -217,7 +217,7 @@ service cloud.firestore {
         (ownsStudentRecord(appId, studentId) || ownStudentEmailRecord())
         && request.resource.data.email == resource.data.email
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'claimed', 'authUid', 'lastSeenTablon', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak'
+          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak'
         ])
       );
     }

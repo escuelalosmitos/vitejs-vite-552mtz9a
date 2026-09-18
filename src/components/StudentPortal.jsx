@@ -5435,7 +5435,7 @@ END:VCALENDAR`;
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight">Calendario</h2>
+                <h2 className="text-2xl font-black uppercase tracking-tight text-white">Calendario</h2>
                 <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">
                   Días no lectivos oficiales
                   {calendarCenterNames.length > 0 && (
@@ -5780,7 +5780,7 @@ END:VCALENDAR`;
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight">Tablón de Avisos</h2>
+                <h2 className="text-2xl font-black uppercase tracking-tight text-white">Tablón de Avisos</h2>
                 <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Novedades y Enlaces</p>
               </div>
               <Megaphone className="w-20 h-20 text-zinc-800 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />

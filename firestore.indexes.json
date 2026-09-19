@@ -12,8 +12,8 @@
       "collectionGroup": "gestiones",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "type", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "type", "order": "ASCENDING" },
         { "fieldPath": "recoveryDate", "order": "ASCENDING" }
       ]
     },

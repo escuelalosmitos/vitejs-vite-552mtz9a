@@ -2153,6 +2153,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
+  const mboxTodayStr = getTodayLocalString();
   const [mitoboxReservations, setMitoboxReservations] = useState([]);
   const [mitoboxSlotUsage, setMitoboxSlotUsage] = useState([]);
   const [mitoboxDataError, setMitoboxDataError] = useState('');
@@ -2672,32 +2673,47 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
   }, [activeCenters.map(center => `${center.id}:${center.status}`).join('|')]);
 
-  // Radar Mitobox diferido: sus reservas solo se consultan cuando se abre la
-  // pestaña y únicamente para la fecha seleccionada.
+  // Agenda Mitobox diferida: solo consulta reservas confirmadas desde hoy y
+  // se mantiene independiente del selector diario del radar de disponibilidad.
   useEffect(() => {
-    if (activeTab !== 'mitobox' || !mboxAdminDate) {
+    if (activeTab !== 'mitobox') {
       setMitoboxReservations([]);
-      setMitoboxSlotUsage([]);
       return undefined;
     }
     setMitoboxDataError('');
     const reservationsQuery = query(
       collection(db, 'artifacts', appId, 'mitoboxReservations'),
-      where('reservationDate', '==', mboxAdminDate)
-    );
-    const slotsQuery = query(
-      collection(db, 'artifacts', appId, 'mitoboxSlots'),
-      where('reservationDate', '==', mboxAdminDate)
+      where('status', '==', 'confirmed'),
+      where('reservationDate', '>=', mboxTodayStr),
+      orderBy('reservationDate', 'asc')
     );
     const unsubReservations = onSnapshot(
       reservationsQuery,
       snapshot => setMitoboxReservations(snapshot.docs
         .map(reservationDoc => ({ id: reservationDoc.id, ...reservationDoc.data() }))
-        .sort((left, right) => String(left.reservationTime || '').localeCompare(String(right.reservationTime || '')))),
+        .sort((left, right) => (
+          String(left.reservationDate || '').localeCompare(String(right.reservationDate || ''))
+          || String(left.reservationTime || '').localeCompare(String(right.reservationTime || ''))
+          || String(left.sede || '').localeCompare(String(right.sede || ''), 'es')
+        ))),
       error => {
         console.error('No se pudieron cargar las reservas Mitobox', error);
-        setMitoboxDataError('No se han podido cargar las reservas de esta fecha.');
+        setMitoboxDataError('No se ha podido cargar la agenda de reservas futuras.');
       }
+    );
+    return () => unsubReservations();
+  }, [activeTab, mboxTodayStr, db, appId]);
+
+  // El radar sí depende del día seleccionado, pero solo necesita leer la
+  // ocupación agregada de cada sala y turno.
+  useEffect(() => {
+    if (activeTab !== 'mitobox' || !mboxAdminDate) {
+      setMitoboxSlotUsage([]);
+      return undefined;
+    }
+    const slotsQuery = query(
+      collection(db, 'artifacts', appId, 'mitoboxSlots'),
+      where('reservationDate', '==', mboxAdminDate)
     );
     const unsubSlots = onSnapshot(
       slotsQuery,
@@ -2707,10 +2723,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         setMitoboxDataError('No se ha podido cargar el aforo reservado de esta fecha.');
       }
     );
-    return () => {
-      unsubReservations();
-      unsubSlots();
-    };
+    return () => unsubSlots();
   }, [activeTab, mboxAdminDate, db, appId]);
 
   // Conversión compatible de las reservas antiguas guardadas como gestiones.
@@ -10915,7 +10928,7 @@ ${valueOrDash(comments.privateNote)}`,
 
   const visibleMitoboxReservations = mitoboxReservations.filter(reservation => (
     isActiveMitoboxReservation(reservation)
-    && isSameCenter(reservation.centerId || reservation.sede, mboxAdminSede)
+    && reservation.reservationDate >= mboxTodayStr
   ));
 
   const cancelMitoboxReservationFromAdmin = async reservation => {
@@ -13679,12 +13692,12 @@ ${startDateWarning}
             <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
               <div className="flex items-center justify-between gap-4 mb-5"><div><h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Reservas confirmadas</h3><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Información operativa · no pasa por la bandeja</p></div><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-xl text-xs font-black">{visibleMitoboxReservations.length}</span></div>
               {visibleMitoboxReservations.length === 0 ? (
-                <div className="bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl p-7 text-center text-xs font-bold uppercase tracking-widest text-zinc-400">Todavía no hay reservas para esta fecha y sede.</div>
+                <div className="bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl p-7 text-center text-xs font-bold uppercase tracking-widest text-zinc-400">No hay reservas futuras confirmadas.</div>
               ) : (
                 <div className="space-y-3">
                   {visibleMitoboxReservations.map(reservation => (
                     <div key={reservation.id} className="border border-zinc-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="min-w-0"><p className="font-black text-slate-900">{reservation.reservationTime}h · {reservation.sala}</p><p className="text-sm font-bold text-zinc-600 mt-1">{reservation.studentName || 'Usuario'} · {reservation.instrument || 'Instrumento no indicado'}</p><p className="text-[10px] font-bold text-zinc-400 mt-1 truncate">{reservation.studentEmail || ''}</p></div>
+                      <div className="min-w-0"><p className="font-black text-slate-900">{formatDateSpanish(reservation.reservationDate)} · {reservation.reservationTime}h</p><p className="text-xs font-black uppercase tracking-widest text-blue-700 mt-1">{reservation.sede || 'Sede'} · {reservation.sala || 'Sala'}</p><p className="text-sm font-bold text-zinc-600 mt-1">{reservation.studentName || 'Usuario'} · {reservation.instrument || 'Instrumento no indicado'}</p><p className="text-[10px] font-bold text-zinc-400 mt-1 truncate">{reservation.studentEmail || ''}</p></div>
                       <button type="button" onClick={() => cancelMitoboxReservationFromAdmin(reservation)} className="shrink-0 px-4 py-2.5 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-colors">Cancelar excepcionalmente</button>
                     </div>
                   ))}

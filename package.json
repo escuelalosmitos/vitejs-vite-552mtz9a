@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:static": "node --test tests/security-static.test.mjs",
+    "test:static": "node --test tests/security-static.test.mjs tests/mitobox-utils.test.mjs",
     "test:rules": "firebase emulators:exec --only firestore --project demo-escuela-seguridad \"node --test --test-concurrency=1 tests/firestore-rules.test.mjs\"",
     "test:security": "npm run test:static && npm run test:rules"
   },

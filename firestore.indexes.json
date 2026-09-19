@@ -1,6 +1,23 @@
 {
   "indexes": [
     {
+      "collectionGroup": "gestiones",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "gestiones",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "recoveryDate", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "teacherEvaluations",
       "queryScope": "COLLECTION",
       "fields": [

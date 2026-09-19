@@ -45,14 +45,24 @@ const getFutureAccessBlockMessage = (classStartDate) => (
   `Tu plaza está reservada. Podrás activar y usar tu Área del Alumno a partir del ${formatDateSpanish(classStartDate)}.`
 );
 
+const hasStudentPortalEntitlement = (studentData = {}) => {
+  const status = String(studentData.globalStatus || 'activo').toLowerCase();
+  const hasClasses = Array.isArray(studentData.classes) && studentData.classes.length > 0;
+  const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true;
+  return status !== 'baja' && (hasClasses || hasExtraService);
+};
+
 const getStudentDocumentPriority = (studentDocument, authenticatedUser) => {
   const data = studentDocument.data();
   const status = String(data.globalStatus || 'activo').toLowerCase();
   const hasClasses = Array.isArray(data.classes) && data.classes.length > 0;
+  const hasExtraService = data.hasMitobox === true || data.hasMitoverso === true;
   return [
     data.authUid === authenticatedUser.uid ? 1 : 0,
     status !== 'baja' ? 1 : 0,
+    hasStudentPortalEntitlement(data) ? 1 : 0,
     hasClasses ? 1 : 0,
+    hasExtraService ? 1 : 0,
     Date.parse(data.updatedAt || data.classMembershipSyncedAt || 0) || 0
   ];
 };
@@ -136,9 +146,7 @@ export default function App() {
             && String(linkedStudent.data().email || '').trim().toLowerCase() === authenticatedEmail
           ) {
             const linkedData = linkedStudent.data();
-            const linkedIsUsable = String(linkedData.globalStatus || 'activo').toLowerCase() !== 'baja'
-              && Array.isArray(linkedData.classes)
-              && linkedData.classes.length > 0;
+            const linkedIsUsable = hasStudentPortalEntitlement(linkedData);
             if (linkedIsUsable) studentDocument = linkedStudent;
           }
         }
@@ -159,8 +167,13 @@ export default function App() {
         }
 
         const studentData = studentDocument.data();
+        if (!hasStudentPortalEntitlement(studentData)) {
+          setAccessRole('denied');
+          return;
+        }
         const classStartDate = String(studentData.classStartDate || '').trim();
-        if (classStartDate && classStartDate > getTodayLocalString()) {
+        const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true;
+        if (!hasExtraService && classStartDate && classStartDate > getTodayLocalString()) {
           setAuthError(getFutureAccessBlockMessage(classStartDate));
           await signOut(auth);
           return;
@@ -175,6 +188,7 @@ export default function App() {
           role: 'student',
           studentId: studentDocument.id,
           email: authenticatedEmail,
+          portalEnabled: true,
           updatedAt: nowIso,
           ...(studentData.authUid ? {} : { createdAt: nowIso })
         }, { merge: true });
@@ -226,16 +240,21 @@ export default function App() {
         }
 
         const studentDocument = chooseStudentDocument(studentSnapshot.docs, credential.user);
-        if (studentDocument) {
+        if (studentDocument && hasStudentPortalEntitlement(studentDocument.data())) {
           const nowIso = new Date().toISOString();
           await updateDoc(studentDocument.ref, { claimed: true, authUid: credential.user.uid });
           await setDoc(doc(db, 'artifacts', appId, 'access', credential.user.uid), {
             role: 'student',
             studentId: studentDocument.id,
             email: cleanEmail,
+            portalEnabled: true,
             createdAt: nowIso,
             updatedAt: nowIso
           }, { merge: true });
+        } else {
+          await deleteUser(credential.user);
+          setAuthError('Acceso denegado: este correo no tiene ahora mismo clases ni servicios activos.');
+          return;
         }
       }
     } catch (err) {

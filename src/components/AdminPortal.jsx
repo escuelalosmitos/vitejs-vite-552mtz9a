@@ -6,7 +6,8 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, runTransaction } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
+import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -1985,6 +1986,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const studentClassMembershipSyncRef = useRef(false);
   const maintenanceReconciliationRef = useRef({ inFlight: false, signature: '' });
   const autoStartDateAdvanceRef = useRef({ inFlight: false, signature: '' });
+  const mitoboxLegacyMigrationRef = useRef({ inFlight: false, signature: '' });
   const publicAvailabilitySyncRef = useRef({
     inFlight: false,
     queued: false,
@@ -1993,6 +1995,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     remoteUpdatedAt: ''
   });
   const latestPublicAvailabilityRef = useRef({ classes: [], signature: '' });
+  const gestionSourcesRef = useRef({ pending: [], scheduled: [], recoveries: [], resolvedInitial: [], resolvedExtra: [] });
+  const resolvedGestionesCursorRef = useRef(null);
   const [publicAvailabilityStatus, setPublicAvailabilityStatus] = useState({
     phase: 'waiting',
     message: 'Esperando a cargar alumnos y clases…',
@@ -2108,7 +2112,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [teacherTaskInboxFilter, setTeacherTaskInboxFilter] = useState('todas');
   const [gestionPendingFilter, setGestionPendingFilter] = useState('todas');
   const [gestionSearchTerm, setGestionSearchTerm] = useState('');
-  const [resolvedGestionesVisible, setResolvedGestionesVisible] = useState(HISTORIAL_TRAMITES_BLOCK_SIZE);
+  const [resolvedGestionesHasMore, setResolvedGestionesHasMore] = useState(true);
+  const [loadingMoreResolvedGestiones, setLoadingMoreResolvedGestiones] = useState(false);
+  const [gestionDetailsModal, setGestionDetailsModal] = useState(null);
   const [dangerViewMode, setDangerViewMode] = useState('actual');
   const [dangerSubView, setDangerSubView] = useState('ocupacion');
   const [bulkExecutingGestiones, setBulkExecutingGestiones] = useState(false);
@@ -2147,6 +2153,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
   const [mboxAdminDate, setMboxAdminDate] = useState(new Date().toISOString().split('T')[0]);
   const [mboxAdminSede, setMboxAdminSede] = useState('Tarragona');
+  const [mitoboxReservations, setMitoboxReservations] = useState([]);
+  const [mitoboxSlotUsage, setMitoboxSlotUsage] = useState([]);
+  const [mitoboxDataError, setMitoboxDataError] = useState('');
+  const [serviceStudentModal, setServiceStudentModal] = useState(false);
+  const [serviceStudentDraft, setServiceStudentDraft] = useState({ name: '', email: '', hasMitobox: true, hasMitoverso: false });
+  const [savingServiceStudent, setSavingServiceStudent] = useState(false);
 
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
   const [teacherPanelTab, setTeacherPanelTab] = useState('evaluations');
@@ -2219,9 +2231,47 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       error => handleSourceError(source, error)
     );
 
-    const unsubGestiones = subscribeStartupSource('gestiones', collection(db, 'artifacts', appId, 'gestiones'), snap => {
-      setGestiones(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => new Date(b.date) - new Date(a.date)));
+    gestionSourcesRef.current = { pending: [], scheduled: [], recoveries: [], resolvedInitial: [], resolvedExtra: [] };
+    resolvedGestionesCursorRef.current = null;
+    setResolvedGestionesHasMore(true);
+    const mergeGestionSources = () => {
+      const merged = new Map();
+      Object.values(gestionSourcesRef.current).flat().forEach(gestion => merged.set(gestion.id, gestion));
+      setGestiones([...merged.values()].sort((a, b) => new Date(b.date || b.updatedAt || 0) - new Date(a.date || a.updatedAt || 0)));
+    };
+    const gestionesCollection = collection(db, 'artifacts', appId, 'gestiones');
+    const pendingGestionesQuery = query(gestionesCollection, where('status', '==', 'pendiente'));
+    const scheduledGestionesQuery = query(gestionesCollection, where('executionMode', '==', 'scheduled'));
+    const futureRecoveriesQuery = query(
+      gestionesCollection,
+      where('type', '==', 'recuperacion'),
+      where('status', '==', 'completado'),
+      where('recoveryDate', '>=', getTodayLocalString())
+    );
+    const latestResolvedGestionesQuery = query(
+      gestionesCollection,
+      where('status', 'in', ['completado', 'rechazado', 'cancelado', 'archivado']),
+      orderBy('date', 'desc'),
+      limit(HISTORIAL_TRAMITES_BLOCK_SIZE)
+    );
+    const unsubPendingGestiones = subscribeStartupSource('gestiones', pendingGestionesQuery, snap => {
+      gestionSourcesRef.current.pending = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      mergeGestionSources();
     });
+    const unsubScheduledGestiones = onSnapshot(scheduledGestionesQuery, snap => {
+      gestionSourcesRef.current.scheduled = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      mergeGestionSources();
+    }, error => console.error('No se pudieron cargar las gestiones programadas:', error));
+    const unsubFutureRecoveries = onSnapshot(futureRecoveriesQuery, snap => {
+      gestionSourcesRef.current.recoveries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      mergeGestionSources();
+    }, error => console.error('No se pudieron cargar las recuperaciones futuras:', error));
+    const unsubResolvedGestiones = onSnapshot(latestResolvedGestionesQuery, snap => {
+      gestionSourcesRef.current.resolvedInitial = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      resolvedGestionesCursorRef.current = snap.docs[snap.docs.length - 1] || null;
+      setResolvedGestionesHasMore(snap.docs.length === HISTORIAL_TRAMITES_BLOCK_SIZE);
+      mergeGestionSources();
+    }, error => handleSourceError('gestiones', error));
     const unsubStudents = subscribeStartupSource('students', collection(db, 'artifacts', appId, 'students'), snap => {
       setStudents(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => String(a.name || '').localeCompare(String(b.name || ''))));
       if (snap.metadata?.fromCache !== true) setStudentsLoaded(true);
@@ -2284,7 +2334,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return () => {
       disposed = true;
       if (startupTimeoutId) window.clearTimeout(startupTimeoutId);
-      unsubGestiones();
+      unsubPendingGestiones();
+      unsubScheduledGestiones();
+      unsubFutureRecoveries();
+      unsubResolvedGestiones();
       unsubStudents();
       unsubSettings();
       unsubClasses();
@@ -2619,6 +2672,119 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
   }, [activeCenters.map(center => `${center.id}:${center.status}`).join('|')]);
 
+  // Radar Mitobox diferido: sus reservas solo se consultan cuando se abre la
+  // pestaña y únicamente para la fecha seleccionada.
+  useEffect(() => {
+    if (activeTab !== 'mitobox' || !mboxAdminDate) {
+      setMitoboxReservations([]);
+      setMitoboxSlotUsage([]);
+      return undefined;
+    }
+    setMitoboxDataError('');
+    const reservationsQuery = query(
+      collection(db, 'artifacts', appId, 'mitoboxReservations'),
+      where('reservationDate', '==', mboxAdminDate)
+    );
+    const slotsQuery = query(
+      collection(db, 'artifacts', appId, 'mitoboxSlots'),
+      where('reservationDate', '==', mboxAdminDate)
+    );
+    const unsubReservations = onSnapshot(
+      reservationsQuery,
+      snapshot => setMitoboxReservations(snapshot.docs
+        .map(reservationDoc => ({ id: reservationDoc.id, ...reservationDoc.data() }))
+        .sort((left, right) => String(left.reservationTime || '').localeCompare(String(right.reservationTime || '')))),
+      error => {
+        console.error('No se pudieron cargar las reservas Mitobox', error);
+        setMitoboxDataError('No se han podido cargar las reservas de esta fecha.');
+      }
+    );
+    const unsubSlots = onSnapshot(
+      slotsQuery,
+      snapshot => setMitoboxSlotUsage(snapshot.docs.map(slotDoc => ({ id: slotDoc.id, slotId: slotDoc.id, ...slotDoc.data() }))),
+      error => {
+        console.error('No se pudo cargar la ocupación Mitobox', error);
+        setMitoboxDataError('No se ha podido cargar el aforo reservado de esta fecha.');
+      }
+    );
+    return () => {
+      unsubReservations();
+      unsubSlots();
+    };
+  }, [activeTab, mboxAdminDate, db, appId]);
+
+  // Conversión compatible de las reservas antiguas guardadas como gestiones.
+  // Solo se revisan futuras al abrir el Radar y cada documento se migra una vez.
+  useEffect(() => {
+    if (activeTab !== 'mitobox' || !settingsLoaded) return;
+    const legacyReservations = gestiones.filter(gestion => (
+      gestion.type === 'reserva_mitobox'
+      && gestion.reservationDate >= getTodayLocalString()
+      && !['rechazado', 'cancelado', 'archivado'].includes(String(gestion.status || '').toLowerCase())
+      && !gestion.migratedToMitoboxReservationsAt
+    ));
+    const signature = legacyReservations.map(gestion => `${gestion.id}:${gestion.reservationDate}:${gestion.reservationTime}`).sort().join('|');
+    if (!signature || mitoboxLegacyMigrationRef.current.inFlight || mitoboxLegacyMigrationRef.current.signature === signature) return;
+    mitoboxLegacyMigrationRef.current = { inFlight: true, signature };
+
+    (async () => {
+      for (const gestion of legacyReservations) {
+        const center = getCenterForValue(gestion.centerId || gestion.sede);
+        const room = findRoomByValue(center, gestion.roomId || gestion.sala);
+        if (!center || !room || !gestion.studentId || !gestion.reservationTime) continue;
+        const reservationId = buildMitoboxReservationId({ studentId: gestion.studentId, date: gestion.reservationDate, time: gestion.reservationTime });
+        const slotId = buildMitoboxSlotId({ date: gestion.reservationDate, centerId: center.id, roomId: room.id, time: gestion.reservationTime });
+        const reservationRef = doc(db, 'artifacts', appId, 'mitoboxReservations', reservationId);
+        const slotRef = doc(db, 'artifacts', appId, 'mitoboxSlots', slotId);
+        const nowIso = new Date().toISOString();
+        await runTransaction(db, async transaction => {
+          const reservationSnapshot = await transaction.get(reservationRef);
+          const slotSnapshot = await transaction.get(slotRef);
+          if (reservationSnapshot.exists()) return;
+          const reservedCount = Math.max(0, Number(slotSnapshot.data()?.reservedCount || 0));
+          const configuredCapacity = Math.max(1, Number(room.capacity || 1));
+          const capacity = Math.max(configuredCapacity, reservedCount + 1);
+          transaction.set(slotRef, {
+            reservationDate: gestion.reservationDate,
+            reservationTime: gestion.reservationTime,
+            centerId: center.id,
+            roomId: room.id,
+            reservedCount: reservedCount + 1,
+            capacity,
+            updatedAt: nowIso,
+            lastMutationId: reservationId
+          }, { merge: true });
+          transaction.set(reservationRef, {
+            studentId: gestion.studentId,
+            studentName: gestion.studentName || '',
+            studentEmail: normalizeEmail(gestion.studentEmail || ''),
+            status: 'confirmed',
+            reservationDate: gestion.reservationDate,
+            reservationTime: gestion.reservationTime,
+            durationMinutes: 60,
+            instrument: gestion.instrument || '',
+            sede: center.name,
+            sala: room.name,
+            centerId: center.id,
+            roomId: room.id,
+            slotId,
+            capacity,
+            migratedFromGestionId: gestion.id,
+            createdAt: gestion.date || nowIso,
+            updatedAt: nowIso
+          });
+        });
+        await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
+          status: 'archivado',
+          migratedToMitoboxReservationId: reservationId,
+          migratedToMitoboxReservationsAt: nowIso
+        });
+      }
+    })().catch(error => console.error('No se pudieron migrar todas las reservas Mitobox antiguas', error)).finally(() => {
+      mitoboxLegacyMigrationRef.current.inFlight = false;
+    });
+  }, [activeTab, settingsLoaded, gestiones, centers, db, appId]);
+
   useEffect(() => {
     if (viewClassModal) {
       const updatedClass = allClasses.find(c => c.id === viewClassModal.id);
@@ -2628,9 +2794,34 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   }, [allClasses, viewClassModal?.id]);
 
-  useEffect(() => {
-    setResolvedGestionesVisible(HISTORIAL_TRAMITES_BLOCK_SIZE);
-  }, [gestionSearchTerm]);
+  const loadMoreResolvedGestiones = async () => {
+    if (loadingMoreResolvedGestiones || !resolvedGestionesHasMore || !resolvedGestionesCursorRef.current) return;
+    setLoadingMoreResolvedGestiones(true);
+    try {
+      const pageQuery = query(
+        collection(db, 'artifacts', appId, 'gestiones'),
+        where('status', 'in', ['completado', 'rechazado', 'cancelado', 'archivado']),
+        orderBy('date', 'desc'),
+        startAfter(resolvedGestionesCursorRef.current),
+        limit(HISTORIAL_TRAMITES_BLOCK_SIZE)
+      );
+      const snapshot = await getDocs(pageQuery);
+      const nextPage = snapshot.docs.map(documentSnapshot => ({ id: documentSnapshot.id, ...documentSnapshot.data() }));
+      const existing = new Map(gestionSourcesRef.current.resolvedExtra.map(gestion => [gestion.id, gestion]));
+      nextPage.forEach(gestion => existing.set(gestion.id, gestion));
+      gestionSourcesRef.current.resolvedExtra = [...existing.values()];
+      resolvedGestionesCursorRef.current = snapshot.docs[snapshot.docs.length - 1] || resolvedGestionesCursorRef.current;
+      setResolvedGestionesHasMore(snapshot.docs.length === HISTORIAL_TRAMITES_BLOCK_SIZE);
+      const merged = new Map();
+      Object.values(gestionSourcesRef.current).flat().forEach(gestion => merged.set(gestion.id, gestion));
+      setGestiones([...merged.values()].sort((left, right) => new Date(right.date || right.updatedAt || 0) - new Date(left.date || left.updatedAt || 0)));
+    } catch (error) {
+      console.error('No se pudo cargar la siguiente página de trámites', error);
+      alert('No se han podido cargar más trámites. Reintenta en unos instantes.');
+    } finally {
+      setLoadingMoreResolvedGestiones(false);
+    }
+  };
 
   const isLastDayOfMonth = useMemo(() => {
     const tomorrow = new Date();
@@ -3410,6 +3601,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         capacity: Number(clase.capacity) || seatData.cap || 0,
         committedSeatCount: seatData.committedCount,
         activeStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
+        // Para Mitobox, un mantenimiento no libera el aula: la clase conserva
+        // prioridad. Las altas que todavía no han comenzado sí se excluyen.
+        mitoboxStudentCount: seatData.students.filter(student => !student.isFutureStart).length,
         freeSpots: seatData.freeSpots,
         cancelledDates: Array.isArray(clase.cancelledDates) ? clase.cancelledDates : [],
         isWebVisible: clase.isWebVisible === true
@@ -3432,12 +3626,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       teacher: String(change.teacher || '').trim()
     })).filter(change => change.id && change.classId);
 
+    // Solo se publica la geometría operativa de la recolocación. No se incluyen
+    // nombres, correos ni identificadores de alumnos.
+    const sanitizedMitoboxRelocations = temporaryRelocations.map(relocation => ({
+      id: String(relocation.id || '').trim(),
+      sourceClassId: String(relocation.sourceClassId || '').trim(),
+      sourceClassRefPath: String(relocation.sourceClassRefPath || '').trim(),
+      targetClassId: String(relocation.targetClassId || '').trim(),
+      targetClassRefPath: String(relocation.targetClassRefPath || '').trim(),
+      from: normalizeTemporaryClassChangeDate(relocation.from),
+      until: normalizeTemporaryClassChangeDate(relocation.until),
+      status: String(relocation.status || '').trim()
+    })).filter(relocation => relocation.id && relocation.sourceClassId && relocation.targetClassId);
+
     return {
       classes,
       temporaryClassChanges: sanitizedChanges,
-      signature: buildPublicAvailabilitySignature([...classes, ...sanitizedChanges])
+      mitoboxRelocations: sanitizedMitoboxRelocations,
+      signature: buildPublicAvailabilitySignature([...classes, ...sanitizedChanges, ...sanitizedMitoboxRelocations])
     };
-  }, [operationalClasses, temporaryClassChanges, students, todayStr]);
+  }, [operationalClasses, temporaryClassChanges, temporaryRelocations, students, todayStr]);
 
   const studentSettingsPublication = useMemo(() => {
     const data = {
@@ -3547,7 +3755,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         updatedAt: new Date().toISOString(),
         signature: studentClassCatalogPublication.signature,
         classes: studentClassCatalogPublication.classes,
-        temporaryClassChanges: studentClassCatalogPublication.temporaryClassChanges
+        temporaryClassChanges: studentClassCatalogPublication.temporaryClassChanges,
+        mitoboxRelocations: studentClassCatalogPublication.mitoboxRelocations
       }).catch(error => console.error('No se pudo publicar el catálogo privado de clases:', error));
     }, 1400);
     return () => window.clearTimeout(timer);
@@ -6917,6 +7126,57 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
   };
 
+  const createServiceOnlyStudent = async () => {
+    const name = String(serviceStudentDraft.name || '').trim();
+    const email = normalizeEmail(serviceStudentDraft.email || '');
+    const hasMitobox = serviceStudentDraft.hasMitobox === true;
+    const hasMitoverso = serviceStudentDraft.hasMitoverso === true;
+    if (!name) return alert('Escribe el nombre del usuario.');
+    if (!email || !email.includes('@')) return alert('Escribe un correo válido.');
+    if (!hasMitobox && !hasMitoverso) return alert('Activa al menos un servicio.');
+    if (students.some(student => normalizeEmail(student.email || '') === email)) {
+      return alert('Ya existe una ficha con ese correo. Activa el servicio desde su fila del CRM.');
+    }
+
+    setSavingServiceStudent(true);
+    try {
+      const studentId = `service-${Date.now()}`;
+      const nowIso = new Date().toISOString();
+      await setDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+        name,
+        alias: '',
+        useAlias: false,
+        email,
+        claimed: false,
+        classes: [],
+        instruments: [],
+        globalStatus: 'activo',
+        hasMitobox,
+        hasMitoverso,
+        triviaPoints: 0,
+        triviaPointsAnnual: 0,
+        triviaPointsQuarterly: 0,
+        triviaStreak: 0,
+        triviaVictories: 0,
+        source: 'service_only_admin',
+        internalNotes: `Alta directa sin plaza fija: ${[hasMitobox ? 'Mitobox' : '', hasMitoverso ? 'Mitoverso' : ''].filter(Boolean).join(' + ')}.`,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        createdBy: user?.email || 'admin'
+      });
+      setServiceStudentModal(false);
+      setServiceStudentDraft({ name: '', email: '', hasMitobox: true, hasMitoverso: false });
+      setFilterStatus('sin_plaza');
+      setSearchStudent(email);
+      alert('Usuario creado. Ya puede activar su cuenta desde “Primera vez aquí” con este correo.');
+    } catch (error) {
+      console.error('No se pudo crear el usuario de servicios', error);
+      alert('No se ha podido crear el usuario: ' + error.message);
+    } finally {
+      setSavingServiceStudent(false);
+    }
+  };
+
   const createManualMaintenanceForStudent = async (studentId, studentName) => {
     if (!studentId) return false;
 
@@ -9491,7 +9751,7 @@ Coordinación Los Mitos.`
     .filter(matchesTeacherRequestSearch);
   const filteredWorkshopRegistrations = workshopRegistrations.filter(matchesWorkshopRegistrationSearch);
   const filteredResolvedGestiones = resolvedGestiones.filter(matchesGestionSearch);
-  const visibleResolvedGestiones = filteredResolvedGestiones.slice(0, resolvedGestionesVisible);
+  const visibleResolvedGestiones = filteredResolvedGestiones;
   const pendingGestionFilterCounts = gestionPendingFilters.reduce((acc, filter) => {
     acc[filter.id] = pendingGestiones.filter(filter.matcher).length;
     return acc;
@@ -10641,36 +10901,61 @@ ${valueOrDash(comments.privateNote)}`,
   };
 
   const availableMboxSlotsAdmin = useMemo(() => {
-    let slots = [];
-    if (mboxAdminDate && mboxAdminSede) {
-      const targetDay = new Date(`${mboxAdminDate}T00:00:00`).getDay();
-      const allScheduledClasses = allClasses.filter(c => {
-         if (c.date && c.date !== mboxAdminDate) return false;
-         if (!c.date && c.dayOfWeek !== targetDay) return false;
-         return isSameCenter(c.centerId || c.sede || 'Tarragona', mboxAdminSede);
-      });
-      const aliveClasses = allScheduledClasses.filter(c => {
-        if (c.cancelledDates?.includes(mboxAdminDate)) return false; 
-        const exceptionsEseDia = c.exceptions?.[mboxAdminDate] || {};
-        const activeStudents = (c.students || []).filter(s => {
-          if (isStudentInMaintenance(s.id, mboxAdminDate)) return false;
-          const estadoHoy = exceptionsEseDia[s.id];
-          if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
-          return true;
+    const center = getCenterForValue(mboxAdminSede);
+    return calculateMitoboxAvailability({
+      date: mboxAdminDate,
+      center,
+      classes: allClasses,
+      temporaryClassChanges,
+      temporaryRelocations,
+      settings,
+      slotUsage: mitoboxSlotUsage
+    });
+  }, [allClasses, temporaryClassChanges, temporaryRelocations, settings, mitoboxSlotUsage, mboxAdminDate, mboxAdminSede, centers]);
+
+  const visibleMitoboxReservations = mitoboxReservations.filter(reservation => (
+    isActiveMitoboxReservation(reservation)
+    && isSameCenter(reservation.centerId || reservation.sede, mboxAdminSede)
+  ));
+
+  const cancelMitoboxReservationFromAdmin = async reservation => {
+    const reason = window.prompt(`Motivo de la cancelación de la reserva de ${reservation.studentName || 'este usuario'}:`, 'Necesidad organizativa de la escuela');
+    if (reason === null) return;
+    if (!String(reason).trim()) return alert('Indica un motivo para informar al usuario.');
+    const reservationRef = doc(db, 'artifacts', appId, 'mitoboxReservations', reservation.id);
+    const slotRef = doc(db, 'artifacts', appId, 'mitoboxSlots', reservation.slotId);
+    const nowIso = new Date().toISOString();
+    try {
+      await runTransaction(db, async transaction => {
+        const reservationSnapshot = await transaction.get(reservationRef);
+        const slotSnapshot = await transaction.get(slotRef);
+        if (!reservationSnapshot.exists() || !isActiveMitoboxReservation(reservationSnapshot.data())) return;
+        transaction.update(reservationRef, {
+          status: 'cancelled',
+          cancelledAt: nowIso,
+          cancelledBy: 'admin',
+          cancellationReason: String(reason).trim(),
+          updatedAt: nowIso
         });
-        return activeStudents.length > 0;
+        if (slotSnapshot.exists()) {
+          transaction.update(slotRef, {
+            reservedCount: Math.max(0, Number(slotSnapshot.data().reservedCount || 0) - 1),
+            updatedAt: nowIso,
+            lastMutationId: reservation.id
+          });
+        }
       });
-      const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
-      activeTimes.forEach(t => {
-        const center = getCenterForValue(mboxAdminSede);
-        const occupiedSalas = aliveClasses.filter(c => c.time === t).map(c => findRoomByValue(center, c.roomId || c.sala || 'Sala 1')?.name || c.sala || 'Sala 1');
-        const allSalas = (center?.rooms || []).filter(room => room.active !== false && room.mitoboxEnabled !== false).map(room => room.name);
-        const freeSalas = allSalas.filter(s => !occupiedSalas.includes(s));
-        freeSalas.forEach(fs => { slots.push({ time: t, sala: fs }); });
+      await sendStudentNotification({
+        studentEmail: reservation.studentEmail,
+        subject: 'Cancelación de reserva Mitobox',
+        body: `Hola ${reservation.studentName || ''},\n\nTu reserva Mitobox del ${formatDateSpanish(reservation.reservationDate)} a las ${reservation.reservationTime}h en ${reservation.sede} (${reservation.sala}) ha sido cancelada por Administración.\n\nMotivo: ${String(reason).trim()}\n\nPuedes entrar en el Área del Alumno para reservar otro turno.\n\nUn saludo,\nCoordinación Los Mitos.`
       });
+      alert('Reserva cancelada y usuario avisado.');
+    } catch (error) {
+      console.error('No se pudo cancelar la reserva Mitobox', error);
+      alert('No se ha podido cancelar la reserva.');
     }
-    return slots;
-  }, [allClasses, maintenancePeriods, mboxAdminDate, mboxAdminSede, centers]);
+  };
 
 
   // ==========================================
@@ -12038,6 +12323,55 @@ ${startDateWarning}
       {notesModal && <StableModalRenderer key={`notes-${notesModal.id || 'open'}`} render={NotesModalOverlay} />}
       {changeClassModal && <StableModalRenderer key={`change-class-${changeClassModal.id || 'open'}`} render={ChangeClassModalOverlay} />}
       {editStudentModal && <StableModalRenderer key={`edit-student-${editStudentModal.id || 'open'}`} render={EditStudentModalOverlay} />} 
+      {serviceStudentModal && (
+        <div className="fixed inset-0 bg-black/80 z-[120] flex items-start sm:items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl relative my-4">
+            <button type="button" onClick={() => !savingServiceStudent && setServiceStudentModal(false)} className="absolute top-4 right-4 p-2 bg-zinc-100 text-zinc-500 rounded-full hover:text-black"><X className="w-5 h-5"/></button>
+            <div className="flex items-center gap-3 mb-6"><div className="p-3 bg-blue-50 text-blue-600 rounded-2xl"><PlusCircle className="w-6 h-6"/></div><div><h2 className="text-xl font-black uppercase tracking-tight">Alta solo servicios</h2><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Sin asignar una clase ficticia</p></div></div>
+            <div className="space-y-4">
+              <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Nombre y apellidos</label><input value={serviceStudentDraft.name} onChange={event => setServiceStudentDraft(previous => ({ ...previous, name: event.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none focus:border-blue-500 font-bold"/></div>
+              <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Correo de acceso</label><input type="email" value={serviceStudentDraft.email} onChange={event => setServiceStudentDraft(previous => ({ ...previous, email: event.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none focus:border-blue-500 font-bold"/></div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasMitobox ? 'border-blue-500 bg-blue-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasMitobox} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasMitobox: event.target.checked }))} className="accent-blue-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Mitobox</span></label>
+                <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasMitoverso ? 'border-indigo-500 bg-indigo-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasMitoverso} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasMitoverso: event.target.checked }))} className="accent-indigo-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Mitoverso</span></label>
+              </div>
+              <p className="text-xs font-medium text-zinc-500 leading-relaxed">Después, el usuario entra en alumnos.escuelalosmitos.com, pulsa «Primera vez aquí» y crea su contraseña con este correo.</p>
+              <button type="button" onClick={createServiceOnlyStudent} disabled={savingServiceStudent} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black uppercase tracking-widest text-xs disabled:opacity-50">{savingServiceStudent ? 'Creando…' : 'Crear usuario'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {gestionDetailsModal && (
+        <div className="fixed inset-0 bg-black/80 z-[130] flex items-start sm:items-center justify-center p-3 sm:p-4 overflow-y-auto backdrop-blur-sm">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-5 sm:p-8 shadow-2xl relative my-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
+            <button type="button" onClick={() => setGestionDetailsModal(null)} className="absolute top-4 right-4 p-2 bg-zinc-100 text-zinc-500 rounded-full hover:text-black"><X className="w-5 h-5"/></button>
+            <div className="flex items-start gap-3 mb-6 pr-10"><div className="p-3 bg-zinc-100 rounded-2xl"><FileText className="w-6 h-6"/></div><div><p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Detalle completo del trámite</p><h2 className="text-xl font-black uppercase tracking-tight mt-1">{gestionDetailsModal.title || getGestionTypeLabel(gestionDetailsModal.type)}</h2></div></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+              {[
+                ['Alumno', gestionDetailsModal.studentName],
+                ['Correo', gestionDetailsModal.studentEmail],
+                ['Tipo', getGestionTypeLabel(gestionDetailsModal.type || 'tarea')],
+                ['Estado', gestionDetailsModal.status],
+                ['Solicitado', gestionDetailsModal.date ? new Date(gestionDetailsModal.date).toLocaleString('es-ES') : ''],
+                ['Resuelto', gestionDetailsModal.resolvedAt || gestionDetailsModal.completedAt ? new Date(gestionDetailsModal.resolvedAt || gestionDetailsModal.completedAt).toLocaleString('es-ES') : ''],
+                ['Resuelto por', gestionDetailsModal.resolvedBy || gestionDetailsModal.completedBy || ''],
+                ['Mes objetivo', gestionDetailsModal.targetMonth || ''],
+                ['Profesor', gestionDetailsModal.requestedTeacher || gestionDetailsModal.sourceTeacher || ''],
+                ['Ticket', gestionDetailsModal.ticketId || ''],
+                ['Fecha recuperación', gestionDetailsModal.recoveryDate ? formatDateSpanish(gestionDetailsModal.recoveryDate) : ''],
+                ['Aviso email', gestionDetailsModal.studentNotificationEmailSentAt || gestionDetailsModal.adminCopySentAt || '']
+              ].filter(([, value]) => value).map(([label, value]) => (
+                <div key={label} className="bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">{label}</p><p className="text-sm font-bold text-slate-800 mt-1 break-words">{String(value)}</p></div>
+              ))}
+            </div>
+            {(gestionDetailsModal.sourceClassLine || gestionDetailsModal.requestedClassLine) && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">{gestionDetailsModal.sourceClassLine && <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4"><p className="text-[9px] font-black uppercase tracking-widest text-indigo-500">Clase de origen</p><p className="text-sm font-bold text-indigo-950 mt-1 whitespace-pre-wrap">{gestionDetailsModal.sourceClassLine}</p></div>}{gestionDetailsModal.requestedClassLine && <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4"><p className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Clase solicitada</p><p className="text-sm font-bold text-emerald-950 mt-1 whitespace-pre-wrap">{gestionDetailsModal.requestedClassLine}</p></div>}</div>}
+            <div className="bg-white border-2 border-zinc-200 rounded-2xl p-5"><p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Solicitud completa</p><p className="text-sm font-medium text-slate-700 leading-relaxed whitespace-pre-wrap">{gestionDetailsModal.details || 'Sin observaciones añadidas.'}</p></div>
+            {gestionDetailsModal.rejectionReason && <div className="mt-4 bg-red-50 border border-red-100 rounded-2xl p-4"><p className="text-[10px] font-black uppercase tracking-widest text-red-500 mb-1">Motivo del rechazo</p><p className="text-sm font-bold text-red-900 whitespace-pre-wrap">{gestionDetailsModal.rejectionReason}</p></div>}
+            {(gestionDetailsModal.adminNotes || gestionDetailsModal.resolutionNotes || gestionDetailsModal.resolutionSummary) && <div className="mt-4 bg-amber-50 border border-amber-100 rounded-2xl p-4"><p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-1">Notas o resolución</p><p className="text-sm font-bold text-amber-950 whitespace-pre-wrap">{gestionDetailsModal.adminNotes || gestionDetailsModal.resolutionNotes || gestionDetailsModal.resolutionSummary}</p></div>}
+            <button type="button" onClick={() => setGestionDetailsModal(null)} className="w-full mt-6 py-4 bg-black hover:bg-zinc-800 text-white rounded-xl font-black uppercase tracking-widest text-xs">Cerrar</button>
+          </div>
+        </div>
+      )}
       <TemporaryRelocationModalOverlay
         student={temporaryRelocationModal}
         onClose={() => setTemporaryRelocationModal(null)}
@@ -12803,7 +13137,23 @@ ${startDateWarning}
                   </div>
                 ) : (
                   <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                    <div className="overflow-x-auto">
+                    <div className="md:hidden divide-y divide-zinc-100">
+                      {filteredPendingGestiones.map(g => (
+                        <div key={`mobile-${g.id}`} className="p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0"><p className="font-black text-slate-900 leading-tight">{g.studentName || 'Sin alumno'}</p><p className="text-[10px] text-zinc-400 truncate">{g.studentEmail || ''}</p><p className="text-[10px] font-bold text-zinc-400 mt-1">{formatDateSpanish(g.date)}</p></div>
+                            <span className={`shrink-0 px-2 py-1 rounded border text-[9px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>{getGestionTypeLabel(g.type || 'tarea')}</span>
+                          </div>
+                          <button type="button" onClick={() => setGestionDetailsModal(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
+                          <div className="grid grid-cols-2 gap-2">
+                            {gestionRequiresTadosi(g) && <button onClick={() => markGestionTadosiDone(g)} disabled={isGestionTadosiDone(g)} className="px-3 py-2.5 bg-amber-100 text-amber-800 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:bg-emerald-100 disabled:text-emerald-700">{isGestionTadosiDone(g) ? 'Tadosi hecho' : 'Marcar Tadosi'}</button>}
+                            <button onClick={() => updateGestionStatus(g.id, 'completado', g)} disabled={!isGestionReadyForExecution(g)} className="px-3 py-2.5 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-30">Completar</button>
+                            <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="px-3 py-2.5 bg-red-50 text-red-700 rounded-xl text-[9px] font-black uppercase tracking-widest">Rechazar</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-left border-collapse min-w-[800px]">
                     <thead>
                       <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
@@ -12825,8 +13175,6 @@ ${startDateWarning}
                         const sourceClassLine = getGestionSourceClassLine(g);
                         const targetClassLine = getGestionTargetClassLine(g);
                         const bajaScopeLabel = getBajaScopeLabel(g);
-                        const detailsText = g.details || g.title || '';
-
                         return (
                         <tr key={g.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
                           <td className="p-4 whitespace-nowrap text-zinc-500">{formatDateSpanish(g.date)}</td>
@@ -12922,13 +13270,7 @@ ${startDateWarning}
                             })()}
                           </td>
                           <td className="p-4 min-w-[240px]">
-                            <div
-                              className="max-w-[220px] md:max-w-[360px] text-xs leading-relaxed text-slate-600 whitespace-pre-wrap"
-                              title={detailsText}
-                              style={{ display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
-                            >
-                              {detailsText || <span className="text-zinc-300 italic">Sin detalles añadidos.</span>}
-                            </div>
+                            <button type="button" onClick={() => setGestionDetailsModal(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
                             <div className="flex justify-end gap-2">
@@ -12973,7 +13315,16 @@ ${startDateWarning}
                   {gestionSearchNeedle ? `${filteredResolvedGestiones.length} trámite(s) cerrado(s) encontrados con la búsqueda actual.` : `${resolvedGestiones.length} trámite(s) cerrado(s) archivados.`}
                 </p>
                 <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden opacity-80 hover:opacity-100 transition-opacity">
-                  <div className="overflow-x-auto">
+                  <div className="md:hidden divide-y divide-zinc-100">
+                    {visibleResolvedGestiones.map(g => (
+                      <div key={`resolved-mobile-${g.id}`} className="p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="font-black text-slate-900 leading-tight">{g.studentName || 'Sin alumno'}</p><p className="text-[10px] font-bold text-zinc-400 mt-1">{formatDateSpanish(g.date)}</p></div><span className={`shrink-0 px-2 py-1 rounded border text-[9px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>{getGestionTypeLabel(g.type || 'tarea')}</span></div>
+                        <button type="button" onClick={() => setGestionDetailsModal(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
+                        <span className={`inline-flex px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>Cerrado · {g.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-left border-collapse min-w-[800px]">
                       <thead>
                         <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
@@ -12995,7 +13346,7 @@ ${startDateWarning}
                               </span>
                             </td>
                             <td className="p-4">
-                              <div className="max-w-[200px] md:max-w-md truncate text-xs text-zinc-500 italic" title={g.details}>{g.details}</div>
+                              <button type="button" onClick={() => setGestionDetailsModal(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
                             </td>
                             <td className="p-4 text-right whitespace-nowrap">
                               <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
@@ -13008,13 +13359,14 @@ ${startDateWarning}
                     </table>
                   </div>
                 </div>
-                {resolvedGestionesVisible < filteredResolvedGestiones.length && (
+                {resolvedGestionesHasMore && (
                   <div className="p-4 bg-zinc-50 border-t border-zinc-100 text-center">
                     <button
-                      onClick={() => setResolvedGestionesVisible(prev => prev + HISTORIAL_TRAMITES_BLOCK_SIZE)}
-                      className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-6 py-3 rounded-xl transition-colors"
+                      onClick={loadMoreResolvedGestiones}
+                      disabled={loadingMoreResolvedGestiones}
+                      className="bg-zinc-200 hover:bg-zinc-300 text-zinc-700 font-black uppercase tracking-widest text-[10px] px-6 py-3 rounded-xl transition-colors disabled:opacity-50"
                     >
-                      Cargar más trámites ({Math.min(HISTORIAL_TRAMITES_BLOCK_SIZE, filteredResolvedGestiones.length - resolvedGestionesVisible)} más)
+                      {loadingMoreResolvedGestiones ? 'Cargando…' : `Cargar otros ${HISTORIAL_TRAMITES_BLOCK_SIZE} trámites`}
                     </button>
                   </div>
                 )}
@@ -13063,6 +13415,7 @@ ${startDateWarning}
                   <ClipboardList className="w-4 h-4" />
                   Copiar emails activos + mantenimiento ({getActiveStudentEmails().length})
                 </button>
+                <button type="button" onClick={() => setServiceStudentModal(true)} className="mt-3 ml-0 sm:ml-2 inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors"><PlusCircle className="w-4 h-4"/> Alta solo Mitobox/Mitoverso</button>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
@@ -13304,12 +13657,14 @@ ${startDateWarning}
               </div>
 
               <div className="border-t border-zinc-100 pt-6">
+                {mitoboxDataError && <div className="mb-5 bg-red-50 border border-red-200 text-red-700 rounded-2xl p-4 text-xs font-bold">{mitoboxDataError}</div>}
                 {availableMboxSlotsAdmin.length > 0 ? (
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {availableMboxSlotsAdmin.map((slot, i) => (
                       <div key={i} className="bg-blue-50 border border-blue-100 p-4 rounded-xl text-center">
                         <p className="text-blue-900 font-black text-xl">{slot.time}h</p>
                         <p className="text-[10px] text-blue-600 font-bold uppercase tracking-widest">{slot.sala}</p>
+                        <p className="text-[9px] text-blue-800 font-black uppercase tracking-widest mt-2">{slot.reservedCount}/{slot.capacity} reservadas · {slot.freeSeats} libres</p>
                       </div>
                     ))}
                   </div>
@@ -13319,6 +13674,22 @@ ${startDateWarning}
                   </div>
                 )}
               </div>
+            </div>
+
+            <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">
+              <div className="flex items-center justify-between gap-4 mb-5"><div><h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Reservas confirmadas</h3><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Información operativa · no pasa por la bandeja</p></div><span className="bg-blue-100 text-blue-700 px-3 py-1 rounded-xl text-xs font-black">{visibleMitoboxReservations.length}</span></div>
+              {visibleMitoboxReservations.length === 0 ? (
+                <div className="bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl p-7 text-center text-xs font-bold uppercase tracking-widest text-zinc-400">Todavía no hay reservas para esta fecha y sede.</div>
+              ) : (
+                <div className="space-y-3">
+                  {visibleMitoboxReservations.map(reservation => (
+                    <div key={reservation.id} className="border border-zinc-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="min-w-0"><p className="font-black text-slate-900">{reservation.reservationTime}h · {reservation.sala}</p><p className="text-sm font-bold text-zinc-600 mt-1">{reservation.studentName || 'Usuario'} · {reservation.instrument || 'Instrumento no indicado'}</p><p className="text-[10px] font-bold text-zinc-400 mt-1 truncate">{reservation.studentEmail || ''}</p></div>
+                      <button type="button" onClick={() => cancelMitoboxReservationFromAdmin(reservation)} className="shrink-0 px-4 py-2.5 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-colors">Cancelar excepcionalmente</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

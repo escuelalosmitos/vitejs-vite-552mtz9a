@@ -219,3 +219,53 @@ test('la prueba real usa solo el emulador y un proyecto ficticio', async () => {
   assert.match(packageConfig.scripts['test:rules'], /--project demo-escuela-seguridad/);
   assert.doesNotMatch(packageConfig.scripts['test:rules'], /deploy/);
 });
+
+test('los servicios extra permiten un portal sin plaza y el alta directa desde CRM', async () => {
+  const [app, admin, student, rules] = await Promise.all([
+    read('src/App.jsx'),
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/StudentPortal.jsx'),
+    read('firestore.rules')
+  ]);
+  assert.match(app, /hasStudentPortalEntitlement/);
+  assert.match(app, /studentData\.hasMitobox === true \|\| studentData\.hasMitoverso === true/);
+  assert.match(admin, /createServiceOnlyStudent/);
+  assert.match(admin, /Alta solo Mitobox\/Mitoverso/);
+  assert.match(student, /isServiceOnlyStudent/);
+  assert.match(student, /Solicitar una plaza de clases/);
+  assert.match(student, /Dar de baja mis servicios/);
+  assert.match(rules, /studentHasPortalEntitlement/);
+});
+
+test('Mitobox usa reservas dedicadas, aforo transaccional y radar diferido', async () => {
+  const [admin, student, rules] = await Promise.all([
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/StudentPortal.jsx'),
+    read('firestore.rules')
+  ]);
+  assert.match(student, /runTransaction\(db/);
+  assert.match(student, /mitoboxReservations/);
+  assert.match(student, /mitoboxSlots/);
+  assert.match(student, /reservedCount >= capacity/);
+  assert.match(admin, /activeTab !== 'mitobox'/);
+  assert.match(admin, /Reservas confirmadas/);
+  assert.match(admin, /cancelMitoboxReservationFromAdmin/);
+  assert.match(rules, /reservationMatchesSlot/);
+  assert.match(rules, /request\.resource\.data\.reservedCount <= request\.resource\.data\.capacity/);
+});
+
+test('la bandeja pagina el histórico real y abre el detalle bajo demanda visual', async () => {
+  const admin = await read('src/components/AdminPortal.jsx');
+  const indexConfig = JSON.parse(await read('firestore.indexes.json'));
+  assert.match(admin, /limit\(HISTORIAL_TRAMITES_BLOCK_SIZE\)/);
+  assert.match(admin, /startAfter\(resolvedGestionesCursorRef\.current\)/);
+  assert.match(admin, /loadMoreResolvedGestiones/);
+  assert.match(admin, /Abrir detalles/);
+  assert.match(admin, /setGestionDetailsModal\(g\)/);
+  assert.doesNotMatch(admin, /onSnapshot\(collection\(db, 'artifacts', appId, 'gestiones'\)/);
+  assert.ok(indexConfig.indexes.some(index => (
+    index.collectionGroup === 'gestiones'
+    && index.fields.some(field => field.fieldPath === 'status')
+    && index.fields.some(field => field.fieldPath === 'date')
+  )));
+});

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
 import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
+import { buildMitoboxReservationId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -322,6 +323,7 @@ const normalizeCenters = (rawCenters = [], legacySettings = {}) => {
         id: normalizeConfigId(rawRoom?.id || rawRoom?.name, `sala-${roomIndex + 1}`),
         name: String(rawRoom?.name || `Sala ${roomIndex + 1}`).trim(),
         aliases: uniqueStrings(rawRoom?.aliases || []),
+        capacity: Math.max(1, Number(rawRoom?.capacity || 1)),
         mitoboxEnabled: rawRoom?.mitoboxEnabled !== false,
         active: rawRoom?.active !== false
       }))
@@ -650,6 +652,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   const [studentTemporaryClassChanges, setStudentTemporaryClassChanges] = useState([]);
   const [catalogTemporaryClassChanges, setCatalogTemporaryClassChanges] = useState([]);
+  const [catalogMitoboxRelocations, setCatalogMitoboxRelocations] = useState([]);
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
@@ -683,6 +686,9 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [mboxSede, setMboxSede] = useState('Tarragona');
   const [mboxInst, setMboxInst] = useState('');
   const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
+  const [myMitoboxReservations, setMyMitoboxReservations] = useState([]);
+  const [mitoboxSlotUsage, setMitoboxSlotUsage] = useState([]);
+  const [mitoboxReservationError, setMitoboxReservationError] = useState('');
   const [extraSignupModal, setExtraSignupModal] = useState(null);
   const [isSendingExtraSignup, setIsSendingExtraSignup] = useState(false);
   const [workshops, setWorkshops] = useState([]);
@@ -777,7 +783,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return `${centerName}${roomName ? ` · ${roomName}` : ''}`;
   };
   const portalStartDate = String(profile?.classStartDate || '').trim();
-  const isPortalAccessScheduled = Boolean(portalStartDate && portalStartDate > todayStr);
+  const hasServicePortalAccess = Boolean(profile?.hasMitobox || profile?.hasMitoverso);
+  const isPortalAccessScheduled = Boolean(!hasServicePortalAccess && portalStartDate && portalStartDate > todayStr);
   const maintenanceOptions = useMemo(() => [
     getMaintenancePeriodForMonths(1, timeRules.isLate),
     getMaintenancePeriodForMonths(2, timeRules.isLate)
@@ -1370,6 +1377,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
     return deduplicateStudentClasses(displayedClasses);
   }, [myClasses, allClasses, temporaryRelocations, temporaryClassChanges, profile?.id, profile?.name, profile?.alias, profile?.useAlias, profile?.email, profile?.classStartDate, profile?.scheduledBaja, profile?.scheduledBajaClassEndDate, todayStr]);
+
+  const isServiceOnlyStudent = effectiveMyClasses.length === 0 && hasServicePortalAccess;
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
@@ -2559,6 +2568,53 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
   }, [profile?.id, profileClassIdsSignature, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, classCatalog, classesRetryNonce, db, appId, user.email]);
 
+  // Las reservas Mitobox viven fuera de la bandeja de gestiones. El alumno
+  // solo escucha sus propias reservas; la ocupación pública del turno no
+  // contiene nombres ni correos.
+  useEffect(() => {
+    if (!profile?.id || profile.hasMitobox !== true) {
+      setMyMitoboxReservations([]);
+      return undefined;
+    }
+    const reservationQuery = query(
+      collection(db, 'artifacts', appId, 'mitoboxReservations'),
+      where('studentId', '==', profile.id)
+    );
+    return onSnapshot(
+      reservationQuery,
+      snapshot => setMyMitoboxReservations(snapshot.docs
+        .map(reservationDoc => ({ id: reservationDoc.id, ...reservationDoc.data() }))
+        .sort((left, right) => `${left.reservationDate || ''}T${left.reservationTime || ''}`.localeCompare(`${right.reservationDate || ''}T${right.reservationTime || ''}`))),
+      error => {
+        console.error('No se pudieron cargar las reservas Mitobox del alumno', error);
+        setMitoboxReservationError('No se han podido comprobar tus reservas actuales.');
+      }
+    );
+  }, [profile?.id, profile?.hasMitobox, db, appId]);
+
+  useEffect(() => {
+    if (!mitoboxModal || !mboxDate || profile?.hasMitobox !== true) {
+      setMitoboxSlotUsage([]);
+      return undefined;
+    }
+    const usageQuery = query(
+      collection(db, 'artifacts', appId, 'mitoboxSlots'),
+      where('reservationDate', '==', mboxDate)
+    );
+    return onSnapshot(
+      usageQuery,
+      snapshot => {
+        setMitoboxSlotUsage(snapshot.docs.map(slotDoc => ({ id: slotDoc.id, slotId: slotDoc.id, ...slotDoc.data() })));
+        setMitoboxReservationError('');
+      },
+      error => {
+        console.error('No se pudo cargar la ocupación Mitobox', error);
+        setMitoboxSlotUsage([]);
+        setMitoboxReservationError('No se ha podido comprobar el aforo de las salas. Reintenta antes de reservar.');
+      }
+    );
+  }, [mitoboxModal, mboxDate, profile?.hasMitobox, db, appId]);
+
   // Una recolocación puede llevar al alumno a una clase que no forma parte de su
   // plaza fija. Se resuelve desde el catálogo privado sin leer la ficha completa
   // de otra clase (que contiene datos de otros alumnos).
@@ -2630,6 +2686,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         const data = snapshot.exists() ? snapshot.data() : {};
         setClassCatalog(Array.isArray(data.classes) ? data.classes : []);
         setCatalogTemporaryClassChanges(Array.isArray(data.temporaryClassChanges) ? data.temporaryClassChanges : []);
+        setCatalogMitoboxRelocations(Array.isArray(data.mitoboxRelocations) ? data.mitoboxRelocations : []);
         setClassCatalogLoading(false);
         setClassCatalogLoaded(snapshot.exists());
         classCatalogRetryRef.current.attempts = 0;
@@ -2655,6 +2712,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         }
         setClassCatalog([]);
         setCatalogTemporaryClassChanges([]);
+        setCatalogMitoboxRelocations([]);
         setSelectedNewClass(null);
         setMboxSelectedSlot(null);
         setClassCatalogLoading(false);
@@ -3192,8 +3250,11 @@ export default function StudentPortal({ user, logout, db, appId }) {
         ) {
           const linkedData = linkedStudent.data();
           const linkedIsUsable = String(linkedData.globalStatus || 'activo').toLowerCase() !== 'baja'
-            && Array.isArray(linkedData.classes)
-            && linkedData.classes.length > 0;
+            && (
+              (Array.isArray(linkedData.classes) && linkedData.classes.length > 0)
+              || linkedData.hasMitobox === true
+              || linkedData.hasMitoverso === true
+            );
           if (linkedIsUsable) studentDocument = linkedStudent;
         }
       }
@@ -3207,13 +3268,23 @@ export default function StudentPortal({ user, logout, db, appId }) {
           const score = data => (
             (data.authUid === user.uid ? 100 : 0)
             + (String(data.globalStatus || 'activo').toLowerCase() !== 'baja' ? 10 : 0)
+            + (data.hasMitobox === true || data.hasMitoverso === true ? 5 : 0)
             + (Array.isArray(data.classes) && data.classes.length > 0 ? 1 : 0)
           );
           return score(rightData) - score(leftData);
         })[0] || null;
       }
 
-      if (studentDocument) setProfile({ id: studentDocument.id, ...studentDocument.data() });
+      if (studentDocument) {
+        const studentData = studentDocument.data();
+        const entitled = String(studentData.globalStatus || 'activo').toLowerCase() !== 'baja'
+          && (
+            (Array.isArray(studentData.classes) && studentData.classes.length > 0)
+            || studentData.hasMitobox === true
+            || studentData.hasMitoverso === true
+          );
+        if (entitled) setProfile({ id: studentDocument.id, ...studentData });
+      }
     } catch (error) {
       console.error('Error al localizar el perfil del alumno', error);
       setProfileLoadError('No se ha podido consultar tu perfil. Puede ser un problema temporal de conexión o permisos.');
@@ -3392,8 +3463,8 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
-    const isBajaTotalRequest = gestionModal.type === 'baja' && isMultiSeatStudent && bajaTotalRequested;
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type) && !isServiceOnlyStudent;
+    const isBajaTotalRequest = gestionModal.type === 'baja' && (isServiceOnlyStudent || (isMultiSeatStudent && bajaTotalRequested));
     const gestionUiCopyForPayload = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
     const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
     const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
@@ -3641,29 +3712,74 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
 
   const sendMitoboxReservation = async () => {
     if (!mboxDate || !mboxSede || !mboxInst || !mboxSelectedSlot) return;
+    if (profile?.hasMitobox !== true) {
+      showToast('Necesitas tener Mitobox activo para reservar una sala.', 'error');
+      return;
+    }
     setIsSendingGestion(true);
     try {
-      const gestionId = `mbox-res-${Date.now()}`;
       const selectedCenter = getCenterForValue(mboxSede);
       const selectedRoom = findRoomByValue(selectedCenter, mboxSelectedSlot.roomId || mboxSelectedSlot.sala);
       const selectedCenterName = selectedCenter?.name || mboxSede;
       const selectedRoomName = selectedRoom?.name || mboxSelectedSlot.sala;
-      await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
+      const reservationId = buildMitoboxReservationId({
         studentId: profile.id,
-        studentName: profile.name,
-        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
-        type: 'reserva_mitobox',
-        title: 'Reserva de Sala (Mitobox)',
-        details: `Reserva para ensayar: ${mboxInst}. Fecha: ${formatDateSpanish(mboxDate)}. Sede: ${selectedCenterName}. Hora: ${mboxSelectedSlot.time}h en ${selectedRoomName}`,
-        status: 'pendiente',
-        date: new Date().toISOString(),
-        reservationDate: mboxDate,
-        reservationTime: mboxSelectedSlot.time,
-        instrument: mboxInst,
-        sede: selectedCenterName,
-        sala: selectedRoomName,
-        centerId: selectedCenter?.id || '',
-        roomId: selectedRoom?.id || mboxSelectedSlot.roomId || ''
+        date: mboxDate,
+        time: mboxSelectedSlot.time
+      });
+      const reservationRef = doc(db, 'artifacts', appId, 'mitoboxReservations', reservationId);
+      const slotRef = doc(db, 'artifacts', appId, 'mitoboxSlots', mboxSelectedSlot.slotId);
+      const nowIso = new Date().toISOString();
+
+      await runTransaction(db, async transaction => {
+        const [reservationSnapshot, slotSnapshot] = await Promise.all([
+          transaction.get(reservationRef),
+          transaction.get(slotRef)
+        ]);
+        if (reservationSnapshot.exists() && isActiveMitoboxReservation(reservationSnapshot.data())) {
+          throw new Error('ALREADY_RESERVED');
+        }
+
+        const slotData = slotSnapshot.exists() ? slotSnapshot.data() : {};
+        // Si el turno ya existe, su aforo queda congelado para no alterar el
+        // contador compartido durante una reserva concurrente. Los cambios de
+        // aforo se aplicarán a los nuevos turnos.
+        const capacity = Math.max(1, Number(
+          slotSnapshot.exists()
+            ? slotData.capacity
+            : (mboxSelectedSlot.capacity || selectedRoom?.capacity || 1)
+        ));
+        const reservedCount = Math.max(0, Number(slotData.reservedCount || 0));
+        if (reservedCount >= capacity) throw new Error('ROOM_FULL');
+
+        transaction.set(slotRef, {
+          reservationDate: mboxDate,
+          reservationTime: mboxSelectedSlot.time,
+          centerId: selectedCenter?.id || mboxSelectedSlot.centerId || '',
+          roomId: selectedRoom?.id || mboxSelectedSlot.roomId || '',
+          reservedCount: reservedCount + 1,
+          capacity,
+          updatedAt: nowIso,
+          lastMutationId: reservationId
+        }, { merge: true });
+        transaction.set(reservationRef, {
+          studentId: profile.id,
+          studentName: profile.name || '',
+          studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
+          status: 'confirmed',
+          reservationDate: mboxDate,
+          reservationTime: mboxSelectedSlot.time,
+          durationMinutes: 60,
+          instrument: mboxInst,
+          sede: selectedCenterName,
+          sala: selectedRoomName,
+          centerId: selectedCenter?.id || mboxSelectedSlot.centerId || '',
+          roomId: selectedRoom?.id || mboxSelectedSlot.roomId || '',
+          slotId: mboxSelectedSlot.slotId,
+          capacity,
+          createdAt: reservationSnapshot.exists() ? (reservationSnapshot.data().createdAt || nowIso) : nowIso,
+          updatedAt: nowIso
+        });
       });
 
       const [y, m, d] = mboxDate.split('-');
@@ -3691,6 +3807,7 @@ END:VCALENDAR`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(url);
 
       setMitoboxModal(false);
       setMboxDate('');
@@ -3698,7 +3815,49 @@ END:VCALENDAR`;
       setMboxInst('');
       showToast('Reserva confirmada. Se ha descargado el archivo para tu calendario.');
     } catch (e) {
-      showToast('Error al reservar sala.', 'error');
+      const message = e.message === 'ROOM_FULL'
+        ? 'La última plaza de este turno acaba de ocuparse. Elige otra sala u hora.'
+        : e.message === 'ALREADY_RESERVED'
+          ? 'Ya tienes una reserva a esa misma hora.'
+          : 'Error al reservar sala. No se ha creado ninguna reserva.';
+      showToast(message, 'error');
+    } finally {
+      setIsSendingGestion(false);
+    }
+  };
+
+  const cancelMitoboxReservation = async reservation => {
+    if (!reservation?.id || !reservation.slotId || !window.confirm(`¿Cancelar tu reserva del ${formatDateSpanish(reservation.reservationDate)} a las ${reservation.reservationTime}h?`)) return;
+    setIsSendingGestion(true);
+    try {
+      const reservationRef = doc(db, 'artifacts', appId, 'mitoboxReservations', reservation.id);
+      const slotRef = doc(db, 'artifacts', appId, 'mitoboxSlots', reservation.slotId);
+      const nowIso = new Date().toISOString();
+      await runTransaction(db, async transaction => {
+        const [reservationSnapshot, slotSnapshot] = await Promise.all([
+          transaction.get(reservationRef),
+          transaction.get(slotRef)
+        ]);
+        if (!reservationSnapshot.exists() || !isActiveMitoboxReservation(reservationSnapshot.data())) return;
+        const reservedCount = Math.max(0, Number(slotSnapshot.data()?.reservedCount || 0));
+        transaction.update(reservationRef, {
+          status: 'cancelled',
+          cancelledAt: nowIso,
+          cancelledBy: 'student',
+          updatedAt: nowIso
+        });
+        if (slotSnapshot.exists()) {
+          transaction.update(slotRef, {
+            reservedCount: Math.max(0, reservedCount - 1),
+            updatedAt: nowIso,
+            lastMutationId: reservation.id
+          });
+        }
+      });
+      showToast('Reserva Mitobox cancelada.');
+    } catch (error) {
+      console.error('No se pudo cancelar la reserva Mitobox', error);
+      showToast('No se ha podido cancelar la reserva.', 'error');
     } finally {
       setIsSendingGestion(false);
     }
@@ -3791,6 +3950,10 @@ END:VCALENDAR`;
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
   const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');
   const pendingMitoboxSignup = hasPendingExtraSignup('mitobox');
+  const upcomingMitoboxReservations = myMitoboxReservations.filter(reservation => (
+    isActiveMitoboxReservation(reservation)
+    && `${reservation.reservationDate || ''}T${reservation.reservationTime || '00:00'}` >= `${todayStr}T00:00`
+  ));
   
   const pendingAdminGestiones = myGestiones.filter(g => 
     g.status === 'pendiente' && 
@@ -3864,7 +4027,7 @@ END:VCALENDAR`;
   const frozenRestrictedGestionTypes = ['recuperacion', 'cambio_horario', 'ampliar_clases'];
   const isAcademicGestionLocked = isStudentFrozen || hasGlobalPendingAdminGestion;
   const isChangeHorarioLocked = isStudentFrozen || hasGlobalPendingAdminGestion || !hasAvailableSeatForGestion('cambio_horario');
-  const isBajaLocked = hasGlobalPendingAdminGestion || !hasAvailableSeatForGestion('baja');
+  const isBajaLocked = hasGlobalPendingAdminGestion || (!isServiceOnlyStudent && !hasAvailableSeatForGestion('baja'));
   const isMantenimientoLocked = hasPendingAdminGestion;
 
   const getGestionUiCopy = (type = '', { isBajaTotalRequest = false } = {}) => {
@@ -3906,6 +4069,15 @@ END:VCALENDAR`;
     }
 
     if (type === 'baja') {
+      if (isServiceOnlyStudent) {
+        return {
+          title: 'Dar de baja mis servicios',
+          description: 'Solicita la cancelación de tus servicios activos de Mitobox o Mitoverso.',
+          notice: 'Al tramitarse la baja dejarás de acceder al área de usuario si no conservas ninguna clase ni otro servicio activo.',
+          sourceLabel: 'Servicios activos',
+          placeholder: bajaPlaceholder
+        };
+      }
       if (isMultiSeatStudent && isBajaTotalRequest) {
         return {
           title: 'Dar de baja',
@@ -3950,7 +4122,7 @@ END:VCALENDAR`;
       return;
     }
 
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type);
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type) && !isServiceOnlyStudent;
     const availableSourceClasses = getAvailableFixedSeatClassesForGestion(gestionPayload.type);
     const isGlobalGestion = ['mantenimiento', 'reactivar_plaza'].includes(gestionPayload.type);
 
@@ -4114,10 +4286,10 @@ END:VCALENDAR`;
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type);
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type) && !isServiceOnlyStudent;
     const isBajaRequest = gestionModal.type === 'baja';
     const canChooseTotalBaja = isBajaRequest && isMultiSeatStudent;
-    const isBajaTotalRequest = canChooseTotalBaja && bajaTotalRequested;
+    const isBajaTotalRequest = isServiceOnlyStudent || (canChooseTotalBaja && bajaTotalRequested);
     const gestionUiCopy = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
     const modalTitle = gestionUiCopy.title || gestionModal.title;
     const modalDescription = gestionUiCopy.description || gestionModal.desc || '';
@@ -4593,52 +4765,16 @@ END:VCALENDAR`;
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-    let availableMboxSlots = [];
-    if (mboxDate && mboxSede) {
-      const targetDay = getDayOfWeek(mboxDate);
-      const selectedMboxCenter = getCenterForValue(mboxSede);
-      const isSchoolClosed = globalSettings.festivos.includes(mboxDate)
-        || globalSettings.vacaciones.includes(mboxDate)
-        || Boolean(selectedMboxCenter?.holidays?.includes(mboxDate));
-      const allScheduledClasses = isSchoolClosed ? [] : allClasses
-        .map(clase => getEffectiveClassForDate(clase, mboxDate))
-        .filter(clase => (
-          Number(clase.dayOfWeek) === targetDay
-          && isSameCenter(clase.centerId || clase.sede || 'Tarragona', selectedMboxCenter?.id || mboxSede)
-        ));
-
-      const aliveClasses = allScheduledClasses.filter(c => {
-        if (c.cancelledDates?.includes(mboxDate)) return false; 
-        if (Number.isFinite(Number(c.activeStudentCount))) return Number(c.activeStudentCount) > 0;
-        const exceptionsEseDia = c.exceptions?.[mboxDate] || {};
-        const activeStudents = (c.students || []).filter(s => {
-          const entryStudentId = getStudentEntryId(s);
-          if (!isStudentEntryActiveOnDate(s, {}, mboxDate)) return false;
-          if (isStudentInMaintenanceForDate(entryStudentId, mboxDate)) return false;
-          const estadoHoy = exceptionsEseDia[entryStudentId];
-          if (estadoHoy === 'absent' || estadoHoy === 'notified' || estadoHoy === 'notified_no_ticket') return false;
-          return true;
-        });
-
-        if (activeStudents.length === 0) return false;
-        return true;
-      });
-
-      const activeTimes = [...new Set(aliveClasses.map(c => c.time))].sort();
-      
-      activeTimes.forEach(t => {
-        const occupiedRoomIds = aliveClasses
-          .filter(c => c.time === t)
-          .map(c => findRoomByValue(selectedMboxCenter, c.roomId || c.sala || 'Sala 1')?.id || normalizeConfigId(c.roomId || c.sala || 'Sala 1', 'sala'));
-        const freeRooms = (selectedMboxCenter?.rooms || [])
-          .filter(room => room.active !== false && room.mitoboxEnabled !== false)
-          .filter(room => !occupiedRoomIds.includes(room.id));
-        
-        freeRooms.forEach(room => {
-          availableMboxSlots.push({ time: t, sala: room.name, roomId: room.id });
-        });
-      });
-    }
+    const selectedMboxCenter = getCenterForValue(mboxSede);
+    const availableMboxSlots = calculateMitoboxAvailability({
+      date: mboxDate,
+      center: selectedMboxCenter,
+      classes: allClasses,
+      temporaryClassChanges,
+      temporaryRelocations: catalogMitoboxRelocations.length > 0 ? catalogMitoboxRelocations : temporaryRelocations,
+      settings: globalSettings,
+      slotUsage: mitoboxSlotUsage
+    });
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
@@ -4678,7 +4814,11 @@ END:VCALENDAR`;
           {mboxDate && mboxSede && (
             <div className="mb-6 space-y-4 border-t border-zinc-100 pt-4">
               <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block">4. Salas y Horas disponibles</label>
-              {classCatalogError ? (
+              {mitoboxReservationError ? (
+                <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
+                  <p className="text-xs font-bold text-red-700 leading-relaxed">{mitoboxReservationError}</p>
+                </div>
+              ) : classCatalogError ? (
                 <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
                   <p className="text-xs font-bold text-red-700 leading-relaxed">{classCatalogError}</p>
                   <button type="button" onClick={() => setClassCatalogRetryNonce(value => value + 1)} className="mt-3 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px]">
@@ -4699,6 +4839,7 @@ END:VCALENDAR`;
                     >
                       <div className="font-black text-sm">{slot.time}h</div>
                       <div className="text-[10px] font-bold uppercase tracking-widest opacity-60">{slot.sala}</div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-blue-600 mt-1">{slot.freeSeats}/{slot.capacity} plazas libres</div>
                     </button>
                   ))}
                 </div>
@@ -4710,7 +4851,7 @@ END:VCALENDAR`;
             </div>
           )}
 
-          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || Boolean(classCatalogError) || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || Boolean(classCatalogError) || Boolean(mitoboxReservationError) || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
             {isSendingGestion ? 'Enviando...' : <><CheckCircle className="w-4 h-4"/> Confirmar Reserva</>}
           </button>
         </div>
@@ -4902,7 +5043,7 @@ END:VCALENDAR`;
     );
   }
 
-  if (classesLoadError) {
+  if (classesLoadError && !hasServicePortalAccess) {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto">
         <div className="bg-red-100 text-red-600 p-6 rounded-full mb-6">
@@ -4952,7 +5093,7 @@ END:VCALENDAR`;
   }
 
 
-  if (effectiveMyClasses.length === 0) {
+  if (effectiveMyClasses.length === 0 && !hasServicePortalAccess) {
     return (
       <div className="min-h-screen bg-zinc-50 p-8 flex flex-col justify-center items-center text-center max-w-md mx-auto animate-in fade-in duration-300">
         <div className="bg-amber-100 text-amber-600 p-6 rounded-full mb-6">
@@ -4960,7 +5101,7 @@ END:VCALENDAR`;
         </div>
         <h1 className="text-2xl font-black uppercase tracking-tight leading-none mb-4 text-slate-800">Sin clase asignada</h1>
         <p className="text-zinc-500 font-medium mb-8 leading-relaxed">
-          Tu cuenta existe, pero ahora mismo no tienes ninguna clase asignada. Para acceder al portal necesitas tener una plaza activa o una plaza en mantenimiento.
+          Tu cuenta existe, pero ahora mismo no tienes ninguna clase ni servicio activo asignado.
         </p>
         <div className="bg-white border-2 border-zinc-200 p-6 rounded-2xl mb-8 w-full shadow-sm">
           <p className="text-sm text-slate-700 font-bold mb-4 uppercase tracking-widest">
@@ -5135,7 +5276,19 @@ END:VCALENDAR`;
               </div>
             </div>
 
-            {!hasPlayedToday ? (
+            {isServiceOnlyStudent && (
+              <div className="bg-gradient-to-br from-slate-900 to-blue-950 text-white rounded-3xl p-6 shadow-xl border border-slate-800">
+                <div className="flex items-start gap-4">
+                  <div className="bg-white/10 p-3 rounded-2xl"><Sparkles className="w-7 h-7 text-blue-300"/></div>
+                  <div>
+                    <h3 className="text-xl font-black uppercase tracking-tight">Tus servicios están activos</h3>
+                    <p className="text-sm font-medium text-slate-300 mt-2 leading-relaxed">Puedes consultar el tablón, el calendario y los talleres. En Extras encontrarás el acceso a {profile.hasMitobox && profile.hasMitoverso ? 'Mitobox y Mitoverso' : profile.hasMitobox ? 'Mitobox para reservar una sala' : 'Mitoverso'}.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!isServiceOnlyStudent && (!hasPlayedToday ? (
               <div className="bg-gradient-to-r from-amber-400 to-orange-500 rounded-3xl p-1 text-white shadow-xl relative overflow-hidden transform hover:scale-[1.02] transition-transform cursor-pointer" onClick={startTrivia}>
                 <div className="bg-black/10 absolute inset-0"></div>
                 <div className="relative z-10 p-6 flex flex-col sm:flex-row items-center justify-between gap-6">
@@ -5161,8 +5314,9 @@ END:VCALENDAR`;
                 <p className="font-black text-slate-800 uppercase tracking-tight">Ya has jugado hoy</p>
                 <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mt-1">Vuelve mañana a por más puntos.</p>
               </div>
-            )}
+            ))}
 
+            {!isServiceOnlyStudent && <>
             <h3 className="font-black uppercase tracking-widest text-xs text-zinc-400 px-2 flex items-center gap-2 mt-8"><Calendar className="w-4 h-4"/> Mis Clases Asignadas</h3>
             
             {effectiveMyClasses.length === 0 ? (
@@ -5391,6 +5545,7 @@ END:VCALENDAR`;
                 </p>
               </div>
             </div>
+            </>}
 
             {(pendingProcedures.length > 0 || pendingAbsences.length > 0) && (
               <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200 mt-6">
@@ -5746,6 +5901,20 @@ END:VCALENDAR`;
                 <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
                   ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
                 </p>
+                {profile?.hasMitobox && upcomingMitoboxReservations.length > 0 && (
+                  <div className="mb-5 space-y-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Próximas reservas</p>
+                    {upcomingMitoboxReservations.map(reservation => (
+                      <div key={reservation.id} className="bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-black text-blue-950">{formatDateSpanish(reservation.reservationDate)} · {reservation.reservationTime}h</p>
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-blue-600 mt-0.5">{reservation.sede} · {reservation.sala} · {reservation.instrument}</p>
+                        </div>
+                        <button type="button" onClick={() => cancelMitoboxReservation(reservation)} disabled={isSendingGestion} className="shrink-0 px-3 py-2 bg-white border border-red-100 text-red-600 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white disabled:opacity-50">Cancelar</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {!profile?.hasMitobox && (
                   <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
                     <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
@@ -6061,7 +6230,7 @@ END:VCALENDAR`;
               <MessageSquare className="w-20 h-20 text-zinc-200 absolute -right-4 -bottom-4 rotate-12 pointer-events-none" />
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border-2 border-amber-100 text-amber-900 text-xs font-medium leading-relaxed shadow-sm">
+            {!isServiceOnlyStudent && <div className="bg-white p-5 rounded-2xl border-2 border-amber-100 text-amber-900 text-xs font-medium leading-relaxed shadow-sm">
               <strong className="font-black uppercase tracking-widest text-[11px] block mb-2 text-amber-700 flex items-center gap-2">
                 <AlertCircle className="w-4 h-4"/> Normativa Administrativa
               </strong>
@@ -6072,7 +6241,13 @@ END:VCALENDAR`;
                 <li>El mantenimiento es una excepción: afecta a todas las clases de la persona, aunque tenga más de una plaza.</li>
                 <li>Para cualquier duda, podéis recurrir al botón de <strong>"Dudas u otras gestiones"</strong> al final de esta página.</li>
               </ul>
-            </div>
+            </div>}
+
+            {isServiceOnlyStudent && (
+              <div className="bg-blue-50 border-2 border-blue-100 text-blue-900 p-5 rounded-2xl text-xs font-bold leading-relaxed shadow-sm">
+                Desde aquí puedes solicitar tu primera plaza fija de clases, dar de baja tus servicios o contactar con Administración para cualquier otra gestión.
+              </div>
+            )}
 
             {isStudentFrozen && (
               <div className="bg-blue-50 border-2 border-blue-100 text-blue-900 p-5 rounded-2xl text-xs font-bold leading-relaxed shadow-sm">
@@ -6084,7 +6259,7 @@ END:VCALENDAR`;
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <button 
+              {!isServiceOnlyStudent && <button 
                 disabled={isChangeHorarioLocked}
                 onClick={() => handleAdminGestionClick({
                   type: 'cambio_horario', title: 'Cambiar horario fijo', icon: RefreshCcw, color: 'text-blue-500',
@@ -6096,7 +6271,7 @@ END:VCALENDAR`;
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isChangeHorarioLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isChangeHorarioLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Solicita otro día u hora'}</p>
-              </button>
+              </button>}
 
               <button 
                 disabled={isAcademicGestionLocked}
@@ -6108,11 +6283,11 @@ END:VCALENDAR`;
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isAcademicGestionLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isAcademicGestionLocked ? 'bg-zinc-100' : 'bg-emerald-50 group-hover:scale-110'}`}><PlusCircle className={`w-6 h-6 ${isAcademicGestionLocked ? 'text-zinc-400' : 'text-emerald-500'}`}/></div>
-                <h3 className="font-black text-slate-800 uppercase tracking-tight">Ampliar Mis Clases</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Apunta un nuevo instrumento'}</p>
+                <h3 className="font-black text-slate-800 uppercase tracking-tight">{isServiceOnlyStudent ? 'Solicitar una plaza de clases' : 'Ampliar Mis Clases'}</h3>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Elige instrumento y horario' : isStudentFrozen ? 'No disponible en mantenimiento' : 'Apunta un nuevo instrumento'}</p>
               </button>
 
-              <button 
+              {!isServiceOnlyStudent && <button 
                 disabled={isMantenimientoLocked}
                 onClick={() => handleAdminGestionClick(isStudentFrozen ? {
                   type: 'reactivar_plaza', title: 'Finalizar Mantenimiento', icon: Snowflake, color: 'text-blue-500',
@@ -6128,7 +6303,7 @@ END:VCALENDAR`;
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isMantenimientoLocked ? 'bg-zinc-100' : isStudentFrozen ? 'bg-blue-50 group-hover:scale-110' : 'bg-amber-50 group-hover:scale-110'}`}><Snowflake className={`w-6 h-6 ${isMantenimientoLocked ? 'text-zinc-400' : isStudentFrozen ? 'text-blue-500' : 'text-amber-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isStudentFrozen ? 'Finalizar Mantenimiento' : 'Cuota Mantenimiento'}</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'Solicita terminar antes' : isMultiSeatStudent ? 'Afecta a todas tus clases' : '15€/mes · máximo 2 meses'}</p>
-              </button>
+              </button>}
 
               <button 
                 disabled={isBajaLocked}
@@ -6140,8 +6315,8 @@ END:VCALENDAR`;
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isBajaLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-red-500'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isBajaLocked ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${isBajaLocked ? 'text-zinc-400' : 'text-red-500'}`}/></div>
-                <h3 className="font-black text-slate-800 uppercase tracking-tight">Dar de Baja</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
+                <h3 className="font-black text-slate-800 uppercase tracking-tight">{isServiceOnlyStudent ? 'Dar de baja mis servicios' : 'Dar de Baja'}</h3>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Cancela Mitobox o Mitoverso' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
               </button>
 
               <a 

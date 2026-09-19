@@ -90,22 +90,70 @@ service cloud.firestore {
       return /databases/$(database)/documents/artifacts/$(appId)/access/$(request.auth.uid);
     }
 
+    function studentRecordPath(appId, studentId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/students/$(studentId);
+    }
+
+    function studentHasPortalEntitlement(appId, studentId) {
+      let studentPath = studentRecordPath(appId, studentId);
+      let studentData = get(studentPath).data;
+      return studentId is string
+        && studentId.matches('^[A-Za-z0-9_-]+$')
+        && exists(studentPath)
+        && (!('globalStatus' in studentData) || studentData.globalStatus != 'baja')
+        && (
+          ('classes' in studentData && studentData.classes is list && studentData.classes.size() > 0)
+          || ('hasMitobox' in studentData && studentData.hasMitobox == true)
+          || ('hasMitoverso' in studentData && studentData.hasMitoverso == true)
+        );
+    }
+
     function hasStudentAccess(appId) {
+      let studentAccessPath = accessPath(appId);
+      let accessData = get(studentAccessPath).data;
       return signedIn()
-        && exists(accessPath(appId))
-        && get(accessPath(appId)).data.role == 'student'
-        && get(accessPath(appId)).data.email is string
-        && get(accessPath(appId)).data.email.lower() == authEmail()
-        && get(accessPath(appId)).data.studentId is string
-        && get(accessPath(appId)).data.studentId.matches('^[A-Za-z0-9_-]+$');
+        && exists(studentAccessPath)
+        && accessData.role == 'student'
+        && accessData.email is string
+        && accessData.email.lower() == authEmail()
+        && accessData.studentId is string
+        && accessData.studentId.matches('^[A-Za-z0-9_-]+$')
+        // Compatibilidad durante el despliegue: los vínculos antiguos todavía
+        // no tienen el campo. La nueva aplicación los actualiza al iniciar.
+        && (!('portalEnabled' in accessData) || accessData.portalEnabled == true);
     }
 
     function ownStudentId(appId) {
-      return hasStudentAccess(appId) ? get(accessPath(appId)).data.studentId : '';
+      return get(accessPath(appId)).data.studentId;
     }
 
     function ownsStudentRecord(appId, studentId) {
       return hasStudentAccess(appId) && ownStudentId(appId) == studentId;
+    }
+
+    function studentHasMitobox(appId) {
+      return hasStudentAccess(appId)
+        && get(studentRecordPath(appId, get(accessPath(appId)).data.studentId)).data.hasMitobox == true;
+    }
+
+    function mitoboxSlotPath(appId, slotId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/mitoboxSlots/$(slotId);
+    }
+
+    function mitoboxReservationPath(appId, reservationId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/mitoboxReservations/$(reservationId);
+    }
+
+    function reservationMatchesSlot(appId, reservationId, slotId, expectedStatus) {
+      let reservationData = getAfter(mitoboxReservationPath(appId, reservationId)).data;
+      return reservationId is string
+        && slotId is string
+        && existsAfter(mitoboxReservationPath(appId, reservationId))
+        && reservationData.studentId == ownStudentId(appId)
+        && reservationData.studentEmail is string
+        && reservationData.studentEmail.lower() == authEmail()
+        && reservationData.slotId == slotId
+        && reservationData.status == expectedStatus;
     }
 
     function ownStudentEmailRecord() {
@@ -187,8 +235,9 @@ service cloud.firestore {
       allow create, update: if isAdmin() || (
         signedIn()
         && request.auth.uid == uid
-        && request.resource.data.keys().hasOnly(['role', 'studentId', 'email', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['role', 'studentId', 'email', 'portalEnabled', 'createdAt', 'updatedAt'])
         && request.resource.data.role == 'student'
+        && request.resource.data.portalEnabled == true
         && request.resource.data.email is string
         && request.resource.data.email.lower() == authEmail()
         && request.resource.data.studentId is string
@@ -196,6 +245,7 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/artifacts/$(appId)/students/$(request.resource.data.studentId))
         && get(/databases/$(database)/documents/artifacts/$(appId)/students/$(request.resource.data.studentId)).data.email is string
         && get(/databases/$(database)/documents/artifacts/$(appId)/students/$(request.resource.data.studentId)).data.email.lower() == authEmail()
+        && studentHasPortalEntitlement(appId, request.resource.data.studentId)
       );
       allow delete: if isAdmin();
     }
@@ -277,6 +327,85 @@ service cloud.firestore {
       ) || (
         studentOwnsResource(appId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['adminCopySentAt', 'adminCopyRecipient'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/mitoboxReservations/{reservationId} {
+      // El ID termina en el studentId para permitir leer de forma segura un
+      // documento todavía inexistente dentro de la transacción de alta.
+      allow get: if isAdmin()
+        || (studentHasMitobox(appId) && deterministicIdBelongsToStudent(appId, reservationId))
+        || studentOwnsResource(appId);
+      allow list: if isAdmin() || studentOwnsResource(appId);
+      allow create: if isAdmin() || (
+        studentHasMitobox(appId)
+        && studentCreatesOwnResource(appId)
+        && request.resource.data.status == 'confirmed'
+        && request.resource.data.slotId is string
+        && request.resource.data.reservationDate is string
+        && request.resource.data.reservationTime is string
+        && existsAfter(mitoboxSlotPath(appId, request.resource.data.slotId))
+        && getAfter(mitoboxSlotPath(appId, request.resource.data.slotId)).data.lastMutationId == reservationId
+      );
+      allow update: if isAdmin() || (
+        studentHasMitobox(appId)
+        && studentOwnsResource(appId)
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.studentEmail == resource.data.studentEmail
+        && (
+          (
+            resource.data.status == 'confirmed'
+            && request.resource.data.status == 'cancelled'
+            && request.resource.data.cancelledBy == 'student'
+            && getAfter(mitoboxSlotPath(appId, resource.data.slotId)).data.lastMutationId == reservationId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'cancelledAt', 'cancelledBy', 'updatedAt'
+            ])
+          )
+          || (
+            resource.data.status == 'cancelled'
+            && request.resource.data.status == 'confirmed'
+            && request.resource.data.reservationDate == resource.data.reservationDate
+            && request.resource.data.reservationTime == resource.data.reservationTime
+            && getAfter(mitoboxSlotPath(appId, request.resource.data.slotId)).data.lastMutationId == reservationId
+          )
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/mitoboxSlots/{slotId} {
+      allow read: if isAdmin() || studentHasMitobox(appId);
+      allow create: if isAdmin() || (
+        studentHasMitobox(appId)
+        && request.resource.data.keys().hasOnly([
+          'reservationDate', 'reservationTime', 'centerId', 'roomId',
+          'reservedCount', 'capacity', 'updatedAt', 'lastMutationId'
+        ])
+        && request.resource.data.reservedCount == 1
+        && request.resource.data.capacity >= 1
+        && request.resource.data.reservedCount <= request.resource.data.capacity
+        && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'confirmed')
+      );
+      allow update: if isAdmin() || (
+        studentHasMitobox(appId)
+        && request.resource.data.reservationDate == resource.data.reservationDate
+        && request.resource.data.reservationTime == resource.data.reservationTime
+        && request.resource.data.centerId == resource.data.centerId
+        && request.resource.data.roomId == resource.data.roomId
+        && request.resource.data.capacity == resource.data.capacity
+        && request.resource.data.reservedCount >= 0
+        && request.resource.data.reservedCount <= request.resource.data.capacity
+        && (
+          request.resource.data.reservedCount == resource.data.reservedCount + 1
+          && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'confirmed')
+          || request.resource.data.reservedCount == resource.data.reservedCount - 1
+          && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'cancelled')
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'reservedCount', 'updatedAt', 'lastMutationId'
+        ])
       );
       allow delete: if isAdmin();
     }

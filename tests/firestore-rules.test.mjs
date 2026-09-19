@@ -14,6 +14,7 @@ import {
   getDoc,
   getDocs,
   query,
+  runTransaction,
   setDoc,
   updateDoc,
   where
@@ -44,6 +45,16 @@ const OTHER_STUDENT = {
   uid: 'student-2-uid',
   id: 'student-2',
   email: 'student2@example.com'
+};
+const MITOBOX_STUDENT = {
+  uid: 'mitobox-student-uid',
+  id: 'mitobox-student',
+  email: 'mitobox@example.com'
+};
+const NO_SERVICE_STUDENT = {
+  uid: 'no-service-student-uid',
+  id: 'no-service-student',
+  email: 'noservice@example.com'
 };
 
 function authenticated(testEnv, identity) {
@@ -80,6 +91,7 @@ async function seed(testEnv) {
         email: STUDENT.email,
         claimed: true,
         authUid: STUDENT.uid,
+        classes: ['class-own'],
         internalNotes: 'Dato privado'
       }],
       [`${ROOT}/students/${OTHER_STUDENT.id}`, {
@@ -87,17 +99,52 @@ async function seed(testEnv) {
         email: OTHER_STUDENT.email,
         claimed: true,
         authUid: OTHER_STUDENT.uid,
+        classes: ['class-other'],
         internalNotes: 'Dato privado de otro alumno'
+      }],
+      [`${ROOT}/students/${MITOBOX_STUDENT.id}`, {
+        name: 'Usuario Mitobox',
+        email: MITOBOX_STUDENT.email,
+        claimed: true,
+        authUid: MITOBOX_STUDENT.uid,
+        classes: [],
+        hasMitobox: true,
+        hasMitoverso: false,
+        globalStatus: 'activo'
+      }],
+      [`${ROOT}/students/${NO_SERVICE_STUDENT.id}`, {
+        name: 'Usuario sin servicio',
+        email: NO_SERVICE_STUDENT.email,
+        claimed: true,
+        authUid: NO_SERVICE_STUDENT.uid,
+        classes: [],
+        hasMitobox: false,
+        hasMitoverso: false,
+        globalStatus: 'activo'
       }],
       [`${ROOT}/access/${STUDENT.uid}`, {
         role: 'student',
         studentId: STUDENT.id,
-        email: STUDENT.email
+        email: STUDENT.email,
+        portalEnabled: true
       }],
       [`${ROOT}/access/${OTHER_STUDENT.uid}`, {
         role: 'student',
         studentId: OTHER_STUDENT.id,
-        email: OTHER_STUDENT.email
+        email: OTHER_STUDENT.email,
+        portalEnabled: true
+      }],
+      [`${ROOT}/access/${MITOBOX_STUDENT.uid}`, {
+        role: 'student',
+        studentId: MITOBOX_STUDENT.id,
+        email: MITOBOX_STUDENT.email,
+        portalEnabled: true
+      }],
+      [`${ROOT}/access/${NO_SERVICE_STUDENT.uid}`, {
+        role: 'student',
+        studentId: NO_SERVICE_STUDENT.id,
+        email: NO_SERVICE_STUDENT.email,
+        portalEnabled: false
       }],
 
       [`${ROOT}/settings/global`, { adminSecret: 'solo personal' }],
@@ -409,7 +456,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         collectionGroup(db, 'recurringClasses'),
         where('studentIds', 'array-contains', STUDENT.id)
       )));
-      await assertSucceeds(getDocs(collectionGroup(db, 'recurringClasses')));
+      await assertFails(getDocs(collectionGroup(db, 'recurringClasses')));
 
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'tickets'),
@@ -501,6 +548,86 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       )));
     });
 
+    await t.test('usuario solo Mitobox: entra sin clase y reserva con aforo transaccional', async () => {
+      const db = authenticated(testEnv, MITOBOX_STUDENT);
+      const reservationId = '2026-09-21_1800_mitobox-student';
+      const slotId = '2026-09-21_tarragona_sala-1_1800';
+      const reservationRef = doc(db, `${ROOT}/mitoboxReservations/${reservationId}`);
+      const slotRef = doc(db, `${ROOT}/mitoboxSlots/${slotId}`);
+
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/roleData/studentSettings`)));
+      await assertSucceeds(runTransaction(db, async transaction => {
+        const reservationSnapshot = await transaction.get(reservationRef);
+        const slotSnapshot = await transaction.get(slotRef);
+        assert.equal(reservationSnapshot.exists(), false);
+        assert.equal(slotSnapshot.exists(), false);
+        transaction.set(slotRef, {
+          reservationDate: '2026-09-21',
+          reservationTime: '18:00',
+          centerId: 'tarragona',
+          roomId: 'sala-1',
+          reservedCount: 1,
+          capacity: 2,
+          updatedAt: '2026-09-20T10:00:00.000Z',
+          lastMutationId: reservationId
+        });
+        transaction.set(reservationRef, {
+          studentId: MITOBOX_STUDENT.id,
+          studentName: 'Usuario Mitobox',
+          studentEmail: MITOBOX_STUDENT.email,
+          status: 'confirmed',
+          reservationDate: '2026-09-21',
+          reservationTime: '18:00',
+          durationMinutes: 60,
+          instrument: 'Piano',
+          sede: 'Tarragona',
+          sala: 'Sala 1',
+          centerId: 'tarragona',
+          roomId: 'sala-1',
+          slotId,
+          capacity: 2,
+          createdAt: '2026-09-20T10:00:00.000Z',
+          updatedAt: '2026-09-20T10:00:00.000Z'
+        });
+      }));
+
+      await assertSucceeds(getDoc(reservationRef));
+      await assertSucceeds(getDoc(slotRef));
+      await assertFails(updateDoc(slotRef, {
+        reservedCount: 2,
+        lastMutationId: 'reserva-inexistente',
+        updatedAt: '2026-09-20T10:05:00.000Z'
+      }));
+
+      await assertSucceeds(runTransaction(db, async transaction => {
+        await transaction.get(reservationRef);
+        await transaction.get(slotRef);
+        transaction.update(reservationRef, {
+          status: 'cancelled',
+          cancelledAt: '2026-09-20T11:00:00.000Z',
+          cancelledBy: 'student',
+          updatedAt: '2026-09-20T11:00:00.000Z'
+        });
+        transaction.update(slotRef, {
+          reservedCount: 0,
+          updatedAt: '2026-09-20T11:00:00.000Z',
+          lastMutationId: reservationId
+        });
+      }));
+    });
+
+    await t.test('usuario sin clase ni servicio: su vínculo antiguo no abre el portal', async () => {
+      const db = authenticated(testEnv, NO_SERVICE_STUDENT);
+      await assertFails(getDoc(doc(db, `${ROOT}/roleData/studentSettings`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/mitoboxSlots/any-slot`)));
+      await assertFails(setDoc(doc(db, `${ROOT}/gestiones/no-entitlement`), {
+        studentId: NO_SERVICE_STUDENT.id,
+        studentEmail: NO_SERVICE_STUDENT.email,
+        type: 'consulta',
+        status: 'pendiente'
+      }));
+    });
+
     await t.test('alumno: puede autorizar su ticket exacto para una recuperación, pero no consumirlo ni tocar tickets ajenos', async () => {
       const db = authenticated(testEnv, STUDENT);
       const ownTicket = doc(db, `${ROOT}/users/${TEACHER.uid}/tickets/ticket-own`);
@@ -534,6 +661,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         role: 'student',
         studentId: OTHER_STUDENT.id,
         email: identity.email,
+        portalEnabled: true,
         createdAt: '2026-08-29T10:00:00.000Z'
       }));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/students/${OTHER_STUDENT.id}`)));
@@ -555,7 +683,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertSucceeds(getDoc(doc(db, `${ROOT}/staffAccess/${TEACHER.email}`)));
       await assertSucceeds(getDocs(collection(db, `${ROOT}/students`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/settings/global`)));
-      await assertFails(getDocs(collectionGroup(db, 'recurringClasses')));
+      await assertSucceeds(getDocs(collectionGroup(db, 'recurringClasses')));
       await assertSucceeds(getDocs(query(
         collectionGroup(db, 'recurringClasses'),
         where('authorizedTeacherEmails', 'array-contains', TEACHER.email)

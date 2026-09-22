@@ -93,10 +93,14 @@ const classMatchesReference = (classData = {}, classId = '', classPath = '') => 
 };
 
 const getEffectiveStudentCount = (classData = {}, date = '', relocations = []) => {
-  const publishedCount = [classData.mitoboxStudentCount, classData.committedSeatCount, classData.activeStudentCount]
+  // Estos dos campos cuentan únicamente alumnos que realmente tienen clase.
+  // Mantenimiento e inicios futuros no deben bloquear un aula de Mitobox.
+  const publishedCount = [classData.mitoboxStudentCount, classData.activeStudentCount]
     .map(Number)
     .find(Number.isFinite);
-  const studentIds = unique((classData.students || []).map(getStudentId));
+  const studentIds = unique((classData.students || [])
+    .filter(student => student?.isMaintenance !== true && student?.isFutureStart !== true && student?.isActive !== false)
+    .map(getStudentId));
   const relocationKey = relocation => String(relocation.studentId || relocation.id || [
     relocation.sourceClassId,
     relocation.targetClassId,
@@ -143,6 +147,12 @@ const timeToMinutes = value => {
   return Number(match[1]) * 60 + Number(match[2]);
 };
 
+const minutesToTime = value => {
+  const total = Number(value);
+  if (!Number.isFinite(total) || total < 0 || total >= 24 * 60) return '';
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
 const classOverlapsReservation = (classData = {}, reservationTime = '', reservationDuration = 60) => {
   const classStart = timeToMinutes(classData.time);
   const reservationStart = timeToMinutes(reservationTime);
@@ -150,6 +160,35 @@ const classOverlapsReservation = (classData = {}, reservationTime = '', reservat
   const classEnd = classStart + Math.max(1, Number(classData.duration) || 60);
   const reservationEnd = reservationStart + Math.max(1, Number(reservationDuration) || 60);
   return classStart < reservationEnd && reservationStart < classEnd;
+};
+
+// La escuela trabaja en dos bloques separados. No se deben inventar reservas
+// en la pausa del mediodía al completar los huecos entre la primera y la última
+// actividad de cada bloque.
+const MITOBOX_AFTERNOON_START = 15 * 60;
+
+const buildCandidateTimes = classesAtCenter => {
+  const sessions = { morning: [], afternoon: [] };
+
+  (classesAtCenter || []).forEach(classData => {
+    const start = timeToMinutes(classData.time);
+    if (start === null) return;
+    const duration = Math.max(1, Number(classData.duration) || 60);
+    const key = start < MITOBOX_AFTERNOON_START ? 'morning' : 'afternoon';
+    sessions[key].push({ start, end: start + duration });
+  });
+
+  return unique(Object.values(sessions).flatMap(intervals => {
+    if (intervals.length === 0) return [];
+    const firstStart = Math.min(...intervals.map(interval => interval.start));
+    const lastEnd = Math.max(...intervals.map(interval => interval.end));
+    const times = [];
+    for (let minute = firstStart; minute < lastEnd; minute += 60) {
+      const time = minutesToTime(minute);
+      if (time) times.push(time);
+    }
+    return times;
+  })).sort((left, right) => (timeToMinutes(left) ?? 0) - (timeToMinutes(right) ?? 0));
 };
 
 export const isMitoboxSchoolClosed = ({ date = '', center = {}, settings = {} } = {}) => (
@@ -169,16 +208,17 @@ export const calculateMitoboxAvailability = ({
 } = {}) => {
   if (!date || !center || isMitoboxSchoolClosed({ date, center, settings })) return [];
 
-  const scheduledClasses = (classes || [])
+  // Todas las clases configuradas —también las hibernadas— delimitan las horas
+  // en las que el centro funciona. Solo las que tienen alumnos firmes ocupan aula.
+  const classesAtCenter = (classes || [])
     .map(classData => getEffectiveClass(classData, date, temporaryClassChanges))
     .filter(classData => classOccursOnDate(classData, date))
-    .filter(classData => isSameLocationValue(classData.centerId || classData.sede, center.id || center.name))
-    .filter(classData => getEffectiveStudentCount(classData, date, temporaryRelocations) > 0);
+    .filter(classData => isSameLocationValue(classData.centerId || classData.sede, center.id || center.name));
 
-  // Los bloques empiezan en horas en las que existe docencia real en la sede.
-  // Una cancelación libera el aula, pero conserva la hora como bloque reservable.
-  const candidateTimes = unique(scheduledClasses.map(classData => String(classData.time || '').trim())).sort();
-  const occupyingClasses = scheduledClasses.filter(classData => !(classData.cancelledDates || []).includes(date));
+  const candidateTimes = buildCandidateTimes(classesAtCenter);
+  const occupyingClasses = classesAtCenter
+    .filter(classData => getEffectiveStudentCount(classData, date, temporaryRelocations) > 0)
+    .filter(classData => !(classData.cancelledDates || []).includes(date));
   const usageBySlotId = new Map((slotUsage || []).map(item => [String(item.slotId || item.id || ''), item]));
   const slots = [];
 

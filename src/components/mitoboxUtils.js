@@ -556,8 +556,45 @@ export const calculateMitoboxAvailability = ({
     && new URLSearchParams(window.location.search).get('mitoboxDebug') === '1';
 
   if (debugEnabled) {
+    const targetDay = new Date(`${date}T00:00:00`).getDay();
+    const sourceClassAnalysis = (classes || []).map(originalClass => {
+      const effectiveClass = getEffectiveClass(
+        originalClass,
+        date,
+        temporaryClassChanges
+      );
+      return {
+        id: originalClass.id || originalClass.docId || '',
+        subject: originalClass.subject || '',
+        originalDayOfWeek: originalClass.dayOfWeek ?? null,
+        effectiveDayOfWeek: effectiveClass.dayOfWeek ?? null,
+        originalTime: originalClass.time || '',
+        effectiveTime: effectiveClass.time || '',
+        date: originalClass.date || '',
+        specificDate: originalClass.specificDate || '',
+        isRecurring: originalClass.isRecurring !== false,
+        originalCenterId: originalClass.centerId || '',
+        originalSede: originalClass.sede || '',
+        effectiveCenterId: effectiveClass.centerId || '',
+        effectiveSede: effectiveClass.sede || '',
+        originalRoomId: originalClass.roomId || '',
+        originalSala: originalClass.sala || '',
+        effectiveRoomId: effectiveClass.roomId || '',
+        effectiveSala: effectiveClass.sala || '',
+        occursOnDate: classOccursOnDate(effectiveClass, date),
+        matchesCenter: classMatchesCenter(effectiveClass, center),
+        effectiveStudentCount: getEffectiveStudentCount(
+          effectiveClass,
+          date,
+          temporaryRelocations
+        )
+      };
+    });
+
     const diagnostic = {
       date,
+      targetDay,
+      sourceClassCount: (classes || []).length,
       center: {
         id: center.id || '',
         name: center.name || '',
@@ -570,6 +607,14 @@ export const calculateMitoboxAvailability = ({
           mitoboxEnabled: room.mitoboxEnabled !== false
         }))
       },
+      selectedDayClassesBeforeCenterFilter: sourceClassAnalysis.filter(classData => (
+        Number(classData.originalDayOfWeek) === targetDay
+        || Number(classData.effectiveDayOfWeek) === targetDay
+        || classData.occursOnDate
+      )),
+      selectedCenterClassesBeforeDateFilter: sourceClassAnalysis.filter(classData => (
+        classData.matchesCenter
+      )),
       classesAtCenter: classesAtCenter.map(classData => ({
         id: classData.id || classData.docId || '',
         subject: classData.subject || '',

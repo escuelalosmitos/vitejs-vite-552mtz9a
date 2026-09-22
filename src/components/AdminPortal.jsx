@@ -3497,6 +3497,43 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const getCommercialCommittedSeatCount = (clase = {}) => getCommercialSeatDataForClass(clase).committedCount;
   const getCommercialFreeSpots = (clase = {}) => getCommercialSeatDataForClass(clase).freeSpots;
 
+  // Ocupación anónima para calcular cada fecha consultada en Mitobox.
+  // No se publican nombres, correos ni identificadores de alumnos.
+  const getMitoboxOccupancyForClass = (clase = {}) => (clase.students || [])
+    .filter(studentEntry => !(
+      studentEntry?.isRecovery === true
+      || studentEntry?.isPunctual === true
+      || studentEntry?.isTemporaryRelocation === true
+      || Boolean(studentEntry?.temporaryRelocationId)
+      || studentEntry?.type === 'recovery'
+      || studentEntry?.status === 'recovery'
+    ))
+    .map(studentEntry => {
+      const studentId = String(studentEntry?.id || studentEntry?.studentId || '').trim();
+      const studentInfo = students.find(student => String(student.id || '') === studentId) || {};
+      if (studentInfo.globalStatus === 'baja') return null;
+
+      const from = getStudentClassStartDate(studentEntry, studentInfo);
+      const until = getStudentClassEndDate(studentEntry, studentInfo);
+      if (until && until < todayStr) return null;
+
+      const maintenance = studentId
+        ? getStudentMaintenancePeriods(studentId).map(period => ({
+            from: String(period.from || '').trim(),
+            until: String(period.until || '').trim()
+          })).filter(period => period.from && period.until)
+        : [];
+
+      return { from: from || '', until: until || '', maintenance };
+    })
+    .filter(Boolean);
+
+  const isMitoboxOccupancyActiveOnDate = (occupancy = {}, date = todayStr) => (
+    (!occupancy.from || occupancy.from <= date)
+    && (!occupancy.until || occupancy.until >= date)
+    && !(occupancy.maintenance || []).some(period => period.from <= date && period.until >= date)
+  );
+
   // Publicación segura para la web: este objeto nunca contiene alumnos, nombres,
   // correos, profesores, notas internas, rutas de Firestore ni IDs de gestiones.
   const publicAvailabilityPublication = useMemo(() => {
@@ -3595,6 +3632,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const studentClassCatalogPublication = useMemo(() => {
     const classes = operationalClasses.map(clase => {
       const seatData = getCommercialSeatDataForClass(clase);
+      const mitoboxOccupancy = getMitoboxOccupancyForClass(clase);
+      const mitoboxStudentCount = mitoboxOccupancy.filter(occupancy => (
+        isMitoboxOccupancyActiveOnDate(occupancy, todayStr)
+      )).length;
       return {
         id: String(clase.id || '').trim(),
         docId: String(clase.id || '').trim(),
@@ -3613,10 +3654,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         isRecurring: clase.isRecurring !== false,
         capacity: Number(clase.capacity) || seatData.cap || 0,
         committedSeatCount: seatData.committedCount,
-        activeStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
+        activeStudentCount: mitoboxStudentCount,
         // Mitobox solo bloquea el aula cuando realmente se imparte la clase.
         // Mantenimiento, bajas e inicios futuros no cuentan como alumnos firmes.
-        mitoboxStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
+        mitoboxStudentCount,
+        mitoboxOccupancy,
         freeSpots: seatData.freeSpots,
         cancelledDates: Array.isArray(clase.cancelledDates) ? clase.cancelledDates : [],
         isWebVisible: clase.isWebVisible === true
@@ -3658,7 +3700,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       mitoboxRelocations: sanitizedMitoboxRelocations,
       signature: buildPublicAvailabilitySignature([...classes, ...sanitizedChanges, ...sanitizedMitoboxRelocations])
     };
-  }, [operationalClasses, temporaryClassChanges, temporaryRelocations, students, todayStr]);
+  }, [operationalClasses, temporaryClassChanges, temporaryRelocations, students, maintenancePeriods, todayStr]);
 
   const studentSettingsPublication = useMemo(() => {
     const data = {

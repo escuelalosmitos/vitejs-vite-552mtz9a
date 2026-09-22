@@ -382,40 +382,18 @@ const classOverlapsReservation = (
   );
 };
 
-// Solo existe un turno Mitobox cuando hay docencia real durante toda esa hora.
-// Una clase hibernada libera su sala, pero no crea por sí sola un turno porque
-// no garantiza que haya un profesor presente en el centro.
-const buildCandidateTimes = teachingClasses =>
-  unique(
-    (teachingClasses || []).flatMap(classData => {
-      const start = timeToMinutes(classData.time);
-
-      if (start === null) return [];
-
-      const duration = Math.max(
-        1,
-        Number(classData.duration) || 60
-      );
-
-      const times = [];
-
-      for (
-        let minute = start;
-        minute + 60 <= start + duration;
-        minute += 60
-      ) {
-        const time = minutesToTime(minute);
-
-        if (time) times.push(time);
-      }
-
-      return times;
-    })
-  ).sort(
-    (left, right) =>
-      (timeToMinutes(left) ?? 0)
-      - (timeToMinutes(right) ?? 0)
-  );
+// Solo existe un turno Mitobox cuando una clase real empieza a esa hora.
+// No dependemos del formato histórico de `duration`: algunas clases antiguas
+// pueden guardar la duración de manera distinta aunque ocupen el bloque lectivo.
+// Una clase hibernada libera su sala, pero nunca crea por sí sola un turno.
+const buildCandidateTimes = teachingClasses => unique(
+  (teachingClasses || [])
+    .map(classData => String(classData.time || '').trim())
+    .filter(time => timeToMinutes(time) !== null)
+).sort(
+  (left, right) =>
+    (timeToMinutes(left) ?? 0) - (timeToMinutes(right) ?? 0)
+);
 
 export const isMitoboxSchoolClosed = ({
   date = '',

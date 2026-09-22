@@ -189,6 +189,18 @@ const classMatchesReference = (
   );
 };
 
+const isOccupancyActiveOnDate = (
+  occupancy = {},
+  date = ''
+) => (
+  (!occupancy.from || normalizeDate(occupancy.from) <= date)
+  && (!occupancy.until || normalizeDate(occupancy.until) >= date)
+  && !(occupancy.maintenance || []).some(period => (
+    normalizeDate(period.from) <= date
+    && normalizeDate(period.until) >= date
+  ))
+);
+
 const getEffectiveStudentCount = (
   classData = {},
   date = '',
@@ -255,6 +267,19 @@ const getEffectiveStudentCount = (
     )
     .map(relocationKey)
     .filter(Boolean);
+
+  const datedOccupancy = Array.isArray(classData.mitoboxOccupancy)
+    ? classData.mitoboxOccupancy.filter(
+        occupancy => isOccupancyActiveOnDate(occupancy, date)
+      ).length
+    : null;
+
+  if (datedOccupancy !== null) {
+    return Math.max(
+      0,
+      datedOccupancy - movedOut.size + unique(movedIn).length
+    );
+  }
 
   if (Number.isFinite(publishedCount)) {
     return Math.max(

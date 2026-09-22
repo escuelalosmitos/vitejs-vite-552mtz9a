@@ -3614,9 +3614,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         capacity: Number(clase.capacity) || seatData.cap || 0,
         committedSeatCount: seatData.committedCount,
         activeStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
-        // Para Mitobox, un mantenimiento no libera el aula: la clase conserva
-        // prioridad. Las altas que todavía no han comenzado sí se excluyen.
-        mitoboxStudentCount: seatData.students.filter(student => !student.isFutureStart).length,
+        // Mitobox solo bloquea el aula cuando realmente se imparte la clase.
+        // Mantenimiento, bajas e inicios futuros no cuentan como alumnos firmes.
+        mitoboxStudentCount: seatData.students.filter(student => !student.isMaintenance && !student.isFutureStart).length,
         freeSpots: seatData.freeSpots,
         cancelledDates: Array.isArray(clase.cancelledDates) ? clase.cancelledDates : [],
         isWebVisible: clase.isWebVisible === true
@@ -10918,13 +10918,15 @@ ${valueOrDash(comments.privateNote)}`,
     return calculateMitoboxAvailability({
       date: mboxAdminDate,
       center,
-      classes: allClasses,
+      // Se usa exactamente la misma proyección saneada que recibe StudentPortal,
+      // para que Radar y alumno compartan horarios y criterio de ocupación.
+      classes: studentClassCatalogPublication.classes,
       temporaryClassChanges,
       temporaryRelocations,
       settings,
       slotUsage: mitoboxSlotUsage
     });
-  }, [allClasses, temporaryClassChanges, temporaryRelocations, settings, mitoboxSlotUsage, mboxAdminDate, mboxAdminSede, centers]);
+  }, [studentClassCatalogPublication, temporaryClassChanges, temporaryRelocations, settings, mitoboxSlotUsage, mboxAdminDate, mboxAdminSede, centers]);
 
   const visibleMitoboxReservations = mitoboxReservations.filter(reservation => (
     isActiveMitoboxReservation(reservation)
@@ -13652,7 +13654,7 @@ ${startDateWarning}
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Radar Mitobox</h2>
-              <p className="text-zinc-500 font-medium text-sm">Visualiza las salas libres que pueden reservar los alumnos.</p>
+              <p className="text-zinc-500 font-medium text-sm">Visualiza las salas libres que pueden reservar los alumnos. Las clases hibernadas liberan el aula hasta que tengan alumnos firmes.</p>
             </header>
 
             <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200">

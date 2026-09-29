@@ -1,5 +1,6 @@
 // AdminPortal · configuración multi-sede dinámica y compatible con datos heredados
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+// HOTFIX 2026-09-29: la apertura particular no depende de sede, instrumento, profesor ni aforo.
 import { 
   Inbox, ClipboardList, Users, User, Megaphone, Settings, LogOut, Search, MonitorPlay, 
   DoorOpen, Check, X, Trash2, Calendar, FileText, Plus, ShieldAlert, 
@@ -3665,8 +3666,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           allowPrivateOpening: Boolean(
             autoAdvanceStartDate
             && formationMinimum > 1
-            && maxCap >= 2
-            && maxCap <= 4
             && clase.allowPrivateOpening === true
             && String(clase.privateOpeningUrl || '').trim()
           ),
@@ -11432,17 +11431,17 @@ ${valueOrDash(comments.privateNote)}`,
     });
     const [saving, setSaving] = useState(false);
     const classCapacity = Math.max(0, Number(editWebModal.capacity) || 0);
-    const isSmallGroup = classCapacity >= 2 && classCapacity <= 4;
     const formationMinimum = Math.min(
       classCapacity || 1,
       Math.max(1, Number(formData.formationMinimum) || getDefaultFormationMinimumStudentCount(editWebModal))
     );
+    const privateOpeningAvailable = formData.autoAdvanceStartDate && formationMinimum > 1;
     const handleSave = async () => {
       const cleanWhatsappUrl = normalizeAnnouncementUrl(formData.whatsappGroupUrl);
       if (cleanWhatsappUrl === null) return alert('La URL del grupo de WhatsApp debe empezar por https:// o http://');
       const cleanPrivateOpeningUrl = normalizeAnnouncementUrl(formData.privateOpeningUrl);
       if (cleanPrivateOpeningUrl === null) return alert('La URL Tadosi de apertura particular debe empezar por https:// o http://');
-      const allowPrivateOpening = Boolean(isSmallGroup && formationMinimum > 1 && formData.autoAdvanceStartDate && formData.allowPrivateOpening);
+      const allowPrivateOpening = Boolean(privateOpeningAvailable && formData.allowPrivateOpening);
       if (allowPrivateOpening && !cleanPrivateOpeningUrl) return alert('Añade la URL Tadosi de 120 € para ofrecer la apertura inmediata.');
 
       setSaving(true);
@@ -11548,16 +11547,27 @@ ${valueOrDash(comments.privateNote)}`,
                       )}
                     </div>
                   </div>
-                  {isSmallGroup && formationMinimum > 1 && formData.autoAdvanceStartDate && (
-                    <div className="rounded-2xl border-2 border-violet-200 bg-violet-50 p-4 space-y-3">
+                  <div className={`rounded-2xl border-2 p-4 space-y-3 ${privateOpeningAvailable ? 'border-violet-200 bg-violet-50' : 'border-zinc-200 bg-zinc-50'}`}>
                       <label className="flex items-start gap-3 cursor-pointer">
-                        <input type="checkbox" checked={formData.allowPrivateOpening} onChange={e => setFormData({...formData, allowPrivateOpening: e.target.checked})} className="mt-0.5 w-4 h-4 accent-violet-600" />
+                        <input
+                          type="checkbox"
+                          checked={privateOpeningAvailable && formData.allowPrivateOpening}
+                          onChange={e => setFormData({...formData, allowPrivateOpening: e.target.checked})}
+                          disabled={!privateOpeningAvailable}
+                          className="mt-0.5 w-4 h-4 accent-violet-600 disabled:opacity-40"
+                        />
                         <span>
-                          <span className="block text-[10px] font-black uppercase tracking-widest text-violet-900">Permitir abrir el grupo como particular provisional</span>
-                          <span className="block mt-1 text-[9px] font-bold leading-relaxed text-violet-700">Solo para grupos pequeños en formación. El formulario seguirá ofreciendo también la espera normal del grupo.</span>
+                          <span className={`block text-[10px] font-black uppercase tracking-widest ${privateOpeningAvailable ? 'text-violet-900' : 'text-zinc-600'}`}>Permitir abrir el grupo como particular provisional</span>
+                          <span className={`block mt-1 text-[9px] font-bold leading-relaxed ${privateOpeningAvailable ? 'text-violet-700' : 'text-zinc-500'}`}>
+                            {!formData.autoAdvanceStartDate
+                              ? 'Activa primero «Aplazar automáticamente mientras el grupo esté en formación».'
+                              : formationMinimum <= 1
+                                ? 'Configura un mínimo superior a 1: con mínimo 1, la primera inscripción ya abre el grupo a su cuota normal.'
+                                : 'Disponible con independencia de la sede, el instrumento, el profesor o el aforo. El formulario seguirá ofreciendo también la espera normal del grupo.'}
+                          </span>
                         </span>
                       </label>
-                      {formData.allowPrivateOpening && <>
+                      {privateOpeningAvailable && formData.allowPrivateOpening && <>
                         <div>
                           <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">URL Tadosi · modalidad 120 € *</label>
                           <input type="text" value={formData.privateOpeningUrl} onChange={e => setFormData({...formData, privateOpeningUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
@@ -11566,7 +11576,6 @@ ${valueOrDash(comments.privateNote)}`,
                         <p className="text-[9px] font-bold leading-relaxed text-violet-800">Al alcanzar el mínimo configurado de {formationMinimum} alumnos, Administración deberá cambiar la cuota del alumno que abrió el turno a la cuota normal desde el siguiente recibo.</p>
                       </>}
                     </div>
-                  )}
                   <div>
                     <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
                     <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Nivel iniciación..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500" />

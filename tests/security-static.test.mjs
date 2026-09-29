@@ -119,6 +119,40 @@ test('los talleres cancelados desaparecen y el alumno puede revocar su inscripci
   assert.match(student, /billingPending: false/);
 });
 
+test('las nuevas reformas mantienen cada aviso en su sección y evitan lecturas o mensajes innecesarios', async () => {
+  const [admin, student, teacher, publicForm] = await Promise.all([
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/StudentPortal.jsx'),
+    read('src/components/TeacherPortal.jsx'),
+    read('FORMULARIO_PUBLICO_WORDPRESS.html')
+  ]);
+
+  assert.match(admin, /unreadAnnouncementResponses/);
+  assert.match(admin, /unreadMitoboxReservations/);
+  assert.match(admin, /const totalInboxNotifications = totalPendingInbox/);
+  assert.match(admin, /\.filter\(c => c\.isClassOperative\)/);
+  assert.match(admin, /ajuste_cuota_apertura_grupo/);
+  assert.match(admin, /privateOpeningSelected/);
+
+  assert.match(student, /window\.scrollTo\(\{ top: 0, left: 0, behavior: 'auto' \}\)/);
+  assert.match(student, /type: 'otras_gestiones'/);
+  assert.match(student, /La revocación no es automática/);
+  assert.match(student, /adminSeenAt: ''/);
+
+  const absenceAlertBlock = teacher.slice(
+    teacher.indexOf('const createRepeatedAbsenceAlerts'),
+    teacher.indexOf('const executeSaveRecord')
+  );
+  assert.match(absenceAlertBlock, /streakRecords\.length < 12/);
+  assert.doesNotMatch(absenceAlertBlock, /teacherNotifications/);
+  assert.match(teacher, /Final anunciado ·/);
+
+  assert.match(publicForm, /Inicio previsto/);
+  assert.match(publicForm, /data-opening-mode="private"/);
+  assert.match(publicForm, /privateOpeningUrl/);
+  assert.match(publicForm, /120&nbsp;€\/mes/);
+});
+
 test('la plantilla docente conserva nombre normalizado y correo corporativo explícito', async () => {
   const admin = await read('src/components/AdminPortal.jsx');
   assert.match(admin, /teacherEmails: \{\}/);

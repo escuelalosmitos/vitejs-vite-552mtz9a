@@ -3411,7 +3411,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         streakRecords.push(record);
       }
 
-      if (streakRecords.length < 4) continue;
+      if (streakRecords.length < 12) continue;
 
       const streakStartDate = streakRecords[streakRecords.length - 1]?.date || savedRecord.date;
       const absenceDates = streakRecords.map(record => record.date).filter(Boolean).reverse();
@@ -3422,51 +3422,16 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const now = new Date().toISOString();
       const classLine = `${savedRecord.subject || 'Clase'} · ${getDayName(currentSession.dayOfWeek)} · ${savedRecord.time || ''}h · ${getClassCenterName(savedRecord)}${savedRecord.sala || savedRecord.roomId ? ` · ${getClassRoomName(savedRecord)}` : ''}`;
       const details = `${student.name} acumula ${streakRecords.length} clases consecutivas sin asistir ni avisar.\n\nClase: ${classLine}\nFechas de la racha: ${absenceDates.map(formatDateSpanish).join(', ')}\n\nAviso informativo para valorar si conviene ponerse en contacto con el alumno o la familia.`;
-      const teacherNotificationRef = doc(db, 'artifacts', appId, 'teacherNotifications', safeAlertId);
       const adminGestionRef = doc(db, 'artifacts', appId, 'gestiones', safeAlertId);
 
       await runTransaction(db, async transaction => {
-        const [teacherNotificationSnap, adminGestionSnap] = await Promise.all([
-          transaction.get(teacherNotificationRef),
-          transaction.get(adminGestionRef)
-        ]);
-
-        if (!teacherNotificationSnap.exists()) {
-          transaction.set(teacherNotificationRef, {
-            teacherName,
-            teacherNameNormalized: String(teacherName || '').trim().toLowerCase(),
-            teacherEmail,
-            teacherKeys: [normalizeTeacherKey(teacherName)],
-            teacherEmails: [teacherEmail],
-            title: `4 faltas sin avisar: ${student.name}`,
-            body: details,
-            type: 'falta_reiterada',
-            status: 'unread',
-            studentId: student.id,
-            studentName: student.name,
-            classId: savedRecord.classId,
-            classLine,
-            streakStartDate,
-            streakCount: streakRecords.length,
-            absenceDates,
-            createdAt: now,
-            createdBy: user?.email || teacherName,
-            source: 'attendance_system'
-          });
-        } else {
-          transaction.set(teacherNotificationRef, {
-            streakCount: streakRecords.length,
-            absenceDates,
-            lastAbsenceDate: savedRecord.date,
-            updatedAt: now
-          }, { merge: true });
-        }
+        const adminGestionSnap = await transaction.get(adminGestionRef);
 
         if (!adminGestionSnap.exists()) {
           transaction.set(adminGestionRef, {
             type: 'falta_reiterada',
             status: 'pendiente',
-            title: `4 faltas sin avisar: ${student.name}`,
+            title: `12 clases sin asistir ni avisar: ${student.name}`,
             details,
             informational: true,
             requiresAction: false,
@@ -4380,6 +4345,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
     const hasPendingPlanning = pendingPlanningForStudent.length > 0;
     const isBlockedStudent = isAttendanceBlockedStudent(student, date);
     const hasAnnouncedAbsence = student.status === 'notified' || student.originalException === 'notified' || student.originalException === 'notified_no_ticket';
+    const announcedEndDate = getStudentClassEndDate(student, globalSt || {});
+    const hasAnnouncedEnd = Boolean(announcedEndDate && announcedEndDate >= date);
 
     return (
       <div key={`${student.id}-${student.isRecovery ? student.recoveryDate || 'recovery' : 'fixed'}-${student.temporaryRelocationId || 'base'}`} className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 md:p-5 border-2 rounded-2xl gap-4 transition-colors ${isBlockedStudent ? 'bg-blue-50/50 border-blue-100' : hasOpenAdminIncident ? 'bg-red-50/40 border-red-100' : hasPendingPlanning ? 'bg-orange-50/40 border-orange-200' : hasAnnouncedAbsence ? 'bg-amber-50/40 border-amber-200' : 'bg-zinc-50 border-zinc-100 hover:border-zinc-300'}`}>
@@ -4406,6 +4373,11 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
               {hasAnnouncedAbsence && !isBlockedStudent && (
                 <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-[9px] font-black uppercase tracking-widest">
                   <AlertCircle className="w-3 h-3" /> Ausencia anunciada
+                </span>
+              )}
+              {hasAnnouncedEnd && !isBlockedStudent && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-orange-200 bg-orange-50 text-orange-800 text-[9px] font-black uppercase tracking-widest">
+                  <CalendarOff className="w-3 h-3" /> Final anunciado · {formatDateSpanish(announcedEndDate)}
                 </span>
               )}
               {hasOpenAdminIncident && !isBlockedStudent && (

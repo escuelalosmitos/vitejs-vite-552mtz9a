@@ -713,6 +713,14 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
   const [whatsappConfirmModal, setWhatsappConfirmModal] = useState(null);
+
+  useEffect(() => {
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    });
+  }, [activeTab]);
   const [expandedClassTasks, setExpandedClassTasks] = useState({});
 
   useEffect(() => {
@@ -2839,6 +2847,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
           answerType: currentPoll.pollAnswerType || 'single',
           selectedOptionIds: currentPoll.pollAnswerType === 'text' ? [] : selectedOptionIds,
           textAnswer: currentPoll.pollAnswerType === 'text' ? textAnswer : '',
+          adminSeenAt: '',
+          adminSeenBy: '',
           createdAt: previous?.createdAt || nowIso,
           updatedAt: nowIso
         });
@@ -3001,6 +3011,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
           teacher: studentContext.teacher,
           comment,
           status: 'pending',
+          adminSeenAt: '',
+          adminSeenBy: '',
           createdAt: previous?.createdAt || nowIso,
           submittedAt: nowIso,
           updatedAt: nowIso,
@@ -3049,6 +3061,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
         transaction.update(responseRef, {
           status: 'withdrawn',
+          adminSeenAt: '',
+          adminSeenBy: '',
           withdrawnAt: nowIso,
           updatedAt: nowIso
         });
@@ -3470,7 +3484,13 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
       ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
       : null;
-    const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
+    const isOtherGestion = gestionModal.type === 'otras_gestiones';
+    const isExemptFromLateRule = isTicketRedemption || isAmpliarClases || isOtherGestion;
+
+    if (isOtherGestion && !gestionText.trim()) {
+      showToast('Escribe tu consulta para Administración.', 'error');
+      return;
+    }
 
     if (isStudentFrozen && frozenRestrictedGestionTypes.includes(gestionModal.type)) {
       showToast('Con la plaza en mantenimiento no puedes gestionar recuperaciones, cambios ni ampliaciones hasta que termine el periodo.', 'error');
@@ -3948,6 +3968,15 @@ END:VCALENDAR`;
 
   const pendingAbsences = [];
   const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
+  const scheduledBajaGestion = myGestiones
+    .filter(g => g.type === 'baja' && ['completado', 'programada', 'programado'].includes(String(g.status || '').toLowerCase()))
+    .map(g => ({
+      ...g,
+      effectiveDate: normalizeClassDate(g.scheduledEffectiveDate || g.bajaEffectiveDate || g.effectiveDate || g.scheduledBajaEffectiveDate || '')
+    }))
+    .filter(g => !g.effectiveDate || g.effectiveDate >= todayStr)
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0] || null;
+  const shouldShowBajaRevocationNotice = Boolean(profile?.scheduledBaja || scheduledBajaGestion);
   const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');
   const pendingMitoboxSignup = hasPendingExtraSignup('mitobox');
   const upcomingMitoboxReservations = myMitoboxReservations.filter(reservation => (
@@ -4300,7 +4329,8 @@ END:VCALENDAR`;
       : null;
     const requiresSourceClassChoice = isSourceClassGestion && !isBajaTotalRequest && sourceClassCandidates.length > 1;
     const sourceClassLabel = gestionUiCopy.sourceLabel || (requiresSourceClassChoice ? 'Elige la plaza afectada' : 'Plaza afectada');
-    const isExemptFromLateRule = isTicketRedemption || isAmpliarClases;
+    const isOtherGestion = gestionModal.type === 'otras_gestiones';
+    const isExemptFromLateRule = isTicketRedemption || isAmpliarClases || isOtherGestion;
 
     const targetInstrument = gestionModal.type === 'ampliar_clases'
       ? selectedInst
@@ -4344,6 +4374,7 @@ END:VCALENDAR`;
       (isTicketRedemption && (!selectedRecoveryTicket || !resolvedRecoverySubject)) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
+      (isOtherGestion && !gestionText.trim()) ||
       isMaintenanceChoiceInvalid;
 
     return (
@@ -5285,6 +5316,15 @@ END:VCALENDAR`;
                     <p className="text-sm font-medium text-slate-300 mt-2 leading-relaxed">Puedes consultar el tablón, el calendario y los talleres. En Extras encontrarás el acceso a {profile.hasMitobox && profile.hasMitoverso ? 'Mitobox y Mitoverso' : profile.hasMitobox ? 'Mitobox para reservar una sala' : 'Mitoverso'}.</p>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {shouldShowBajaRevocationNotice && (
+              <div className="bg-orange-50 border-2 border-orange-200 text-orange-950 p-5 rounded-2xl text-xs font-bold leading-relaxed shadow-sm">
+                <strong className="font-black uppercase tracking-widest text-[11px] block mb-2 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4"/> Baja programada
+                </strong>
+                Si cambias de opinión, puedes solicitar la revocación hasta el día 19 inclusive enviando un mensaje a Administración desde «Gestiones» → «Dudas u otras gestiones». La revocación no es automática y solo podrá aceptarse si la plaza continúa disponible.
               </div>
             )}
 
@@ -6319,16 +6359,24 @@ END:VCALENDAR`;
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Cancela Mitobox o Mitoverso' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
               </button>
 
-              <a 
-                href="mailto:gestiones@escuelalosmitos.com?subject=Dudas%20y%20Otras%20Gestiones%20-%20Portal%20Alumno"
+              <button
+                type="button"
+                onClick={() => handleAdminGestionClick({
+                  type: 'otras_gestiones',
+                  title: 'Dudas u otras gestiones',
+                  icon: MessageSquare,
+                  color: 'text-white',
+                  desc: 'Escribe directamente a Administración desde el portal.',
+                  placeholder: 'Cuéntanos tu consulta o solicitud...'
+                })}
                 className="col-span-1 sm:col-span-2 bg-black p-6 rounded-3xl border-2 border-black hover:bg-zinc-800 text-left transition-all shadow-md group flex items-center justify-between"
               >
                 <div>
                   <h3 className="font-black text-white uppercase tracking-tight text-lg">Dudas u otras gestiones</h3>
-                  <p className="text-xs font-medium text-zinc-400 mt-1">Vía Mail: Clases particulares, facturación, consultas...</p>
+                  <p className="text-xs font-medium text-zinc-400 mt-1">Envía tu mensaje a Administración sin salir del portal.</p>
                 </div>
-                <div className="bg-zinc-800 p-4 rounded-full group-hover:scale-110 transition-transform"><Mail className="w-6 h-6 text-white"/></div>
-              </a>
+                <div className="bg-zinc-800 p-4 rounded-full group-hover:scale-110 transition-transform"><MessageSquare className="w-6 h-6 text-white"/></div>
+              </button>
 
             </div>
           </div>

@@ -17,7 +17,7 @@ const BI_WEEKS_PER_MONTH = 4.333;
 const MAINTENANCE_MONTHLY_FEE = 15;
 const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
-const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 3;
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
 
 const normalizeTicketSubject = (value = '') => String(value || '').trim();
 const isFlexibleRecoveryTicket = (ticket = {}) => {
@@ -392,7 +392,7 @@ const buildLegacyCenterSettings = (centers = [], currentSettings = {}) => {
 const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 
 const PROJECTABLE_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
-const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox"]);
+const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox", "ajuste_cuota_apertura_grupo"]);
 const HISTORIAL_TRAMITES_BLOCK_SIZE = 30;
 
 const EXTRA_SERVICE_GESTION_TYPES = new Set(["alta_mitoverso", "alta_mitobox"]);
@@ -1978,7 +1978,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [classesLoaded, setClassesLoaded] = useState(false);
   const [ticketsLoaded, setTicketsLoaded] = useState(false);
-  const [activatedDataAreas, setActivatedDataAreas] = useState({ gestiones: true });
+  // El tablón se mantiene conectado desde el inicio para que sus distintivos
+  // reflejen respuestas nuevas aunque el administrador aún no haya abierto la pestaña.
+  const [activatedDataAreas, setActivatedDataAreas] = useState({ gestiones: true, announcements: true });
   const [deferredDataStatus, setDeferredDataStatus] = useState({});
   const [deferredRetryVersion, setDeferredRetryVersion] = useState(0);
   const classIndexMigrationRef = useRef(false);
@@ -2673,13 +2675,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     });
   }, [activeCenters.map(center => `${center.id}:${center.status}`).join('|')]);
 
-  // Agenda Mitobox diferida: solo consulta reservas confirmadas desde hoy y
-  // se mantiene independiente del selector diario del radar de disponibilidad.
+  // La agenda se mantiene conectada desde el inicio para poder mostrar el
+  // distintivo de reservas nuevas. Sigue siendo independiente del selector diario.
   useEffect(() => {
-    if (activeTab !== 'mitobox') {
-      setMitoboxReservations([]);
-      return undefined;
-    }
     setMitoboxDataError('');
     const reservationsQuery = query(
       collection(db, 'artifacts', appId, 'mitoboxReservations'),
@@ -2702,7 +2700,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       }
     );
     return () => unsubReservations();
-  }, [activeTab, mboxTodayStr, db, appId]);
+  }, [mboxTodayStr, db, appId]);
 
   // El radar sí depende del día seleccionado, pero solo necesita leer la
   // ocupación agregada de cada sala y turno.
@@ -3608,7 +3606,17 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           precio: String(clase.price || '').trim(),
           detalles: String(clase.publicDetails || '').trim(),
           inicio: publicStartDate || null,
-          autoAdvanceStartDate
+          autoAdvanceStartDate,
+          allowPrivateOpening: Boolean(
+            autoAdvanceStartDate
+            && maxCap >= 2
+            && maxCap <= 4
+            && clase.allowPrivateOpening === true
+            && String(clase.privateOpeningUrl || '').trim()
+          ),
+          privateOpeningUrl: String(clase.privateOpeningUrl || '').trim(),
+          privateOpeningPrice: String(clase.privateOpeningPrice || '120 €/mes').trim(),
+          privateOpeningThreshold: Math.min(maxCap, Math.max(2, Number(clase.privateOpeningThreshold) || 2))
         };
       })
       .filter(Boolean)
@@ -5155,9 +5163,56 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     }
   };
 
+  const markAnnouncementResponsesSeen = async () => {
+    const unseenResponses = [
+      ...pollResponses.map(response => ({ ...response, collectionName: 'pollResponses' })),
+      ...callResponses.map(response => ({ ...response, collectionName: 'callResponses' }))
+    ].filter(response => !response.adminSeenAt);
+    if (unseenResponses.length === 0) return;
+    const seenAt = new Date().toISOString();
+
+    try {
+      for (let start = 0; start < unseenResponses.length; start += 450) {
+        const batch = writeBatch(db);
+        unseenResponses.slice(start, start + 450).forEach(response => {
+          batch.update(doc(db, 'artifacts', appId, response.collectionName, response.id), {
+            adminSeenAt: seenAt,
+            adminSeenBy: user?.email || user?.uid || 'admin'
+          });
+        });
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('No se pudieron marcar las respuestas del tablón como vistas:', error);
+    }
+  };
+
+  const markMitoboxReservationsSeen = async () => {
+    const unseen = mitoboxReservations.filter(reservation => !reservation.adminSeenAt);
+    if (unseen.length === 0) return;
+    const seenAt = new Date().toISOString();
+
+    try {
+      for (let start = 0; start < unseen.length; start += 450) {
+        const batch = writeBatch(db);
+        unseen.slice(start, start + 450).forEach(reservation => {
+          batch.update(doc(db, 'artifacts', appId, 'mitoboxReservations', reservation.id), {
+            adminSeenAt: seenAt,
+            adminSeenBy: user?.email || user?.uid || 'admin'
+          });
+        });
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('No se pudieron marcar las reservas Mitobox como vistas:', error);
+    }
+  };
+
   const handleAdminTabChange = (tabId) => {
     setActiveTab(tabId);
     if (tabId === 'workshops') markWorkshopRegistrationsSeen();
+    if (tabId === 'announcements') markAnnouncementResponsesSeen();
+    if (tabId === 'mitobox') markMitoboxReservationsSeen();
   };
 
   useEffect(() => {
@@ -5470,7 +5525,8 @@ ${portalAction} accediendo a tu portal.`;
     alta_mitoverso: 'Alta Mitoverso',
     alta_mitobox: 'Alta Mitobox',
     aviso_ausencia: 'Aviso de ausencia',
-    falta_reiterada: '4 faltas sin avisar',
+    falta_reiterada: '12 clases sin asistir ni avisar',
+    ajuste_cuota_apertura_grupo: 'Ajustar cuota al formarse el grupo',
     reserva_mitobox: 'Reserva Mitobox',
     tarea_manual: 'Tarea manual'
   }[type] || String(type || 'tarea_manual').replace(/_/g, ' '));
@@ -6116,6 +6172,8 @@ A partir de ${formatDateSpanish(scheduledEffectiveDate)} dejará de aparecer com
 
 Sigues activo/a en la escuela en el resto de clases que mantienes actualmente.
 
+Si cambias de opinión, puedes solicitar la revocación hasta el día 19 inclusive enviando un mensaje a Administración desde «Gestiones» → «Dudas u otras gestiones». La revocación no es automática y solo podrá aceptarse si la plaza continúa disponible.
+
 Un saludo,
 Coordinación Los Mitos.`
           });
@@ -6186,6 +6244,8 @@ ${isTotalBaja
   : hasScopedBaja && sourceClassLine
     ? `La plaza solicitada era:\n· ${sourceClassLine}\n\nAl ser tu última plaza fija, la baja queda programada como baja completa de Escuela Los Mitos.\n`
     : 'La baja queda programada según la normativa administrativa del centro.\n'}
+Si cambias de opinión, puedes solicitar la revocación hasta el día 19 inclusive enviando un mensaje a Administración desde «Gestiones» → «Dudas u otras gestiones». La revocación no es automática y solo podrá aceptarse si la plaza continúa disponible.
+
 Un saludo,
 Coordinación Los Mitos.`
         });
@@ -9566,6 +9626,11 @@ Coordinación Los Mitos.`
       isWebVisible: false,
       tadosiUrl: '',
       startDate: '',
+      autoAdvanceStartDate: false,
+      allowPrivateOpening: false,
+      privateOpeningUrl: '',
+      privateOpeningPrice: '120 €/mes',
+      privateOpeningThreshold: 2,
       price: '',
       publicDetails: '',
       whatsappGroupUrl: ''
@@ -9737,7 +9802,13 @@ Coordinación Los Mitos.`
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
   const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length + scheduledGestionesProgramadas.length;
   const unreadWorkshopRegistrations = workshopRegistrations.filter(registration => !registration.adminSeenAt);
-  const totalInboxNotifications = totalPendingInbox + unreadWorkshopRegistrations.length;
+  const unreadAnnouncementResponses = [...pollResponses, ...callResponses].filter(response => !response.adminSeenAt);
+  const unreadMitoboxReservations = mitoboxReservations.filter(reservation => (
+    !reservation.adminSeenAt
+    && isActiveMitoboxReservation(reservation)
+    && reservation.reservationDate >= mboxTodayStr
+  ));
+  const totalInboxNotifications = totalPendingInbox;
 
   const gestionPendingFilters = [
     { id: 'todas', label: 'Todas gestiones', matcher: () => true },
@@ -11014,6 +11085,55 @@ ${valueOrDash(comments.privateNote)}`,
     }
   };
 
+  const ensurePrivateOpeningConversionAlert = async (classData = {}, updatedStudents = []) => {
+    if (classData.allowPrivateOpening !== true || isPunctualClass(classData) || !classData.refPath) return;
+    const fixedStudents = (updatedStudents || []).filter(isFixedClassStudent);
+    const threshold = Math.min(
+      Math.max(2, Number(classData.capacity) || 4),
+      Math.max(2, Number(classData.privateOpeningThreshold) || 2)
+    );
+    const starterEntry = fixedStudents.find(student => student.provisionalPrivateOpening === true)
+      || fixedStudents.find(student => String(student.id || '') === String(classData.privateOpeningStarterStudentId || ''));
+    if (!starterEntry || fixedStudents.length < threshold) return;
+
+    const alertId = `ajuste-cuota-apertura-${classData.id}-${starterEntry.id}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const alertRef = doc(db, 'artifacts', appId, 'gestiones', alertId);
+    const existingAlert = await getDoc(alertRef);
+    if (!existingAlert.exists()) {
+      const studentInfo = students.find(student => student.id === starterEntry.id) || {};
+      const nowIso = new Date().toISOString();
+      await setDoc(alertRef, {
+        type: 'ajuste_cuota_apertura_grupo',
+        status: 'pendiente',
+        title: `Cambiar a cuota de grupo: ${starterEntry.name || studentInfo.name || 'Alumno'}`,
+        details: `${starterEntry.name || studentInfo.name || 'El alumno'} abrió este turno como clase particular provisional. El grupo ya ha alcanzado ${fixedStudents.length} alumno(s). Cambia su cuota en Tadosi a la cuota normal de grupo desde el siguiente recibo.\n\nClase: ${formatClassLine(classData)}\nCuota provisional: ${classData.privateOpeningPrice || '120 €/mes'}\nCuota de grupo: ${classData.price || '70 €/mes'}`,
+        studentId: starterEntry.id,
+        studentName: starterEntry.name || studentInfo.name || 'Alumno',
+        studentEmail: studentInfo.email || starterEntry.email || '',
+        requestedClass: classData.id,
+        requestedClassLine: formatClassLine(classData),
+        requestedTeacher: classData.teacher || '',
+        source: 'private_group_opening',
+        requiresAction: true,
+        requiresTadosiSetup: true,
+        tadosiDone: false,
+        threshold,
+        classStudentCount: fixedStudents.length,
+        date: nowIso,
+        createdAt: nowIso,
+        createdBy: user?.email || 'admin'
+      });
+    }
+
+    await updateDoc(doc(db, classData.refPath), {
+      privateOpeningActive: false,
+      privateOpeningConversionPending: true,
+      privateOpeningConversionAlertId: alertId,
+      privateOpeningThresholdReachedAt: new Date().toISOString(),
+      autoAdvanceStartDate: false
+    });
+  };
+
 
   // ==========================================
   // MODALES Y COMPONENTES
@@ -11237,15 +11357,25 @@ ${valueOrDash(comments.privateNote)}`,
       tadosiUrl: editWebModal.tadosiUrl || '',
       startDate: editWebModal.startDate || '',
       autoAdvanceStartDate: editWebModal.autoAdvanceStartDate === true,
+      allowPrivateOpening: editWebModal.allowPrivateOpening === true,
+      privateOpeningUrl: editWebModal.privateOpeningUrl || '',
+      privateOpeningPrice: editWebModal.privateOpeningPrice || '120 €/mes',
+      privateOpeningThreshold: Math.max(2, Number(editWebModal.privateOpeningThreshold) || 2),
       price: editWebModal.price || '',
       cuotaBase: editWebModal.cuotaBase || 60, 
       publicDetails: editWebModal.publicDetails || '',
       whatsappGroupUrl: editWebModal.whatsappGroupUrl || ''
     });
     const [saving, setSaving] = useState(false);
+    const classCapacity = Math.max(0, Number(editWebModal.capacity) || 0);
+    const isSmallGroup = classCapacity >= 2 && classCapacity <= 4;
     const handleSave = async () => {
       const cleanWhatsappUrl = normalizeAnnouncementUrl(formData.whatsappGroupUrl);
       if (cleanWhatsappUrl === null) return alert('La URL del grupo de WhatsApp debe empezar por https:// o http://');
+      const cleanPrivateOpeningUrl = normalizeAnnouncementUrl(formData.privateOpeningUrl);
+      if (cleanPrivateOpeningUrl === null) return alert('La URL Tadosi de apertura particular debe empezar por https:// o http://');
+      const allowPrivateOpening = Boolean(isSmallGroup && formData.autoAdvanceStartDate && formData.allowPrivateOpening);
+      if (allowPrivateOpening && !cleanPrivateOpeningUrl) return alert('Añade la URL Tadosi de 120 € para ofrecer la apertura inmediata.');
 
       setSaving(true);
       try {
@@ -11256,6 +11386,12 @@ ${valueOrDash(comments.privateNote)}`,
           ...formData,
           startDate: effectiveStartDate,
           whatsappGroupUrl: cleanWhatsappUrl || '',
+          allowPrivateOpening,
+          privateOpeningUrl: allowPrivateOpening ? cleanPrivateOpeningUrl : '',
+          privateOpeningPrice: allowPrivateOpening ? (String(formData.privateOpeningPrice || '').trim() || '120 €/mes') : '',
+          privateOpeningThreshold: allowPrivateOpening
+            ? Math.min(classCapacity || 4, Math.max(2, Number(formData.privateOpeningThreshold) || 2))
+            : 2,
           cuotaBase: Number(formData.cuotaBase) || 0
         });
         alert("Configuración web, informes y grupo de WhatsApp guardada correctamente.");
@@ -11326,6 +11462,28 @@ ${valueOrDash(comments.privateNote)}`,
                       </label>
                     </div>
                   </div>
+                  {isSmallGroup && formData.autoAdvanceStartDate && (
+                    <div className="rounded-2xl border-2 border-violet-200 bg-violet-50 p-4 space-y-3">
+                      <label className="flex items-start gap-3 cursor-pointer">
+                        <input type="checkbox" checked={formData.allowPrivateOpening} onChange={e => setFormData({...formData, allowPrivateOpening: e.target.checked})} className="mt-0.5 w-4 h-4 accent-violet-600" />
+                        <span>
+                          <span className="block text-[10px] font-black uppercase tracking-widest text-violet-900">Permitir abrir el grupo como particular provisional</span>
+                          <span className="block mt-1 text-[9px] font-bold leading-relaxed text-violet-700">Solo para grupos pequeños en formación. El formulario seguirá ofreciendo también la espera normal del grupo.</span>
+                        </span>
+                      </label>
+                      {formData.allowPrivateOpening && <>
+                        <div>
+                          <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">URL Tadosi · modalidad 120 € *</label>
+                          <input type="text" value={formData.privateOpeningUrl} onChange={e => setFormData({...formData, privateOpeningUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div><label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Precio mostrado</label><input type="text" value={formData.privateOpeningPrice} onChange={e => setFormData({...formData, privateOpeningPrice: e.target.value})} placeholder="120 €/mes" className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none" /></div>
+                          <div><label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Bajar a grupo desde</label><input type="number" min="2" max={classCapacity || 4} value={formData.privateOpeningThreshold} onChange={e => setFormData({...formData, privateOpeningThreshold: e.target.value})} className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none" /></div>
+                        </div>
+                        <p className="text-[9px] font-bold leading-relaxed text-violet-800">Al alcanzar ese número de alumnos, Administración deberá cambiar la cuota del alumno que abrió el turno a la cuota normal desde el siguiente recibo.</p>
+                      </>}
+                    </div>
+                  )}
                   <div>
                     <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Detalle público adicional</label>
                     <textarea value={formData.publicDetails} onChange={e => setFormData({...formData, publicDetails: e.target.value})} placeholder="Ej: Nivel iniciación..." className="w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px] focus:border-blue-500" />
@@ -11775,7 +11933,9 @@ ${valueOrDash(comments.privateNote)}`,
     const [searchName, setSearchName] = useState('');
     const [email, setEmail] = useState('');
     const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(resurrectClassModal) ? todayStr : getNextClassDateForDay(resurrectClassModal.dayOfWeek, todayStr));
+    const [privateOpeningSelected, setPrivateOpeningSelected] = useState(false);
     const [saving, setSaving] = useState(false);
+    const canUsePrivateOpening = !isPunctualClass(resurrectClassModal) && resurrectClassModal.allowPrivateOpening === true;
     const matchedStudentForResurrect = students.find(s =>
       s.name.toLowerCase() === searchName.trim().toLowerCase() ||
       (email && s.email === email.trim().toLowerCase())
@@ -11870,6 +12030,11 @@ ${startDateWarning}
             classStartDate: selectedClassStartDate
           });
         }
+        const fixedStudentsBefore = (resurrectClassModal.students || []).filter(isFixedClassStudent);
+        const isPrivateOpeningStarter = !isPunctualClass(resurrectClassModal)
+          && resurrectClassModal.allowPrivateOpening === true
+          && privateOpeningSelected
+          && fixedStudentsBefore.length === 0;
         const newStudentPayload = {
           id: studentId,
           name: displayName,
@@ -11877,11 +12042,25 @@ ${startDateWarning}
           classStartDate: classStartDateForClass,
           isPaused: false,
           status: 'present',
-          isRecovery: false
+          isRecovery: false,
+          ...(isPrivateOpeningStarter ? {
+            provisionalPrivateOpening: true,
+            provisionalPrivateOpeningPrice: resurrectClassModal.privateOpeningPrice || '120 €/mes',
+            provisionalPrivateOpeningStartedAt: new Date().toISOString()
+          } : {})
         };
         const targetPath = doc(db, resurrectClassModal.refPath);
         const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
-        await updateDoc(targetPath, withClassStudentIndex(updatedStudents));
+        await updateDoc(targetPath, {
+          ...withClassStudentIndex(updatedStudents),
+          ...(isPrivateOpeningStarter ? {
+            privateOpeningActive: true,
+            privateOpeningStarterStudentId: studentId,
+            privateOpeningStartedAt: new Date().toISOString(),
+            autoAdvanceStartDate: false
+          } : {})
+        });
+        await ensurePrivateOpeningConversionAlert(resurrectClassModal, updatedStudents);
 
         let initialEmailSent = false;
         if (!isPunctualClass(resurrectClassModal)) {
@@ -11977,6 +12156,15 @@ ${startDateWarning}
                 <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(resurrectClassModal.dayOfWeek)}.</p>
               </div>
             )}
+            {canUsePrivateOpening && (
+              <label className="flex items-start gap-3 p-4 bg-violet-50 border border-violet-200 rounded-2xl cursor-pointer">
+                <input type="checkbox" checked={privateOpeningSelected} onChange={e => setPrivateOpeningSelected(e.target.checked)} className="mt-0.5 w-4 h-4 accent-violet-600" />
+                <span className="text-xs font-bold text-violet-950 leading-relaxed">
+                  <strong className="block uppercase tracking-widest text-[10px] mb-1">Apertura particular provisional</strong>
+                  Marca esta casilla solo si esta inscripción procede del enlace de {resurrectClassModal.privateOpeningPrice || '120 €/mes'}. Al alcanzar el mínimo, aparecerá una tarea para bajar la cuota al precio normal de grupo.
+                </span>
+              </label>
+            )}
           </div>
           <button onClick={handleResurrect} disabled={saving || !searchName} className="w-full bg-indigo-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-indigo-700 transition-all shadow-md disabled:opacity-50">
             {saving ? 'Guardando...' : 'Reactivar Clase'}
@@ -11992,6 +12180,7 @@ ${startDateWarning}
     const [searchName, setSearchName] = useState('');
     const [emailInput, setEmailInput] = useState('');
     const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(c) ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
+    const [privateOpeningSelected, setPrivateOpeningSelected] = useState(false);
     const [saving, setSaving] = useState(false);
     const maxCap = parseInt(c.capacity, 10) || 0;
     const planningStudents = getClassStudentModalData(c, isArchitectProjection, archDate || todayStr);
@@ -12004,6 +12193,7 @@ ${startDateWarning}
     const absenceCount = planningStudents.filter(student => student.absenceAnnounced).length;
     const isFull = maxCap > 0 && currentCount >= maxCap;
     const isPunctual = isPunctualClass(c);
+    const canUsePrivateOpeningForAdd = !isPunctual && c.allowPrivateOpening === true && (c.students || []).filter(isFixedClassStudent).length === 0;
     const matchedStudentForAdd = students.find(s =>
       s.name.toLowerCase() === searchName.trim().toLowerCase() ||
       (emailInput && s.email === emailInput.trim().toLowerCase())
@@ -12105,6 +12295,11 @@ ${startDateWarning}
             classStartDate: selectedClassStartDate
           });
         }
+        const fixedStudentsBefore = (c.students || []).filter(isFixedClassStudent);
+        const isPrivateOpeningStarter = !isPunctual
+          && c.allowPrivateOpening === true
+          && privateOpeningSelected
+          && fixedStudentsBefore.length === 0;
         const newStudentPayload = {
           id: studentId,
           name: displayName,
@@ -12112,11 +12307,25 @@ ${startDateWarning}
           classStartDate: classStartDateForClass,
           isPaused: false,
           status: 'present',
-          isRecovery: false
+          isRecovery: false,
+          ...(isPrivateOpeningStarter ? {
+            provisionalPrivateOpening: true,
+            provisionalPrivateOpeningPrice: c.privateOpeningPrice || '120 €/mes',
+            provisionalPrivateOpeningStartedAt: new Date().toISOString()
+          } : {})
         };
         const targetPath = doc(db, c.refPath);
         const updatedStudents = [...(c.students || []), newStudentPayload];
-        await updateDoc(targetPath, withClassStudentIndex(updatedStudents));
+        await updateDoc(targetPath, {
+          ...withClassStudentIndex(updatedStudents),
+          ...(isPrivateOpeningStarter ? {
+            privateOpeningActive: true,
+            privateOpeningStarterStudentId: studentId,
+            privateOpeningStartedAt: new Date().toISOString(),
+            autoAdvanceStartDate: false
+          } : {})
+        });
+        await ensurePrivateOpeningConversionAlert(c, updatedStudents);
 
         let initialEmailSent = false;
         if (!isPunctual) {
@@ -12244,6 +12453,15 @@ ${startDateWarning}
                 )}
                 <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(c.dayOfWeek)}.</p>
               </div>
+            )}
+            {canUsePrivateOpeningForAdd && (
+              <label className="mt-4 flex items-start gap-3 p-4 bg-violet-50 border border-violet-200 rounded-2xl cursor-pointer">
+                <input type="checkbox" checked={privateOpeningSelected} onChange={e => setPrivateOpeningSelected(e.target.checked)} className="mt-0.5 w-4 h-4 accent-violet-600" />
+                <span className="text-xs font-bold text-violet-950 leading-relaxed">
+                  <strong className="block uppercase tracking-widest text-[10px] mb-1">Apertura particular provisional</strong>
+                  Marca esta casilla solo si la inscripción procede del enlace de {c.privateOpeningPrice || '120 €/mes'}. No la marques para una inscripción normal en espera de que se forme el grupo.
+                </span>
+              </label>
             )}
           </div>
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
@@ -12465,11 +12683,11 @@ ${startDateWarning}
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalInboxNotifications },
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
-            { id: 'mitobox', icon: DoorOpen, label: 'Mitobox' }, 
+            { id: 'mitobox', icon: DoorOpen, label: 'Mitobox', notificationCount: unreadMitoboxReservations.length }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
-            { id: 'announcements', icon: Megaphone, label: 'Tablón' },
+            { id: 'announcements', icon: Megaphone, label: 'Tablón', notificationCount: unreadAnnouncementResponses.length },
             { id: 'workshops', icon: PartyPopper, label: 'Talleres', notificationCount: unreadWorkshopRegistrations.length },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
             { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
@@ -12478,7 +12696,7 @@ ${startDateWarning}
             <button key={tab.id} onClick={() => handleAdminTabChange(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
               <tab.icon className="w-4 h-4 shrink-0" />
               <span className="flex-1">{tab.label}</span>
-              {tab.notificationCount > 0 && <span className="min-w-5 h-5 px-1.5 bg-red-500 text-white border-2 border-zinc-950 rounded-full text-[9px] font-black flex items-center justify-center" title={`${tab.notificationCount} nueva(s) inscripción(es)`}>{tab.notificationCount}</span>}
+              {tab.notificationCount > 0 && <span className="min-w-5 h-5 px-1.5 bg-red-500 text-white border-2 border-zinc-950 rounded-full text-[9px] font-black flex items-center justify-center" title={`${tab.notificationCount} novedad(es)`}>{tab.notificationCount}</span>}
               {tab.count > 0 && <span className="bg-white text-red-600 px-2 py-0.5 rounded-full text-[10px] font-black">{tab.count}</span>}
             </button>
           ))}
@@ -12766,7 +12984,7 @@ ${startDateWarning}
                       </tr>
                     </thead>
                     <tbody className="text-sm font-medium text-slate-700">
-                      {businessIntelligence.clasesRentabilidad.map(c => {
+                      {businessIntelligence.clasesRentabilidad.filter(c => c.isClassOperative).map(c => {
                         const isGreen = c.beneficio > 50;
                         const isYellow = c.beneficio > 0 && c.beneficio <= 50;
                         
@@ -12817,7 +13035,7 @@ ${startDateWarning}
             <header className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Bandeja de Entrada</h2>
-                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos, tareas internas y consulta las nuevas inscripciones en talleres.</p>
+                <p className="text-zinc-500 font-medium text-sm">Gestiona solicitudes de alumnos, alertas internas y tareas de profesores.</p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
                 <button onClick={consolidateExpiredScheduledGestiones} disabled={bulkConsolidatingGestiones || scheduledGestionesVencidas.length === 0} className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Consolida solo bajas y cambios de horario programados cuya fecha efectiva ya ha llegado. No procesa mantenimientos.">
@@ -12832,7 +13050,7 @@ ${startDateWarning}
               </div>
             </header>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm">
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Pendientes totales</p>
                 <p className="text-2xl font-black text-slate-900">{totalPendingInbox}</p>
@@ -12857,13 +13075,9 @@ ${startDateWarning}
                 <p className="text-[10px] font-black uppercase tracking-widest text-fuchsia-700">Programadas vencidas</p>
                 <p className="text-2xl font-black text-fuchsia-900">{scheduledGestionesVencidas.length}</p>
               </div>
-              <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 shadow-sm">
-                <p className="text-[10px] font-black uppercase tracking-widest text-rose-700">Inscripciones nuevas</p>
-                <p className="text-2xl font-black text-rose-900">{unreadWorkshopRegistrations.length}</p>
-              </div>
             </div>
 
-            {totalPendingInbox === 0 && resolvedGestiones.length === 0 && resolvedTeacherRequests.length === 0 && workshopRegistrations.length === 0 ? (
+            {totalPendingInbox === 0 && resolvedGestiones.length === 0 && resolvedTeacherRequests.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <Check className="w-12 h-12 text-emerald-400 mx-auto mb-4 bg-emerald-50 rounded-full p-2" />
                 <h3 className="text-lg font-black text-slate-800 uppercase">Todo al día</h3>
@@ -12876,12 +13090,12 @@ ${startDateWarning}
                     type="text"
                     value={gestionSearchTerm}
                     onChange={e => setGestionSearchTerm(e.target.value)}
-                    placeholder="Buscar por alumno, email, profesor, taller, encargo o texto de solicitud..."
+                    placeholder="Buscar por alumno, email, profesor, encargo o texto de solicitud..."
                     className="w-full pl-11 pr-4 py-3 rounded-2xl outline-none font-bold text-sm text-slate-700"
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <button
                     onClick={() => setInboxSection('gestiones')}
                     className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'gestiones' ? 'bg-black text-white border-black shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-black'}`}
@@ -12916,18 +13130,6 @@ ${startDateWarning}
                         <p className="text-sm font-black uppercase tracking-tight mt-1">Bajas y cambios pendientes de consolidar</p>
                       </div>
                       <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'programadas' ? 'bg-white/20 text-white' : 'bg-violet-50 text-violet-700'}`}>{scheduledGestionesProgramadas.length}</span>
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => { setInboxSection('talleres'); markWorkshopRegistrationsSeen(); }}
-                    className={`p-4 rounded-2xl border-2 text-left transition-all ${inboxSection === 'talleres' ? 'bg-rose-700 text-white border-rose-700 shadow-md' : 'bg-white text-slate-800 border-zinc-200 hover:border-rose-500'}`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Talleres · informativo</p>
-                        <p className="text-sm font-black uppercase tracking-tight mt-1">Nuevas inscripciones recibidas</p>
-                      </div>
-                      <span className={`px-3 py-1 rounded-xl text-xs font-black ${inboxSection === 'talleres' ? 'bg-white/20 text-white' : 'bg-rose-50 text-rose-700'}`}>{workshopRegistrations.length}</span>
                     </div>
                   </button>
                 </div>
@@ -12978,60 +13180,7 @@ ${startDateWarning}
                   </div>
                 )}
 
-                {inboxSection === 'talleres' ? (
-                  filteredWorkshopRegistrations.length === 0 ? (
-                    <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
-                      <PartyPopper className="w-10 h-10 text-zinc-300 mx-auto mb-3" />
-                      <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">No hay inscripciones de talleres en esta vista</h3>
-                      <p className="text-xs text-zinc-400 font-medium mt-2">Este apartado es informativo; las inscripciones se gestionan desde Talleres.</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div>
-                          <h3 className="text-sm font-black uppercase tracking-tight text-rose-950 flex items-center gap-2"><PartyPopper className="w-4 h-4"/> Inscripciones recibidas</h3>
-                          <p className="text-xs font-bold text-rose-800/70 mt-1">Información de entrada. Confirmaciones, rechazos y listas de espera se gestionan en el apartado Talleres.</p>
-                        </div>
-                        <button onClick={() => { setActiveTab('workshops'); markWorkshopRegistrationsSeen(); }} className="bg-rose-700 hover:bg-rose-800 text-white px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 shrink-0"><ArrowRightLeft className="w-4 h-4"/> Ir a Talleres</button>
-                      </div>
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        {filteredWorkshopRegistrations.map(registration => {
-                          const answers = Array.isArray(registration.answers) ? registration.answers : [];
-                          const status = registration.status || 'pending';
-                          const createdAt = registration.updatedAt || registration.createdAt || '';
-                          return (
-                            <article key={registration.id} className={`bg-white rounded-3xl border-2 p-5 shadow-sm ${!registration.adminSeenAt ? 'border-rose-300 ring-2 ring-rose-50' : 'border-zinc-100'}`}>
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2 mb-2">
-                                    {!registration.adminSeenAt && <span className="bg-red-500 text-white px-2 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Nueva</span>}
-                                    <span className={`inline-flex items-center px-2 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_REGISTRATION_STATUS_STYLE[status] || WORKSHOP_REGISTRATION_STATUS_STYLE.pending}`}>{WORKSHOP_REGISTRATION_STATUS_LABELS[status] || status}</span>
-                                  </div>
-                                  <h4 className="font-black text-slate-900 uppercase tracking-tight text-lg leading-tight">{registration.workshopTitle || 'Taller'}</h4>
-                                  <p className="text-xs font-black text-rose-700 mt-1">{registration.studentName || 'Alumno sin nombre'}</p>
-                                  <p className="text-[10px] font-bold text-zinc-400 mt-0.5">{registration.studentEmail || 'Sin email'}</p>
-                                </div>
-                                <div className="w-11 h-11 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center shrink-0"><PartyPopper className="w-5 h-5"/></div>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-2 mt-4">
-                                <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Fecha</p><p className="text-xs font-black text-slate-700 mt-1">{createdAt ? new Date(createdAt).toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Sin fecha'}</p></div>
-                                <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Precio</p><p className="text-xs font-black text-slate-700 mt-1">{registration.priceType === 'paid' ? `${Number(registration.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €` : 'Gratuito'}</p></div>
-                              </div>
-
-                              {answers.length > 0 && <div className="mt-3 bg-zinc-50 border border-zinc-100 rounded-xl p-3"><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-2">Respuestas del alumno</p><div className="space-y-2">{answers.map((answer, index) => <div key={answer.questionId || index}><p className="text-[10px] font-black text-slate-600">{answer.question || 'Pregunta'}</p><p className="text-xs font-medium text-zinc-600 whitespace-pre-wrap">{answer.answer || 'Sin respuesta'}</p></div>)}</div></div>}
-
-                              <div className="mt-4 pt-3 border-t border-zinc-100 flex flex-wrap items-center justify-between gap-2">
-                                <span className={`text-[9px] font-black uppercase tracking-widest flex items-center gap-1 ${registration.adminNotificationEmailSentAt ? 'text-emerald-700' : 'text-amber-700'}`}>{registration.adminNotificationEmailSentAt ? <><Mail className="w-3 h-3"/> Email enviado a Gestiones</> : <><Clock className="w-3 h-3"/> Email pendiente</>}</span>
-                                <button onClick={() => { setActiveTab('workshops'); markWorkshopRegistrationsSeen(); }} className="text-[9px] font-black uppercase tracking-widest text-rose-700 hover:text-rose-900">Abrir en Talleres →</button>
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )
-                ) : inboxSection === 'profesores' ? (
+                {inboxSection === 'profesores' ? (
                   filteredTeacherRequests.length === 0 ? (
                     <div className="bg-white rounded-3xl p-10 text-center border-2 border-dashed border-zinc-200">
                       <CheckCircle className="w-10 h-10 text-zinc-300 mx-auto mb-3" />

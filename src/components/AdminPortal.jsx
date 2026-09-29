@@ -178,6 +178,52 @@ const withClassStudentIndex = (classStudents = []) => ({
   studentIds: getClassStudentIds(classStudents)
 });
 
+const isFixedClassStudent = (studentEntry = {}) => {
+  return !(
+    studentEntry?.isRecovery === true ||
+    studentEntry?.isTemporary === true ||
+    studentEntry?.isPunctual === true ||
+    studentEntry?.isTemporaryRelocation === true ||
+    Boolean(studentEntry?.temporaryRelocationId) ||
+    studentEntry?.type === 'recovery' ||
+    studentEntry?.status === 'recovery'
+  );
+};
+
+const getDefaultFormationMinimumStudentCount = (classData = {}) => (
+  normalizeConfigId(classData.subject, '').includes('bateria') ? 1 : 2
+);
+
+const getFormationMinimumStudentCount = (classData = {}) => {
+  const capacity = Math.max(1, Number(classData.capacity) || 1);
+  const explicitMinimum = Number(classData.formationMinimum);
+  if (Number.isFinite(explicitMinimum) && explicitMinimum >= 1) {
+    return Math.min(capacity, Math.max(1, Math.trunc(explicitMinimum)));
+  }
+
+  // Compatibilidad: conserva umbrales particulares antiguos superiores a 2
+  // en instrumentos distintos de batería. Batería adopta el nuevo mínimo 1.
+  const defaultMinimum = getDefaultFormationMinimumStudentCount(classData);
+  const legacyPrivateThreshold = Number(classData.privateOpeningThreshold);
+  if (defaultMinimum > 1 && Number.isFinite(legacyPrivateThreshold) && legacyPrivateThreshold >= 2) {
+    return Math.min(capacity, Math.max(1, Math.trunc(legacyPrivateThreshold)));
+  }
+  return Math.min(capacity, defaultMinimum);
+};
+
+const getFormationActivationPatch = (classData = {}, classStudents = [], reachedAt = new Date().toISOString()) => {
+  if (classData.autoAdvanceStartDate !== true || isPunctualClass(classData)) return {};
+  const minimum = getFormationMinimumStudentCount(classData);
+  const fixedStudentCount = (classStudents || []).filter(isFixedClassStudent).length;
+  if (fixedStudentCount < minimum) return {};
+  return {
+    autoAdvanceStartDate: false,
+    formationMinimumReachedAt: reachedAt,
+    formationMinimumRequired: minimum,
+    formationStudentCountAtActivation: fixedStudentCount
+  };
+};
+
 const ADMIN_STARTUP_DATA_LABELS = {
   gestiones: 'Bandeja de gestiones',
   students: 'Alumnos',
@@ -2852,14 +2898,23 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     return allClasses.filter(c => !isPunctualClass(c));
   }, [allClasses]);
 
-  // Al abrir Administración, pone al día de una sola vez todos los grupos que
-  // continúan marcados como "en formación". La proyección pública usa además
-  // el mismo cálculo, por lo que la web no llega a publicar una fecha vencida.
+  // Al abrir Administración, pone al día todos los grupos en formación:
+  // activa los que ya alcanzaron el mínimo y aplaza solo los que siguen vacíos
+  // o por debajo del mínimo. La web no llega a publicar una fecha vencida.
   useEffect(() => {
     if (!classesLoaded || autoStartDateAdvanceRef.current.inFlight) return undefined;
 
+    const classesReadyToActivate = recurringClassesOnly
+      .filter(clase => clase.autoAdvanceStartDate === true && clase.refPath)
+      .map(clase => ({
+        clase,
+        activationPatch: getFormationActivationPatch(clase, clase.students || [])
+      }))
+      .filter(item => item.activationPatch.autoAdvanceStartDate === false);
+    const readyPaths = new Set(classesReadyToActivate.map(item => item.clase.refPath));
+
     const pendingUpdates = recurringClassesOnly
-      .filter(clase => clase.autoAdvanceStartDate === true && clase.startDate && clase.refPath)
+      .filter(clase => clase.autoAdvanceStartDate === true && clase.startDate && clase.refPath && !readyPaths.has(clase.refPath))
       .map(clase => {
         const currentStartDate = normalizeGestionDateString(clase.startDate);
         const nextStartDate = getAutoAdvancedClassStartDate(currentStartDate, clase.dayOfWeek, todayStr);
@@ -2867,13 +2922,15 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       })
       .filter(item => item.currentStartDate && item.nextStartDate && item.nextStartDate !== item.currentStartDate);
 
-    if (pendingUpdates.length === 0) {
+    if (classesReadyToActivate.length === 0 && pendingUpdates.length === 0) {
       autoStartDateAdvanceRef.current.signature = '';
       return undefined;
     }
 
-    const signature = pendingUpdates
-      .map(item => `${item.clase.refPath}:${item.currentStartDate}>${item.nextStartDate}`)
+    const signature = [
+      ...classesReadyToActivate.map(item => `${item.clase.refPath}:activar`),
+      ...pendingUpdates.map(item => `${item.clase.refPath}:${item.currentStartDate}>${item.nextStartDate}`)
+    ]
       .sort()
       .join('|');
     if (autoStartDateAdvanceRef.current.signature === signature) return undefined;
@@ -2886,6 +2943,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       try {
         const batch = writeBatch(db);
         const advancedAt = new Date().toISOString();
+        classesReadyToActivate.forEach(({ clase, activationPatch }) => {
+          batch.update(doc(db, clase.refPath), {
+            ...activationPatch,
+            formationMinimumReachedAt: advancedAt
+          });
+        });
         pendingUpdates.forEach(({ clase, currentStartDate, nextStartDate }) => {
           batch.update(doc(db, clase.refPath), {
             startDate: nextStartDate,
@@ -2895,6 +2958,9 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         });
         await batch.commit();
         if (!cancelled) {
+          if (classesReadyToActivate.length > 0) {
+            console.info(`Grupos activados automáticamente al alcanzar el mínimo: ${classesReadyToActivate.length}`);
+          }
           console.info(`Fechas de inicio actualizadas automáticamente: ${pendingUpdates.length}`);
         }
       } catch (error) {
@@ -3046,18 +3112,6 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       ? { ...effectiveClass, upcomingTemporaryClassChange }
       : effectiveClass;
   }), [operationalClasses, temporaryClassChanges, classesReferenceDate, todayStr, officialTeacherNameMap]);
-
-  const isFixedClassStudent = (studentEntry = {}) => {
-    return !(
-      studentEntry?.isRecovery === true ||
-      studentEntry?.isTemporary === true ||
-      studentEntry?.isPunctual === true ||
-      studentEntry?.isTemporaryRelocation === true ||
-      Boolean(studentEntry?.temporaryRelocationId) ||
-      studentEntry?.type === 'recovery' ||
-      studentEntry?.status === 'recovery'
-    );
-  };
 
   const doDateRangesOverlap = (fromA, untilA, fromB, untilB) => {
     if (!fromA || !untilA || !fromB || !untilB) return false;
@@ -3578,6 +3632,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const dayNum = parseInt(clase.dayOfWeek, 10);
         const timeStr = String(clase.time || '').trim();
         const instrument = String(clase.subject || '').trim();
+        const formationMinimum = getFormationMinimumStudentCount(clase);
         const storedStartDate = normalizeGestionDateString(clase.startDate || '');
         const autoAdvanceStartDate = clase.autoAdvanceStartDate === true;
         const publicStartDate = autoAdvanceStartDate
@@ -3609,6 +3664,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           autoAdvanceStartDate,
           allowPrivateOpening: Boolean(
             autoAdvanceStartDate
+            && formationMinimum > 1
             && maxCap >= 2
             && maxCap <= 4
             && clase.allowPrivateOpening === true
@@ -3616,7 +3672,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           ),
           privateOpeningUrl: String(clase.privateOpeningUrl || '').trim(),
           privateOpeningPrice: String(clase.privateOpeningPrice || '120 €/mes').trim(),
-          privateOpeningThreshold: Math.min(maxCap, Math.max(2, Number(clase.privateOpeningThreshold) || 2))
+          formationMinimum,
+          privateOpeningThreshold: formationMinimum
         };
       })
       .filter(Boolean)
@@ -6582,7 +6639,10 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
             recoveryDate: null
           };
           const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-          await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
+          await updateDoc(doc(db, targetClass.refPath), {
+            ...withClassStudentIndex(updatedTargetStudents),
+            ...getFormationActivationPatch(targetClass, updatedTargetStudents)
+          });
           logMessage += `➕ Entrada programada en ${formatClassLine(targetClass)} desde ${formatDateSpanish(scheduledStartDate)}.\n`;
           await finalizeGestionStatus(
             gestionId,
@@ -6646,7 +6706,10 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           recoveryTicketSubject: type === 'recuperacion' ? normalizeTicketSubject(matchedRecoveryTicket?.subject || gestionData.ticketSubject || targetClass.subject) : ''
         };
         const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-        await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
+        await updateDoc(doc(db, targetClass.refPath), {
+          ...withClassStudentIndex(updatedTargetStudents),
+          ...getFormationActivationPatch(targetClass, updatedTargetStudents)
+        });
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
         logMessage += `✅ Trámite archivado con éxito.\n`;
@@ -7154,7 +7217,10 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           recoveryDate: null
         };
         const updatedTargetStudents = [...(targetClass.students || []), newStudentPayload];
-        await updateDoc(doc(db, targetClass.refPath), withClassStudentIndex(updatedTargetStudents));
+        await updateDoc(doc(db, targetClass.refPath), {
+          ...withClassStudentIndex(updatedTargetStudents),
+          ...getFormationActivationPatch(targetClass, updatedTargetStudents)
+        });
         targetStatus = 'recreada_entrada_destino';
       }
     } else {
@@ -9630,7 +9696,8 @@ Coordinación Los Mitos.`
       allowPrivateOpening: false,
       privateOpeningUrl: '',
       privateOpeningPrice: '120 €/mes',
-      privateOpeningThreshold: 2,
+      formationMinimum: getDefaultFormationMinimumStudentCount(newClassData),
+      privateOpeningThreshold: getDefaultFormationMinimumStudentCount(newClassData),
       price: '',
       publicDetails: '',
       whatsappGroupUrl: ''
@@ -11088,10 +11155,7 @@ ${valueOrDash(comments.privateNote)}`,
   const ensurePrivateOpeningConversionAlert = async (classData = {}, updatedStudents = []) => {
     if (classData.allowPrivateOpening !== true || isPunctualClass(classData) || !classData.refPath) return;
     const fixedStudents = (updatedStudents || []).filter(isFixedClassStudent);
-    const threshold = Math.min(
-      Math.max(2, Number(classData.capacity) || 4),
-      Math.max(2, Number(classData.privateOpeningThreshold) || 2)
-    );
+    const threshold = getFormationMinimumStudentCount(classData);
     const starterEntry = fixedStudents.find(student => student.provisionalPrivateOpening === true)
       || fixedStudents.find(student => String(student.id || '') === String(classData.privateOpeningStarterStudentId || ''));
     if (!starterEntry || fixedStudents.length < threshold) return;
@@ -11360,7 +11424,7 @@ ${valueOrDash(comments.privateNote)}`,
       allowPrivateOpening: editWebModal.allowPrivateOpening === true,
       privateOpeningUrl: editWebModal.privateOpeningUrl || '',
       privateOpeningPrice: editWebModal.privateOpeningPrice || '120 €/mes',
-      privateOpeningThreshold: Math.max(2, Number(editWebModal.privateOpeningThreshold) || 2),
+      formationMinimum: getFormationMinimumStudentCount(editWebModal),
       price: editWebModal.price || '',
       cuotaBase: editWebModal.cuotaBase || 60, 
       publicDetails: editWebModal.publicDetails || '',
@@ -11369,12 +11433,16 @@ ${valueOrDash(comments.privateNote)}`,
     const [saving, setSaving] = useState(false);
     const classCapacity = Math.max(0, Number(editWebModal.capacity) || 0);
     const isSmallGroup = classCapacity >= 2 && classCapacity <= 4;
+    const formationMinimum = Math.min(
+      classCapacity || 1,
+      Math.max(1, Number(formData.formationMinimum) || getDefaultFormationMinimumStudentCount(editWebModal))
+    );
     const handleSave = async () => {
       const cleanWhatsappUrl = normalizeAnnouncementUrl(formData.whatsappGroupUrl);
       if (cleanWhatsappUrl === null) return alert('La URL del grupo de WhatsApp debe empezar por https:// o http://');
       const cleanPrivateOpeningUrl = normalizeAnnouncementUrl(formData.privateOpeningUrl);
       if (cleanPrivateOpeningUrl === null) return alert('La URL Tadosi de apertura particular debe empezar por https:// o http://');
-      const allowPrivateOpening = Boolean(isSmallGroup && formData.autoAdvanceStartDate && formData.allowPrivateOpening);
+      const allowPrivateOpening = Boolean(isSmallGroup && formationMinimum > 1 && formData.autoAdvanceStartDate && formData.allowPrivateOpening);
       if (allowPrivateOpening && !cleanPrivateOpeningUrl) return alert('Añade la URL Tadosi de 120 € para ofrecer la apertura inmediata.');
 
       setSaving(true);
@@ -11386,12 +11454,12 @@ ${valueOrDash(comments.privateNote)}`,
           ...formData,
           startDate: effectiveStartDate,
           whatsappGroupUrl: cleanWhatsappUrl || '',
+          formationMinimum,
           allowPrivateOpening,
           privateOpeningUrl: allowPrivateOpening ? cleanPrivateOpeningUrl : '',
           privateOpeningPrice: allowPrivateOpening ? (String(formData.privateOpeningPrice || '').trim() || '120 €/mes') : '',
-          privateOpeningThreshold: allowPrivateOpening
-            ? Math.min(classCapacity || 4, Math.max(2, Number(formData.privateOpeningThreshold) || 2))
-            : 2,
+          // Se conserva el campo antiguo sincronizado durante la transición.
+          privateOpeningThreshold: formationMinimum,
           cuotaBase: Number(formData.cuotaBase) || 0
         });
         alert("Configuración web, informes y grupo de WhatsApp guardada correctamente.");
@@ -11457,12 +11525,30 @@ ${valueOrDash(comments.privateNote)}`,
                         />
                         <span>
                           <span className="block text-[10px] font-black uppercase tracking-widest text-blue-800">Aplazar automáticamente mientras el grupo esté en formación</span>
-                          <span className="block mt-1 text-[9px] font-bold leading-relaxed text-blue-700">Si la fecha vence, pasará al primer día correspondiente de la clase del mes siguiente. Desactívalo cuando confirmes el inicio.</span>
+                          <span className="block mt-1 text-[9px] font-bold leading-relaxed text-blue-700">Si la fecha vence, pasará al primer día correspondiente del mes siguiente. Se desactivará automáticamente al alcanzar el mínimo configurado.</span>
                         </span>
                       </label>
+                      {formData.autoAdvanceStartDate && (
+                        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                          <label className="text-[10px] font-black uppercase text-amber-800 mb-1 block">Mínimo para abrir el grupo</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max={classCapacity || 1}
+                            value={formData.formationMinimum}
+                            onChange={e => setFormData({
+                              ...formData,
+                              formationMinimum: e.target.value,
+                              allowPrivateOpening: Number(e.target.value) > 1 ? formData.allowPrivateOpening : false
+                            })}
+                            className="w-full p-3 bg-white border-2 border-amber-200 rounded-xl font-black text-sm outline-none focus:border-amber-500"
+                          />
+                          <p className="mt-1 text-[9px] font-bold leading-relaxed text-amber-800">Al alcanzar este número de alumnos fijos se desactivará el aplazamiento. Si existe una apertura particular, este mismo valor determina cuándo pasa a cuota de grupo.</p>
+                        </div>
+                      )}
                     </div>
                   </div>
-                  {isSmallGroup && formData.autoAdvanceStartDate && (
+                  {isSmallGroup && formationMinimum > 1 && formData.autoAdvanceStartDate && (
                     <div className="rounded-2xl border-2 border-violet-200 bg-violet-50 p-4 space-y-3">
                       <label className="flex items-start gap-3 cursor-pointer">
                         <input type="checkbox" checked={formData.allowPrivateOpening} onChange={e => setFormData({...formData, allowPrivateOpening: e.target.checked})} className="mt-0.5 w-4 h-4 accent-violet-600" />
@@ -11476,11 +11562,8 @@ ${valueOrDash(comments.privateNote)}`,
                           <label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">URL Tadosi · modalidad 120 € *</label>
                           <input type="text" value={formData.privateOpeningUrl} onChange={e => setFormData({...formData, privateOpeningUrl: e.target.value})} placeholder="https://tadosi.com/..." className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500" />
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div><label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Precio mostrado</label><input type="text" value={formData.privateOpeningPrice} onChange={e => setFormData({...formData, privateOpeningPrice: e.target.value})} placeholder="120 €/mes" className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none" /></div>
-                          <div><label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Bajar a grupo desde</label><input type="number" min="2" max={classCapacity || 4} value={formData.privateOpeningThreshold} onChange={e => setFormData({...formData, privateOpeningThreshold: e.target.value})} className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none" /></div>
-                        </div>
-                        <p className="text-[9px] font-bold leading-relaxed text-violet-800">Al alcanzar ese número de alumnos, Administración deberá cambiar la cuota del alumno que abrió el turno a la cuota normal desde el siguiente recibo.</p>
+                        <div><label className="text-[10px] font-black uppercase text-violet-700 mb-1 block">Precio mostrado</label><input type="text" value={formData.privateOpeningPrice} onChange={e => setFormData({...formData, privateOpeningPrice: e.target.value})} placeholder="120 €/mes" className="w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold text-sm outline-none" /></div>
+                        <p className="text-[9px] font-bold leading-relaxed text-violet-800">Al alcanzar el mínimo configurado de {formationMinimum} alumnos, Administración deberá cambiar la cuota del alumno que abrió el turno a la cuota normal desde el siguiente recibo.</p>
                       </>}
                     </div>
                   )}
@@ -11935,7 +12018,10 @@ ${valueOrDash(comments.privateNote)}`,
     const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(resurrectClassModal) ? todayStr : getNextClassDateForDay(resurrectClassModal.dayOfWeek, todayStr));
     const [privateOpeningSelected, setPrivateOpeningSelected] = useState(false);
     const [saving, setSaving] = useState(false);
-    const canUsePrivateOpening = !isPunctualClass(resurrectClassModal) && resurrectClassModal.allowPrivateOpening === true;
+    const canUsePrivateOpening = !isPunctualClass(resurrectClassModal)
+      && resurrectClassModal.autoAdvanceStartDate === true
+      && getFormationMinimumStudentCount(resurrectClassModal) > 1
+      && resurrectClassModal.allowPrivateOpening === true;
     const matchedStudentForResurrect = students.find(s =>
       s.name.toLowerCase() === searchName.trim().toLowerCase() ||
       (email && s.email === email.trim().toLowerCase())
@@ -12053,6 +12139,7 @@ ${startDateWarning}
         const updatedStudents = [...(resurrectClassModal.students || []), newStudentPayload];
         await updateDoc(targetPath, {
           ...withClassStudentIndex(updatedStudents),
+          ...getFormationActivationPatch(resurrectClassModal, updatedStudents),
           ...(isPrivateOpeningStarter ? {
             privateOpeningActive: true,
             privateOpeningStarterStudentId: studentId,
@@ -12193,7 +12280,11 @@ ${startDateWarning}
     const absenceCount = planningStudents.filter(student => student.absenceAnnounced).length;
     const isFull = maxCap > 0 && currentCount >= maxCap;
     const isPunctual = isPunctualClass(c);
-    const canUsePrivateOpeningForAdd = !isPunctual && c.allowPrivateOpening === true && (c.students || []).filter(isFixedClassStudent).length === 0;
+    const canUsePrivateOpeningForAdd = !isPunctual
+      && c.autoAdvanceStartDate === true
+      && getFormationMinimumStudentCount(c) > 1
+      && c.allowPrivateOpening === true
+      && (c.students || []).filter(isFixedClassStudent).length === 0;
     const matchedStudentForAdd = students.find(s =>
       s.name.toLowerCase() === searchName.trim().toLowerCase() ||
       (emailInput && s.email === emailInput.trim().toLowerCase())
@@ -12318,6 +12409,7 @@ ${startDateWarning}
         const updatedStudents = [...(c.students || []), newStudentPayload];
         await updateDoc(targetPath, {
           ...withClassStudentIndex(updatedStudents),
+          ...getFormationActivationPatch(c, updatedStudents),
           ...(isPrivateOpeningStarter ? {
             privateOpeningActive: true,
             privateOpeningStarterStudentId: studentId,

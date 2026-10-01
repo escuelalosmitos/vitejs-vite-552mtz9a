@@ -1557,6 +1557,47 @@ export default function StudentPortal({ user, logout, db, appId }) {
       });
   }, [workshops, workshopRegistrationsByWorkshop, fixedMyClasses, effectiveMyClasses, profile?.id, todayStr, pollClock]);
 
+  const workshopLayout = useMemo(() => {
+    const nowLocal = getLocalDateTimeString();
+    const activeRegistrationStatuses = new Set(['confirmed', 'pending', 'waitlist']);
+    const getLayoutData = (workshop = {}) => {
+      const registration = workshopRegistrationsByWorkshop.get(workshop.id);
+      const hasActiveRegistration = Boolean(registration && activeRegistrationStatuses.has(registration.status));
+      const registrationOpen = workshop.status === 'published'
+        && (!workshop.publishAt || workshop.publishAt <= nowLocal)
+        && Boolean(workshop.registrationDeadline && workshop.registrationDeadline > nowLocal);
+      const freeSeats = workshop.unlimitedCapacity
+        ? null
+        : Math.max(0, Number(workshop.capacity || 0) - Number(workshop.confirmedCount || 0));
+      const isFull = !workshop.unlimitedCapacity && freeSeats === 0;
+      const hasUsefulAction = hasActiveRegistration
+        || (registrationOpen && (!isFull || workshop.waitlistEnabled === true));
+
+      let priority = 3;
+      if (hasActiveRegistration) priority = 0;
+      else if (registrationOpen && !isFull) priority = 1;
+      else if (registrationOpen && isFull && workshop.waitlistEnabled === true) priority = 2;
+
+      return { workshop, hasActiveRegistration, hasUsefulAction, priority };
+    };
+
+    const rows = visibleWorkshops.map(getLayoutData);
+    const featuredRow = rows.find(row => row.workshop.featured === true && row.hasUsefulAction) || null;
+    const regularWorkshops = rows
+      .filter(row => !featuredRow || row.workshop.id !== featuredRow.workshop.id)
+      .sort((left, right) => {
+        if (left.priority !== right.priority) return left.priority - right.priority;
+        return String(left.workshop.sessions?.[0]?.date || '2999-12-31')
+          .localeCompare(String(right.workshop.sessions?.[0]?.date || '2999-12-31'));
+      })
+      .map(row => row.workshop);
+
+    return {
+      featuredWorkshop: featuredRow?.workshop || null,
+      regularWorkshops
+    };
+  }, [visibleWorkshops, workshopRegistrationsByWorkshop, pollClock]);
+
   const latestVisibleWorkshopKey = useMemo(() => {
     const activeWorkshopKeys = visibleWorkshops
       .filter(workshop => (
@@ -4789,6 +4830,54 @@ END:VCALENDAR`;
     );
   };
 
+  const renderWorkshopCard = (workshop, { featuredPlacement = false } = {}) => {
+    const registration = getWorkshopRegistration(workshop.id);
+    const activeRegistration = registration && ['confirmed', 'pending', 'waitlist'].includes(registration.status) ? registration : null;
+    const firstSession = workshop.sessions?.[0];
+    const registrationOpen = isWorkshopRegistrationOpen(workshop);
+    const freeSeats = getWorkshopFreeSeats(workshop);
+    const isFull = !workshop.unlimitedCapacity && freeSeats === 0;
+    const isInactiveForStudent = !activeRegistration && (!registrationOpen || (isFull && !workshop.waitlistEnabled));
+    const safeImageUrl = getSafeAnnouncementUrl(workshop.imageUrl || '');
+    const registrationLabel = !registrationOpen
+      ? 'Cerrada'
+      : isFull
+        ? (workshop.waitlistEnabled ? 'Lista de espera' : 'Completo')
+        : workshop.unlimitedCapacity
+          ? 'Abierta'
+          : `${freeSeats} ${freeSeats === 1 ? 'plaza' : 'plazas'}`;
+
+    return (
+      <article
+        key={workshop.id}
+        className={`bg-white rounded-3xl shadow-sm border-2 overflow-hidden flex flex-col h-full transition-all ${featuredPlacement ? 'border-amber-300 ring-2 ring-amber-100' : isInactiveForStudent ? 'border-zinc-200 opacity-80' : 'border-zinc-100 hover:border-violet-300'}`}
+      >
+        <button onClick={() => openWorkshopModal(workshop)} className="text-left flex flex-col h-full group">
+          <div className="h-44 bg-gradient-to-br from-violet-700 to-zinc-950 relative overflow-hidden">
+            {safeImageUrl ? <img src={safeImageUrl} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"/> : <div className="w-full h-full flex items-center justify-center"><Music className="w-20 h-20 text-white/20"/></div>}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent"/>
+            <div className="absolute top-3 left-3 flex flex-wrap gap-2">
+              {featuredPlacement && <span className="bg-amber-400 text-amber-950 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline mr-1"/> Destacado</span>}
+              {activeRegistration && <span className={`px-2.5 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}>{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</span>}
+              {!activeRegistration && isFull && !workshop.waitlistEnabled && <span className="bg-zinc-100 text-zinc-700 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest">Completo</span>}
+            </div>
+            {firstSession && <div className="absolute bottom-3 left-4 right-4 text-white"><span className="text-[9px] font-black uppercase tracking-widest text-white/70 block">Próxima sesión</span><span className="font-black text-sm capitalize">{formatWorkshopDate(firstSession.date)} · {firstSession.startTime}h</span></div>}
+          </div>
+          <div className="p-5 flex flex-col flex-1">
+            <h4 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">{workshop.title}</h4>
+            <p className="text-sm text-zinc-500 font-medium mt-2 leading-relaxed flex-1">{workshop.shortDescription}</p>
+            <div className="space-y-2 mt-5 pt-4 border-t border-zinc-100">
+              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Lugar</span><span className="text-slate-700 text-right">{getWorkshopLocationLabelForStudent(workshop)}</span></div>
+              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Ticket className="w-3.5 h-3.5"/> Precio</span><span className="text-slate-700">{workshop.priceType === 'free' ? 'Gratuito' : formatEuro(workshop.price)}</span></div>
+              {!activeRegistration && <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Clock className="w-3.5 h-3.5"/> Inscripción</span><span className={registrationOpen && (!isFull || workshop.waitlistEnabled) ? 'text-emerald-700' : 'text-zinc-500'}>{registrationLabel}</span></div>}
+            </div>
+            <span className={`mt-5 w-full text-white font-black py-3.5 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2 ${isInactiveForStudent ? 'bg-zinc-500 group-hover:bg-zinc-600' : 'bg-violet-600 group-hover:bg-violet-700'}`}>{activeRegistration ? 'Ver mi inscripción' : 'Ver taller'} <ArrowRight className="w-4 h-4"/></span>
+          </div>
+        </button>
+      </article>
+    );
+  };
+
   const renderMitoboxModal = () => {
     if (!mitoboxModal) return null;
     
@@ -5825,60 +5914,33 @@ END:VCALENDAR`;
         {/* --- PESTAÑA: EXTRAS --- */}
         {activeTab === 'extras' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-900 text-white border-2 border-indigo-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
+            <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
               <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight">Mitos+</h2>
-                <p className="text-blue-200 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
+                <h2 className="text-2xl font-black uppercase tracking-tight text-white">Mitos+</h2>
+                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
               </div>
-              <Sparkles className="w-24 h-24 text-white/10 absolute -right-4 -bottom-4 pointer-events-none" />
+              <Sparkles className="w-24 h-24 text-zinc-800 absolute -right-4 -bottom-4 pointer-events-none" />
             </div>
 
-            {workshopsLoaded && visibleWorkshops.length > 0 && (
+            {workshopsLoaded && workshopLayout.featuredWorkshop && (
               <section className="space-y-4">
                 <div className="flex items-end justify-between gap-3 px-1">
                   <div>
-                    <h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Talleres y actividades</h3>
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Propuestas especiales de duración limitada</p>
+                    <h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Taller destacado</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Una propuesta especial seleccionada por la escuela</p>
                   </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  {visibleWorkshops.map(workshop => {
-                    const registration = getWorkshopRegistration(workshop.id);
-                    const activeRegistration = registration && ['confirmed', 'pending', 'waitlist'].includes(registration.status) ? registration : null;
-                    const firstSession = workshop.sessions?.[0];
-                    const registrationOpen = isWorkshopRegistrationOpen(workshop);
-                    const freeSeats = getWorkshopFreeSeats(workshop);
-                    const isFull = !workshop.unlimitedCapacity && freeSeats === 0;
-                    const safeImageUrl = getSafeAnnouncementUrl(workshop.imageUrl || '');
-                    return (
-                      <article key={workshop.id} className={`bg-white rounded-3xl shadow-sm border-2 overflow-hidden flex flex-col h-full transition-all ${workshop.featured ? 'border-amber-300 ring-2 ring-amber-100' : 'border-zinc-100 hover:border-violet-300'}`}>
-                        <button onClick={() => openWorkshopModal(workshop)} className="text-left flex flex-col h-full group">
-                          <div className="h-44 bg-gradient-to-br from-violet-700 to-zinc-950 relative overflow-hidden">
-                            {safeImageUrl ? <img src={safeImageUrl} alt="" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"/> : <div className="w-full h-full flex items-center justify-center"><Music className="w-20 h-20 text-white/20"/></div>}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent"/>
-                            <div className="absolute top-3 left-3 flex flex-wrap gap-2">
-                              {workshop.featured && <span className="bg-amber-400 text-amber-950 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline mr-1"/> Destacado</span>}
-                              {activeRegistration && <span className={`px-2.5 py-1 rounded-full border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}>{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</span>}
-                            </div>
-                            {firstSession && <div className="absolute bottom-3 left-4 right-4 text-white"><span className="text-[9px] font-black uppercase tracking-widest text-white/70 block">Próxima sesión</span><span className="font-black text-sm capitalize">{formatWorkshopDate(firstSession.date)} · {firstSession.startTime}h</span></div>}
-                          </div>
-                          <div className="p-5 flex flex-col flex-1">
-                            <h4 className="text-xl font-black uppercase tracking-tight text-slate-800 leading-tight">{workshop.title}</h4>
-                            <p className="text-sm text-zinc-500 font-medium mt-2 leading-relaxed flex-1">{workshop.shortDescription}</p>
-                            <div className="space-y-2 mt-5 pt-4 border-t border-zinc-100">
-                              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/> Lugar</span><span className="text-slate-700 text-right">{getWorkshopLocationLabelForStudent(workshop)}</span></div>
-                              <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Ticket className="w-3.5 h-3.5"/> Precio</span><span className="text-slate-700">{workshop.priceType === 'free' ? 'Gratuito' : formatEuro(workshop.price)}</span></div>
-                              {!activeRegistration && <div className="flex items-center justify-between gap-3 text-[10px] font-black uppercase tracking-widest"><span className="text-zinc-400 flex items-center gap-1"><Clock className="w-3.5 h-3.5"/> Inscripción</span><span className={registrationOpen ? 'text-emerald-700' : 'text-zinc-500'}>{registrationOpen ? isFull && workshop.waitlistEnabled ? 'Lista de espera' : workshop.unlimitedCapacity ? 'Abierta' : `${freeSeats} ${freeSeats === 1 ? 'plaza' : 'plazas'}` : 'Cerrada'}</span></div>}
-                            </div>
-                            <span className="mt-5 w-full bg-violet-600 group-hover:bg-violet-700 text-white font-black py-3.5 rounded-xl uppercase text-[10px] tracking-widest flex items-center justify-center gap-2">{activeRegistration ? 'Ver mi inscripción' : 'Ver taller'} <ArrowRight className="w-4 h-4"/></span>
-                          </div>
-                        </button>
-                      </article>
-                    );
-                  })}
+                  {renderWorkshopCard(workshopLayout.featuredWorkshop, { featuredPlacement: true })}
                 </div>
               </section>
             )}
+
+            <section className="space-y-4">
+              <div className="px-1">
+                <h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Servicios permanentes</h3>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Recursos disponibles durante todo el curso</p>
+              </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
@@ -5981,6 +6043,21 @@ END:VCALENDAR`;
               </div>
 
             </div>
+            </section>
+
+            {workshopsLoaded && workshopLayout.regularWorkshops.length > 0 && (
+              <section className="space-y-4">
+                <div className="flex items-end justify-between gap-3 px-1">
+                  <div>
+                    <h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Talleres y actividades</h3>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Propuestas especiales de duración limitada</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {workshopLayout.regularWorkshops.map(workshop => renderWorkshopCard(workshop))}
+                </div>
+              </section>
+            )}
           </div>
         )}
 

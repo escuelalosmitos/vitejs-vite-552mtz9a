@@ -6001,7 +6001,7 @@ END:VCALENDAR`;
                 </div>
                 <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
                 <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
+                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras. Tienes disponibles pianos, guitarras, amplificadores... ¡Todo lo que veas!
                 </p>
                 {profile?.hasMitobox && upcomingMitoboxReservations.length > 0 && (
                   <div className="mb-5 space-y-2">

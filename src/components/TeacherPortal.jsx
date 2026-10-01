@@ -5,9 +5,10 @@ import {
   MessageSquare, LogOut, CornerDownRight, BookOpen, CalendarOff, Ticket, 
   Snowflake, Timer, Palmtree, PartyPopper, Coffee, MapPin, Bell, UserMinus, 
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
-  Megaphone, Send, Link as LinkIcon
+  Megaphone, Send, Link as LinkIcon, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { collection, query, where, documentId, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
+import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
@@ -542,17 +543,6 @@ const cleanAttendanceNotesForReport = (record = {}) => {
   return notes || 'Ninguna';
 };
 
-const getPreviousMonthStr = (currentMonthStr) => { 
-  const [y, m] = currentMonthStr.split('-').map(Number);
-  let prevM = m - 1;
-  let prevY = y;
-  if (prevM === 0) {
-    prevM = 12;
-    prevY--;
-  }
-  return `${prevY}-${String(prevM).padStart(2, '0')}`;
-};
-
 const generateLast12Months = () => {
   const months = [];
   const d = new Date();
@@ -722,6 +712,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
   const [scheduleView, setScheduleView] = useState('schedule');
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date().toISOString().slice(0, 10));
 
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
@@ -1894,49 +1886,6 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     selectedDailyReport?.submittedAt || lastReportSentDate === date
   );
 
-  const monthlyPayroll = useMemo(() => {
-    const targetMonth = selectedPayrollMonth; 
-    const prevMonth = getPreviousMonthStr(targetMonth);
-    const teacherKey = normalizeTeacherKey(getTeacherName());
-
-    const currentRecords = records.filter(r => r.date && r.date.startsWith(targetMonth) && !r.isRenounced);
-    const currentMinutes = currentRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
-    const currentHours = currentMinutes / 60;
-
-    const prevRecords = records.filter(r => r.date && r.date.startsWith(prevMonth) && !r.isRenounced);
-    const prevTotalMinutes = prevRecords.reduce((acc, r) => acc + normalizeNumber(r.duration || 60), 0);
-    const prevUniqueDays = new Set(prevRecords.map(r => r.date)).size;
-    const avgDailyMins = prevUniqueDays > 0 ? (prevTotalMinutes / prevUniqueDays) : 0;
-
-    const vacationsThisMonth = (settings.vacaciones || []).filter(d => d.startsWith(targetMonth)).length;
-    const projectedMinutes = vacationsThisMonth * avgDailyMins;
-    const projectedHours = projectedMinutes / 60;
-
-    const adjustmentItems = payrollAdjustments
-      .filter(a => 
-        a.month === targetMonth && 
-        normalizeTeacherKey(a.teacher) === teacherKey
-      )
-      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-
-    const adjustmentHours = adjustmentItems.reduce((acc, a) => acc + normalizeNumber(a.hours), 0);
-
-    const totalBeforeAdjustments = currentHours + projectedHours;
-    const totalHours = totalBeforeAdjustments + adjustmentHours;
-    const earnings = totalHours * (settings.hourlyRate || 0);
-
-    return { 
-      realHours: currentHours.toFixed(2),
-      projectedHours: projectedHours.toFixed(2),
-      vacationDays: vacationsThisMonth,
-      adjustmentHours: adjustmentHours.toFixed(2),
-      adjustmentItems,
-      totalBeforeAdjustments: totalBeforeAdjustments.toFixed(2),
-      totalHours: totalHours.toFixed(2), 
-      earnings: earnings.toFixed(2) 
-    };
-  }, [records, selectedPayrollMonth, settings, payrollAdjustments, user]);
-
   const dashboardItems = useMemo(() => {
     const selectedDayOfWeek = getDayOfWeek(date);
     const items = [];
@@ -2173,6 +2122,53 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
   };
 
+  const monthlyPayroll = useMemo(() => {
+    const targetMonth = selectedPayrollMonth;
+    const teacherName = getTeacherName();
+    const teacherKey = normalizeTeacherKey(teacherName);
+    const vacationDates = (settings.vacaciones || []).filter(item => String(item || '').startsWith(`${targetMonth}-`));
+    const scheduledHoursByDate = {};
+
+    vacationDates.forEach(vacationDate => {
+      const vacationDay = getLocalDayOfWeekFromDate(vacationDate);
+      if (vacationDay === null) return;
+      scheduledHoursByDate[vacationDate] = allRecurringClasses
+        .filter(classData => !isPunctualClass(classData))
+        .filter(classData => isSameTeacher(classData.teacher, teacherName))
+        .filter(classData => Number(classData.dayOfWeek) === vacationDay)
+        .filter(classData => getEffectiveActiveStudentsForClass(classData, vacationDate).length > 0)
+        .reduce((hours, classData) => hours + Math.max(1, normalizeNumber(classData.duration || 60)) / 60, 0);
+    });
+
+    const vacationCalculation = calculateVacationPayroll({
+      targetMonth,
+      vacationDates,
+      records,
+      scheduledHoursByDate
+    });
+    const currentRecords = records.filter(record => record.date?.startsWith(targetMonth) && !record.isRenounced);
+    const currentHours = currentRecords.reduce((hours, record) => hours + normalizeNumber(record.duration || 60) / 60, 0);
+    const adjustmentItems = payrollAdjustments
+      .filter(adjustment => adjustment.month === targetMonth && normalizeTeacherKey(adjustment.teacher) === teacherKey)
+      .sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
+    const adjustmentHours = adjustmentItems.reduce((hours, adjustment) => hours + normalizeNumber(adjustment.hours), 0);
+    const totalBeforeAdjustments = currentHours + vacationCalculation.vacationHours;
+    const totalHours = totalBeforeAdjustments + adjustmentHours;
+    const earnings = totalHours * (settings.hourlyRate || 0);
+
+    return {
+      realHours: currentHours.toFixed(2),
+      projectedHours: vacationCalculation.vacationHours.toFixed(2),
+      vacationDays: vacationCalculation.vacationDays,
+      vacationCalculation,
+      adjustmentHours: adjustmentHours.toFixed(2),
+      adjustmentItems,
+      totalBeforeAdjustments: totalBeforeAdjustments.toFixed(2),
+      totalHours: totalHours.toFixed(2),
+      earnings: earnings.toFixed(2)
+    };
+  }, [records, selectedPayrollMonth, settings.vacaciones, settings.hourlyRate, payrollAdjustments, allRecurringClasses, globalStudents, maintenancePeriods, temporaryRelocations, user, staffProfile]);
+
   const closingChecklistApplies = date >= CLOSING_CHECKLIST_START_DATE;
 
   const closingDuty = useMemo(() => {
@@ -2371,8 +2367,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       }
     });
 
-    const statusOrder = { active: 0, temporary_active: 0, inactive: 1, temporary_inactive: 1, reserved: 2 };
-    const weeklyRows = [...classRows].sort((a, b) =>
+    const visibleClassRows = classRows.filter(row => (
+      ['active', 'temporary_active'].includes(row.status)
+      || (row.status === 'reserved' && row.activeCount > 0)
+    ));
+    const statusOrder = { active: 0, temporary_active: 0, reserved: 1 };
+    const weeklyRows = [...visibleClassRows].sort((a, b) =>
       Number(a.dayOfWeek) - Number(b.dayOfWeek) ||
       String(a.time || '').localeCompare(String(b.time || '')) ||
       (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9)
@@ -2382,6 +2382,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       .filter(isPunctualClass)
       .filter(classData => isSameTeacher(classData.teacher, teacherName))
       .filter(classData => (classData.date || classData.specificDate || '') >= todayStr)
+      .filter(classData => getEffectiveActiveStudentsForClass(classData, classData.date || classData.specificDate).length > 0)
       .map(classData => {
         const punctualDate = classData.date || classData.specificDate;
         return {
@@ -2407,6 +2408,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
         isSameTeacher(item.officialClass.teacher, teacherName) ||
         isSameTeacher(item.change.teacher, teacherName)
       ))
+      .filter(item => getEffectiveActiveStudentsForClass(item.officialClass, normalizeTemporaryClassChangeDate(item.change.from)).length > 0)
       .sort((a, b) => normalizeTemporaryClassChangeDate(a.change.from).localeCompare(normalizeTemporaryClassChangeDate(b.change.from)));
 
     const uniqueIdsForStatus = status => new Set(classRows.filter(row => status.includes(row.status)).map(row => row.classId)).size;
@@ -2414,16 +2416,57 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       weeklyRows,
       punctualRows,
       upcomingChanges,
-      outsideRows: [...classRows, ...punctualRows].filter(row =>
+      outsideRows: [...visibleClassRows, ...punctualRows].filter(row =>
         row.outsideAvailability && ['active', 'temporary_active', 'punctual'].includes(row.status)
       ),
       summary: {
         activeClasses: uniqueIdsForStatus(['active', 'temporary_active']),
-        inactiveClasses: uniqueIdsForStatus(['inactive', 'temporary_inactive']),
-        reservedClasses: uniqueIdsForStatus(['reserved'])
+        reservedClasses: new Set(visibleClassRows.filter(row => row.status === 'reserved').map(row => row.classId)).size
       }
     };
   }, [allRecurringClasses, temporaryClassChanges, availability, globalStudents, maintenancePeriods, temporaryRelocations, settings.teachersList, centers]);
+
+  const teacherCalendarModel = useMemo(() => {
+    const [year, month] = String(calendarMonth || '').split('-').map(Number);
+    if (!Number.isFinite(year) || !Number.isFinite(month)) {
+      return { monthLabel: '', cells: [], eventsByDate: {}, selectedEvents: [], assignedCenters: [] };
+    }
+
+    const assignedCenterIds = new Set();
+    [...teacherScheduleModel.weeklyRows, ...teacherScheduleModel.punctualRows].forEach(row => {
+      const center = getClassCenter(row.classData || row.officialClass || {});
+      if (center?.id) assignedCenterIds.add(center.id);
+    });
+    const assignedCenters = centers.filter(center => assignedCenterIds.has(center.id));
+    const eventsByDate = {};
+    const addEvent = (eventDate, event) => {
+      if (!String(eventDate || '').startsWith(`${calendarMonth}-`)) return;
+      if (!eventsByDate[eventDate]) eventsByDate[eventDate] = [];
+      eventsByDate[eventDate].push(event);
+    };
+
+    (settings.vacaciones || []).forEach(eventDate => addEvent(eventDate, { type: 'vacation', label: 'Vacaciones' }));
+    (settings.festivos || []).forEach(eventDate => addEvent(eventDate, { type: 'holiday', label: 'Festivo general' }));
+    assignedCenters.forEach(center => {
+      (center.holidays || []).forEach(eventDate => addEvent(eventDate, { type: 'local', label: `Festivo local · ${center.name}` }));
+    });
+
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const firstWeekdayMondayFirst = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+    const cells = [
+      ...Array(firstWeekdayMondayFirst).fill(null),
+      ...Array.from({ length: daysInMonth }, (_, index) => `${calendarMonth}-${String(index + 1).padStart(2, '0')}`)
+    ];
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    return {
+      monthLabel: new Date(year, month - 1, 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }),
+      cells,
+      eventsByDate,
+      selectedEvents: eventsByDate[selectedCalendarDate] || [],
+      assignedCenters
+    };
+  }, [calendarMonth, selectedCalendarDate, teacherScheduleModel, centers, settings.vacaciones, settings.festivos]);
 
   const sanitizeTemplateStudentForSave = (student = {}) => {
     const studentInfo = globalStudents.find(g => g.id === student.id) || {};
@@ -5211,21 +5254,23 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
               </div>
             </header>
 
-            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-2 grid grid-cols-2 gap-2">
+            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button onClick={() => setScheduleView('schedule')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${scheduleView === 'schedule' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
                 <LayoutGrid className="w-4 h-4" /> Mi horario
               </button>
               <button onClick={() => setScheduleView('availability')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${scheduleView === 'availability' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
                 <Clock className="w-4 h-4" /> Mi disponibilidad
               </button>
+              <button onClick={() => setScheduleView('calendar')} className={`py-3 px-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all flex items-center justify-center gap-2 ${scheduleView === 'calendar' ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:text-black hover:bg-zinc-50'}`}>
+                <Calendar className="w-4 h-4" /> Calendario
+              </button>
             </div>
 
             {scheduleView === 'schedule' && (
               <div className="space-y-5">
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   <div className="bg-slate-900 text-white rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.activeClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Clases activas</p></div>
-                  <div className="bg-zinc-100 text-zinc-700 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.inactiveClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Inactivas</p></div>
-                  <div className="col-span-2 md:col-span-1 bg-amber-50 text-amber-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.reservedClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-amber-600">Reservadas</p></div>
+                  <div className="bg-amber-50 text-amber-800 rounded-2xl p-4"><p className="text-2xl font-black">{teacherScheduleModel.summary.reservedClasses}</p><p className="text-[9px] font-black uppercase tracking-widest text-amber-600">Reservadas</p></div>
                 </div>
 
                 {teacherScheduleModel.upcomingChanges.length > 0 && (
@@ -5249,7 +5294,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                 )}
 
                 <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
-                  <div className="p-4 md:p-5 border-b border-zinc-100"><h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Semana habitual</h3><p className="text-xs text-zinc-500 mt-1">Clases activas e inactivas. No se muestran nombres de alumnos.</p></div>
+                  <div className="p-4 md:p-5 border-b border-zinc-100"><h3 className="text-sm font-black uppercase tracking-widest text-slate-900">Semana habitual</h3><p className="text-xs text-zinc-500 mt-1">Solo se muestran las clases activas o reservadas. No se muestran nombres de alumnos.</p></div>
                   {teacherScheduleModel.weeklyRows.length === 0 ? (
                     <div className="p-12 text-center text-zinc-400"><Clock className="w-10 h-10 mx-auto mb-3 text-zinc-200"/><p className="text-xs font-black uppercase tracking-widest">No hay clases registradas</p></div>
                   ) : (
@@ -5257,10 +5302,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                       {teacherScheduleModel.weeklyRows.map(row => {
                         const statusConfig = {
                           active: { label: 'Activa', style: 'bg-slate-900 text-white border-slate-900' },
-                          inactive: { label: 'Inactiva', style: 'bg-zinc-100 text-zinc-600 border-zinc-200' },
                           reserved: { label: 'Reservada hasta regreso', style: 'bg-amber-50 text-amber-800 border-amber-200' },
-                          temporary_active: { label: 'Cambio temporal', style: 'bg-violet-100 text-violet-800 border-violet-200' },
-                          temporary_inactive: { label: 'Temporal inactiva', style: 'bg-violet-50 text-violet-600 border-violet-100' }
+                          temporary_active: { label: 'Cambio temporal', style: 'bg-violet-100 text-violet-800 border-violet-200' }
                         }[row.status];
                         const showOutsideAvailabilityWarning = row.outsideAvailability && ['active', 'temporary_active'].includes(row.status);
                         return (
@@ -5345,6 +5388,65 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                     ))}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {scheduleView === 'calendar' && (
+              <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+                <div className="bg-white rounded-3xl shadow-sm border border-zinc-200 overflow-hidden">
+                  <div className="p-5 border-b border-zinc-100 flex items-center justify-between gap-3">
+                    <button type="button" onClick={() => {
+                      const [year, month] = calendarMonth.split('-').map(Number);
+                      const previous = new Date(year, month - 2, 1);
+                      const nextMonth = `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`;
+                      setCalendarMonth(nextMonth);
+                      setSelectedCalendarDate(`${nextMonth}-01`);
+                    }} className="p-2.5 rounded-xl bg-zinc-100 text-zinc-600 hover:bg-black hover:text-white"><ChevronLeft className="w-4 h-4"/></button>
+                    <div className="text-center"><h3 className="font-black uppercase tracking-tight text-slate-900 capitalize">{teacherCalendarModel.monthLabel}</h3><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">Calendario escolar</p></div>
+                    <button type="button" onClick={() => {
+                      const [year, month] = calendarMonth.split('-').map(Number);
+                      const following = new Date(year, month, 1);
+                      const nextMonth = `${following.getFullYear()}-${String(following.getMonth() + 1).padStart(2, '0')}`;
+                      setCalendarMonth(nextMonth);
+                      setSelectedCalendarDate(`${nextMonth}-01`);
+                    }} className="p-2.5 rounded-xl bg-zinc-100 text-zinc-600 hover:bg-black hover:text-white"><ChevronRight className="w-4 h-4"/></button>
+                  </div>
+                  <div className="p-3 sm:p-5">
+                    <div className="grid grid-cols-7 gap-1 mb-2">{['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(dayLabel => <div key={dayLabel} className="py-2 text-center text-[9px] font-black uppercase tracking-widest text-zinc-400">{dayLabel}</div>)}</div>
+                    <div className="grid grid-cols-7 gap-1.5">
+                      {teacherCalendarModel.cells.map((calendarDate, index) => {
+                        if (!calendarDate) return <div key={`empty-${index}`} className="aspect-square"/>;
+                        const events = teacherCalendarModel.eventsByDate[calendarDate] || [];
+                        const isSelected = selectedCalendarDate === calendarDate;
+                        const isToday = calendarDate === getTodayLocalString();
+                        return (
+                          <button key={calendarDate} type="button" onClick={() => setSelectedCalendarDate(calendarDate)} className={`aspect-square rounded-xl border flex flex-col items-center justify-center gap-1 transition-all ${isSelected ? 'bg-black text-white border-black shadow-md' : isToday ? 'bg-blue-50 text-blue-900 border-blue-200' : 'bg-white text-slate-800 border-zinc-100 hover:border-zinc-300'}`}>
+                            <span className="text-xs sm:text-sm font-black">{Number(calendarDate.slice(-2))}</span>
+                            <span className="flex items-center gap-0.5 min-h-[5px]">
+                              {events.slice(0, 3).map((event, eventIndex) => <span key={`${event.type}-${eventIndex}`} className={`w-1.5 h-1.5 rounded-full ${event.type === 'vacation' ? 'bg-purple-500' : event.type === 'holiday' ? 'bg-amber-500' : 'bg-blue-500'} ${isSelected ? 'ring-1 ring-white' : ''}`}/>) }
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <aside className="bg-white rounded-3xl shadow-sm border border-zinc-200 p-5 h-fit">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Día seleccionado</p>
+                  <h3 className="text-lg font-black text-slate-900 mt-1">{formatDateSpanish(selectedCalendarDate)}</h3>
+                  <div className="space-y-2 mt-5">
+                    {teacherCalendarModel.selectedEvents.length === 0 ? (
+                      <p className="text-xs font-bold text-zinc-400 bg-zinc-50 rounded-xl p-4">No hay vacaciones ni festivos registrados para este día.</p>
+                    ) : teacherCalendarModel.selectedEvents.map((event, index) => (
+                      <div key={`${event.type}-${index}`} className={`rounded-xl border p-3 text-xs font-black ${event.type === 'vacation' ? 'bg-purple-50 border-purple-100 text-purple-800' : event.type === 'holiday' ? 'bg-amber-50 border-amber-100 text-amber-800' : 'bg-blue-50 border-blue-100 text-blue-800'}`}>{event.label}</div>
+                    ))}
+                  </div>
+                  <div className="border-t border-zinc-100 mt-5 pt-5">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Sedes de tu horario</p>
+                    <p className="text-xs font-bold text-zinc-600">{teacherCalendarModel.assignedCenters.length > 0 ? teacherCalendarModel.assignedCenters.map(center => center.name).join(' · ') : 'Sin sede asignada'}</p>
+                  </div>
+                </aside>
               </div>
             )}
           </div>
@@ -5826,7 +5928,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                     )}
                   </div>
 
-                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest text-center mt-6">* La proyección de vacaciones se calcula matemáticamente en base a la media diaria de tu mes anterior. Los ajustes administrativos se aplican al total final visible.</p>
+                  <p className="text-[10px] font-bold text-zinc-500 text-center mt-6 leading-relaxed">Las vacaciones solo computan cuando coinciden con tus días habituales de trabajo, conforme al artículo 22 del II Convenio colectivo autonómico de enseñanza y formación no reglada de Cataluña. Las horas se calculan según la media de tu jornada durante los últimos 11 meses disponibles, de acuerdo con la doctrina del Tribunal Supremo (STS 394/2020, de 22 de mayo). Los ajustes administrativos se aplican al total final visible.</p>
                </div>
                <Music className="absolute -bottom-12 -right-12 w-80 h-80 text-zinc-900/40 rotate-12 pointer-events-none" />
             </div>

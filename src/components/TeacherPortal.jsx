@@ -458,6 +458,11 @@ const NON_COMPUTABLE_REASONS = {
     tag: 'ÚLTIMA HORA SIN ALUMNOS',
     detail: 'Todos los alumnos activos faltaron y no quedaban más clases computables después. No se aplica protocolo de hora muerta.'
   },
+  last_minute_class_not_taught: {
+    label: 'Clase no impartida por incidencia de última hora',
+    tag: 'CLASE NO IMPARTIDA',
+    detail: 'La clase no llegó a impartirse por una incidencia de última hora comunicada por el profesor. La hora no computa y la escuela conserva la relación de alumnos afectados.'
+  },
   legacy_renounced: {
     label: 'Hora no computable registrada sin motivo específico',
     tag: 'HORA NO COMPUTABLE',
@@ -2736,6 +2741,25 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
     return recordsForSelectedDate.map(record => {
       const students = record.students || [];
 
+      if (record.nonComputableReason === 'last_minute_class_not_taught') {
+        const affectedStudents = students
+          .map(student => `- ${formatAttendanceStudentName(student)}`)
+          .join('\n') || '- Ninguno';
+        const incidentCause = String(record.incidentCause || record.nonComputableDetail || 'No especificada').trim();
+
+        return `
+CLASE: ${record.time} - ${record.subject} (NO IMPARTIDA)
+Sede: ${getClassCenterName(record)} (${getClassRoomName(record)})
+Profesor: ${record.teacher}
+Estado de hora: NO COMPUTABLE - Clase no impartida por incidencia de última hora
+Causa comunicada: ${incidentCause}
+Total alumnos afectados: ${students.length}
+
+Alumnos a quienes la escuela debe una clase:
+${affectedStudents}
+        `.trim();
+      }
+
       const present = students
         .filter(s => s.status === 'present')
         .map(s => `- ${formatAttendanceStudentName(s)}`)
@@ -3724,6 +3748,103 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
     } catch (error) {
       console.error(error);
       showNotification({ type: 'error', text: 'Error al cancelar la clase temporalmente.' });
+    }
+  };
+
+  const markLastMinuteClassNotTaught = async (classData) => {
+    if (!user || !classData?.id) return;
+
+    const today = getTodayLocalString();
+    if (date > today) {
+      showNotification({ type: 'error', text: 'Esta opción solo puede utilizarse el mismo día o después de la clase.' });
+      return;
+    }
+
+    const existingRecord = records.find(record => record.date === date && record.classId === classData.id);
+    if (existingRecord) {
+      showNotification({ type: 'error', text: 'Esta clase ya tiene un registro guardado.' });
+      return;
+    }
+
+    const cause = window.prompt(
+      `Indica brevemente por qué no se ha podido impartir la clase de ${classData.subject} de las ${classData.time}h.\n\nEste motivo aparecerá en el informe diario.`,
+      ''
+    );
+    if (cause === null) return;
+    const cleanCause = String(cause || '').trim();
+    if (!cleanCause) {
+      showNotification({ type: 'error', text: 'Debes indicar la causa de la clase no impartida.' });
+      return;
+    }
+
+    const affectedStudents = getEffectiveActiveStudentsForClass(classData, date);
+    const affectedNames = affectedStudents.map(student => student.name || 'Alumno').join(', ') || 'Ningún alumno activo';
+    const confirmed = window.confirm(
+      `¿Confirmas que esta clase NO se ha impartido?\n\n${classData.subject} · ${formatDateSpanish(date)} · ${classData.time}h\nCausa: ${cleanCause}\nAlumnos afectados: ${affectedNames}\n\nLa hora quedará como no computable y no se crearán tickets ni sustituciones.`
+    );
+    if (!confirmed) return;
+
+    const location = getLocationIdentity(
+      classData.centerId || classData.sede || 'Tarragona',
+      classData.roomId || classData.sala || 'Sala 1'
+    );
+    const nonComputableInfo = getNonComputableInfo('last_minute_class_not_taught');
+    const recordId = `no-impartida-${classData.id}-${date}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const savedAt = new Date().toISOString();
+    const studentsSnapshot = affectedStudents.map(student => ({
+      ...student,
+      status: 'class_not_taught',
+      classNotTaught: true
+    }));
+
+    const savedRecord = {
+      id: recordId,
+      classId: classData.id,
+      date,
+      time: classData.time,
+      sede: getClassCenterName(classData),
+      sala: getClassRoomName(classData),
+      centerId: classData.centerId || location.centerId,
+      roomId: classData.roomId || location.roomId,
+      teacher: classData.teacher || getOfficialTeacherName(),
+      subject: classData.subject,
+      capacity: classData.capacity || '',
+      duration: classData.duration || 60,
+      temporaryClassChangeId: classData.temporaryClassChange?.id || '',
+      officialSchedule: classData.officialSchedule || null,
+      notes: '',
+      classNotes: classData.notes || '',
+      classNotesUpdatedAt: classData.notesUpdatedAt || null,
+      classNotesUpdatedBy: classData.notesUpdatedBy || '',
+      classNotesUpdatedByName: classData.notesUpdatedByName || '',
+      isRenounced: true,
+      isNonComputable: true,
+      nonComputableReason: 'last_minute_class_not_taught',
+      nonComputableLabel: nonComputableInfo.label,
+      nonComputableDetail: nonComputableInfo.detail,
+      incidentCause: cleanCause,
+      incidentReportedAt: savedAt,
+      incidentReportedByUid: user.uid,
+      incidentReportedByEmail: user.email || '',
+      incidentReportedByName: getOfficialTeacherName(),
+      schoolOwesClass: true,
+      affectedStudentIds: affectedStudents.map(student => student.id).filter(Boolean),
+      affectedStudentNames: affectedStudents.map(student => student.name || 'Alumno'),
+      students: studentsSnapshot
+    };
+
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), savedRecord);
+
+      if (classData.refPath) {
+        const updatedCancelledDates = [...new Set([...(classData.cancelledDates || []), date])];
+        await setDoc(doc(db, classData.refPath), { cancelledDates: updatedCancelledDates }, { merge: true });
+      }
+
+      showNotification({ type: 'success', text: 'Clase no impartida registrada. La hora no computa y constará en el informe.' });
+    } catch (error) {
+      console.error('No se pudo registrar la clase no impartida:', error);
+      showNotification({ type: 'error', text: 'No se pudo registrar la incidencia. La clase sigue pendiente.' });
     }
   };
 
@@ -4819,6 +4940,17 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                               <button onClick={() => startSession(item.data)} className="w-full sm:w-auto bg-zinc-100 hover:bg-black hover:text-white text-black font-bold py-2.5 px-5 rounded-xl inline-flex items-center justify-center gap-2 transition-all text-xs uppercase tracking-widest">
                                 <Play className="w-4 h-4" /> Pasar Lista
                               </button>
+
+                              {!isFutureDate && (
+                                <button
+                                  onClick={() => markLastMinuteClassNotTaught(item.data)}
+                                  className="p-2.5 text-rose-500 hover:text-white hover:bg-rose-600 rounded-xl transition-colors shrink-0 border border-rose-100 bg-rose-50"
+                                  title="Marcar como no impartida por una incidencia de última hora"
+                                  aria-label="Marcar clase como no impartida"
+                                >
+                                  <AlertCircle className="w-5 h-5" />
+                                </button>
+                              )}
                               
                               <button onClick={() => cancelClassForToday(item.data)} className="p-2.5 text-zinc-400 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-colors shrink-0" title="Cancelar solo por hoy (Sustitución)">
                                 <CalendarOff className="w-5 h-5" />

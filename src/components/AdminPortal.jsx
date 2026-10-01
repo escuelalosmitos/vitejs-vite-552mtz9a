@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
+import { calculateVacationPayroll } from './payrollVacationUtils';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -2074,7 +2075,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
-    hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 },
+    hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 }, fixedCostsNotes: '',
     generalTasks: [], prizes: { mensual: '', trimestral: '', anual: '' }, teachersList: [], teacherColors: {}, teacherEmails: {},
     roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos,
     centers: normalizeCenters([], {})
@@ -10575,7 +10576,7 @@ Coordinación Los Mitos.`
       if (!payroll[teacherKey]) payroll[teacherKey] = {
         name: officialTeacherNames.get(teacherKey),
         realHours: 0,
-        vacationHours: 0,
+        scheduledVacationHoursByDate: {},
         adjustmentHours: 0,
         adjustments: []
       };
@@ -10616,17 +10617,28 @@ Coordinación Los Mitos.`
         if (!hasActiveStudentThatDate) return;
         const tName = ensureTeacher(classData.teacher);
         const duration = Number(String(classData.duration || 60).replace(',', '.')) || 60;
-        payroll[tName].vacationHours += (duration / 60);
+        payroll[tName].scheduledVacationHoursByDate[vacationDate] = (
+          payroll[tName].scheduledVacationHoursByDate[vacationDate] || 0
+        ) + (duration / 60);
       });
     });
 
     return Object.entries(payroll).map(([teacherKey, data]) => {
-      const totalHours = data.realHours + data.vacationHours + data.adjustmentHours;
+      const teacherRecords = allRecords.filter(record => normalizeTeacherKey(record.teacher) === teacherKey);
+      const vacationCalculation = calculateVacationPayroll({
+        targetMonth,
+        vacationDates: thisMonthVacationDates,
+        records: teacherRecords,
+        scheduledHoursByDate: data.scheduledVacationHoursByDate
+      });
+      const totalHours = data.realHours + vacationCalculation.vacationHours + data.adjustmentHours;
       return {
         name: data.name,
         teacherKey,
         realHours: data.realHours,
-        vacationHours: data.vacationHours,
+        vacationHours: vacationCalculation.vacationHours,
+        vacationDays: vacationCalculation.vacationDays,
+        vacationCalculation,
         adjustmentHours: data.adjustmentHours,
         totalHours,
         adjustments: data.adjustments,
@@ -10652,7 +10664,7 @@ Coordinación Los Mitos.`
     const blocks = teachersPayroll.map(teacher => [
       `Profesor/a: ${teacher.name}`,
       `Horas totales liquidables: ${formatHours(teacher.totalHours)} h`,
-      ...(teacher.vacationHours > 0 ? [`Horas de vacaciones (incluidas en el total): ${formatHours(teacher.vacationHours)} h`] : []),
+      ...(teacher.vacationHours > 0 ? [`Horas de vacaciones (${teacher.vacationDays} días computables; incluidas en el total): ${formatHours(teacher.vacationHours)} h`] : []),
       `Salario: ${formatSalary(teacher.earnings)} €`
     ].join('\n'));
     const textToCopy = `INFORME DE HORAS Y NÓMINAS · ${monthLabel}\n\n${blocks.join('\n\n')}`;
@@ -14867,7 +14879,7 @@ ${startDateWarning}
             {teacherPanelTab === 'payroll' && (
               <div className="space-y-6">
                 <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 text-xs font-bold text-amber-900 leading-relaxed flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <p>Las vacaciones se calculan automáticamente a partir de las clases habituales que coinciden con las fechas marcadas como vacaciones y se suman al total liquidable. Los ajustes manuales no alteran los registros de asistencia.</p>
+                  <p>Las vacaciones solo computan cuando coinciden con los días habituales de trabajo del profesor. Su valor se calcula con la media de jornada de los 11 meses anteriores o, si todavía no existe historial, con su horario activo. Los ajustes manuales no alteran los registros de asistencia.</p>
                   <button onClick={copyPayrollReport} className="bg-black text-white px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 flex items-center justify-center gap-2 shadow-md shrink-0">
                     <ClipboardList className="w-4 h-4"/> Copiar informe para el despacho
                   </button>
@@ -15550,6 +15562,17 @@ ${startDateWarning}
                       </div>
                     </div>
                   ))}
+                  <div className="pt-3 border-t border-zinc-100">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-2">Detalle de los gastos incluidos</label>
+                    <textarea
+                      value={settings.fixedCostsNotes || ''}
+                      onChange={event => setSettings({ ...settings, fixedCostsNotes: event.target.value })}
+                      placeholder="Alquiler, electricidad, agua, seguros, gestoría…"
+                      rows={4}
+                      className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-sm font-semibold text-slate-700 outline-none focus:border-black resize-y"
+                    />
+                    <p className="text-[10px] font-semibold text-zinc-400 mt-2">Este texto es solo informativo y no modifica el total numérico.</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -15676,6 +15699,9 @@ ${startDateWarning}
             {/* CALENDARIO ESCOLAR */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
+              <div className="mb-5 bg-purple-50 border border-purple-100 text-purple-900 rounded-2xl p-4 text-xs font-bold leading-relaxed">
+                Las fechas marcadas como vacaciones cierran la escuela, pero no generan automáticamente horas para todo el profesorado. Solo se computan cuando coinciden con sus días habituales de trabajo, y su valor se calcula según la media de jornada de los 11 meses anteriores o del historial disponible.
+              </div>
               <div className="flex flex-col sm:flex-row gap-2 mb-6">
                 <input id="adminDateInput" type="date" className="flex-1 p-3 bg-zinc-50 border border-zinc-200 rounded-xl outline-none font-bold text-sm" />
                 <select id="adminDateType" className="flex-[2] p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-black uppercase">

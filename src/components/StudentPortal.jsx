@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
 import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
 import { buildMitoboxReservationId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
+import GymusikStudent from './GymusikStudent';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -791,7 +792,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
     return `${centerName}${roomName ? ` · ${roomName}` : ''}`;
   };
   const portalStartDate = String(profile?.classStartDate || '').trim();
-  const hasServicePortalAccess = Boolean(profile?.hasMitobox || profile?.hasMitoverso);
+  const hasServicePortalAccess = Boolean(profile?.hasMitobox || profile?.hasMitoverso || profile?.hasGymusik);
   const isPortalAccessScheduled = Boolean(!hasServicePortalAccess && portalStartDate && portalStartDate > todayStr);
   const maintenanceOptions = useMemo(() => [
     getMaintenancePeriodForMonths(1, timeRules.isLate),
@@ -3309,6 +3310,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
               (Array.isArray(linkedData.classes) && linkedData.classes.length > 0)
               || linkedData.hasMitobox === true
               || linkedData.hasMitoverso === true
+              || linkedData.hasGymusik === true
             );
           if (linkedIsUsable) studentDocument = linkedStudent;
         }
@@ -3323,7 +3325,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
           const score = data => (
             (data.authUid === user.uid ? 100 : 0)
             + (String(data.globalStatus || 'activo').toLowerCase() !== 'baja' ? 10 : 0)
-            + (data.hasMitobox === true || data.hasMitoverso === true ? 5 : 0)
+            + (data.hasMitobox === true || data.hasMitoverso === true || data.hasGymusik === true ? 5 : 0)
             + (Array.isArray(data.classes) && data.classes.length > 0 ? 1 : 0)
           );
           return score(rightData) - score(leftData);
@@ -3337,6 +3339,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
             (Array.isArray(studentData.classes) && studentData.classes.length > 0)
             || studentData.hasMitobox === true
             || studentData.hasMitoverso === true
+            || studentData.hasGymusik === true
           );
         if (entitled) setProfile({ id: studentDocument.id, ...studentData });
       }
@@ -3359,6 +3362,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         classes: onboarding.classId ? [onboarding.classId] : [],
         hasMitobox: false,
         hasMitoverso: false,
+        hasGymusik: false,
         triviaPoints: 0,
         triviaVictories: 0
     };
@@ -4142,7 +4146,7 @@ END:VCALENDAR`;
       if (isServiceOnlyStudent) {
         return {
           title: 'Dar de baja mis servicios',
-          description: 'Solicita la cancelación de tus servicios activos de Mitobox o Mitoverso.',
+          description: 'Solicita la cancelación de tus servicios activos de Mitobox, Mitoverso o Gymusik.',
           notice: 'Al tramitarse la baja dejarás de acceder al área de usuario si no conservas ninguna clase ni otro servicio activo.',
           sourceLabel: 'Servicios activos',
           placeholder: bajaPlaceholder
@@ -5402,7 +5406,7 @@ END:VCALENDAR`;
                   <div className="bg-white/10 p-3 rounded-2xl"><Sparkles className="w-7 h-7 text-blue-300"/></div>
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tight">Tus servicios están activos</h3>
-                    <p className="text-sm font-medium text-slate-300 mt-2 leading-relaxed">Puedes consultar el tablón, el calendario y los talleres. En Extras encontrarás el acceso a {profile.hasMitobox && profile.hasMitoverso ? 'Mitobox y Mitoverso' : profile.hasMitobox ? 'Mitobox para reservar una sala' : 'Mitoverso'}.</p>
+                    <p className="text-sm font-medium text-slate-300 mt-2 leading-relaxed">Puedes consultar el tablón, el calendario y los talleres. En Extras encontrarás tus servicios activos de Mitobox, Mitoverso o Gymusik.</p>
                   </div>
                 </div>
               </div>
@@ -6001,7 +6005,7 @@ END:VCALENDAR`;
                 </div>
                 <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
                 <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras. Tienes disponibles pianos, guitarras, amplificadores... ¡Todo lo que veas!
+                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
                 </p>
                 {profile?.hasMitobox && upcomingMitoboxReservations.length > 0 && (
                   <div className="mb-5 space-y-2">
@@ -6041,6 +6045,8 @@ END:VCALENDAR`;
                   </button>
                 )}
               </div>
+
+              <GymusikStudent db={db} appId={appId} profile={profile}/>
 
             </div>
             </section>
@@ -6433,7 +6439,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isBajaLocked ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${isBajaLocked ? 'text-zinc-400' : 'text-red-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isServiceOnlyStudent ? 'Dar de baja mis servicios' : 'Dar de Baja'}</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Cancela Mitobox o Mitoverso' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Cancela Mitobox, Mitoverso o Gymusik' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
               </button>
 
               <button

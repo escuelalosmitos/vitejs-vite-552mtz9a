@@ -1,0 +1,168 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Calendar, Download, Dumbbell, MapPin, Users } from 'lucide-react';
+import { collection, doc, onSnapshot, query, runTransaction, setDoc, where } from 'firebase/firestore';
+import {
+  buildGymusikReservationId, canCancelGymusikReservationWithCredit,
+  getGymusikCreditsRemaining, getGymusikMonth,
+  normalizeGymusikConfig, sortGymusikSessions
+} from './gymusikUtils';
+
+const nowIso = () => new Date().toISOString();
+const todayLocal = () => {
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  return new Date(now.getTime() - offset * 60000).toISOString().slice(0, 10);
+};
+const displayDate = value => String(value || '').slice(0, 10).split('-').reverse().join('/');
+const escapeIcs = value => String(value || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+const toIcsDate = date => date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+
+export default function GymusikStudent({ db, appId, profile }) {
+  const [config, setConfig] = useState(normalizeGymusikConfig());
+  const [member, setMember] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [reservations, setReservations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  const [notice, setNotice] = useState('');
+
+  useEffect(() => {
+    if (!profile?.id) return undefined;
+    let ready = 0;
+    const markReady = () => { ready += 1; if (ready >= 4) setLoading(false); };
+    const studentEmail = String(profile.email || '').trim().toLowerCase();
+    const unsubs = [
+      onSnapshot(doc(db, 'artifacts', appId, 'gymusikSettings', 'main'), snapshot => { setConfig(normalizeGymusikConfig(snapshot.exists() ? snapshot.data() : {})); markReady(); }, () => markReady()),
+      onSnapshot(doc(db, 'artifacts', appId, 'gymusikMembers', String(profile.id)), snapshot => { setMember(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null); markReady(); }, () => markReady()),
+      onSnapshot(collection(db, 'artifacts', appId, 'gymusikSessions'), snapshot => { setSessions(sortGymusikSessions(snapshot.docs.map(item => ({ id: item.id, ...item.data() })))); markReady(); }, () => markReady()),
+      onSnapshot(query(collection(db, 'artifacts', appId, 'gymusikReservations'), where('studentEmail', '==', studentEmail)), snapshot => { setReservations(snapshot.docs.map(item => ({ id: item.id, ...item.data() }))); markReady(); }, () => markReady())
+    ];
+    return () => unsubs.forEach(unsub => unsub());
+  }, [db, appId, profile?.id, profile?.email]);
+
+  const upcomingSessions = useMemo(() => sessions.filter(session => (
+    session.status === 'published'
+    && session.date >= todayLocal()
+    && (!member?.instrument || session.instrument === member.instrument)
+  )), [sessions, member]);
+
+  const ownReservationBySession = useMemo(() => new Map(reservations.map(reservation => [reservation.sessionId, reservation])), [reservations]);
+  const currentMonth = getGymusikMonth(todayLocal());
+  const currentCredits = getGymusikCreditsRemaining({ reservations, studentId: profile?.id, month: currentMonth, monthlyCredits: config.monthlyCredits });
+  const formationCount = Math.max(0, Number(config.formationCount || 0));
+  const missingPeople = Math.max(0, config.minimumMembers - formationCount);
+  const isActiveMember = member?.status === 'active' && profile?.hasGymusik === true;
+  const isCurrentStudent = member ? member.isCurrentStudent !== false : Array.isArray(profile?.classes) && profile.classes.length > 0;
+  const memberPrice = isCurrentStudent ? config.studentPrice : config.externalPrice;
+
+  const notify = text => { setNotice(text); window.setTimeout(() => setNotice(''), 4000); };
+
+  const requestPreenrollment = async () => {
+    setBusyId('preenroll');
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'gymusikMembers', String(profile.id)), {
+        studentId: String(profile.id), studentName: profile.name || '', studentEmail: String(profile.email || '').trim().toLowerCase(),
+        instrument: config.instruments?.[0] || 'Guitarra', status: 'preenrolled', isCurrentStudent: Array.isArray(profile.classes) && profile.classes.length > 0,
+        createdAt: nowIso(), updatedAt: nowIso(), createdBy: 'student'
+      }, { merge: true });
+      notify('Preinscripción enviada. No se realizará ningún cobro hasta que Administración active el servicio.');
+    } catch (error) { console.error(error); alert(`No se pudo enviar la preinscripción: ${error.message}`); } finally { setBusyId(''); }
+  };
+
+  const reserveSession = async session => {
+    if (!isActiveMember || !config.active) return;
+    const month = getGymusikMonth(session.date);
+    const creditsRemaining = getGymusikCreditsRemaining({ reservations, studentId: profile.id, month, monthlyCredits: config.monthlyCredits });
+    if (creditsRemaining < 1) return alert(`Ya has comprometido tus ${config.monthlyCredits} créditos de ${month}.`);
+    const reservationId = buildGymusikReservationId(session.id, profile.id);
+    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
+    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservationId);
+    setBusyId(session.id);
+    try {
+      let finalStatus = 'confirmed';
+      await runTransaction(db, async transaction => {
+        const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
+        if (!sessionSnapshot.exists()) throw new Error('La sesión ya no está disponible.');
+        const liveSession = sessionSnapshot.data();
+        if (liveSession.status !== 'published') throw new Error('La sesión ya no admite reservas.');
+        const previous = reservationSnapshot.exists() ? reservationSnapshot.data() : null;
+        if (previous && ['confirmed', 'waitlist', 'attended', 'no_show'].includes(previous.status)) throw new Error('Ya tienes una reserva para esta sesión.');
+        const reservedCount = Math.max(0, Number(liveSession.reservedCount || 0));
+        const waitlistCount = Math.max(0, Number(liveSession.waitlistCount || 0));
+        const capacity = Math.max(1, Number(liveSession.capacity || 1));
+        finalStatus = reservedCount < capacity ? 'confirmed' : 'waitlist';
+        transaction.set(reservationRef, {
+          sessionId: session.id, sessionDate: liveSession.date, sessionTime: liveSession.time,
+          instrument: liveSession.instrument, centerId: liveSession.centerId || '', sede: liveSession.sede || '', roomId: liveSession.roomId || '', sala: liveSession.sala || '',
+          teacherName: liveSession.teacherName || '', teacherEmail: String(liveSession.teacherEmail || '').trim().toLowerCase(),
+          studentId: String(profile.id), studentName: profile.name || '', studentEmail: String(profile.email || '').trim().toLowerCase(),
+          status: finalStatus, creditMonth: month, creditConsumed: false,
+          createdAt: previous?.createdAt || nowIso(), updatedAt: nowIso(), createdBy: 'student'
+        }, { merge: true });
+        transaction.update(sessionRef, {
+          reservedCount: reservedCount + (finalStatus === 'confirmed' ? 1 : 0),
+          waitlistCount: waitlistCount + (finalStatus === 'waitlist' ? 1 : 0),
+          lastReservationId: reservationId, updatedAt: nowIso()
+        });
+      });
+      notify(finalStatus === 'confirmed' ? 'Reserva Gymusik confirmada.' : 'La sesión está completa: te hemos añadido a la lista de espera.');
+    } catch (error) { console.error(error); alert(error.message || 'No se pudo completar la reserva.'); } finally { setBusyId(''); }
+  };
+
+  const cancelReservation = async (session, reservation) => {
+    if (!reservation || !['confirmed', 'waitlist'].includes(reservation.status)) return;
+    const returnsCredit = reservation.status === 'waitlist' || canCancelGymusikReservationWithCredit({ session, cancellationHours: config.cancellationHours });
+    const warning = returnsCredit ? 'Recuperarás el crédito.' : `Faltan menos de ${config.cancellationHours} horas: la cancelación consumirá el crédito.`;
+    if (!window.confirm(`¿Cancelar tu plaza?\n\n${warning}`)) return;
+    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
+    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservation.id);
+    setBusyId(session.id);
+    try {
+      await runTransaction(db, async transaction => {
+        const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
+        if (!sessionSnapshot.exists() || !reservationSnapshot.exists()) return;
+        const liveSession = sessionSnapshot.data(); const liveReservation = reservationSnapshot.data();
+        if (!['confirmed', 'waitlist'].includes(liveReservation.status)) return;
+        transaction.update(reservationRef, { status: 'cancelled', cancelledAt: nowIso(), cancelledBy: 'student', creditConsumed: !returnsCredit, creditReturned: returnsCredit, updatedAt: nowIso() });
+        transaction.update(sessionRef, {
+          reservedCount: Math.max(0, Number(liveSession.reservedCount || 0) - (liveReservation.status === 'confirmed' ? 1 : 0)),
+          waitlistCount: Math.max(0, Number(liveSession.waitlistCount || 0) - (liveReservation.status === 'waitlist' ? 1 : 0)),
+          promotionPending: liveReservation.status === 'confirmed' && Number(liveSession.waitlistCount || 0) > 0,
+          lastReservationId: reservation.id, updatedAt: nowIso()
+        });
+      });
+      notify(returnsCredit ? 'Reserva cancelada y crédito recuperado.' : 'Reserva cancelada fuera de plazo; el crédito queda consumido.');
+    } catch (error) { console.error(error); alert(error.message || 'No se pudo cancelar.'); } finally { setBusyId(''); }
+  };
+
+  const downloadIcs = session => {
+    const start = new Date(`${session.date}T${session.time || '00:00'}:00`);
+    const end = new Date(start.getTime() + Math.max(15, Number(session.duration || 60)) * 60000);
+    const content = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Escuela Los Mitos//Gymusik//ES','CALSCALE:GREGORIAN','BEGIN:VEVENT',`UID:gymusik-${session.id}@escuelalosmitos.com`,`DTSTAMP:${toIcsDate(new Date())}`,`DTSTART:${toIcsDate(start)}`,`DTEND:${toIcsDate(end)}`,`SUMMARY:${escapeIcs(`Gymusik · ${session.instrument}`)}`,`LOCATION:${escapeIcs(`${session.sede} · ${session.sala}`)}`,`DESCRIPTION:${escapeIcs(session.content || 'Entrenamiento musical dirigido')}`,'END:VEVENT','END:VCALENDAR'].join('\r\n');
+    const blob = new Blob([content], { type: 'text/calendar;charset=utf-8' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `Gymusik_${session.date}_${String(session.time || '').replace(':', '')}.ics`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
+  };
+
+  return (
+    <div className="md:col-span-2 bg-white rounded-3xl shadow-sm border-2 border-zinc-100 overflow-hidden relative">
+      {notice && <div className="m-5 mb-0 p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs font-bold leading-relaxed">{notice}</div>}
+      <div className="p-6 bg-zinc-950 text-white relative overflow-hidden"><Dumbbell className="w-28 h-28 absolute -right-5 -bottom-8 text-zinc-800 rotate-12"/><div className="relative z-10 flex items-start justify-between gap-4"><div><p className="text-[9px] font-black uppercase tracking-[.25em] text-emerald-400">Entrenamiento musical dirigido</p><h3 className="text-3xl font-black uppercase tracking-tight mt-1">Gymusik</h3><p className="text-sm font-medium text-zinc-300 mt-2 max-w-xl">Entrena cambios, ritmos y recursos concretos mediante práctica repetitiva, corrección y acompañamiento.</p></div>{isActiveMember && <span className="shrink-0 bg-emerald-400 text-emerald-950 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest">Suscripción activa</span>}</div></div>
+      <div className="p-6">
+        {loading ? <p className="py-8 text-center text-xs font-black uppercase tracking-widest text-zinc-400">Cargando Gymusik…</p> : !member ? (
+          <div className="grid md:grid-cols-[1fr_auto] gap-5 items-center"><div><p className="font-black text-lg">Primer grupo de guitarra en formación</p><p className="text-sm font-medium text-zinc-500 mt-2">La cuota será de <b>{memberPrice} €/mes</b> e incluirá {config.monthlyCredits} sesiones. No se realizará ningún cobro hasta alcanzar el mínimo y confirmar la apertura.</p>{missingPeople > 0 && <p className="text-xs font-black uppercase tracking-widest text-amber-700 mt-3">Faltan {missingPeople} persona(s) para el mínimo</p>}</div><button disabled={busyId === 'preenroll'} onClick={requestPreenrollment} className="px-6 py-4 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-widest disabled:opacity-50">Preinscribirme</button></div>
+        ) : member.status === 'preenrolled' ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5"><p className="font-black text-amber-950">Estás en la preinscripción de {member.instrument}</p><p className="text-sm font-medium text-amber-800 mt-2">No se realizará ningún cobro hasta que Administración confirme que el grupo puede comenzar.{missingPeople > 0 ? ` Faltan ${missingPeople} persona(s) para alcanzar el mínimo.` : ' Ya se ha alcanzado el mínimo y la escuela está preparando la apertura.'}</p></div>
+        ) : member.status === 'cancelled' ? <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-5 text-sm font-bold text-zinc-500">Tu suscripción a Gymusik no está activa. Contacta con Administración si quieres volver.</div> : member.status === 'paused' ? <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-sm font-bold text-blue-800">Tu suscripción a Gymusik está en pausa. Mientras dure la pausa no podrás reservar sesiones. Contacta con Administración para reactivarla.</div> : (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"><div className="bg-emerald-50 p-4 rounded-2xl"><span className="block text-2xl font-black text-emerald-800">{currentCredits}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Créditos este mes</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{member.instrument}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Instrumento</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{config.cancellationHours} h</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Cancelación</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{memberPrice} €</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Cuota mensual</span></div></div>
+            {!config.active ? <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl text-sm font-bold text-amber-800">La escuela todavía no ha activado el calendario de Gymusik.</div> : upcomingSessions.length === 0 ? <div className="p-7 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl text-center text-xs font-black uppercase tracking-widest text-zinc-400">No hay próximas sesiones publicadas de {member.instrument}.</div> : <div className="space-y-3">{upcomingSessions.map(session => {
+              const reservation = ownReservationBySession.get(session.id); const active = reservation && ['confirmed', 'waitlist'].includes(reservation.status); const full = Number(session.reservedCount || 0) >= Number(session.capacity || 1);
+              return <div key={session.id} className="border border-zinc-200 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><span className="bg-black text-white px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{session.instrument}</span>{reservation?.status === 'confirmed' && <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Reserva confirmada</span>}{reservation?.status === 'waitlist' && <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">En lista de espera</span>}</div><p className="font-black mt-2">{session.title}</p><p className="text-sm font-medium text-zinc-500 mt-1">{session.content}</p><div className="flex flex-wrap gap-3 mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5"/>{displayDate(session.date)} · {session.time}h</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/>{session.sede} · {session.sala}</span><span className="flex items-center gap-1"><Users className="w-3.5 h-3.5"/>{session.reservedCount || 0}/{session.capacity}</span></div></div><div className="flex flex-wrap gap-2 lg:justify-end">{reservation?.status === 'confirmed' && <button onClick={() => downloadIcs(session)} className="p-3 bg-zinc-100 text-zinc-700 rounded-xl" title="Descargar calendario"><Download className="w-4 h-4"/></button>}{active ? <button disabled={busyId === session.id} onClick={() => cancelReservation(session, reservation)} className="px-4 py-3 bg-red-50 text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50">Cancelar</button> : <button disabled={busyId === session.id || getGymusikCreditsRemaining({ reservations, studentId: profile.id, month: getGymusikMonth(session.date), monthlyCredits: config.monthlyCredits }) < 1} onClick={() => reserveSession(session)} className="px-5 py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40">{full ? 'Apuntarme a espera' : 'Reservar'}</button>}</div></div>;
+            })}</div>}
+            <p className="text-[10px] font-bold text-zinc-400 mt-5 leading-relaxed">Los créditos caducan al terminar su mes. Cancelando con al menos {config.cancellationHours} horas recuperas el crédito; una cancelación posterior o una ausencia lo consume.</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

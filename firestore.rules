@@ -105,6 +105,7 @@ service cloud.firestore {
           ('classes' in studentData && studentData.classes is list && studentData.classes.size() > 0)
           || ('hasMitobox' in studentData && studentData.hasMitobox == true)
           || ('hasMitoverso' in studentData && studentData.hasMitoverso == true)
+          || ('hasGymusik' in studentData && studentData.hasGymusik == true)
         );
     }
 
@@ -134,6 +135,39 @@ service cloud.firestore {
     function studentHasMitobox(appId) {
       return hasStudentAccess(appId)
         && get(studentRecordPath(appId, get(accessPath(appId)).data.studentId)).data.hasMitobox == true;
+    }
+
+    function gymusikMemberPath(appId, studentId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/gymusikMembers/$(studentId);
+    }
+
+    function studentHasGymusik(appId) {
+      let studentId = ownStudentId(appId);
+      let memberPath = gymusikMemberPath(appId, studentId);
+      return hasStudentAccess(appId)
+        && get(studentRecordPath(appId, studentId)).data.hasGymusik == true
+        && exists(memberPath)
+        && get(memberPath).data.status == 'active';
+    }
+
+    function gymusikSessionPath(appId, sessionId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/gymusikSessions/$(sessionId);
+    }
+
+    function gymusikReservationPath(appId, reservationId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/gymusikReservations/$(reservationId);
+    }
+
+    function gymusikReservationMatchesSession(appId, reservationId, sessionId, expectedStatus) {
+      let reservationData = getAfter(gymusikReservationPath(appId, reservationId)).data;
+      return reservationId is string
+        && sessionId is string
+        && existsAfter(gymusikReservationPath(appId, reservationId))
+        && reservationData.studentId == ownStudentId(appId)
+        && reservationData.studentEmail is string
+        && reservationData.studentEmail.lower() == authEmail()
+        && reservationData.sessionId == sessionId
+        && reservationData.status == expectedStatus;
     }
 
     function mitoboxSlotPath(appId, slotId) {
@@ -406,6 +440,134 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'reservedCount', 'updatedAt', 'lastMutationId'
         ])
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/gymusikSettings/{settingId} {
+      allow read: if isAdmin() || isTeacher(appId) || hasStudentAccess(appId);
+      allow write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/gymusikMembers/{studentId} {
+      allow get: if isAdmin() || isTeacher(appId) || ownsStudentRecord(appId, studentId);
+      allow list: if isAdmin() || isTeacher(appId);
+      allow create: if isAdmin() || (
+        ownsStudentRecord(appId, studentId)
+        && request.resource.data.studentId == studentId
+        && request.resource.data.studentEmail is string
+        && request.resource.data.studentEmail.lower() == authEmail()
+        && request.resource.data.status == 'preenrolled'
+        && request.resource.data.keys().hasOnly([
+          'studentId', 'studentName', 'studentEmail', 'instrument', 'status',
+          'isCurrentStudent', 'createdAt', 'updatedAt', 'createdBy'
+        ])
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/gymusikSessions/{sessionId} {
+      allow read: if isAdmin() || isTeacher(appId) || hasStudentAccess(appId);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        teacherMatchesData(appId, resource.data)
+        && teacherMatchesData(appId, request.resource.data)
+        && request.resource.data.teacherEmail == resource.data.teacherEmail
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'completedAt', 'completedBy', 'updatedAt'
+        ])
+      ) || (
+        studentHasGymusik(appId)
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.capacity == resource.data.capacity
+        && request.resource.data.teacherEmail == resource.data.teacherEmail
+        && request.resource.data.reservedCount >= 0
+        && request.resource.data.waitlistCount >= 0
+        && request.resource.data.reservedCount <= request.resource.data.capacity
+        && request.resource.data.lastReservationId is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'reservedCount', 'waitlistCount', 'lastReservationId',
+          'promotionPending', 'updatedAt'
+        ])
+        && (
+          (
+            request.resource.data.reservedCount == resource.data.reservedCount + 1
+            && request.resource.data.waitlistCount == resource.data.waitlistCount
+            && gymusikReservationMatchesSession(appId, request.resource.data.lastReservationId, sessionId, 'confirmed')
+          )
+          || (
+            request.resource.data.waitlistCount == resource.data.waitlistCount + 1
+            && request.resource.data.reservedCount == resource.data.reservedCount
+            && gymusikReservationMatchesSession(appId, request.resource.data.lastReservationId, sessionId, 'waitlist')
+          )
+          || (
+            request.resource.data.reservedCount == resource.data.reservedCount - 1
+            && request.resource.data.waitlistCount == resource.data.waitlistCount
+            && gymusikReservationMatchesSession(appId, request.resource.data.lastReservationId, sessionId, 'cancelled')
+          )
+          || (
+            request.resource.data.waitlistCount == resource.data.waitlistCount - 1
+            && request.resource.data.reservedCount == resource.data.reservedCount
+            && gymusikReservationMatchesSession(appId, request.resource.data.lastReservationId, sessionId, 'cancelled')
+          )
+        )
+      );
+    }
+
+    match /artifacts/{appId}/gymusikReservations/{reservationId} {
+      allow get: if isAdmin()
+        || teacherMatchesData(appId, resource.data)
+        || studentOwnsResource(appId)
+        || deterministicIdBelongsToStudent(appId, reservationId);
+      allow list: if isAdmin() || teacherMatchesData(appId, resource.data) || studentOwnsResource(appId);
+      allow create: if isAdmin() || (
+        studentHasGymusik(appId)
+        && studentCreatesOwnResource(appId)
+        && request.resource.data.status in ['confirmed', 'waitlist']
+        && request.resource.data.sessionId is string
+        && request.resource.data.teacherEmail is string
+        && existsAfter(gymusikSessionPath(appId, request.resource.data.sessionId))
+        && getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.status == 'published'
+        && request.resource.data.sessionDate == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.date
+        && request.resource.data.sessionTime == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.time
+        && request.resource.data.instrument == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.instrument
+        && request.resource.data.teacherEmail == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.teacherEmail
+        && getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.lastReservationId == reservationId
+      );
+      allow update: if isAdmin() || (
+        teacherMatchesData(appId, resource.data)
+        && teacherMatchesData(appId, request.resource.data)
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.studentEmail == resource.data.studentEmail
+        && request.resource.data.sessionId == resource.data.sessionId
+        && request.resource.data.teacherEmail == resource.data.teacherEmail
+        && request.resource.data.status in ['attended', 'no_show']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'attendanceMarkedAt', 'attendanceMarkedBy',
+          'creditConsumed', 'updatedAt'
+        ])
+      ) || (
+        studentHasGymusik(appId)
+        && studentOwnsResource(appId)
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.studentEmail == resource.data.studentEmail
+        && request.resource.data.sessionId == resource.data.sessionId
+        && request.resource.data.teacherEmail == resource.data.teacherEmail
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'cancelledAt', 'cancelledBy', 'creditConsumed',
+          'creditReturned', 'updatedAt'
+        ])
+        && (
+          (
+            resource.data.status in ['confirmed', 'waitlist']
+            && request.resource.data.status == 'cancelled'
+          )
+          || (
+            resource.data.status == 'cancelled'
+            && request.resource.data.status in ['confirmed', 'waitlist']
+          )
+        )
+        && getAfter(gymusikSessionPath(appId, resource.data.sessionId)).data.lastReservationId == reservationId
       );
       allow delete: if isAdmin();
     }

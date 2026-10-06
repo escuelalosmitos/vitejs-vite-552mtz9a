@@ -10,6 +10,7 @@ import {
 import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
+import ServicesAdmin from './ServicesAdmin';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -2019,6 +2020,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
 export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
+  const [servicesSubTab, setServicesSubTab] = useState('mitobox');
   const [loading, setLoading] = useState(true);
   const [startupLoadErrors, setStartupLoadErrors] = useState({});
   const [startupRetryVersion, setStartupRetryVersion] = useState(0);
@@ -2208,7 +2210,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [mitoboxSlotUsage, setMitoboxSlotUsage] = useState([]);
   const [mitoboxDataError, setMitoboxDataError] = useState('');
   const [serviceStudentModal, setServiceStudentModal] = useState(false);
-  const [serviceStudentDraft, setServiceStudentDraft] = useState({ name: '', email: '', hasMitobox: true, hasMitoverso: false });
+  const [serviceStudentDraft, setServiceStudentDraft] = useState({ name: '', email: '', hasMitobox: true, hasMitoverso: false, hasGymusik: false });
   const [savingServiceStudent, setSavingServiceStudent] = useState(false);
 
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
@@ -3952,7 +3954,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           email: gestion.studentEmail || gestion.email || '',
           globalStatus: 'activo',
           hasMitoverso: false,
-          hasMitobox: false
+          hasMitobox: false,
+          hasGymusik: false
         };
         studentById.set(gestion.studentId, studentInfo);
         potentialStudents.push(studentInfo);
@@ -6981,6 +6984,78 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     return registrationsToCancel.length;
   };
 
+  const cancelStudentGymusikForFinalBaja = async studentId => {
+    const now = new Date().toISOString();
+    const reservationsSnapshot = await getDocs(query(
+      collection(db, 'artifacts', appId, 'gymusikReservations'),
+      where('studentId', '==', String(studentId))
+    ));
+    const activeReservations = reservationsSnapshot.docs
+      .map(reservationDoc => ({ id: reservationDoc.id, ...reservationDoc.data() }))
+      .filter(reservation => ['confirmed', 'waitlist'].includes(reservation.status));
+
+    for (const reservation of activeReservations) {
+      const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservation.id);
+      const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', reservation.sessionId);
+      await runTransaction(db, async transaction => {
+        const [reservationSnapshot, sessionSnapshot] = await Promise.all([
+          transaction.get(reservationRef),
+          transaction.get(sessionRef)
+        ]);
+        if (!reservationSnapshot.exists()) return;
+        const currentReservation = reservationSnapshot.data();
+        if (!['confirmed', 'waitlist'].includes(currentReservation.status)) return;
+
+        transaction.update(reservationRef, {
+          status: 'cancelled',
+          cancelledAt: now,
+          cancelledBy: 'baja_definitiva',
+          creditConsumed: false,
+          creditReturned: true,
+          updatedAt: now
+        });
+
+        if (sessionSnapshot.exists()) {
+          const session = sessionSnapshot.data();
+          transaction.update(sessionRef, {
+            reservedCount: Math.max(0, Number(session.reservedCount || 0) - (currentReservation.status === 'confirmed' ? 1 : 0)),
+            waitlistCount: Math.max(0, Number(session.waitlistCount || 0) - (currentReservation.status === 'waitlist' ? 1 : 0)),
+            promotionPending: currentReservation.status === 'confirmed' && Number(session.waitlistCount || 0) > 0,
+            updatedAt: now
+          });
+        }
+      });
+    }
+
+    const memberRef = doc(db, 'artifacts', appId, 'gymusikMembers', String(studentId));
+    const configRef = doc(db, 'artifacts', appId, 'gymusikSettings', 'main');
+    await runTransaction(db, async transaction => {
+      const [memberSnapshot, configSnapshot] = await Promise.all([
+        transaction.get(memberRef),
+        transaction.get(configRef)
+      ]);
+      if (!memberSnapshot.exists()) return;
+      const member = memberSnapshot.data();
+      const countedForFormation = ['preenrolled', 'active'].includes(member.status);
+      transaction.set(memberRef, {
+        status: 'cancelled',
+        cancelledAt: now,
+        cancelledBy: user?.email || 'admin',
+        cancellationReason: 'Baja definitiva del alumno',
+        updatedAt: now
+      }, { merge: true });
+      if (countedForFormation && configSnapshot.exists()) {
+        transaction.set(configRef, {
+          formationCount: Math.max(0, Number(configSnapshot.data().formationCount || 0) - 1),
+          updatedAt: now,
+          updatedBy: user?.email || 'admin'
+        }, { merge: true });
+      }
+    });
+
+    return activeReservations.length;
+  };
+
   const executeImmediateFinalBajaFromCrm = async (studentId, studentName) => {
     const studentInfo = students.find(student => student.id === studentId);
     if (!studentInfo) return alert('No se ha encontrado la ficha del alumno.');
@@ -6998,10 +7073,11 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         await updateDoc(doc(db, classData.refPath), withClassStudentIndex(updatedStudents));
       }
 
-      const [ticketsVoided, cancelledStates, workshopRegistrationsCancelled] = await Promise.all([
+      const [ticketsVoided, cancelledStates, workshopRegistrationsCancelled, gymusikReservationsCancelled] = await Promise.all([
         voidStudentTickets(studentId, 'baja_inmediata_admin'),
         cancelStudentStatesForFinalBaja(studentId, '', todayStr),
-        cancelStudentWorkshopRegistrationsForFinalBaja(studentId)
+        cancelStudentWorkshopRegistrationsForFinalBaja(studentId),
+        cancelStudentGymusikForFinalBaja(studentId)
       ]);
       await resetStudentTrivia(studentId);
 
@@ -7011,6 +7087,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         instruments: [],
         hasMitoverso: false,
         hasMitobox: false,
+        hasGymusik: false,
         scheduledBaja: false,
         immediateBajaAt: now,
         immediateBajaBy: user?.email || 'admin',
@@ -7032,7 +7109,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         status: 'completado',
         workflowStatus: 'baja_inmediata_consolidada',
         title: 'Baja inmediata desde Alumnos CRM',
-        details: `Baja definitiva aplicada inmediatamente. Clases eliminadas: ${affectedClasses.length}. Tickets anulados: ${ticketsVoided}. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Gestiones canceladas: ${cancelledStates.gestiones}. Talleres cancelados: ${workshopRegistrationsCancelled}.`,
+        details: `Baja definitiva aplicada inmediatamente. Clases eliminadas: ${affectedClasses.length}. Tickets anulados: ${ticketsVoided}. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Gestiones canceladas: ${cancelledStates.gestiones}. Talleres cancelados: ${workshopRegistrationsCancelled}. Reservas Gymusik canceladas: ${gymusikReservationsCancelled}.`,
         studentId,
         studentName: displayName,
         studentEmail: normalizeEmail(studentInfo.email || ''),
@@ -7049,7 +7126,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         body: `Hola ${studentInfo.name || displayName},\n\nTe confirmamos que tu baja en Escuela Los Mitos se ha hecho efectiva hoy. Tu acceso al Área del Alumno ha quedado desactivado y ya no conservas plazas ni inscripciones activas en talleres.\n\nSi consideras que se trata de un error, responde a este correo para que podamos revisarlo.\n\nUn saludo,\nCoordinación Los Mitos.`
       });
 
-      alert(`✅ Baja inmediata completada para ${displayName}.\n\nPlazas eliminadas: ${affectedClasses.length}\nTickets anulados: ${ticketsVoided}\nInscripciones en talleres canceladas: ${workshopRegistrationsCancelled}`);
+      alert(`✅ Baja inmediata completada para ${displayName}.\n\nPlazas eliminadas: ${affectedClasses.length}\nTickets anulados: ${ticketsVoided}\nInscripciones en talleres canceladas: ${workshopRegistrationsCancelled}\nReservas Gymusik canceladas: ${gymusikReservationsCancelled}`);
     } catch (error) {
       console.error('No se pudo completar la baja inmediata:', error);
       alert(`La baja inmediata no se ha podido completar por completo: ${error.message}`);
@@ -7102,17 +7179,20 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const hasRemainingSeat = hasRemainingCommittedFixedSeat(studentId, studentInfo, localClassUpdates);
     const shouldFinalizeGlobalBaja = isTotalBaja || !hasRemainingSeat;
     let ticketsVoided = 0;
+    let gymusikReservationsCancelled = 0;
     let cancelledStates = { maintenancePeriods: 0, temporaryRelocations: 0, gestiones: 0 };
 
     if (shouldFinalizeGlobalBaja) {
       await resetStudentTrivia(studentId);
       ticketsVoided = await voidStudentTickets(studentId, 'baja_programada_consolidada');
       cancelledStates = await cancelStudentStatesForFinalBaja(studentId, gestion.id || '', effectiveDate || todayStr);
+      gymusikReservationsCancelled = await cancelStudentGymusikForFinalBaja(studentId);
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
         globalStatus: 'baja',
         classes: [],
         hasMitoverso: false,
         hasMitobox: false,
+        hasGymusik: false,
         extrasDisabledByBajaAt: new Date().toISOString(),
         extrasDisabledByBajaBy: user?.email || 'admin',
         scheduledBaja: false,
@@ -7138,7 +7218,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
 
     const summary = shouldFinalizeGlobalBaja
-      ? `Baja definitiva consolidada para ${displayName}. Clases eliminadas: ${removedClassLines.length}. Tickets anulados: ${ticketsVoided}. Extras desactivados. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Otras gestiones canceladas: ${cancelledStates.gestiones}.`
+      ? `Baja definitiva consolidada para ${displayName}. Clases eliminadas: ${removedClassLines.length}. Tickets anulados: ${ticketsVoided}. Extras desactivados. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Otras gestiones canceladas: ${cancelledStates.gestiones}. Reservas Gymusik canceladas: ${gymusikReservationsCancelled}.`
       : `Baja parcial consolidada para ${displayName}. Plaza eliminada: ${removedClassLines.length}. Conserva otras plazas activas.`;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), buildConsolidatedGestionUpdate(gestion, summary, {
@@ -7149,6 +7229,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       consolidatedMaintenancePeriodsCancelled: cancelledStates.maintenancePeriods,
       consolidatedTemporaryRelocationsCancelled: cancelledStates.temporaryRelocations,
       consolidatedOtherGestionesCancelled: cancelledStates.gestiones,
+      consolidatedGymusikReservationsCancelled: gymusikReservationsCancelled,
       consolidatedExtrasDisabled: shouldFinalizeGlobalBaja,
       consolidatedKeepsActiveSeats: !shouldFinalizeGlobalBaja
     }));
@@ -7312,9 +7393,10 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const email = normalizeEmail(serviceStudentDraft.email || '');
     const hasMitobox = serviceStudentDraft.hasMitobox === true;
     const hasMitoverso = serviceStudentDraft.hasMitoverso === true;
+    const hasGymusik = serviceStudentDraft.hasGymusik === true;
     if (!name) return alert('Escribe el nombre del usuario.');
     if (!email || !email.includes('@')) return alert('Escribe un correo válido.');
-    if (!hasMitobox && !hasMitoverso) return alert('Activa al menos un servicio.');
+    if (!hasMitobox && !hasMitoverso && !hasGymusik) return alert('Activa al menos un servicio.');
     if (students.some(student => normalizeEmail(student.email || '') === email)) {
       return alert('Ya existe una ficha con ese correo. Activa el servicio desde su fila del CRM.');
     }
@@ -7334,19 +7416,43 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         globalStatus: 'activo',
         hasMitobox,
         hasMitoverso,
+        hasGymusik,
+        gymusikStatus: hasGymusik ? 'active' : '',
         triviaPoints: 0,
         triviaPointsAnnual: 0,
         triviaPointsQuarterly: 0,
         triviaStreak: 0,
         triviaVictories: 0,
         source: 'service_only_admin',
-        internalNotes: `Alta directa sin plaza fija: ${[hasMitobox ? 'Mitobox' : '', hasMitoverso ? 'Mitoverso' : ''].filter(Boolean).join(' + ')}.`,
+        internalNotes: `Alta directa sin plaza fija: ${[hasMitobox ? 'Mitobox' : '', hasMitoverso ? 'Mitoverso' : '', hasGymusik ? 'Gymusik' : ''].filter(Boolean).join(' + ')}.`,
         createdAt: nowIso,
         updatedAt: nowIso,
         createdBy: user?.email || 'admin'
       });
+      if (hasGymusik) {
+        await setDoc(doc(db, 'artifacts', appId, 'gymusikMembers', studentId), {
+          studentId,
+          studentName: name,
+          studentEmail: email,
+          instrument: 'Guitarra',
+          status: 'active',
+          isCurrentStudent: false,
+          createdAt: nowIso,
+          activatedAt: nowIso,
+          updatedAt: nowIso,
+          createdBy: user?.email || 'admin'
+        });
+        await runTransaction(db, async transaction => {
+          const configRef = doc(db, 'artifacts', appId, 'gymusikSettings', 'main');
+          const configSnapshot = await transaction.get(configRef);
+          transaction.set(configRef, {
+            formationCount: Math.max(0, Number(configSnapshot.data()?.formationCount || 0)) + 1,
+            updatedAt: nowIso
+          }, { merge: true });
+        });
+      }
       setServiceStudentModal(false);
-      setServiceStudentDraft({ name: '', email: '', hasMitobox: true, hasMitoverso: false });
+      setServiceStudentDraft({ name: '', email: '', hasMitobox: true, hasMitoverso: false, hasGymusik: false });
       setFilterStatus('sin_plaza');
       setSearchStudent(email);
       alert('Usuario creado. Ya puede activar su cuenta desde “Primera vez aquí” con este correo.');
@@ -9758,6 +9864,7 @@ Coordinación Los Mitos.`
             classes: [],
             hasMitobox: false,
             hasMitoverso: false,
+            hasGymusik: false,
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Importado masivamente de Tadosi',
@@ -12131,6 +12238,7 @@ ${startDateWarning}
             classes: [resurrectClassModal.id],
             hasMitobox: false,
             hasMitoverso: false,
+            hasGymusik: false,
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido al reactivar grupo',
@@ -12401,6 +12509,7 @@ ${startDateWarning}
             classes: [c.id],
             hasMitobox: false,
             hasMitoverso: false,
+            hasGymusik: false,
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido desde panel de clase',
@@ -12719,9 +12828,10 @@ ${startDateWarning}
             <div className="space-y-4">
               <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Nombre y apellidos</label><input value={serviceStudentDraft.name} onChange={event => setServiceStudentDraft(previous => ({ ...previous, name: event.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none focus:border-blue-500 font-bold"/></div>
               <div><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1">Correo de acceso</label><input type="email" value={serviceStudentDraft.email} onChange={event => setServiceStudentDraft(previous => ({ ...previous, email: event.target.value }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none focus:border-blue-500 font-bold"/></div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasMitobox ? 'border-blue-500 bg-blue-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasMitobox} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasMitobox: event.target.checked }))} className="accent-blue-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Mitobox</span></label>
                 <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasMitoverso ? 'border-indigo-500 bg-indigo-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasMitoverso} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasMitoverso: event.target.checked }))} className="accent-indigo-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Mitoverso</span></label>
+                <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasGymusik ? 'border-emerald-500 bg-emerald-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasGymusik} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasGymusik: event.target.checked }))} className="accent-emerald-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Gymusik</span></label>
               </div>
               <p className="text-xs font-medium text-zinc-500 leading-relaxed">Después, el usuario entra en alumnos.escuelalosmitos.com, pulsa «Primera vez aquí» y crea su contraseña con este correo.</p>
               <button type="button" onClick={createServiceOnlyStudent} disabled={savingServiceStudent} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black uppercase tracking-widest text-xs disabled:opacity-50">{savingServiceStudent ? 'Creando…' : 'Crear usuario'}</button>
@@ -12796,7 +12906,7 @@ ${startDateWarning}
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalInboxNotifications },
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
-            { id: 'mitobox', icon: DoorOpen, label: 'Mitobox', notificationCount: unreadMitoboxReservations.length }, 
+            { id: 'mitobox', icon: DoorOpen, label: 'Servicios', notificationCount: unreadMitoboxReservations.length }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
             { id: 'teachers', icon: Calculator, label: 'Profesores' },
@@ -13734,7 +13844,7 @@ ${startDateWarning}
                   <ClipboardList className="w-4 h-4" />
                   Copiar emails activos + mantenimiento ({getActiveStudentEmails().length})
                 </button>
-                <button type="button" onClick={() => setServiceStudentModal(true)} className="mt-3 ml-0 sm:ml-2 inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors"><PlusCircle className="w-4 h-4"/> Alta solo Mitobox/Mitoverso</button>
+                <button type="button" onClick={() => setServiceStudentModal(true)} className="mt-3 ml-0 sm:ml-2 inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm transition-colors"><PlusCircle className="w-4 h-4"/> Alta solo servicios</button>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
@@ -13953,9 +14063,22 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 3. NUEVA PESTAÑA MITOBOX --- */}
+        {/* --- 3. SERVICIOS: MITOBOX, MITOVERSO Y GYMUSIK --- */}
         {activeTab === 'mitobox' && (
           <div className="space-y-6 animate-in fade-in">
+            <header className="mb-2">
+              <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Servicios</h2>
+              <p className="text-zinc-500 font-medium text-sm">Gestión centralizada de Mitobox, Mitoverso y Gymusik.</p>
+            </header>
+            <div className="grid grid-cols-3 gap-2 bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm">
+              {[
+                { id: 'mitobox', label: 'Mitobox', icon: DoorOpen },
+                { id: 'mitoverso', label: 'Mitoverso', icon: MonitorPlay },
+                { id: 'gymusik', label: 'Gymusik', icon: Activity }
+              ].map(serviceItem => <button key={serviceItem.id} type="button" onClick={() => setServicesSubTab(serviceItem.id)} className={`px-3 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${servicesSubTab === serviceItem.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:bg-zinc-50 hover:text-black'}`}><serviceItem.icon className="w-4 h-4"/>{serviceItem.label}</button>)}
+            </div>
+
+            {servicesSubTab === 'mitobox' ? <>
             <header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Radar Mitobox</h2>
               <p className="text-zinc-500 font-medium text-sm">Visualiza las salas libres que pueden reservar los alumnos. Las clases hibernadas liberan el aula hasta que tengan alumnos firmes.</p>
@@ -14010,6 +14133,7 @@ ${startDateWarning}
                 </div>
               )}
             </div>
+            </> : <ServicesAdmin service={servicesSubTab} db={db} appId={appId} user={user} students={students} centers={centers} settings={settings}/>} 
           </div>
         )}
 

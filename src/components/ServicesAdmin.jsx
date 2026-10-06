@@ -25,6 +25,39 @@ const addDaysToDate = (value, days = 0) => {
   return new Date(Date.UTC(year, month - 1, day + Number(days || 0))).toISOString().slice(0, 10);
 };
 const normalizeEmail = value => String(value || '').trim().toLowerCase();
+const normalizeTextKey = value => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-');
+const getLocalWeekday = value => {
+  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
+  return year && month && day ? new Date(year, month - 1, day).getDay() : -1;
+};
+const parseTimeMinutes = value => {
+  const [hours, minutes] = String(value || '').slice(0, 5).split(':').map(Number);
+  return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : null;
+};
+const timeRangesOverlap = (left = {}, right = {}) => {
+  const leftStart = parseTimeMinutes(left.time);
+  const rightStart = parseTimeMinutes(right.time);
+  if (leftStart === null || rightStart === null) return false;
+  const leftEnd = leftStart + Math.max(15, Number(left.duration || 60));
+  const rightEnd = rightStart + Math.max(15, Number(right.duration || 60));
+  return leftStart < rightEnd && rightStart < leftEnd;
+};
+const classOccursOnDate = (classData = {}, date = '') => {
+  if (!date || ['cancelled', 'canceled', 'inactive', 'deleted'].includes(String(classData.status || '').toLowerCase())) return false;
+  if ((classData.cancelledDates || []).includes(date) || classData.exceptions?.[date]?.cancelled === true) return false;
+  const specificDate = String(classData.specificDate || classData.date || '').slice(0, 10);
+  if (classData.isRecurring === false || specificDate) return specificDate === date;
+  return Number(classData.dayOfWeek) === getLocalWeekday(date);
+};
+const sameConfiguredValue = (leftId, leftName, rightId, rightName) => (
+  (leftId && rightId && String(leftId) === String(rightId))
+  || Boolean(normalizeTextKey(leftName) && normalizeTextKey(leftName) === normalizeTextKey(rightName))
+);
 const teacherOperationalEmail = value => {
   const localPart = String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '');
   return localPart ? `${localPart}@escuelalosmitos.com` : '';
@@ -95,7 +128,10 @@ function MitoversoRoster({ students = [] }) {
   );
 }
 
-export default function ServicesAdmin({ service = 'gymusik', db, appId, user, students = [], centers = [], settings = {} }) {
+export default function ServicesAdmin({
+  service = 'gymusik', db, appId, user, students = [], centers = [], settings = {},
+  classes = [], availabilities = {}, availabilityStatus = 'ready', resolveClassForDate = classData => classData
+}) {
   const [config, setConfig] = useState(normalizeGymusikConfig());
   const [configDraft, setConfigDraft] = useState(normalizeGymusikConfig());
   const [members, setMembers] = useState([]);
@@ -114,6 +150,10 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
   const [publishRepeatedSessions, setPublishRepeatedSessions] = useState(false);
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [memberFilter, setMemberFilter] = useState('all');
+
+  const configuredInstruments = Array.isArray(settings.instrumentos) && settings.instrumentos.length > 0
+    ? [...new Set(settings.instrumentos.map(item => String(item || '').trim()).filter(Boolean))]
+    : config.instruments;
 
   useEffect(() => {
     if (service !== 'gymusik') return undefined;
@@ -143,6 +183,13 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
     }, { merge: true }).catch(error => console.error('No se pudo sincronizar el contador de Gymusik:', error));
   }, [service, loading, members, config.formationCount, db, appId, user?.email]);
 
+  useEffect(() => {
+    if (service !== 'gymusik' || editingSessionId || configuredInstruments.length === 0) return;
+    setSessionDraft(previous => configuredInstruments.includes(previous.instrument)
+      ? previous
+      : { ...previous, instrument: configuredInstruments[0] });
+  }, [service, editingSessionId, settings.instrumentos]);
+
   if (service === 'mitoverso') return <MitoversoRoster students={students}/>;
   if (service !== 'gymusik') return null;
 
@@ -166,11 +213,25 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
   const activeCenters = centers.filter(center => center.status === 'active');
   const selectedCenter = centers.find(center => String(center.id) === String(sessionDraft.centerId)) || activeCenters[0] || centers[0] || {};
   const availableRooms = (selectedCenter.rooms || []).filter(room => room.active !== false);
+  const configuredTeachers = [...new Set((settings.teachersList || []).map(item => String(item || '').trim()).filter(Boolean))];
+
+  const getInactiveResourceIssues = session => {
+    const issues = [];
+    const teacherIsActive = configuredTeachers.some(name => normalizeTextKey(name) === normalizeTextKey(session.teacherName));
+    const center = centers.find(item => String(item.id) === String(session.centerId))
+      || centers.find(item => normalizeTextKey(item.name) === normalizeTextKey(session.sede));
+    const room = (center?.rooms || []).find(item => String(item.id) === String(session.roomId))
+      || (center?.rooms || []).find(item => normalizeTextKey(item.name) === normalizeTextKey(session.sala));
+    if (!teacherIsActive) issues.push(`El profesor ${session.teacherName || 'asignado'} ya no figura activo en Configuración.`);
+    if (!center || center.status !== 'active') issues.push(`La sede ${session.sede || 'asignada'} ya no está activa.`);
+    if (!room || room.active === false) issues.push(`La sala ${session.sala || 'asignada'} ya no está activa.`);
+    return issues;
+  };
 
   const saveConfig = async () => {
     setSaving(true);
     try {
-      const normalized = normalizeGymusikConfig(configDraft);
+      const normalized = normalizeGymusikConfig({ ...configDraft, instruments: configuredInstruments });
       await setDoc(doc(db, 'artifacts', appId, 'gymusikSettings', 'main'), { ...normalized, updatedAt: nowIso(), updatedBy: user?.email || 'admin' }, { merge: true });
       notify('Configuración de Gymusik guardada.');
     } catch (error) { console.error(error); alert(`No se pudo guardar: ${error.message}`); } finally { setSaving(false); }
@@ -245,14 +306,89 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
   };
   const updateSessionTeacher = teacherName => setSessionDraft(previous => ({ ...previous, teacherName, teacherEmail: normalizeEmail(settings.teacherEmails?.[teacherName] || teacherOperationalEmail(teacherName)) }));
 
+  const getSessionConflicts = (candidate, ignoredSessionId = '') => {
+    const conflicts = [];
+    const weekday = getLocalWeekday(candidate.date);
+    const teacherKey = normalizeTextKey(candidate.teacherName);
+    const candidateTeacherEmail = normalizeEmail(candidate.teacherEmail);
+    const teacherSlots = availabilities?.[teacherKey]?.[String(weekday)] || [];
+    const candidateStart = parseTimeMinutes(candidate.time);
+    const candidateEnd = candidateStart === null ? null : candidateStart + Math.max(15, Number(candidate.duration || 60));
+    const availabilityCovered = teacherSlots.some(slot => {
+      const start = parseTimeMinutes(slot.start);
+      const end = parseTimeMinutes(slot.end);
+      return start !== null && end !== null && candidateStart !== null && candidateEnd !== null && candidateStart >= start && candidateEnd <= end;
+    });
+
+    if (!availabilityCovered) conflicts.push(`Disponibilidad: ${candidate.teacherName} no ha declarado disponibilidad completa de ${candidate.time}h a ${String(Math.floor(candidateEnd / 60)).padStart(2, '0')}:${String(candidateEnd % 60).padStart(2, '0')}h.`);
+
+    const center = centers.find(item => String(item.id) === String(candidate.centerId));
+    if ((settings.festivos || []).includes(candidate.date) || (settings.vacaciones || []).includes(candidate.date) || (center?.holidays || []).includes(candidate.date)) {
+      conflicts.push(`Calendario: ${displayDate(candidate.date)} figura como festivo o periodo sin actividad en ${candidate.sede}.`);
+    }
+
+    classes.forEach(classData => {
+      const effectiveClass = resolveClassForDate(classData, candidate.date) || classData;
+      if (!classOccursOnDate(effectiveClass, candidate.date) || !timeRangesOverlap(effectiveClass, candidate)) return;
+      const classLabel = `${effectiveClass.subject || 'Clase habitual'} · ${effectiveClass.time || ''}h`;
+      if (sameConfiguredValue(effectiveClass.centerId, effectiveClass.sede, candidate.centerId, candidate.sede)
+        && sameConfiguredValue(effectiveClass.roomId, effectiveClass.sala, candidate.roomId, candidate.sala)) {
+        conflicts.push(`Sala ocupada: ${candidate.sala} coincide con ${classLabel}.`);
+      }
+      const sameTeacher = candidateTeacherEmail
+        ? (effectiveClass.authorizedTeacherEmails || effectiveClass.teacherEmails || []).map(normalizeEmail).includes(candidateTeacherEmail)
+          || normalizeEmail(settings.teacherEmails?.[effectiveClass.teacher]) === candidateTeacherEmail
+        : normalizeTextKey(effectiveClass.teacher) === teacherKey;
+      if (sameTeacher || normalizeTextKey(effectiveClass.teacher) === teacherKey) {
+        conflicts.push(`Profesor ocupado: ${candidate.teacherName} coincide con ${classLabel}.`);
+      }
+    });
+
+    sessions.forEach(existing => {
+      if (existing.id === ignoredSessionId || ['cancelled', 'completed'].includes(existing.status) || existing.date !== candidate.date || !timeRangesOverlap(existing, candidate)) return;
+      const sessionLabel = `${existing.title || `Gymusik · ${existing.instrument}`} · ${existing.time || ''}h`;
+      if (sameConfiguredValue(existing.centerId, existing.sede, candidate.centerId, candidate.sede)
+        && sameConfiguredValue(existing.roomId, existing.sala, candidate.roomId, candidate.sala)) {
+        conflicts.push(`Sala ocupada por Gymusik: ${candidate.sala} coincide con ${sessionLabel}.`);
+      }
+      if (normalizeEmail(existing.teacherEmail) === candidateTeacherEmail || normalizeTextKey(existing.teacherName) === teacherKey) {
+        conflicts.push(`Profesor ocupado en Gymusik: ${candidate.teacherName} coincide con ${sessionLabel}.`);
+      }
+    });
+
+    return [...new Set(conflicts)];
+  };
+
+  const confirmSessionConflicts = candidates => {
+    const datedConflicts = candidates.flatMap(candidate => getSessionConflicts(candidate, editingSessionId)
+      .map(conflict => `${displayDate(candidate.date)} · ${conflict}`));
+    if (datedConflicts.length === 0) return true;
+    const visible = datedConflicts.slice(0, 12);
+    const remaining = datedConflicts.length - visible.length;
+    return window.confirm(`AVISOS DE PLANIFICACIÓN:\n\n${visible.join('\n')}\n${remaining > 0 ? `\n…y ${remaining} conflicto(s) más.` : ''}\n\n¿Quieres guardar igualmente?`);
+  };
+
   const saveSession = async event => {
     event.preventDefault();
     if (!sessionDraft.date || !sessionDraft.time || !sessionDraft.instrument || !sessionDraft.teacherName || !sessionDraft.centerId || !sessionDraft.roomId) return alert('Completa fecha, hora, instrumento, profesor, sede y sala.');
     if (!String(sessionDraft.content || '').trim()) return alert('Describe el contenido del entrenamiento.');
+    const inactiveResources = getInactiveResourceIssues(sessionDraft);
+    if (inactiveResources.length > 0) return alert(`Revisa los recursos de la sesión:\n\n${inactiveResources.join('\n')}`);
+    if (availabilityStatus !== 'ready') return alert(availabilityStatus === 'error'
+      ? 'No se ha podido cargar la disponibilidad docente. Reintenta antes de guardar para evitar solapamientos.'
+      : 'La disponibilidad docente todavía se está cargando. Espera unos segundos y vuelve a guardar.');
     setSaving(true);
     try {
       const capacity = Math.max(1, Math.trunc(Number(sessionDraft.capacity) || 1));
       const duration = Math.max(15, Math.trunc(Number(sessionDraft.duration) || 60));
+      const total = editingSessionId ? 1 : (repeatWeekly ? Math.min(12, Math.max(2, Math.trunc(Number(repeatCount) || 4))) : 1);
+      const candidateSessions = Array.from({ length: total }, (_, index) => ({
+        ...sessionDraft,
+        date: addDaysToDate(sessionDraft.date, index * 7),
+        capacity,
+        duration
+      }));
+      if (!confirmSessionConflicts(candidateSessions)) return;
 
       if (editingSessionId) {
         const existing = sessions.find(session => session.id === editingSessionId);
@@ -263,13 +399,12 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
         }, { merge: true });
         notify('Sesión Gymusik actualizada.');
       } else {
-        const total = repeatWeekly ? Math.min(12, Math.max(2, Math.trunc(Number(repeatCount) || 4))) : 1;
         const seriesId = total > 1 ? `gymusik_${Date.now().toString(36)}` : '';
         const batch = writeBatch(db);
         const createdAt = nowIso();
 
         for (let index = 0; index < total; index += 1) {
-          const date = addDaysToDate(sessionDraft.date, index * 7);
+          const date = candidateSessions[index].date;
           const repeatedSession = {
             ...sessionDraft,
             date,
@@ -295,7 +430,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
       setRepeatWeekly(false);
       setRepeatCount(4);
       setPublishRepeatedSessions(false);
-      setSessionDraft(emptySession(centers, config));
+      setSessionDraft(emptySession(centers, { ...config, instruments: configuredInstruments }));
     } catch (error) {
       console.error(error);
       alert(`No se pudo guardar: ${error.message}`);
@@ -304,7 +439,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
     }
   };
 
-  const editSession = session => { setEditingSessionId(session.id); setRepeatWeekly(false); setSessionDraft({ ...emptySession(centers, config), ...session }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const editSession = session => { setEditingSessionId(session.id); setRepeatWeekly(false); setSessionDraft({ ...emptySession(centers, { ...config, instruments: configuredInstruments }), ...session }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   const deleteSession = async session => {
     const linked = reservations.filter(item => item.sessionId === session.id && !['cancelled'].includes(item.status));
     if (linked.length > 0) return alert('No puedes borrar una sesión con reservas. Cancélala para conservar el historial.');
@@ -312,6 +447,10 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
   };
   const changeSessionStatus = async (session, status) => {
     const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
+    if (status === 'published') {
+      const inactiveResources = getInactiveResourceIssues(session);
+      if (inactiveResources.length > 0) return alert(`No se puede publicar hasta corregir estos datos:\n\n${inactiveResources.join('\n')}`);
+    }
     if (status !== 'cancelled') {
       await updateDoc(sessionRef, { status, updatedAt: nowIso(), updatedBy: user?.email || 'admin' });
       return;
@@ -362,7 +501,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
       {message && <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] bg-black text-white px-6 py-3 rounded-full shadow-2xl text-xs font-black uppercase tracking-widest">{message}</div>}
       <div className={`rounded-3xl p-6 md:p-8 border-2 ${config.active ? 'bg-emerald-950 border-emerald-800 text-white' : 'bg-zinc-950 border-zinc-800 text-white'}`}>
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-          <div><p className="text-[10px] font-black uppercase tracking-[.25em] text-emerald-400">Entrenamiento musical dirigido</p><h2 className="text-3xl font-black uppercase tracking-tight mt-1">Gymusik</h2><p className="text-sm font-medium text-zinc-300 mt-2 max-w-2xl">Sesiones de práctica repetitiva, corrección y acompañamiento. Cada instrumento se programa por separado.</p></div>
+          <div><p className="text-[10px] font-black uppercase tracking-[.25em] text-emerald-400">Estado general del servicio</p><h2 className="text-3xl font-black uppercase tracking-tight mt-1">Gymusik</h2><p className="text-sm font-medium text-zinc-300 mt-2 max-w-2xl">Estos controles afectan a todo Gymusik. La publicación de cada fecha se gestiona individualmente en su sesión.</p></div>
           <div className="flex flex-col sm:flex-row gap-2">
             <button onClick={() => setPreenrollmentOpen(!config.preenrollmentOpen)} className={`px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest ${config.preenrollmentOpen ? 'bg-amber-300 text-amber-950' : 'bg-white/10 text-white hover:bg-white/20'}`}>{config.preenrollmentOpen ? 'Preinscripciones abiertas · cerrar' : 'Abrir preinscripciones'}</button>
             <button onClick={() => setServiceActive(!config.active)} className={`px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest ${config.active ? 'bg-white text-emerald-900' : 'bg-emerald-500 text-emerald-950'}`}>{config.active ? 'Servicio activo · pausar' : 'Activar servicio'}</button>
@@ -385,7 +524,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-6">
           {[['Precio alumno', 'studentPrice'], ['Precio externo', 'externalPrice'], ['Créditos mensuales', 'monthlyCredits'], ['Mínimo de miembros', 'minimumMembers'], ['Cancelación gratuita (h)', 'cancellationHours']].map(([label, field]) => <label key={field} className="text-[10px] font-black uppercase tracking-widest text-zinc-500">{label}<input type="number" min="0" value={configDraft[field]} onChange={event => setConfigDraft(previous => ({ ...previous, [field]: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-black outline-none focus:border-emerald-500"/></label>)}
         </div>
-        <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-4">Instrumentos disponibles (separados por comas)<input value={(configDraft.instruments || []).join(', ')} onChange={event => setConfigDraft(previous => ({ ...previous, instruments: event.target.value.split(',').map(item => item.trim()).filter(Boolean) }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold outline-none focus:border-emerald-500"/></label>
+        <div className="mt-4 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl"><p className="text-[10px] font-black uppercase tracking-widest text-emerald-800">Instrumentos sincronizados con Configuración</p><p className="text-xs font-bold text-emerald-700 mt-2">{configuredInstruments.join(' · ') || 'No hay instrumentos configurados'}</p><p className="text-[10px] font-medium text-emerald-700 mt-2">Para añadir o retirar instrumentos, utiliza Admin → Configuración → Oferta de instrumentos.</p></div>
         <button disabled={saving} onClick={saveConfig} className="mt-5 px-5 py-3 bg-black text-white rounded-xl text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-2"><Save className="w-4 h-4"/> Guardar configuración</button>
       </details>
 
@@ -394,7 +533,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
           <h3 className="text-lg font-black uppercase tracking-tight">Añadir preinscripción manual</h3><p className="text-xs font-bold text-zinc-400 mt-1">Para solicitudes recibidas fuera del área de alumno. El cobro y la activación se confirman después manualmente.</p>
           <input value={memberSearch} onChange={event => { setMemberSearch(event.target.value); setMemberStudentId(''); }} placeholder="Buscar alumno o usuario" className="mt-5 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold outline-none"/>
           <select value={memberStudentId} onChange={event => setMemberStudentId(event.target.value)} className="mt-3 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"><option value="">Seleccionar usuario…</option>{selectableStudents.slice(0, 80).map(student => <option key={student.id} value={student.id}>{student.name} · {student.email}</option>)}</select>
-          <label className="block mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">Interés principal (opcional)<select value={memberInstrument} onChange={event => setMemberInstrument(event.target.value)} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold normal-case tracking-normal"><option value="">Sin preferencia · acceso libre</option>{config.instruments.map(instrument => <option key={instrument}>{instrument}</option>)}</select></label>
+          <label className="block mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">Interés principal (opcional)<select value={memberInstrument} onChange={event => setMemberInstrument(event.target.value)} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold normal-case tracking-normal"><option value="">Sin preferencia · acceso libre</option>{configuredInstruments.map(instrument => <option key={instrument}>{instrument}</option>)}</select></label>
           <button onClick={addMember} className="mt-4 w-full py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest inline-flex justify-center items-center gap-2"><Plus className="w-4 h-4"/> Añadir</button>
           <p className="mt-4 text-[10px] font-bold text-zinc-400 leading-relaxed">Para una persona externa, crea primero su ficha con «Alta solo servicios» en el CRM y después añádela aquí.</p>
         </section>
@@ -405,9 +544,9 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
       </div>
 
       <form onSubmit={saveSession} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex items-center justify-between gap-4"><div><h3 className="text-xl font-black uppercase tracking-tight">{editingSessionId ? 'Editar sesión' : 'Nueva sesión'}</h3><p className="text-xs font-bold text-zinc-400 mt-1">La capacidad parte del aforo de la sala, pero puedes reducirla.</p></div>{editingSessionId && <button type="button" onClick={() => { setEditingSessionId(''); setRepeatWeekly(false); setSessionDraft(emptySession(centers, config)); }} className="p-2 bg-zinc-100 rounded-full"><X className="w-4 h-4"/></button>}</div>
+        <div className="flex items-center justify-between gap-4"><div><h3 className="text-xl font-black uppercase tracking-tight">{editingSessionId ? 'Editar sesión' : 'Nueva sesión'}</h3><p className="text-xs font-bold text-zinc-400 mt-1">La capacidad parte del aforo de la sala. Al guardar se comprobarán disponibilidad, profesor y espacio.</p></div>{editingSessionId && <button type="button" onClick={() => { setEditingSessionId(''); setRepeatWeekly(false); setSessionDraft(emptySession(centers, { ...config, instruments: configuredInstruments })); }} className="p-2 bg-zinc-100 rounded-full"><X className="w-4 h-4"/></button>}</div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Instrumento<select value={sessionDraft.instrument} onChange={event => setSessionDraft(previous => ({ ...previous, instrument: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold">{config.instruments.map(item => <option key={item}>{item}</option>)}</select></label>
+          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Instrumento<select value={sessionDraft.instrument} onChange={event => setSessionDraft(previous => ({ ...previous, instrument: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold">{configuredInstruments.map(item => <option key={item}>{item}</option>)}</select></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Fecha<input type="date" value={sessionDraft.date} onChange={event => setSessionDraft(previous => ({ ...previous, date: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Hora<input type="time" value={sessionDraft.time} onChange={event => setSessionDraft(previous => ({ ...previous, time: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Duración<input type="number" min="15" step="15" value={sessionDraft.duration} onChange={event => setSessionDraft(previous => ({ ...previous, duration: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
@@ -439,7 +578,8 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
           const confirmed = sessionReservations.filter(item => ['confirmed', 'attended', 'no_show'].includes(item.status));
           const waitlist = sessionReservations.filter(item => item.status === 'waitlist').sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
           const expanded = expandedSessionId === session.id;
-          return <article key={session.id} className="bg-white border border-zinc-200 rounded-3xl shadow-sm overflow-hidden"><div className="p-5"><div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><div className="flex flex-wrap gap-2"><span className={`px-2.5 py-1 border rounded-lg text-[9px] font-black uppercase tracking-widest ${statusStyle[session.status] || statusStyle.draft}`}>{GYMUSIK_SESSION_STATUSES[session.status] || session.status}</span><span className="px-2.5 py-1 bg-black text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Gymusik · {session.instrument}</span><span className="px-2.5 py-1 bg-violet-100 text-violet-800 rounded-lg text-[9px] font-black uppercase tracking-widest">{session.level || 'Todos los niveles'}</span>{session.promotionPending && <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-lg text-[9px] font-black uppercase tracking-widest">Plaza libre con espera</span>}</div><h4 className="font-black text-lg mt-2">{session.title || 'Sesión Gymusik'}</h4><p className="text-sm font-medium text-zinc-500 mt-1">{session.content}</p>{(session.material || session.requirements) && <p className="text-xs font-bold text-zinc-400 mt-2">{session.material ? `Material: ${session.material}` : ''}{session.material && session.requirements ? ' · ' : ''}{session.requirements ? `Requisitos: ${session.requirements}` : ''}</p>}<div className="flex flex-wrap gap-4 mt-4 text-[10px] font-black uppercase tracking-widest text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-4 h-4"/>{displayDate(session.date)} · {session.time}h</span><span className="flex items-center gap-1"><MapPin className="w-4 h-4"/>{session.sede} · {session.sala}</span><span className="flex items-center gap-1"><Users className="w-4 h-4"/>{confirmed.length}/{session.capacity} · espera {waitlist.length}</span><span className="flex items-center gap-1"><Music className="w-4 h-4"/>{session.teacherName}</span></div></div><div className="flex flex-wrap gap-2"><select value={session.status || 'draft'} onChange={event => changeSessionStatus(session, event.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-[9px] font-black uppercase">{Object.entries(GYMUSIK_SESSION_STATUSES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button onClick={() => editSession(session)} className="p-2.5 bg-violet-50 text-violet-700 rounded-xl"><Edit3 className="w-4 h-4"/></button><button onClick={() => deleteSession(session)} className="p-2.5 bg-red-50 text-red-600 rounded-xl"><Trash2 className="w-4 h-4"/></button></div></div><button onClick={() => setExpandedSessionId(expanded ? '' : session.id)} className="w-full border-t border-zinc-100 mt-5 pt-4 flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">Asistentes y espera ({sessionReservations.length}) {expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button></div>{expanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{sessionReservations.length === 0 ? <p className="py-5 text-center text-xs font-black uppercase tracking-widest text-zinc-400">Sin reservas.</p> : sessionReservations.map(reservation => <div key={reservation.id} className="bg-white border border-zinc-200 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm">{reservation.studentName || 'Usuario'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{reservation.status === 'waitlist' ? 'Lista de espera' : reservation.status} · {reservation.studentEmail}</p></div><div className="flex gap-2">{reservation.status === 'waitlist' && <button onClick={() => promoteReservation(reservation).catch(error => alert(error.message))} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase"><UserCheck className="w-3 h-3 inline"/> Promocionar</button>}{['confirmed', 'waitlist'].includes(reservation.status) && <button onClick={() => cancelReservation(reservation)} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase">Cancelar</button>}</div></div>)}</div>}</article>;
+          const resourceIssues = getInactiveResourceIssues(session);
+          return <article key={session.id} className="bg-white border border-zinc-200 rounded-3xl shadow-sm overflow-hidden"><div className="p-5"><div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4"><div><div className="flex flex-wrap gap-2"><span className={`px-2.5 py-1 border rounded-lg text-[9px] font-black uppercase tracking-widest ${statusStyle[session.status] || statusStyle.draft}`}>{GYMUSIK_SESSION_STATUSES[session.status] || session.status}</span><span className="px-2.5 py-1 bg-black text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Gymusik · {session.instrument}</span><span className="px-2.5 py-1 bg-violet-100 text-violet-800 rounded-lg text-[9px] font-black uppercase tracking-widest">{session.level || 'Todos los niveles'}</span>{session.promotionPending && <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-lg text-[9px] font-black uppercase tracking-widest">Plaza libre con espera</span>}{resourceIssues.length > 0 && <span className="px-2.5 py-1 bg-red-100 text-red-700 border border-red-200 rounded-lg text-[9px] font-black uppercase tracking-widest">Reasignación necesaria</span>}</div><h4 className="font-black text-lg mt-2">{session.title || 'Sesión Gymusik'}</h4><p className="text-sm font-medium text-zinc-500 mt-1">{session.content}</p>{resourceIssues.length > 0 && <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-xl text-xs font-bold text-red-700">{resourceIssues.join(' ')}</div>}{(session.material || session.requirements) && <p className="text-xs font-bold text-zinc-400 mt-2">{session.material ? `Material: ${session.material}` : ''}{session.material && session.requirements ? ' · ' : ''}{session.requirements ? `Requisitos: ${session.requirements}` : ''}</p>}<div className="flex flex-wrap gap-4 mt-4 text-[10px] font-black uppercase tracking-widest text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-4 h-4"/>{displayDate(session.date)} · {session.time}h</span><span className="flex items-center gap-1"><MapPin className="w-4 h-4"/>{session.sede} · {session.sala}</span><span className="flex items-center gap-1"><Users className="w-4 h-4"/>{confirmed.length}/{session.capacity} · espera {waitlist.length}</span><span className="flex items-center gap-1"><Music className="w-4 h-4"/>{session.teacherName}</span></div></div><div className="flex flex-wrap gap-2"><select value={session.status || 'draft'} onChange={event => changeSessionStatus(session, event.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-[9px] font-black uppercase">{Object.entries(GYMUSIK_SESSION_STATUSES).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><button onClick={() => editSession(session)} className="p-2.5 bg-violet-50 text-violet-700 rounded-xl"><Edit3 className="w-4 h-4"/></button><button onClick={() => deleteSession(session)} className="p-2.5 bg-red-50 text-red-600 rounded-xl"><Trash2 className="w-4 h-4"/></button></div></div><button onClick={() => setExpandedSessionId(expanded ? '' : session.id)} className="w-full border-t border-zinc-100 mt-5 pt-4 flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">Asistentes y espera ({sessionReservations.length}) {expanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button></div>{expanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{sessionReservations.length === 0 ? <p className="py-5 text-center text-xs font-black uppercase tracking-widest text-zinc-400">Sin reservas.</p> : sessionReservations.map(reservation => <div key={reservation.id} className="bg-white border border-zinc-200 rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm">{reservation.studentName || 'Usuario'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{reservation.status === 'waitlist' ? 'Lista de espera' : reservation.status} · {reservation.studentEmail}</p></div><div className="flex gap-2">{reservation.status === 'waitlist' && <button onClick={() => promoteReservation(reservation).catch(error => alert(error.message))} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase"><UserCheck className="w-3 h-3 inline"/> Promocionar</button>}{['confirmed', 'waitlist'].includes(reservation.status) && <button onClick={() => cancelReservation(reservation)} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase">Cancelar</button>}</div></div>)}</div>}</article>;
         })}
       </section>
     </div>

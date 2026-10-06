@@ -54,6 +54,12 @@ export default function GymusikStudent({ db, appId, profile }) {
   const isActiveMember = member?.status === 'active' && profile?.hasGymusik === true;
   const isCurrentStudent = member ? member.isCurrentStudent !== false : Array.isArray(profile?.classes) && profile.classes.length > 0;
   const memberPrice = isCurrentStudent ? config.studentPrice : config.externalPrice;
+  const hasVisibleOffer = upcomingSessions.length > 0;
+  const hasExistingMembership = Boolean(
+    profile?.hasGymusik === true
+    || (member && member.status !== 'cancelled')
+  );
+  const shouldShowGymusik = hasVisibleOffer || hasExistingMembership;
 
   const notify = text => { setNotice(text); window.setTimeout(() => setNotice(''), 4000); };
 
@@ -142,6 +148,8 @@ export default function GymusikStudent({ db, appId, profile }) {
     const blob = new Blob([content], { type: 'text/calendar;charset=utf-8' });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `Gymusik_${session.date}_${String(session.time || '').replace(':', '')}.ics`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
   };
+
+  if (!loading && !shouldShowGymusik) return null;
 
   return (
     <div className="md:col-span-2 bg-white rounded-3xl shadow-sm border-2 border-zinc-100 overflow-hidden relative">

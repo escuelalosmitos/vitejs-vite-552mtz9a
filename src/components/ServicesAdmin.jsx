@@ -165,6 +165,17 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
     } catch (error) { console.error(error); alert(`No se pudo guardar: ${error.message}`); } finally { setSaving(false); }
   };
 
+  const setPreenrollmentOpen = async preenrollmentOpen => {
+    if (!preenrollmentOpen && !window.confirm('¿Cerrar las preinscripciones? Quienes ya estén preinscritos conservarán su estado y seguirán viendo Gymusik.')) return;
+    await setDoc(doc(db, 'artifacts', appId, 'gymusikSettings', 'main'), {
+      preenrollmentOpen,
+      preenrollmentUpdatedAt: nowIso(),
+      updatedAt: nowIso(),
+      updatedBy: user?.email || 'admin'
+    }, { merge: true });
+    notify(preenrollmentOpen ? 'Preinscripciones de Gymusik abiertas.' : 'Preinscripciones de Gymusik cerradas.');
+  };
+
   const setServiceActive = async active => {
     if (active && formationMembers.length < config.minimumMembers && !window.confirm(`Todavía faltan ${missingMembers} personas para alcanzar el mínimo. ¿Activar igualmente?`)) return;
     await setDoc(doc(db, 'artifacts', appId, 'gymusikSettings', 'main'), { active, activatedAt: active ? nowIso() : '', updatedAt: nowIso(), updatedBy: user?.email || 'admin' }, { merge: true });
@@ -296,7 +307,10 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
       <div className={`rounded-3xl p-6 md:p-8 border-2 ${config.active ? 'bg-emerald-950 border-emerald-800 text-white' : 'bg-zinc-950 border-zinc-800 text-white'}`}>
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div><p className="text-[10px] font-black uppercase tracking-[.25em] text-emerald-400">Entrenamiento musical dirigido</p><h2 className="text-3xl font-black uppercase tracking-tight mt-1">Gymusik</h2><p className="text-sm font-medium text-zinc-300 mt-2 max-w-2xl">Sesiones de práctica repetitiva, corrección y acompañamiento. Cada instrumento se programa por separado.</p></div>
-          <button onClick={() => setServiceActive(!config.active)} className={`px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest ${config.active ? 'bg-white text-emerald-900' : 'bg-emerald-500 text-emerald-950'}`}>{config.active ? 'Servicio activo · pausar' : 'Activar servicio'}</button>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button onClick={() => setPreenrollmentOpen(!config.preenrollmentOpen)} className={`px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest ${config.preenrollmentOpen ? 'bg-amber-300 text-amber-950' : 'bg-white/10 text-white hover:bg-white/20'}`}>{config.preenrollmentOpen ? 'Preinscripciones abiertas · cerrar' : 'Abrir preinscripciones'}</button>
+            <button onClick={() => setServiceActive(!config.active)} className={`px-6 py-4 rounded-2xl text-xs font-black uppercase tracking-widest ${config.active ? 'bg-white text-emerald-900' : 'bg-emerald-500 text-emerald-950'}`}>{config.active ? 'Servicio activo · pausar' : 'Activar servicio'}</button>
+          </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mt-6">
           <div className="bg-white/10 p-4 rounded-2xl"><span className="block text-2xl font-black">{activeMembers.length}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Miembros activos</span></div>

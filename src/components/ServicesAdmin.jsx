@@ -19,6 +19,11 @@ const todayLocal = () => {
   return new Date(now.getTime() - offset * 60000).toISOString().slice(0, 10);
 };
 const displayDate = value => String(value || '').slice(0, 10).split('-').reverse().join('/');
+const addDaysToDate = (value, days = 0) => {
+  const [year, month, day] = String(value || '').slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return '';
+  return new Date(Date.UTC(year, month - 1, day + Number(days || 0))).toISOString().slice(0, 10);
+};
 const normalizeEmail = value => String(value || '').trim().toLowerCase();
 const teacherOperationalEmail = value => {
   const localPart = String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '');
@@ -101,6 +106,9 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
   const [memberSearch, setMemberSearch] = useState('');
   const [sessionDraft, setSessionDraft] = useState(() => emptySession(centers, normalizeGymusikConfig()));
   const [editingSessionId, setEditingSessionId] = useState('');
+  const [repeatWeekly, setRepeatWeekly] = useState(false);
+  const [repeatCount, setRepeatCount] = useState(4);
+  const [publishRepeatedSessions, setPublishRepeatedSessions] = useState(false);
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [memberFilter, setMemberFilter] = useState('all');
 
@@ -238,17 +246,62 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
     event.preventDefault();
     if (!sessionDraft.date || !sessionDraft.time || !sessionDraft.instrument || !sessionDraft.teacherName || !sessionDraft.centerId || !sessionDraft.roomId) return alert('Completa fecha, hora, instrumento, profesor, sede y sala.');
     if (!String(sessionDraft.content || '').trim()) return alert('Describe el contenido del entrenamiento.');
-    const id = editingSessionId || buildGymusikSessionId(sessionDraft);
-    const existing = sessions.find(session => session.id === id);
-    await setDoc(doc(db, 'artifacts', appId, 'gymusikSessions', id), {
-      ...sessionDraft, capacity: Math.max(1, Math.trunc(Number(sessionDraft.capacity) || 1)), duration: Math.max(15, Math.trunc(Number(sessionDraft.duration) || 60)),
-      reservedCount: Number(existing?.reservedCount || 0), waitlistCount: Number(existing?.waitlistCount || 0),
-      createdAt: existing?.createdAt || nowIso(), updatedAt: nowIso(), updatedBy: user?.email || 'admin'
-    }, { merge: true });
-    setEditingSessionId(''); setSessionDraft(emptySession(centers, config)); notify('Sesión Gymusik guardada.');
+    setSaving(true);
+    try {
+      const capacity = Math.max(1, Math.trunc(Number(sessionDraft.capacity) || 1));
+      const duration = Math.max(15, Math.trunc(Number(sessionDraft.duration) || 60));
+
+      if (editingSessionId) {
+        const existing = sessions.find(session => session.id === editingSessionId);
+        await setDoc(doc(db, 'artifacts', appId, 'gymusikSessions', editingSessionId), {
+          ...sessionDraft, capacity, duration,
+          reservedCount: Number(existing?.reservedCount || 0), waitlistCount: Number(existing?.waitlistCount || 0),
+          createdAt: existing?.createdAt || nowIso(), updatedAt: nowIso(), updatedBy: user?.email || 'admin'
+        }, { merge: true });
+        notify('Sesión Gymusik actualizada.');
+      } else {
+        const total = repeatWeekly ? Math.min(12, Math.max(2, Math.trunc(Number(repeatCount) || 4))) : 1;
+        const seriesId = total > 1 ? `gymusik_${Date.now().toString(36)}` : '';
+        const batch = writeBatch(db);
+        const createdAt = nowIso();
+
+        for (let index = 0; index < total; index += 1) {
+          const date = addDaysToDate(sessionDraft.date, index * 7);
+          const repeatedSession = {
+            ...sessionDraft,
+            date,
+            status: total > 1 && publishRepeatedSessions ? 'published' : sessionDraft.status,
+            capacity,
+            duration,
+            reservedCount: 0,
+            waitlistCount: 0,
+            createdAt,
+            updatedAt: createdAt,
+            updatedBy: user?.email || 'admin',
+            ...(total > 1 ? { recurrence: 'weekly', seriesId, seriesIndex: index + 1, seriesTotal: total } : {})
+          };
+          const id = buildGymusikSessionId(repeatedSession);
+          batch.set(doc(db, 'artifacts', appId, 'gymusikSessions', id), repeatedSession);
+        }
+
+        await batch.commit();
+        notify(total > 1 ? `${total} sesiones semanales creadas.` : 'Sesión Gymusik guardada.');
+      }
+
+      setEditingSessionId('');
+      setRepeatWeekly(false);
+      setRepeatCount(4);
+      setPublishRepeatedSessions(false);
+      setSessionDraft(emptySession(centers, config));
+    } catch (error) {
+      console.error(error);
+      alert(`No se pudo guardar: ${error.message}`);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const editSession = session => { setEditingSessionId(session.id); setSessionDraft({ ...emptySession(centers, config), ...session }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const editSession = session => { setEditingSessionId(session.id); setRepeatWeekly(false); setSessionDraft({ ...emptySession(centers, config), ...session }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   const deleteSession = async session => {
     const linked = reservations.filter(item => item.sessionId === session.id && !['cancelled'].includes(item.status));
     if (linked.length > 0) return alert('No puedes borrar una sesión con reservas. Cancélala para conservar el historial.');
@@ -335,7 +388,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
 
       <div className="grid xl:grid-cols-5 gap-6">
         <section className="xl:col-span-2 bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
-          <h3 className="text-lg font-black uppercase tracking-tight">Añadir preinscripción</h3><p className="text-xs font-bold text-zinc-400 mt-1">El cobro y la activación se confirman después manualmente.</p>
+          <h3 className="text-lg font-black uppercase tracking-tight">Añadir preinscripción manual</h3><p className="text-xs font-bold text-zinc-400 mt-1">Para solicitudes recibidas fuera del área de alumno. El cobro y la activación se confirman después manualmente.</p>
           <input value={memberSearch} onChange={event => { setMemberSearch(event.target.value); setMemberStudentId(''); }} placeholder="Buscar alumno o usuario" className="mt-5 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold outline-none"/>
           <select value={memberStudentId} onChange={event => setMemberStudentId(event.target.value)} className="mt-3 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"><option value="">Seleccionar usuario…</option>{selectableStudents.slice(0, 80).map(student => <option key={student.id} value={student.id}>{student.name} · {student.email}</option>)}</select>
           <select value={memberInstrument} onChange={event => setMemberInstrument(event.target.value)} className="mt-3 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold">{config.instruments.map(instrument => <option key={instrument}>{instrument}</option>)}</select>
@@ -349,7 +402,7 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
       </div>
 
       <form onSubmit={saveSession} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
-        <div className="flex items-center justify-between gap-4"><div><h3 className="text-xl font-black uppercase tracking-tight">{editingSessionId ? 'Editar sesión' : 'Nueva sesión'}</h3><p className="text-xs font-bold text-zinc-400 mt-1">La capacidad parte del aforo de la sala, pero puedes reducirla.</p></div>{editingSessionId && <button type="button" onClick={() => { setEditingSessionId(''); setSessionDraft(emptySession(centers, config)); }} className="p-2 bg-zinc-100 rounded-full"><X className="w-4 h-4"/></button>}</div>
+        <div className="flex items-center justify-between gap-4"><div><h3 className="text-xl font-black uppercase tracking-tight">{editingSessionId ? 'Editar sesión' : 'Nueva sesión'}</h3><p className="text-xs font-bold text-zinc-400 mt-1">La capacidad parte del aforo de la sala, pero puedes reducirla.</p></div>{editingSessionId && <button type="button" onClick={() => { setEditingSessionId(''); setRepeatWeekly(false); setSessionDraft(emptySession(centers, config)); }} className="p-2 bg-zinc-100 rounded-full"><X className="w-4 h-4"/></button>}</div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Instrumento<select value={sessionDraft.instrument} onChange={event => setSessionDraft(previous => ({ ...previous, instrument: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold">{config.instruments.map(item => <option key={item}>{item}</option>)}</select></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Fecha<input type="date" value={sessionDraft.date} onChange={event => setSessionDraft(previous => ({ ...previous, date: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
@@ -363,11 +416,19 @@ export default function ServicesAdmin({ service = 'gymusik', db, appId, user, st
         <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-4">Título<input value={sessionDraft.title} onChange={event => setSessionDraft(previous => ({ ...previous, title: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
         <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-4">Contenido y objetivos<textarea rows="4" value={sessionDraft.content} onChange={event => setSessionDraft(previous => ({ ...previous, content: event.target.value }))} placeholder="Ej.: cambios entre acordes abiertos, ritmo de corcheas y repetición por bloques" className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-medium resize-y"/></label>
         <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mt-4">Indicaciones internas para el profesor<textarea rows="2" value={sessionDraft.teacherNotes} onChange={event => setSessionDraft(previous => ({ ...previous, teacherNotes: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-medium resize-y"/></label>
-        <button type="submit" className="mt-5 px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-2"><Save className="w-4 h-4"/> Guardar sesión</button>
+        {!editingSessionId && <div className="mt-5 p-4 bg-violet-50 border border-violet-200 rounded-2xl">
+          <label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={repeatWeekly} onChange={event => setRepeatWeekly(event.target.checked)} className="w-4 h-4 accent-violet-600"/><span className="text-xs font-black uppercase tracking-widest text-violet-900">Repetir semanalmente</span></label>
+          {repeatWeekly && <div className="grid sm:grid-cols-2 gap-4 mt-4">
+            <label className="text-[10px] font-black uppercase tracking-widest text-violet-800">Número de sesiones<input type="number" min="2" max="12" value={repeatCount} onChange={event => setRepeatCount(event.target.value)} className="mt-1 w-full p-3 bg-white border-2 border-violet-200 rounded-xl font-bold"/></label>
+            <label className="flex items-center gap-3 sm:mt-5 cursor-pointer"><input type="checkbox" checked={publishRepeatedSessions} onChange={event => setPublishRepeatedSessions(event.target.checked)} className="w-4 h-4 accent-violet-600"/><span className="text-[10px] font-black uppercase tracking-widest text-violet-800">Publicarlas directamente</span></label>
+            <p className="sm:col-span-2 text-[10px] font-bold text-violet-700">Se crearán {Math.min(12, Math.max(2, Math.trunc(Number(repeatCount) || 4)))} sesiones independientes, empezando el {displayDate(sessionDraft.date)} y manteniendo el mismo día de la semana y la misma hora.</p>
+          </div>}
+        </div>}
+        <button type="submit" disabled={saving} className="mt-5 px-6 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest inline-flex items-center gap-2 disabled:opacity-50"><Save className="w-4 h-4"/> {saving ? 'Guardando…' : repeatWeekly && !editingSessionId ? 'Crear sesiones' : 'Guardar sesión'}</button>
       </form>
 
       <section className="space-y-4">
-        <div className="flex items-center justify-between"><div><h3 className="text-xl font-black uppercase tracking-tight">Sesiones</h3><p className="text-xs font-bold text-zinc-400 mt-1">Publica únicamente las cuatro sesiones que correspondan al mes.</p></div><span className="bg-violet-100 text-violet-800 px-3 py-1.5 rounded-xl text-xs font-black">{sessions.length}</span></div>
+        <div className="flex items-center justify-between"><div><h3 className="text-xl font-black uppercase tracking-tight">Sesiones</h3><p className="text-xs font-bold text-zinc-400 mt-1">Publica las fechas que quieras ofrecer; cada reserva consume un crédito del mes correspondiente.</p></div><span className="bg-violet-100 text-violet-800 px-3 py-1.5 rounded-xl text-xs font-black">{sessions.length}</span></div>
         {sessions.length === 0 ? <div className="bg-white border-2 border-dashed border-zinc-200 rounded-3xl p-10 text-center text-xs font-black uppercase tracking-widest text-zinc-400">Todavía no hay sesiones.</div> : sessions.map(session => {
           const sessionReservations = reservations.filter(item => item.sessionId === session.id && item.status !== 'cancelled');
           const confirmed = sessionReservations.filter(item => ['confirmed', 'attended', 'no_show'].includes(item.status));

@@ -5949,22 +5949,22 @@ END:VCALENDAR`;
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                {profile?.hasMitoverso ? (
-                  <div className="absolute top-4 right-4 bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Star className="w-3 h-3"/> Suscripción Activa
+                <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5">
+                  <div className="flex items-start gap-4">
+                    <div className={`w-14 h-14 shrink-0 rounded-2xl flex items-center justify-center ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-white/10 text-indigo-300'}`}>
+                      <MonitorPlay className="w-7 h-7"/>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-2xl font-black text-white uppercase tracking-tight">Mitoverso</h3>
+                      <p className="text-sm text-zinc-300 font-medium mt-1 leading-relaxed">Cursos online, audios y recursos exclusivos para avanzar a tu ritmo desde casa.</p>
+                      {profile?.hasMitoverso ? (
+                        <span className="mt-3 inline-flex bg-indigo-500/20 text-indigo-200 border border-indigo-400/20 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest items-center gap-1"><Star className="w-3 h-3"/> Suscripción activa</span>
+                      ) : pendingMitoversoSignup && (
+                        <span className="mt-3 inline-flex bg-amber-400/20 text-amber-200 border border-amber-300/20 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest items-center gap-1"><Clock className="w-3 h-3"/> En revisión</span>
+                      )}
+                    </div>
                   </div>
-                ) : pendingMitoversoSignup && (
-                  <div className="absolute top-4 right-4 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Clock className="w-3 h-3"/> En revisión
-                  </div>
-                )}
-                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
-                  <MonitorPlay className="w-8 h-8"/>
                 </div>
-                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitoverso</h3>
-                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  Accede a nuestra plataforma de cursos online, audios y recursos exclusivos. Ideal para alumnos de guitarra que quieren avanzar a su ritmo desde casa.
-                </p>
                 {!profile?.hasMitoverso && (
                   <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
                     <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
@@ -5991,22 +5991,22 @@ END:VCALENDAR`;
               </div>
 
               <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                {profile?.hasMitobox ? (
-                  <div className="absolute top-4 right-4 bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Star className="w-3 h-3"/> Tarifa Plana Activa
+                <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5">
+                  <div className="flex items-start gap-4">
+                    <div className={`w-14 h-14 shrink-0 rounded-2xl flex items-center justify-center ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-white/10 text-blue-300'}`}>
+                      <DoorOpen className="w-7 h-7"/>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-2xl font-black text-white uppercase tracking-tight">Mitobox</h3>
+                      <p className="text-sm text-zinc-300 font-medium mt-1 leading-relaxed">Reserva las aulas disponibles de la escuela para ensayar cuando lo necesites.</p>
+                      {profile?.hasMitobox ? (
+                        <span className="mt-3 inline-flex bg-blue-500/20 text-blue-200 border border-blue-400/20 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest items-center gap-1"><Star className="w-3 h-3"/> Tarifa plana activa</span>
+                      ) : pendingMitoboxSignup && (
+                        <span className="mt-3 inline-flex bg-amber-400/20 text-amber-200 border border-amber-300/20 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest items-center gap-1"><Clock className="w-3 h-3"/> En revisión</span>
+                      )}
+                    </div>
                   </div>
-                ) : pendingMitoboxSignup && (
-                  <div className="absolute top-4 right-4 bg-amber-100 text-amber-700 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                    <Clock className="w-3 h-3"/> En revisión
-                  </div>
-                )}
-                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
-                  <DoorOpen className="w-8 h-8"/>
                 </div>
-                <h3 className="text-2xl font-black text-slate-800 uppercase tracking-tight mb-2">Mitobox</h3>
-                <p className="text-sm text-zinc-500 font-medium mb-6 flex-1">
-                  ¿No puedes ensayar en casa? Con nuestra tarifa plana puedes reservar las aulas de la escuela que estén vacías para venir a practicar siempre que quieras.
-                </p>
                 {profile?.hasMitobox && upcomingMitoboxReservations.length > 0 && (
                   <div className="mb-5 space-y-2">
                     <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Próximas reservas</p>
@@ -6046,7 +6046,7 @@ END:VCALENDAR`;
                 )}
               </div>
 
-              <GymusikStudent db={db} appId={appId} profile={profile}/>
+              <GymusikStudent db={db} appId={appId} profile={profile} instruments={globalSettings.instrumentos || INSTRUMENTOS}/>
 
             </div>
             </section>

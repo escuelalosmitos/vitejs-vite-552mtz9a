@@ -19,7 +19,7 @@ export default function GymusikTeacher({ db, appId, user, date, onSessionsCountC
   }, [db, appId, teacherEmail]);
 
   const sessionsForDate = useMemo(() => sessions
-    .filter(session => session.date === date && session.status !== 'cancelled')
+    .filter(session => session.date === date && ['published', 'completed'].includes(session.status))
     .sort((left, right) => String(left.time || '').localeCompare(String(right.time || ''))), [sessions, date]);
 
   useEffect(() => onSessionsCountChange(sessionsForDate.length), [sessionsForDate.length, onSessionsCountChange]);

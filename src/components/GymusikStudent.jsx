@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Calendar, Download, Dumbbell, MapPin, Users } from 'lucide-react';
+import { Calendar, Download, Dumbbell, MapPin, Users, X } from 'lucide-react';
 import { collection, doc, onSnapshot, query, runTransaction, setDoc, where } from 'firebase/firestore';
 import {
   buildGymusikReservationId, canCancelGymusikReservationWithCredit,
@@ -14,6 +14,12 @@ const todayLocal = () => {
   return new Date(now.getTime() - offset * 60000).toISOString().slice(0, 10);
 };
 const displayDate = value => String(value || '').slice(0, 10).split('-').reverse().join('/');
+const displayWeekday = value => {
+  const date = new Date(`${String(value || '').slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return '';
+  const weekday = new Intl.DateTimeFormat('es-ES', { weekday: 'long' }).format(date);
+  return weekday.charAt(0).toUpperCase() + weekday.slice(1);
+};
 const escapeIcs = value => String(value || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
 const toIcsDate = date => date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
@@ -25,6 +31,8 @@ export default function GymusikStudent({ db, appId, profile }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState('');
   const [notice, setNotice] = useState('');
+  const [openGroupId, setOpenGroupId] = useState('');
+  const [selectedSessionIds, setSelectedSessionIds] = useState([]);
 
   useEffect(() => {
     if (!profile?.id) return undefined;
@@ -47,6 +55,23 @@ export default function GymusikStudent({ db, appId, profile }) {
   )), [sessions, member]);
 
   const ownReservationBySession = useMemo(() => new Map(reservations.map(reservation => [reservation.sessionId, reservation])), [reservations]);
+  const sessionGroups = useMemo(() => {
+    const grouped = new Map();
+    upcomingSessions.forEach(session => {
+      const groupId = session.seriesId || `single_${session.id}`;
+      if (!grouped.has(groupId)) grouped.set(groupId, { id: groupId, isSeries: Boolean(session.seriesId), sessions: [] });
+      grouped.get(groupId).sessions.push(session);
+    });
+    return [...grouped.values()]
+      .map(group => ({ ...group, sessions: sortGymusikSessions(group.sessions) }))
+      .sort((left, right) => String(left.sessions[0]?.date || '').localeCompare(String(right.sessions[0]?.date || '')));
+  }, [upcomingSessions]);
+  const openGroup = useMemo(() => sessionGroups.find(group => group.id === openGroupId) || null, [sessionGroups, openGroupId]);
+  const selectedSessions = useMemo(() => {
+    if (!openGroup) return [];
+    const selected = new Set(selectedSessionIds);
+    return openGroup.sessions.filter(session => selected.has(session.id));
+  }, [openGroup, selectedSessionIds]);
   const currentMonth = getGymusikMonth(todayLocal());
   const currentCredits = getGymusikCreditsRemaining({ reservations, studentId: profile?.id, month: currentMonth, monthlyCredits: config.monthlyCredits });
   const formationCount = Math.max(0, Number(config.formationCount || 0));
@@ -61,6 +86,12 @@ export default function GymusikStudent({ db, appId, profile }) {
   const shouldShowGymusik = config.preenrollmentOpen === true || hasExistingMembership;
 
   const notify = text => { setNotice(text); window.setTimeout(() => setNotice(''), 4000); };
+  const openSeriesDialog = groupId => { setOpenGroupId(groupId); setSelectedSessionIds([]); };
+  const closeSeriesDialog = () => {
+    if (busyId === 'series-reserve') return;
+    setOpenGroupId('');
+    setSelectedSessionIds([]);
+  };
 
   const requestPreenrollment = async () => {
     if (config.preenrollmentOpen !== true) {
@@ -78,44 +109,97 @@ export default function GymusikStudent({ db, appId, profile }) {
     } catch (error) { console.error(error); alert(`No se pudo enviar la preinscripción: ${error.message}`); } finally { setBusyId(''); }
   };
 
+  const createSessionReservation = async session => {
+    const month = getGymusikMonth(session.date);
+    const reservationId = buildGymusikReservationId(session.id, profile.id);
+    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
+    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservationId);
+    let finalStatus = 'confirmed';
+    await runTransaction(db, async transaction => {
+      const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
+      if (!sessionSnapshot.exists()) throw new Error('La sesión ya no está disponible.');
+      const liveSession = sessionSnapshot.data();
+      if (liveSession.status !== 'published') throw new Error('La sesión ya no admite reservas.');
+      const previous = reservationSnapshot.exists() ? reservationSnapshot.data() : null;
+      if (previous && ['confirmed', 'waitlist', 'attended', 'no_show'].includes(previous.status)) throw new Error('Ya tienes una reserva para esta sesión.');
+      const reservedCount = Math.max(0, Number(liveSession.reservedCount || 0));
+      const waitlistCount = Math.max(0, Number(liveSession.waitlistCount || 0));
+      const capacity = Math.max(1, Number(liveSession.capacity || 1));
+      finalStatus = reservedCount < capacity ? 'confirmed' : 'waitlist';
+      transaction.set(reservationRef, {
+        sessionId: session.id, sessionDate: liveSession.date, sessionTime: liveSession.time,
+        instrument: liveSession.instrument, centerId: liveSession.centerId || '', sede: liveSession.sede || '', roomId: liveSession.roomId || '', sala: liveSession.sala || '',
+        teacherName: liveSession.teacherName || '', teacherEmail: String(liveSession.teacherEmail || '').trim().toLowerCase(),
+        studentId: String(profile.id), studentName: profile.name || '', studentEmail: String(profile.email || '').trim().toLowerCase(),
+        status: finalStatus, creditMonth: month, creditConsumed: false,
+        createdAt: previous?.createdAt || nowIso(), updatedAt: nowIso(), createdBy: 'student'
+      }, { merge: true });
+      transaction.update(sessionRef, {
+        reservedCount: reservedCount + (finalStatus === 'confirmed' ? 1 : 0),
+        waitlistCount: waitlistCount + (finalStatus === 'waitlist' ? 1 : 0),
+        lastReservationId: reservationId, updatedAt: nowIso()
+      });
+    });
+    return finalStatus;
+  };
+
   const reserveSession = async session => {
     if (!isActiveMember || !config.active) return;
     const month = getGymusikMonth(session.date);
     const creditsRemaining = getGymusikCreditsRemaining({ reservations, studentId: profile.id, month, monthlyCredits: config.monthlyCredits });
     if (creditsRemaining < 1) return alert(`Ya has comprometido tus ${config.monthlyCredits} créditos de ${month}.`);
-    const reservationId = buildGymusikReservationId(session.id, profile.id);
-    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
-    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservationId);
     setBusyId(session.id);
     try {
-      let finalStatus = 'confirmed';
-      await runTransaction(db, async transaction => {
-        const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
-        if (!sessionSnapshot.exists()) throw new Error('La sesión ya no está disponible.');
-        const liveSession = sessionSnapshot.data();
-        if (liveSession.status !== 'published') throw new Error('La sesión ya no admite reservas.');
-        const previous = reservationSnapshot.exists() ? reservationSnapshot.data() : null;
-        if (previous && ['confirmed', 'waitlist', 'attended', 'no_show'].includes(previous.status)) throw new Error('Ya tienes una reserva para esta sesión.');
-        const reservedCount = Math.max(0, Number(liveSession.reservedCount || 0));
-        const waitlistCount = Math.max(0, Number(liveSession.waitlistCount || 0));
-        const capacity = Math.max(1, Number(liveSession.capacity || 1));
-        finalStatus = reservedCount < capacity ? 'confirmed' : 'waitlist';
-        transaction.set(reservationRef, {
-          sessionId: session.id, sessionDate: liveSession.date, sessionTime: liveSession.time,
-          instrument: liveSession.instrument, centerId: liveSession.centerId || '', sede: liveSession.sede || '', roomId: liveSession.roomId || '', sala: liveSession.sala || '',
-          teacherName: liveSession.teacherName || '', teacherEmail: String(liveSession.teacherEmail || '').trim().toLowerCase(),
-          studentId: String(profile.id), studentName: profile.name || '', studentEmail: String(profile.email || '').trim().toLowerCase(),
-          status: finalStatus, creditMonth: month, creditConsumed: false,
-          createdAt: previous?.createdAt || nowIso(), updatedAt: nowIso(), createdBy: 'student'
-        }, { merge: true });
-        transaction.update(sessionRef, {
-          reservedCount: reservedCount + (finalStatus === 'confirmed' ? 1 : 0),
-          waitlistCount: waitlistCount + (finalStatus === 'waitlist' ? 1 : 0),
-          lastReservationId: reservationId, updatedAt: nowIso()
-        });
-      });
+      const finalStatus = await createSessionReservation(session);
       notify(finalStatus === 'confirmed' ? 'Reserva Gymusik confirmada.' : 'La sesión está completa: te hemos añadido a la lista de espera.');
     } catch (error) { console.error(error); alert(error.message || 'No se pudo completar la reserva.'); } finally { setBusyId(''); }
+  };
+
+  const toggleSelectedSession = session => {
+    const selected = selectedSessionIds.includes(session.id);
+    if (selected) {
+      setSelectedSessionIds(current => current.filter(id => id !== session.id));
+      return;
+    }
+    const month = getGymusikMonth(session.date);
+    const remaining = getGymusikCreditsRemaining({ reservations, studentId: profile.id, month, monthlyCredits: config.monthlyCredits });
+    const selectedInMonth = selectedSessions.filter(item => getGymusikMonth(item.date) === month).length;
+    if (selectedInMonth >= remaining) {
+      alert(`No te quedan más créditos disponibles para ${month}.`);
+      return;
+    }
+    setSelectedSessionIds(current => [...current, session.id]);
+  };
+
+  const reserveSelectedSessions = async () => {
+    if (selectedSessions.length === 0 || !isActiveMember || !config.active) return;
+    const selectedByMonth = selectedSessions.reduce((counts, session) => {
+      const month = getGymusikMonth(session.date);
+      counts[month] = (counts[month] || 0) + 1;
+      return counts;
+    }, {});
+    const unavailableMonth = Object.entries(selectedByMonth).find(([month, count]) => count > getGymusikCreditsRemaining({ reservations, studentId: profile.id, month, monthlyCredits: config.monthlyCredits }));
+    if (unavailableMonth) return alert(`No tienes ${unavailableMonth[1]} créditos disponibles para ${unavailableMonth[0]}.`);
+
+    setBusyId('series-reserve');
+    const results = [];
+    const errors = [];
+    for (const session of selectedSessions) {
+      try {
+        results.push(await createSessionReservation(session));
+      } catch (error) {
+        console.error(error);
+        errors.push(`${displayDate(session.date)}: ${error.message || 'no se pudo reservar'}`);
+      }
+    }
+    setBusyId('');
+    setSelectedSessionIds([]);
+
+    const confirmed = results.filter(status => status === 'confirmed').length;
+    const waitlisted = results.filter(status => status === 'waitlist').length;
+    if (results.length > 0) notify(`${confirmed} reserva(s) confirmada(s)${waitlisted > 0 ? ` y ${waitlisted} en lista de espera` : ''}.`);
+    if (errors.length > 0) alert(`Algunas fechas no se pudieron reservar:\n\n${errors.join('\n')}`);
+    if (errors.length === 0) closeSeriesDialog();
   };
 
   const cancelReservation = async (session, reservation) => {
@@ -152,6 +236,22 @@ export default function GymusikStudent({ db, appId, profile }) {
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `Gymusik_${session.date}_${String(session.time || '').replace(':', '')}.ics`; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
   };
 
+  const renderStandaloneSession = session => {
+    const reservation = ownReservationBySession.get(session.id);
+    const active = reservation && ['confirmed', 'waitlist'].includes(reservation.status);
+    const full = Number(session.reservedCount || 0) >= Number(session.capacity || 1);
+    const creditsRemaining = getGymusikCreditsRemaining({ reservations, studentId: profile.id, month: getGymusikMonth(session.date), monthlyCredits: config.monthlyCredits });
+    return <div key={session.id} className="border border-zinc-200 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><span className="bg-black text-white px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{session.instrument}</span>{reservation?.status === 'confirmed' && <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Reserva confirmada</span>}{reservation?.status === 'waitlist' && <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">En lista de espera</span>}</div><p className="font-black mt-2">{session.title}</p><p className="text-sm font-medium text-zinc-500 mt-1">{session.content}</p><div className="flex flex-wrap gap-3 mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5"/>{displayDate(session.date)} · {session.time}h</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/>{session.sede} · {session.sala}</span><span className="flex items-center gap-1"><Users className="w-3.5 h-3.5"/>{session.reservedCount || 0}/{session.capacity}</span></div></div><div className="flex flex-wrap gap-2 lg:justify-end">{reservation?.status === 'confirmed' && <button onClick={() => downloadIcs(session)} className="p-3 bg-zinc-100 text-zinc-700 rounded-xl" title="Descargar calendario"><Download className="w-4 h-4"/></button>}{active ? <button disabled={busyId === session.id} onClick={() => cancelReservation(session, reservation)} className="px-4 py-3 bg-red-50 text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50">Cancelar</button> : <button disabled={busyId === session.id || creditsRemaining < 1} onClick={() => reserveSession(session)} className="px-5 py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40">{full ? 'Apuntarme a espera' : 'Reservar'}</button>}</div></div>;
+  };
+
+  const renderSessionGroup = group => {
+    if (!group.isSeries) return renderStandaloneSession(group.sessions[0]);
+    const first = group.sessions[0];
+    const last = group.sessions[group.sessions.length - 1];
+    const activeReservations = group.sessions.filter(session => ['confirmed', 'waitlist'].includes(ownReservationBySession.get(session.id)?.status)).length;
+    return <div key={group.id} className="border border-violet-200 bg-gradient-to-br from-white to-violet-50 rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-5"><div><div className="flex flex-wrap items-center gap-2"><span className="bg-black text-white px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{first.instrument}</span><span className="bg-violet-100 text-violet-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Serie semanal · {group.sessions.length} fechas</span>{activeReservations > 0 && <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{activeReservations} reservada(s)</span>}</div><p className="font-black text-lg mt-3">{first.title}</p><p className="text-sm font-medium text-zinc-500 mt-1">{first.content}</p><div className="flex flex-wrap gap-3 mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5"/>Cada {displayWeekday(first.date).toLowerCase()} · {first.time}h · {displayDate(first.date)}–{displayDate(last.date)}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/>{first.sede} · {first.sala}</span></div></div><button onClick={() => openSeriesDialog(group.id)} className="shrink-0 px-5 py-3 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest">{activeReservations > 0 ? 'Ver y gestionar fechas' : 'Elegir fechas'}</button></div>;
+  };
+
   if (!loading && !shouldShowGymusik) return null;
 
   return (
@@ -166,14 +266,30 @@ export default function GymusikStudent({ db, appId, profile }) {
         ) : member.status === 'cancelled' ? <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-5 text-sm font-bold text-zinc-500">Tu suscripción a Gymusik no está activa. Contacta con Administración si quieres volver.</div> : member.status === 'paused' ? <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-sm font-bold text-blue-800">Tu suscripción a Gymusik está en pausa. Mientras dure la pausa no podrás reservar sesiones. Contacta con Administración para reactivarla.</div> : (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"><div className="bg-emerald-50 p-4 rounded-2xl"><span className="block text-2xl font-black text-emerald-800">{currentCredits}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Créditos este mes</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{member.instrument}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Instrumento</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{config.cancellationHours} h</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Cancelación</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{memberPrice} €</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Cuota mensual</span></div></div>
-            {!config.active ? <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl text-sm font-bold text-amber-800">La escuela todavía no ha activado el calendario de Gymusik.</div> : upcomingSessions.length === 0 ? <div className="p-7 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl text-center text-xs font-black uppercase tracking-widest text-zinc-400">No hay próximas sesiones publicadas de {member.instrument}.</div> : <div className="space-y-3">{upcomingSessions.map(session => {
-              const reservation = ownReservationBySession.get(session.id); const active = reservation && ['confirmed', 'waitlist'].includes(reservation.status); const full = Number(session.reservedCount || 0) >= Number(session.capacity || 1);
-              return <div key={session.id} className="border border-zinc-200 rounded-2xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><span className="bg-black text-white px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{session.instrument}</span>{reservation?.status === 'confirmed' && <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">Reserva confirmada</span>}{reservation?.status === 'waitlist' && <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">En lista de espera</span>}</div><p className="font-black mt-2">{session.title}</p><p className="text-sm font-medium text-zinc-500 mt-1">{session.content}</p><div className="flex flex-wrap gap-3 mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5"/>{displayDate(session.date)} · {session.time}h</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5"/>{session.sede} · {session.sala}</span><span className="flex items-center gap-1"><Users className="w-3.5 h-3.5"/>{session.reservedCount || 0}/{session.capacity}</span></div></div><div className="flex flex-wrap gap-2 lg:justify-end">{reservation?.status === 'confirmed' && <button onClick={() => downloadIcs(session)} className="p-3 bg-zinc-100 text-zinc-700 rounded-xl" title="Descargar calendario"><Download className="w-4 h-4"/></button>}{active ? <button disabled={busyId === session.id} onClick={() => cancelReservation(session, reservation)} className="px-4 py-3 bg-red-50 text-red-600 rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-50">Cancelar</button> : <button disabled={busyId === session.id || getGymusikCreditsRemaining({ reservations, studentId: profile.id, month: getGymusikMonth(session.date), monthlyCredits: config.monthlyCredits }) < 1} onClick={() => reserveSession(session)} className="px-5 py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40">{full ? 'Apuntarme a espera' : 'Reservar'}</button>}</div></div>;
-            })}</div>}
+            {!config.active ? <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl text-sm font-bold text-amber-800">La escuela todavía no ha activado el calendario de Gymusik.</div> : upcomingSessions.length === 0 ? <div className="p-7 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl text-center text-xs font-black uppercase tracking-widest text-zinc-400">No hay próximas sesiones publicadas de {member.instrument}.</div> : <div className="space-y-3">{sessionGroups.map(renderSessionGroup)}</div>}
             <p className="text-[10px] font-bold text-zinc-400 mt-5 leading-relaxed">Los créditos caducan al terminar su mes. Cancelando con al menos {config.cancellationHours} horas recuperas el crédito; una cancelación posterior o una ausencia lo consume.</p>
           </>
         )}
       </div>
+      {openGroup && <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm p-3 sm:p-6 flex items-center justify-center" onMouseDown={event => { if (event.target === event.currentTarget) closeSeriesDialog(); }}>
+        <div className="bg-white w-full max-w-2xl max-h-[90vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+          <div className="p-5 sm:p-6 bg-zinc-950 text-white flex items-start justify-between gap-4"><div><p className="text-[9px] font-black uppercase tracking-[.25em] text-violet-400">Gymusik · Elegir fechas</p><h4 className="text-xl font-black mt-1">{openGroup.sessions[0]?.title}</h4><p className="text-sm font-medium text-zinc-300 mt-2">{openGroup.sessions[0]?.content}</p></div><button type="button" disabled={busyId === 'series-reserve'} onClick={closeSeriesDialog} className="p-2 bg-white/10 rounded-full disabled:opacity-40"><X className="w-5 h-5"/></button></div>
+          <div className="p-4 sm:p-6 overflow-y-auto space-y-3">
+            {openGroup.sessions.map(session => {
+              const reservation = ownReservationBySession.get(session.id);
+              const active = reservation && ['confirmed', 'waitlist'].includes(reservation.status);
+              const selected = selectedSessionIds.includes(session.id);
+              const month = getGymusikMonth(session.date);
+              const remaining = getGymusikCreditsRemaining({ reservations, studentId: profile.id, month, monthlyCredits: config.monthlyCredits });
+              const selectedInMonth = selectedSessions.filter(item => getGymusikMonth(item.date) === month).length;
+              const noCredit = !selected && selectedInMonth >= remaining;
+              const full = Number(session.reservedCount || 0) >= Number(session.capacity || 1);
+              return <div key={session.id} className={`border rounded-2xl p-4 ${selected ? 'border-violet-500 bg-violet-50' : 'border-zinc-200 bg-white'}`}><div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3"><label className={`flex items-start gap-3 ${active || noCredit ? 'cursor-default' : 'cursor-pointer'}`}><input type="checkbox" checked={selected} disabled={active || noCredit || busyId === 'series-reserve'} onChange={() => toggleSelectedSession(session)} className="w-4 h-4 mt-1 accent-violet-600"/><span><span className="block font-black">{displayWeekday(session.date)} {displayDate(session.date)} · {session.time}h</span><span className="block text-[10px] font-black uppercase tracking-widest text-zinc-400 mt-1">{session.sede} · {session.sala} · {session.reservedCount || 0}/{session.capacity} plazas</span>{!active && full && <span className="block text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">Completa: entrarás en lista de espera</span>}{!active && noCredit && <span className="block text-[10px] font-black uppercase tracking-widest text-red-500 mt-1">Sin créditos disponibles en {month}</span>}</span></label><div className="flex items-center gap-2 sm:justify-end">{reservation?.status === 'confirmed' && <><span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-lg text-[9px] font-black uppercase">Confirmada</span><button type="button" onClick={() => downloadIcs(session)} className="p-2.5 bg-zinc-100 text-zinc-700 rounded-xl" title="Descargar calendario"><Download className="w-4 h-4"/></button></>}{reservation?.status === 'waitlist' && <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-lg text-[9px] font-black uppercase">Lista de espera</span>}{active && <button type="button" disabled={busyId === session.id || busyId === 'series-reserve'} onClick={() => cancelReservation(session, reservation)} className="px-3 py-2 bg-red-50 text-red-600 rounded-xl text-[9px] font-black uppercase disabled:opacity-50">Cancelar</button>}</div></div></div>;
+            })}
+          </div>
+          <div className="p-4 sm:p-5 border-t border-zinc-200 bg-zinc-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="text-sm font-black">{selectedSessions.length} fecha(s) seleccionada(s)</p><p className="text-[10px] font-bold text-zinc-500 mt-1">Cada fecha consume un crédito de su mes.</p></div><button type="button" disabled={selectedSessions.length === 0 || busyId === 'series-reserve'} onClick={reserveSelectedSessions} className="px-5 py-3 bg-violet-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40">{busyId === 'series-reserve' ? 'Reservando…' : `Reservar ${selectedSessions.length || ''} fecha(s)`}</button></div>
+        </div>
+      </div>}
     </div>
   );
 }

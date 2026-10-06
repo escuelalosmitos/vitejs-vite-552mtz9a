@@ -252,6 +252,7 @@ const ADMIN_DEFERRED_DATA_LABELS = {
 
 const ADMIN_TAB_DEFERRED_DATA_KEYS = {
   classes: ['availability'],
+  mitobox: ['availability'],
   teachers: ['availability', 'records', 'payrollAdjustments', 'teacherEvaluations'],
   announcements: ['announcements', 'pollResponses', 'callResponses'],
   gamification: ['announcements']
@@ -2410,7 +2411,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   }, [activeTab]);
 
   const needsAnnouncementsData = Boolean(activatedDataAreas.announcements || activatedDataAreas.gamification);
-  const needsAvailabilityData = Boolean(activatedDataAreas.classes || activatedDataAreas.teachers);
+  const needsAvailabilityData = Boolean(activatedDataAreas.classes || activatedDataAreas.teachers || activatedDataAreas.mitobox);
   const needsTeacherHistoryData = Boolean(activatedDataAreas.teachers);
   const needsPollResponsesData = Boolean(activatedDataAreas.announcements);
   const needsCallResponsesData = Boolean(activatedDataAreas.announcements);
@@ -3776,6 +3777,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       vacaciones: Array.isArray(settings.vacaciones) ? settings.vacaciones : [],
       festivosTarragona: Array.isArray(settings.festivosTarragona) ? settings.festivosTarragona : [],
       festivosReus: Array.isArray(settings.festivosReus) ? settings.festivosReus : [],
+      instrumentos: Array.isArray(settings.instrumentos) ? settings.instrumentos : defaultInstrumentos,
       centers: normalizeCenters(settings.centers, settings),
       studentClassIndexVersion: Number(settings.studentClassIndexVersion || 0)
     };
@@ -14133,7 +14135,19 @@ ${startDateWarning}
                 </div>
               )}
             </div>
-            </> : <ServicesAdmin service={servicesSubTab} db={db} appId={appId} user={user} students={students} centers={centers} settings={settings}/>} 
+            </> : <ServicesAdmin
+              service={servicesSubTab}
+              db={db}
+              appId={appId}
+              user={user}
+              students={students}
+              centers={centers}
+              settings={settings}
+              classes={operationalClasses}
+              availabilities={availabilities}
+              availabilityStatus={deferredDataStatus.availability || 'loading'}
+              resolveClassForDate={getEffectiveClassForDate}
+            />} 
           </div>
         )}
 

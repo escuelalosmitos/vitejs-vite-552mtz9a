@@ -56,6 +56,11 @@ const NO_SERVICE_STUDENT = {
   id: 'no-service-student',
   email: 'noservice@example.com'
 };
+const GYMUSIK_STUDENT = {
+  uid: 'gymusik-student-uid',
+  id: 'gymusik-student',
+  email: 'gymusik@example.com'
+};
 
 function authenticated(testEnv, identity) {
   return testEnv.authenticatedContext(identity.uid, {
@@ -122,6 +127,16 @@ async function seed(testEnv) {
         hasMitoverso: false,
         globalStatus: 'activo'
       }],
+      [`${ROOT}/students/${GYMUSIK_STUDENT.id}`, {
+        name: 'Usuario Gymusik',
+        email: GYMUSIK_STUDENT.email,
+        claimed: true,
+        authUid: GYMUSIK_STUDENT.uid,
+        classes: [],
+        hasGymusik: true,
+        gymusikStatus: 'active',
+        globalStatus: 'activo'
+      }],
       [`${ROOT}/access/${STUDENT.uid}`, {
         role: 'student',
         studentId: STUDENT.id,
@@ -145,6 +160,41 @@ async function seed(testEnv) {
         studentId: NO_SERVICE_STUDENT.id,
         email: NO_SERVICE_STUDENT.email,
         portalEnabled: false
+      }],
+      [`${ROOT}/access/${GYMUSIK_STUDENT.uid}`, {
+        role: 'student',
+        studentId: GYMUSIK_STUDENT.id,
+        email: GYMUSIK_STUDENT.email,
+        portalEnabled: true
+      }],
+
+      [`${ROOT}/gymusikSettings/main`, {
+        active: true,
+        studentPrice: 20,
+        externalPrice: 35,
+        monthlyCredits: 4,
+        minimumMembers: 6,
+        cancellationHours: 24
+      }],
+      [`${ROOT}/gymusikMembers/${GYMUSIK_STUDENT.id}`, {
+        studentId: GYMUSIK_STUDENT.id,
+        studentName: 'Usuario Gymusik',
+        studentEmail: GYMUSIK_STUDENT.email,
+        instrument: 'Guitarra',
+        status: 'active'
+      }],
+      [`${ROOT}/gymusikSessions/gym-session-1`, {
+        title: 'Entrenamiento',
+        instrument: 'Guitarra',
+        date: '2026-10-03',
+        time: '12:00',
+        capacity: 6,
+        reservedCount: 0,
+        waitlistCount: 0,
+        status: 'published',
+        teacherName: 'Norman',
+        teacherEmail: TEACHER.email,
+        lastReservationId: ''
       }],
 
       [`${ROOT}/settings/global`, { adminSecret: 'solo personal' }],
@@ -833,6 +883,65 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/records/record-other`)));
       await assertSucceeds(getDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/dailyReports/report-own`)));
       await assertFails(getDoc(doc(db, `${ROOT}/users/${OTHER_TEACHER.uid}/dailyReports/report-other`)));
+    });
+
+    await t.test('Gymusik: el alumno reserva lo propio y el profesor solo gestiona su asistencia', async () => {
+      const studentDb = authenticated(testEnv, GYMUSIK_STUDENT);
+      const reservationId = `gym-session-1_${GYMUSIK_STUDENT.id}`;
+      const sessionRef = doc(studentDb, `${ROOT}/gymusikSessions/gym-session-1`);
+      const reservationRef = doc(studentDb, `${ROOT}/gymusikReservations/${reservationId}`);
+
+      await assertSucceeds(getDoc(doc(studentDb, `${ROOT}/gymusikSettings/main`)));
+      await assertSucceeds(getDoc(doc(studentDb, `${ROOT}/gymusikMembers/${GYMUSIK_STUDENT.id}`)));
+      await assertSucceeds(runTransaction(studentDb, async transaction => {
+        const sessionSnapshot = await transaction.get(sessionRef);
+        transaction.set(reservationRef, {
+          sessionId: 'gym-session-1',
+          sessionDate: '2026-10-03',
+          sessionTime: '12:00',
+          instrument: 'Guitarra',
+          teacherName: 'Norman',
+          teacherEmail: TEACHER.email,
+          studentId: GYMUSIK_STUDENT.id,
+          studentName: 'Usuario Gymusik',
+          studentEmail: GYMUSIK_STUDENT.email,
+          status: 'confirmed',
+          creditMonth: '2026-10',
+          creditConsumed: false,
+          createdAt: '2026-10-01T10:00:00.000Z',
+          updatedAt: '2026-10-01T10:00:00.000Z',
+          createdBy: 'student'
+        });
+        transaction.update(sessionRef, {
+          reservedCount: Number(sessionSnapshot.data().reservedCount || 0) + 1,
+          waitlistCount: Number(sessionSnapshot.data().waitlistCount || 0),
+          lastReservationId: reservationId,
+          updatedAt: '2026-10-01T10:00:00.000Z'
+        });
+      }));
+
+      const otherStudentDb = authenticated(testEnv, OTHER_STUDENT);
+      await assertFails(getDoc(doc(otherStudentDb, `${ROOT}/gymusikReservations/${reservationId}`)));
+
+      const teacherDb = authenticated(testEnv, TEACHER);
+      await assertSucceeds(getDocs(query(
+        collection(teacherDb, `${ROOT}/gymusikSessions`),
+        where('teacherEmail', '==', TEACHER.email)
+      )));
+      await assertSucceeds(getDocs(query(
+        collection(teacherDb, `${ROOT}/gymusikReservations`),
+        where('teacherEmail', '==', TEACHER.email)
+      )));
+      await assertSucceeds(updateDoc(doc(teacherDb, `${ROOT}/gymusikReservations/${reservationId}`), {
+        status: 'attended',
+        attendanceMarkedAt: '2026-10-03T13:00:00.000Z',
+        attendanceMarkedBy: TEACHER.email,
+        creditConsumed: true,
+        updatedAt: '2026-10-03T13:00:00.000Z'
+      }));
+
+      const otherTeacherDb = authenticated(testEnv, OTHER_TEACHER);
+      await assertFails(getDoc(doc(otherTeacherDb, `${ROOT}/gymusikReservations/${reservationId}`)));
     });
 
     await t.test('administrador: conserva acceso completo y publica disponibilidad', async () => {

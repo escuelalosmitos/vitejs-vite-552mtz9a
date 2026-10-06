@@ -48,7 +48,7 @@ const getFutureAccessBlockMessage = (classStartDate) => (
 const hasStudentPortalEntitlement = (studentData = {}) => {
   const status = String(studentData.globalStatus || 'activo').toLowerCase();
   const hasClasses = Array.isArray(studentData.classes) && studentData.classes.length > 0;
-  const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true;
+  const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true || studentData.hasGymusik === true;
   return status !== 'baja' && (hasClasses || hasExtraService);
 };
 
@@ -56,7 +56,7 @@ const getStudentDocumentPriority = (studentDocument, authenticatedUser) => {
   const data = studentDocument.data();
   const status = String(data.globalStatus || 'activo').toLowerCase();
   const hasClasses = Array.isArray(data.classes) && data.classes.length > 0;
-  const hasExtraService = data.hasMitobox === true || data.hasMitoverso === true;
+  const hasExtraService = data.hasMitobox === true || data.hasMitoverso === true || data.hasGymusik === true;
   return [
     data.authUid === authenticatedUser.uid ? 1 : 0,
     status !== 'baja' ? 1 : 0,
@@ -172,7 +172,7 @@ export default function App() {
           return;
         }
         const classStartDate = String(studentData.classStartDate || '').trim();
-        const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true;
+        const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true || studentData.hasGymusik === true;
         if (!hasExtraService && classStartDate && classStartDate > getTodayLocalString()) {
           setAuthError(getFutureAccessBlockMessage(classStartDate));
           await signOut(auth);

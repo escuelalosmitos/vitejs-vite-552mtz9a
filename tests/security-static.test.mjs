@@ -262,13 +262,37 @@ test('los servicios extra permiten un portal sin plaza y el alta directa desde C
     read('firestore.rules')
   ]);
   assert.match(app, /hasStudentPortalEntitlement/);
-  assert.match(app, /studentData\.hasMitobox === true \|\| studentData\.hasMitoverso === true/);
+  assert.match(app, /studentData\.hasMitobox === true \|\| studentData\.hasMitoverso === true \|\| studentData\.hasGymusik === true/);
   assert.match(admin, /createServiceOnlyStudent/);
-  assert.match(admin, /Alta solo Mitobox\/Mitoverso/);
+  assert.match(admin, /Alta solo servicios/);
   assert.match(student, /isServiceOnlyStudent/);
   assert.match(student, /Solicitar una plaza de clases/);
   assert.match(student, /Dar de baja mis servicios/);
   assert.match(rules, /studentHasPortalEntitlement/);
+});
+
+test('Gymusik separa administración, alumno y profesor con reservas transaccionales', async () => {
+  const [admin, student, teacher, services, gymusikStudent, gymusikTeacher, rules] = await Promise.all([
+    read('src/components/AdminPortal.jsx'),
+    read('src/components/StudentPortal.jsx'),
+    read('src/components/TeacherPortal.jsx'),
+    read('src/components/ServicesAdmin.jsx'),
+    read('src/components/GymusikStudent.jsx'),
+    read('src/components/GymusikTeacher.jsx'),
+    read('firestore.rules')
+  ]);
+  assert.match(admin, /label: 'Servicios'/);
+  assert.match(admin, /ServicesAdmin/);
+  assert.match(student, /GymusikStudent/);
+  assert.match(teacher, /GymusikTeacher/);
+  assert.match(services, /gymusikSessions/);
+  assert.match(services, /formationCount/);
+  assert.match(gymusikStudent, /runTransaction\(db/);
+  assert.match(gymusikStudent, /buildGymusikReservationId/);
+  assert.match(gymusikTeacher, /Sesión Gymusik/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/gymusikMembers\/\{studentId\}/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/gymusikSessions\/\{sessionId\}/);
+  assert.match(rules, /match \/artifacts\/\{appId\}\/gymusikReservations\/\{reservationId\}/);
 });
 
 test('Mitobox usa reservas dedicadas, aforo transaccional y radar diferido', async () => {

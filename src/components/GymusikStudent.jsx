@@ -48,11 +48,13 @@ export default function GymusikStudent({ db, appId, profile }) {
     return () => unsubs.forEach(unsub => unsub());
   }, [db, appId, profile?.id, profile?.email]);
 
+  const currentMonth = getGymusikMonth(todayLocal());
   const upcomingSessions = useMemo(() => sessions.filter(session => (
     session.status === 'published'
     && session.date >= todayLocal()
+    && getGymusikMonth(session.date) === currentMonth
     && (!member?.instrument || session.instrument === member.instrument)
-  )), [sessions, member]);
+  )), [sessions, member, currentMonth]);
 
   const ownReservationBySession = useMemo(() => new Map(reservations.map(reservation => [reservation.sessionId, reservation])), [reservations]);
   const sessionGroups = useMemo(() => {
@@ -72,7 +74,6 @@ export default function GymusikStudent({ db, appId, profile }) {
     const selected = new Set(selectedSessionIds);
     return openGroup.sessions.filter(session => selected.has(session.id));
   }, [openGroup, selectedSessionIds]);
-  const currentMonth = getGymusikMonth(todayLocal());
   const currentCredits = getGymusikCreditsRemaining({ reservations, studentId: profile?.id, month: currentMonth, monthlyCredits: config.monthlyCredits });
   const formationCount = Math.max(0, Number(config.formationCount || 0));
   const missingPeople = Math.max(0, config.minimumMembers - formationCount);
@@ -266,7 +267,7 @@ export default function GymusikStudent({ db, appId, profile }) {
         ) : member.status === 'cancelled' ? <div className="bg-zinc-50 border border-zinc-200 rounded-2xl p-5 text-sm font-bold text-zinc-500">Tu suscripción a Gymusik no está activa. Contacta con Administración si quieres volver.</div> : member.status === 'paused' ? <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-sm font-bold text-blue-800">Tu suscripción a Gymusik está en pausa. Mientras dure la pausa no podrás reservar sesiones. Contacta con Administración para reactivarla.</div> : (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6"><div className="bg-emerald-50 p-4 rounded-2xl"><span className="block text-2xl font-black text-emerald-800">{currentCredits}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Créditos este mes</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{member.instrument}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Instrumento</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{config.cancellationHours} h</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Cancelación</span></div><div className="bg-zinc-50 p-4 rounded-2xl"><span className="block text-lg font-black">{memberPrice} €</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Cuota mensual</span></div></div>
-            {!config.active ? <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl text-sm font-bold text-amber-800">La escuela todavía no ha activado el calendario de Gymusik.</div> : upcomingSessions.length === 0 ? <div className="p-7 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl text-center text-xs font-black uppercase tracking-widest text-zinc-400">No hay próximas sesiones publicadas de {member.instrument}.</div> : <div className="space-y-3">{sessionGroups.map(renderSessionGroup)}</div>}
+            {!config.active ? <div className="p-5 bg-amber-50 border border-amber-200 rounded-2xl text-sm font-bold text-amber-800">La escuela todavía no ha activado el calendario de Gymusik.</div> : upcomingSessions.length === 0 ? <div className="p-7 bg-zinc-50 border-2 border-dashed border-zinc-200 rounded-2xl text-center text-xs font-black uppercase tracking-widest text-zinc-400">No hay más sesiones publicadas de {member.instrument} para este mes.</div> : <div className="space-y-3">{sessionGroups.map(renderSessionGroup)}</div>}
             <p className="text-[10px] font-bold text-zinc-400 mt-5 leading-relaxed">Los créditos caducan al terminar su mes. Cancelando con al menos {config.cancellationHours} horas recuperas el crédito; una cancelación posterior o una ausencia lo consume.</p>
           </>
         )}

@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { collection, query, where, documentId, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
 import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
+import GymusikTeacher from './GymusikTeacher';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
@@ -747,6 +748,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const availableMonths = useMemo(() => generateLast12Months(), []);
 
   const [currentSession, setCurrentSession] = useState(null);
+  const [gymusikSessionsOnDate, setGymusikSessionsOnDate] = useState(0);
   const [isSendingReport, setIsSendingReport] = useState(false);
   
   const [deadHourModal, setDeadHourModal] = useState(null);
@@ -4900,7 +4902,9 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                   </div>
                 )}
 
-                {dashboardItems.length === 0 ? (
+                <GymusikTeacher db={db} appId={appId} user={user} date={date} onSessionsCountChange={setGymusikSessionsOnDate} showNotification={showNotification}/>
+
+                {dashboardItems.length === 0 && gymusikSessionsOnDate === 0 ? (
                   <div className="text-center py-16 bg-zinc-50 rounded-2xl border-2 border-dashed border-zinc-200">
                     <p className="text-zinc-400 font-bold uppercase tracking-widest">No hay clases programadas.</p>
                     <p className="text-xs font-medium text-zinc-400 mt-2">Si deberías tener clase, contacta con coordinación.</p>

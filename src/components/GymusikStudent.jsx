@@ -54,16 +54,19 @@ export default function GymusikStudent({ db, appId, profile }) {
   const isActiveMember = member?.status === 'active' && profile?.hasGymusik === true;
   const isCurrentStudent = member ? member.isCurrentStudent !== false : Array.isArray(profile?.classes) && profile.classes.length > 0;
   const memberPrice = isCurrentStudent ? config.studentPrice : config.externalPrice;
-  const hasVisibleOffer = upcomingSessions.length > 0;
   const hasExistingMembership = Boolean(
     profile?.hasGymusik === true
     || (member && member.status !== 'cancelled')
   );
-  const shouldShowGymusik = hasVisibleOffer || hasExistingMembership;
+  const shouldShowGymusik = config.preenrollmentOpen === true || hasExistingMembership;
 
   const notify = text => { setNotice(text); window.setTimeout(() => setNotice(''), 4000); };
 
   const requestPreenrollment = async () => {
+    if (config.preenrollmentOpen !== true) {
+      alert('Las preinscripciones de Gymusik están cerradas en este momento.');
+      return;
+    }
     setBusyId('preenroll');
     try {
       await setDoc(doc(db, 'artifacts', appId, 'gymusikMembers', String(profile.id)), {

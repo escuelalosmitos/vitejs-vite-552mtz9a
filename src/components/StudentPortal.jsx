@@ -5918,12 +5918,15 @@ END:VCALENDAR`;
         {/* --- PESTAÑA: EXTRAS --- */}
         {activeTab === 'extras' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            <div className="bg-black text-white border-2 border-zinc-800 rounded-3xl p-6 md:p-8 flex items-center justify-between shadow-xl relative overflow-hidden">
-              <div className="relative z-10">
-                <h2 className="text-2xl font-black uppercase tracking-tight text-white">Mitos+</h2>
-                <p className="text-zinc-400 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
+            <div className="px-1 py-2 flex items-center justify-between gap-5">
+              <div>
+                <h2 className="text-3xl font-black uppercase tracking-tight text-slate-900">Mitos+</h2>
+                <p className="text-zinc-500 font-bold text-xs uppercase tracking-widest mt-1">Sácale más partido a tu música</p>
+                <div className="h-1 w-16 rounded-full bg-gradient-to-r from-indigo-500 via-blue-500 to-emerald-500 mt-3" />
               </div>
-              <Sparkles className="w-24 h-24 text-zinc-800 absolute -right-4 -bottom-4 pointer-events-none" />
+              <div className="w-14 h-14 rounded-2xl bg-zinc-100 text-zinc-700 flex items-center justify-center shrink-0">
+                <Sparkles className="w-7 h-7" />
+              </div>
             </div>
 
             {workshopsLoaded && workshopLayout.featuredWorkshop && (
@@ -5948,8 +5951,8 @@ END:VCALENDAR`;
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5">
+              <div className="bg-gradient-to-b from-indigo-50/60 via-white to-white rounded-3xl p-6 shadow-sm hover:shadow-md transition-shadow duration-300 border-2 border-indigo-200 flex flex-col h-full relative overflow-hidden">
+                <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5 border-b-4 border-indigo-500">
                   <div className="flex items-start gap-4">
                     <div className={`w-14 h-14 shrink-0 rounded-2xl flex items-center justify-center ${profile?.hasMitoverso ? 'bg-indigo-600 text-white' : 'bg-white/10 text-indigo-300'}`}>
                       <MonitorPlay className="w-7 h-7"/>
@@ -5990,8 +5993,8 @@ END:VCALENDAR`;
                 )}
               </div>
 
-              <div className="bg-white rounded-3xl p-6 shadow-sm border-2 border-zinc-100 flex flex-col h-full relative overflow-hidden">
-                <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5">
+              <div className="bg-gradient-to-b from-blue-50/60 via-white to-white rounded-3xl p-6 shadow-sm hover:shadow-md transition-shadow duration-300 border-2 border-blue-200 flex flex-col h-full relative overflow-hidden">
+                <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5 border-b-4 border-blue-500">
                   <div className="flex items-start gap-4">
                     <div className={`w-14 h-14 shrink-0 rounded-2xl flex items-center justify-center ${profile?.hasMitobox ? 'bg-blue-600 text-white' : 'bg-white/10 text-blue-300'}`}>
                       <DoorOpen className="w-7 h-7"/>

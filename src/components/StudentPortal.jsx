@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
 import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
-import { buildMitoboxReservationId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
+import {
+  buildMitoboxReservationGroupId,
+  buildMitoboxReservationId,
+  calculateMitoboxAvailability,
+  isActiveMitoboxReservation,
+  isMitoboxSlotSelectionConsecutive,
+  sortMitoboxSlots,
+  toggleMitoboxSlotSelection
+} from './mitoboxUtils';
 import GymusikStudent from './GymusikStudent';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
@@ -566,9 +574,14 @@ const getMaintenancePeriodForMonths = (monthCount = 1, isLate = false) => {
 };
 
 const isMaintenancePeriodActiveForDate = (period = {}, dateStr = '') => {
-  if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(period.status)) return false;
+  if (!period || ['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(period.status || '').toLowerCase())) return false;
   return Boolean(period.from && period.until && period.from <= dateStr && period.until >= dateStr);
 };
+
+const isPendingClassStartEntry = (studentEntry = {}) => (
+  studentEntry.pendingStart === true
+  || String(studentEntry.enrollmentStatus || '').toLowerCase() === 'pending_start'
+);
 
 const formatMaintenancePeriodLine = (period = {}) => {
   if (!period?.from || !period?.until) return 'periodo no indicado';
@@ -686,7 +699,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [mboxDate, setMboxDate] = useState('');
   const [mboxSede, setMboxSede] = useState('Tarragona');
   const [mboxInst, setMboxInst] = useState('');
-  const [mboxSelectedSlot, setMboxSelectedSlot] = useState(null);
+  const [mboxSelectedSlots, setMboxSelectedSlots] = useState([]);
+  const [mboxSelectionMessage, setMboxSelectionMessage] = useState('');
   const [myMitoboxReservations, setMyMitoboxReservations] = useState([]);
   const [mitoboxSlotUsage, setMitoboxSlotUsage] = useState([]);
   const [mitoboxReservationError, setMitoboxReservationError] = useState('');
@@ -730,7 +744,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   }, []);
 
   const timeRules = getMonthNames();
-  const dToday = new Date();
+  const dToday = new Date(pollClock);
   const todayStr = `${dToday.getFullYear()}-${String(dToday.getMonth() + 1).padStart(2, '0')}-${String(dToday.getDate()).padStart(2, '0')}`;
   const centers = useMemo(() => normalizeCenters(globalSettings.centers, globalSettings), [globalSettings]);
   const isStudentClassIndexReady = Number(globalSettings.studentClassIndexVersion || 0) >= 1;
@@ -806,7 +820,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
     if (mitoboxCenters.length === 0) return;
     if (mitoboxCenters.some(center => isSameCenter(center.id, mboxSede))) return;
     setMboxSede(mitoboxCenters[0].name);
-    setMboxSelectedSlot(null);
+    setMboxSelectedSlots([]);
+    setMboxSelectionMessage('');
   }, [mitoboxCenters, mboxSede]);
 
   const activeMaintenancePeriod = useMemo(() => {
@@ -919,6 +934,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   );
 
   const isStudentEntryActiveOnDate = (studentEntry = {}, studentInfo = {}, dateStr = todayStr) => {
+    if (isPendingClassStartEntry(studentEntry)) return false;
     const startDate = getClassEntryStartDate(studentEntry, studentInfo);
     const endDate = getClassEntryEndDate(studentEntry, studentInfo);
     if (startDate && startDate > dateStr) return false;
@@ -1391,7 +1407,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
 
   const fixedMyClasses = effectiveMyClasses.filter(c =>
     !isPunctualClass(c) &&
-    (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
+    (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s) && !isPendingClassStartEntry(s))
   );
 
   const currentCalendarMonth = todayStr.slice(0, 7);
@@ -2764,7 +2780,8 @@ export default function StudentPortal({ user, logout, db, appId }) {
         setCatalogTemporaryClassChanges([]);
         setCatalogMitoboxRelocations([]);
         setSelectedNewClass(null);
-        setMboxSelectedSlot(null);
+        setMboxSelectedSlots([]);
+        setMboxSelectionMessage('');
         setClassCatalogLoading(false);
         setClassCatalogLoaded(false);
         setClassCatalogError('No se ha podido consultar la disponibilidad. Reintenta antes de elegir una plaza o una sala.');
@@ -3041,6 +3058,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         }
 
         const isResubmission = previousStatus === 'withdrawn';
+        const shouldNotifyAdmin = !previous || isResubmission;
         transaction.set(responseRef, {
           callId: call.id,
           announcementId: call.id,
@@ -3058,11 +3076,17 @@ export default function StudentPortal({ user, logout, db, appId }) {
           createdAt: previous?.createdAt || nowIso,
           submittedAt: nowIso,
           updatedAt: nowIso,
+          ...(shouldNotifyAdmin ? { adminNotificationEmailRequestedAt: nowIso } : {}),
           ...(isResubmission ? {
             resubmittedAt: nowIso,
             withdrawnAt: '',
             reviewedAt: '',
-            reviewedBy: ''
+            reviewedBy: '',
+            adminNotificationEmailSentAt: '',
+            adminNotificationEmailRecipient: '',
+            adminNotificationEmailClaimedAt: '',
+            adminNotificationEmailClaimedBy: '',
+            adminNotificationEmailFailedAt: ''
           } : {})
         }, { merge: true });
       });
@@ -3776,81 +3800,115 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
   };
 
   const sendMitoboxReservation = async () => {
-    if (!mboxDate || !mboxSede || !mboxInst || !mboxSelectedSlot) return;
+    const selectedSlots = sortMitoboxSlots(mboxSelectedSlots);
+    if (!mboxDate || !mboxSede || !mboxInst || selectedSlots.length === 0) return;
     if (profile?.hasMitobox !== true) {
       showToast('Necesitas tener Mitobox activo para reservar una sala.', 'error');
+      return;
+    }
+    const nowLocal = new Date();
+    const tomorrowLocal = new Date(nowLocal.getFullYear(), nowLocal.getMonth(), nowLocal.getDate() + 1);
+    const currentMonthEnd = new Date(nowLocal.getFullYear(), nowLocal.getMonth() + 1, 0);
+    const minimumDate = formatLocalDateString(tomorrowLocal);
+    const maximumDate = formatLocalDateString(currentMonthEnd);
+    if (mboxDate < minimumDate || mboxDate > maximumDate) {
+      showToast('Mitobox solo permite reservar, con 24 horas de antelación, dentro del mes corriente ya abonado.', 'error');
+      return;
+    }
+    if (!isMitoboxSlotSelectionConsecutive(selectedSlots, 3)) {
+      showToast('Selecciona entre una y tres horas consecutivas de la misma sala.', 'error');
       return;
     }
     setIsSendingGestion(true);
     try {
       const selectedCenter = getCenterForValue(mboxSede);
-      const selectedRoom = findRoomByValue(selectedCenter, mboxSelectedSlot.roomId || mboxSelectedSlot.sala);
+      const firstSelectedSlot = selectedSlots[0];
+      const selectedRoom = findRoomByValue(selectedCenter, firstSelectedSlot.roomId || firstSelectedSlot.sala);
       const selectedCenterName = selectedCenter?.name || mboxSede;
-      const selectedRoomName = selectedRoom?.name || mboxSelectedSlot.sala;
-      const reservationId = buildMitoboxReservationId({
+      const selectedRoomName = selectedRoom?.name || firstSelectedSlot.sala;
+      const nowIso = new Date().toISOString();
+      const reservationGroupId = buildMitoboxReservationGroupId({
         studentId: profile.id,
         date: mboxDate,
-        time: mboxSelectedSlot.time
+        createdAt: Date.now()
       });
-      const reservationRef = doc(db, 'artifacts', appId, 'mitoboxReservations', reservationId);
-      const slotRef = doc(db, 'artifacts', appId, 'mitoboxSlots', mboxSelectedSlot.slotId);
-      const nowIso = new Date().toISOString();
+      const reservationRows = selectedSlots.map(slot => {
+        const reservationId = buildMitoboxReservationId({
+          studentId: profile.id,
+          date: mboxDate,
+          time: slot.time
+        });
+        return {
+          slot,
+          reservationId,
+          reservationRef: doc(db, 'artifacts', appId, 'mitoboxReservations', reservationId),
+          slotRef: doc(db, 'artifacts', appId, 'mitoboxSlots', slot.slotId)
+        };
+      });
 
       await runTransaction(db, async transaction => {
-        const [reservationSnapshot, slotSnapshot] = await Promise.all([
-          transaction.get(reservationRef),
-          transaction.get(slotRef)
+        const snapshots = await Promise.all([
+          ...reservationRows.map(row => transaction.get(row.reservationRef)),
+          ...reservationRows.map(row => transaction.get(row.slotRef))
         ]);
-        if (reservationSnapshot.exists() && isActiveMitoboxReservation(reservationSnapshot.data())) {
-          throw new Error('ALREADY_RESERVED');
-        }
+        const reservationSnapshots = snapshots.slice(0, reservationRows.length);
+        const slotSnapshots = snapshots.slice(reservationRows.length);
 
-        const slotData = slotSnapshot.exists() ? slotSnapshot.data() : {};
-        // Si el turno ya existe, su aforo queda congelado para no alterar el
-        // contador compartido durante una reserva concurrente. Los cambios de
-        // aforo se aplicarán a los nuevos turnos.
-        const capacity = Math.max(1, Number(
-          slotSnapshot.exists()
-            ? slotData.capacity
-            : (mboxSelectedSlot.capacity || selectedRoom?.capacity || 1)
-        ));
-        const reservedCount = Math.max(0, Number(slotData.reservedCount || 0));
-        if (reservedCount >= capacity) throw new Error('ROOM_FULL');
+        reservationRows.forEach((row, index) => {
+          const reservationSnapshot = reservationSnapshots[index];
+          const slotSnapshot = slotSnapshots[index];
+          if (reservationSnapshot.exists() && isActiveMitoboxReservation(reservationSnapshot.data())) {
+            throw new Error('ALREADY_RESERVED');
+          }
 
-        transaction.set(slotRef, {
-          reservationDate: mboxDate,
-          reservationTime: mboxSelectedSlot.time,
-          centerId: selectedCenter?.id || mboxSelectedSlot.centerId || '',
-          roomId: selectedRoom?.id || mboxSelectedSlot.roomId || '',
-          reservedCount: reservedCount + 1,
-          capacity,
-          updatedAt: nowIso,
-          lastMutationId: reservationId
-        }, { merge: true });
-        transaction.set(reservationRef, {
-          studentId: profile.id,
-          studentName: profile.name || '',
-          studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
-          status: 'confirmed',
-          reservationDate: mboxDate,
-          reservationTime: mboxSelectedSlot.time,
-          durationMinutes: 60,
-          instrument: mboxInst,
-          sede: selectedCenterName,
-          sala: selectedRoomName,
-          centerId: selectedCenter?.id || mboxSelectedSlot.centerId || '',
-          roomId: selectedRoom?.id || mboxSelectedSlot.roomId || '',
-          slotId: mboxSelectedSlot.slotId,
-          capacity,
-          createdAt: reservationSnapshot.exists() ? (reservationSnapshot.data().createdAt || nowIso) : nowIso,
-          updatedAt: nowIso
+          const slotData = slotSnapshot.exists() ? slotSnapshot.data() : {};
+          // Si el turno ya existe, su aforo queda congelado para no alterar el
+          // contador compartido durante una reserva concurrente.
+          const capacity = Math.max(1, Number(
+            slotSnapshot.exists()
+              ? slotData.capacity
+              : (row.slot.capacity || selectedRoom?.capacity || 1)
+          ));
+          const reservedCount = Math.max(0, Number(slotData.reservedCount || 0));
+          if (reservedCount >= capacity) throw new Error('ROOM_FULL');
+
+          transaction.set(row.slotRef, {
+            reservationDate: mboxDate,
+            reservationTime: row.slot.time,
+            centerId: selectedCenter?.id || row.slot.centerId || '',
+            roomId: selectedRoom?.id || row.slot.roomId || '',
+            reservedCount: reservedCount + 1,
+            capacity,
+            updatedAt: nowIso,
+            lastMutationId: row.reservationId
+          }, { merge: true });
+          transaction.set(row.reservationRef, {
+            studentId: profile.id,
+            studentName: profile.name || '',
+            studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
+            status: 'confirmed',
+            reservationDate: mboxDate,
+            reservationTime: row.slot.time,
+            durationMinutes: 60,
+            instrument: mboxInst,
+            sede: selectedCenterName,
+            sala: selectedRoomName,
+            centerId: selectedCenter?.id || row.slot.centerId || '',
+            roomId: selectedRoom?.id || row.slot.roomId || '',
+            slotId: row.slot.slotId,
+            reservationGroupId,
+            reservationGroupSize: reservationRows.length,
+            capacity,
+            createdAt: reservationSnapshot.exists() ? (reservationSnapshot.data().createdAt || nowIso) : nowIso,
+            updatedAt: nowIso
+          });
         });
       });
 
       const [y, m, d] = mboxDate.split('-');
-      const [h, min] = mboxSelectedSlot.time.split(':');
+      const [h, min] = selectedSlots[0].time.split(':');
       const startDate = new Date(y, m - 1, d, h, min);
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
+      const endDate = new Date(startDate.getTime() + selectedSlots.length * 60 * 60 * 1000);
 
       const formatDateICS = (date) => date.toISOString().replace(/-|:|\.\d+/g, '');
       const icsContent = `BEGIN:VCALENDAR
@@ -3859,7 +3917,7 @@ BEGIN:VEVENT
 DTSTART:${formatDateICS(startDate)}
 DTEND:${formatDateICS(endDate)}
 SUMMARY:Ensayo Mitobox - Escuela Los Mitos
-DESCRIPTION:Reserva para ensayar ${mboxInst} en ${selectedCenterName} (${selectedRoomName})
+DESCRIPTION:Reserva de ${selectedSlots.length} ${selectedSlots.length === 1 ? 'hora' : 'horas'} para ensayar ${mboxInst} en ${selectedCenterName} (${selectedRoomName})
 LOCATION:Escuela Los Mitos - ${selectedCenterName}${selectedCenter?.address ? ` - ${selectedCenter.address}` : ''}
 END:VEVENT
 END:VCALENDAR`;
@@ -3868,7 +3926,7 @@ END:VCALENDAR`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `Ensayo_Mitobox_${mboxDate}.ics`);
+      link.setAttribute('download', `Ensayo_Mitobox_${mboxDate}_${selectedSlots[0].time.replace(':', '')}-${selectedSlots[selectedSlots.length - 1].time.replace(':', '')}.ics`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -3876,9 +3934,10 @@ END:VCALENDAR`;
 
       setMitoboxModal(false);
       setMboxDate('');
-      setMboxSelectedSlot(null);
+      setMboxSelectedSlots([]);
+      setMboxSelectionMessage('');
       setMboxInst('');
-      showToast('Reserva confirmada. Se ha descargado el archivo para tu calendario.');
+      showToast(`${selectedSlots.length === 1 ? 'Reserva confirmada' : `${selectedSlots.length} horas reservadas`}. Se ha descargado un único archivo para tu calendario.`);
     } catch (e) {
       const message = e.message === 'ROOM_FULL'
         ? 'La última plaza de este turno acaba de ocuparse. Elige otra sala u hora.'
@@ -4884,10 +4943,13 @@ END:VCALENDAR`;
 
   const renderMitoboxModal = () => {
     if (!mitoboxModal) return null;
-    
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    const currentDate = new Date(pollClock);
+    const tomorrow = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + 1);
+    const currentMonthEndDate = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+    const tomorrowStr = formatLocalDateString(tomorrow);
+    const currentMonthEndStr = formatLocalDateString(currentMonthEndDate);
+    const hasBookableDayThisMonth = tomorrowStr <= currentMonthEndStr;
 
     const selectedMboxCenter = getCenterForValue(mboxSede);
     const availableMboxSlots = calculateMitoboxAvailability({
@@ -4900,10 +4962,21 @@ END:VCALENDAR`;
       slotUsage: mitoboxSlotUsage
     });
 
+    const toggleSelectedMitoboxSlot = (slot) => {
+      const result = toggleMitoboxSlotSelection({ selectedSlots: mboxSelectedSlots, slot, maxSlots: 3 });
+      setMboxSelectedSlots(result.slots);
+      setMboxSelectionMessage(result.error || '');
+    };
+
+    const selectedMitoboxRange = sortMitoboxSlots(mboxSelectedSlots);
+    const selectedMitoboxSummary = selectedMitoboxRange.length > 0
+      ? `${selectedMitoboxRange[0].sala} · ${selectedMitoboxRange[0].time}–${String(Number(selectedMitoboxRange[selectedMitoboxRange.length - 1].time.slice(0, 2)) + 1).padStart(2, '0')}:${selectedMitoboxRange[selectedMitoboxRange.length - 1].time.slice(3)}`
+      : '';
+
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <button onClick={() => {setMitoboxModal(false); setMboxDate(''); setMboxSelectedSlot(null);}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => {setMitoboxModal(false); setMboxDate(''); setMboxSelectedSlots([]); setMboxSelectionMessage('');}} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           
           <div className="flex items-center gap-3 text-black mb-6">
             <DoorOpen className="w-8 h-8 text-blue-500" />
@@ -4923,13 +4996,15 @@ END:VCALENDAR`;
             </div>
 
             <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">2. Fecha (Mín. 24h vista)</label>
-              <input type="date" min={tomorrowStr} value={mboxDate} onChange={e => {setMboxDate(e.target.value); setMboxSelectedSlot(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800" />
+              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">2. Fecha (mín. 24h · mes corriente)</label>
+              <input type="date" min={tomorrowStr} max={currentMonthEndStr} disabled={!hasBookableDayThisMonth} value={mboxDate} onChange={e => {setMboxDate(e.target.value); setMboxSelectedSlots([]); setMboxSelectionMessage('');}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm text-slate-800 disabled:opacity-50" />
+              {!hasBookableDayThisMonth && <p className="mt-2 text-[10px] font-bold text-amber-700 leading-relaxed">Ya no quedan fechas de este mes que cumplan las 24 horas de antelación. Podrás reservar de nuevo cuando comience el mes siguiente.</p>}
+              {hasBookableDayThisMonth && <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Las reservas se limitan al mes vigente cubierto por tu cuota.</p>}
             </div>
 
             <div>
               <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">3. Centro</label>
-              <select value={mboxSede} onChange={e => {setMboxSede(e.target.value); setMboxSelectedSlot(null);}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
+              <select value={mboxSede} onChange={e => {setMboxSede(e.target.value); setMboxSelectedSlots([]); setMboxSelectionMessage('');}} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm">
                 {mitoboxCenters.map(center => <option key={center.id} value={center.name}>{center.name}</option>)}
               </select>
             </div>
@@ -4937,7 +5012,10 @@ END:VCALENDAR`;
 
           {mboxDate && mboxSede && (
             <div className="mb-6 space-y-4 border-t border-zinc-100 pt-4">
-              <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block">4. Salas y Horas disponibles</label>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block">4. Salas y horas disponibles</label>
+                <p className="mt-1 text-[10px] font-bold text-zinc-500">Puedes marcar hasta 3 horas consecutivas de la misma sala.</p>
+              </div>
               {mitoboxReservationError ? (
                 <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
                   <p className="text-xs font-bold text-red-700 leading-relaxed">{mitoboxReservationError}</p>
@@ -4958,8 +5036,8 @@ END:VCALENDAR`;
                   {availableMboxSlots.map((slot, i) => (
                     <button 
                       key={i} 
-                      onClick={() => setMboxSelectedSlot(slot)} 
-                      className={`p-3 rounded-xl border-2 text-left transition-all ${mboxSelectedSlot?.time === slot.time && mboxSelectedSlot?.roomId === slot.roomId ? 'border-blue-500 bg-blue-50 text-blue-900' : 'border-zinc-100 hover:border-blue-300 text-slate-700'}`}
+                      onClick={() => toggleSelectedMitoboxSlot(slot)}
+                      className={`p-3 rounded-xl border-2 text-left transition-all ${mboxSelectedSlots.some(selected => selected.slotId === slot.slotId) ? 'border-blue-500 bg-blue-50 text-blue-900 ring-1 ring-blue-200' : 'border-zinc-100 hover:border-blue-300 text-slate-700'}`}
                     >
                       <div className="font-black text-sm">{slot.time}h</div>
                       <div className="text-[10px] font-bold uppercase tracking-widest opacity-60">{slot.sala}</div>
@@ -4972,11 +5050,19 @@ END:VCALENDAR`;
                   <p className="text-xs font-bold text-zinc-500">No hay salas libres o escuela cerrada para la fecha y centro elegidos.</p>
                 </div>
               )}
+              {mboxSelectionMessage && <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[10px] font-bold text-amber-800">{mboxSelectionMessage}</div>}
+              {selectedMitoboxSummary && (
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-blue-500">Bloque seleccionado</p>
+                  <p className="text-sm font-black text-blue-950 mt-1">{selectedMitoboxSummary}</p>
+                  <p className="text-[10px] font-bold text-blue-700 mt-1">{selectedMitoboxRange.length} {selectedMitoboxRange.length === 1 ? 'hora' : 'horas'} · se descargará un solo evento de calendario</p>
+                </div>
+              )}
             </div>
           )}
 
-          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || Boolean(classCatalogError) || Boolean(mitoboxReservationError) || !mboxDate || !mboxSelectedSlot || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-            {isSendingGestion ? 'Enviando...' : <><CheckCircle className="w-4 h-4"/> Confirmar Reserva</>}
+          <button onClick={sendMitoboxReservation} disabled={isSendingGestion || classCatalogLoading || !classCatalogLoaded || Boolean(classCatalogError) || Boolean(mitoboxReservationError) || !mboxDate || mboxSelectedSlots.length === 0 || !mboxInst} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-blue-700 transition-colors shadow-lg flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+            {isSendingGestion ? 'Enviando...' : <><CheckCircle className="w-4 h-4"/> Confirmar {mboxSelectedSlots.length > 1 ? `${mboxSelectedSlots.length} horas` : 'reserva'}</>}
           </button>
         </div>
       </div>

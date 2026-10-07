@@ -41,6 +41,21 @@ export const buildMitoboxReservationId = ({
     .join('_')
 );
 
+export const buildMitoboxReservationGroupId = ({
+  studentId = '',
+  date = '',
+  createdAt = Date.now()
+} = {}) => (
+  [
+    'grupo',
+    date,
+    normalizeId(studentId, 'alumno'),
+    Number(createdAt).toString(36)
+  ]
+    .filter(Boolean)
+    .join('_')
+);
+
 const normalizeDate = value => {
   if (!value) return '';
 
@@ -361,7 +376,7 @@ const classMatchesRoom = (classData = {}, room = {}) =>
     ]
   );
 
-const timeToMinutes = value => {
+export const timeToMinutes = value => {
   const match = String(value || '')
     .trim()
     .match(/^(\d{1,2}):(\d{2})$/);
@@ -371,21 +386,66 @@ const timeToMinutes = value => {
   return Number(match[1]) * 60 + Number(match[2]);
 };
 
-const minutesToTime = value => {
-  const total = Number(value);
+const getMitoboxSlotRoomKey = (slot = {}) => [
+  normalizeId(slot.centerId || slot.sede, 'sede'),
+  normalizeId(slot.roomId || slot.sala, 'sala')
+].join('|');
 
-  if (
-    !Number.isFinite(total)
-    || total < 0
-    || total >= 24 * 60
-  ) {
-    return '';
+export const sortMitoboxSlots = (slots = []) => [...(slots || [])].sort((left, right) => (
+  (timeToMinutes(left?.time) ?? Number.MAX_SAFE_INTEGER)
+  - (timeToMinutes(right?.time) ?? Number.MAX_SAFE_INTEGER)
+));
+
+export const isMitoboxSlotSelectionConsecutive = (slots = [], maxSlots = 3) => {
+  const ordered = sortMitoboxSlots(slots);
+  if (ordered.length === 0 || ordered.length > Math.max(1, Number(maxSlots) || 3)) return false;
+  if (new Set(ordered.map(getMitoboxSlotRoomKey)).size !== 1) return false;
+
+  return ordered.every((slot, index) => {
+    const minutes = timeToMinutes(slot?.time);
+    if (minutes === null) return false;
+    if (index === 0) return true;
+    return minutes - timeToMinutes(ordered[index - 1]?.time) === 60;
+  });
+};
+
+// Mantiene una única franja continua. Al pulsar otra sala se inicia una nueva
+// selección; dentro de la misma sala solo se pueden añadir o quitar extremos.
+export const toggleMitoboxSlotSelection = ({
+  selectedSlots = [],
+  slot = null,
+  maxSlots = 3
+} = {}) => {
+  if (!slot || timeToMinutes(slot.time) === null) {
+    return { slots: sortMitoboxSlots(selectedSlots), error: 'Turno no válido.' };
   }
 
-  return `${String(Math.floor(total / 60)).padStart(
-    2,
-    '0'
-  )}:${String(total % 60).padStart(2, '0')}`;
+  const ordered = sortMitoboxSlots(selectedSlots);
+  const slotKey = `${getMitoboxSlotRoomKey(slot)}|${slot.time}`;
+  const selectedIndex = ordered.findIndex(item => `${getMitoboxSlotRoomKey(item)}|${item.time}` === slotKey);
+
+  if (selectedIndex >= 0) {
+    if (ordered.length === 1) return { slots: [], error: '' };
+    if (selectedIndex !== 0 && selectedIndex !== ordered.length - 1) {
+      return { slots: ordered, error: 'Para conservar un bloque continuo, desmarca primero una hora del extremo.' };
+    }
+    return { slots: ordered.filter((_, index) => index !== selectedIndex), error: '' };
+  }
+
+  if (ordered.length === 0 || getMitoboxSlotRoomKey(ordered[0]) !== getMitoboxSlotRoomKey(slot)) {
+    return { slots: [slot], error: '' };
+  }
+
+  if (ordered.length >= Math.max(1, Number(maxSlots) || 3)) {
+    return { slots: ordered, error: `Puedes reservar un máximo de ${Math.max(1, Number(maxSlots) || 3)} horas seguidas.` };
+  }
+
+  const candidate = sortMitoboxSlots([...ordered, slot]);
+  if (!isMitoboxSlotSelectionConsecutive(candidate, maxSlots)) {
+    return { slots: ordered, error: 'Selecciona una hora inmediatamente anterior o posterior al bloque actual.' };
+  }
+
+  return { slots: candidate, error: '' };
 };
 
 const classOverlapsReservation = (

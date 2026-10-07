@@ -671,6 +671,11 @@ const getStudentClassEndDate = (studentEntry = {}, studentInfo = {}) => normaliz
   studentEntry.classEndDate || studentEntry.endDate || studentInfo.classEndDate || studentInfo.endDate || ''
 );
 
+const isPendingClassStartEntry = (studentEntry = {}) => (
+  studentEntry.pendingStart === true
+  || String(studentEntry.enrollmentStatus || '').toLowerCase() === 'pending_start'
+);
+
 const hasFutureClassStartDate = (studentEntry = {}, studentInfo = {}, todayStr = getTodayLocalString()) => {
   const startDate = getStudentClassStartDate(studentEntry, studentInfo);
   return Boolean(startDate && startDate > todayStr);
@@ -682,6 +687,7 @@ const hasStudentClassEndedBeforeDate = (studentEntry = {}, studentInfo = {}, dat
 };
 
 const isStudentClassActiveOnDate = (studentEntry = {}, studentInfo = {}, dateStr = getTodayLocalString()) => {
+  if (isPendingClassStartEntry(studentEntry)) return false;
   const startDate = getStudentClassStartDate(studentEntry, studentInfo);
   const endDate = getStudentClassEndDate(studentEntry, studentInfo);
   if (startDate && startDate > dateStr) return false;
@@ -2075,6 +2081,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [pollResponses, setPollResponses] = useState([]);
   const [callResponses, setCallResponses] = useState([]);
   const workshopEmailClaimsRef = useRef(new Set());
+  const callEmailClaimsRef = useRef(new Set());
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
@@ -2640,6 +2647,8 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       try {
         const membershipSyncDate = getTodayLocalString();
         const classIdsByStudentId = new Map();
+        const activeClassIdsByStudentId = new Map();
+        const pendingClassIdsByStudentId = new Map();
         const classSubjectsByStudentId = new Map();
         const studentsById = new Map(students.map(student => [String(student.id || ''), student]));
         const studentOperationalClasses = allClasses.filter(classData => (
@@ -2661,6 +2670,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
               const studentId = String(studentEntry?.id || studentEntry?.studentId || '').trim();
               if (!studentId || studentEntry?.isRecovery || studentEntry?.isTemporaryRelocation) return;
               if (!isStudentClassCommittedOnDate(studentEntry, studentsById.get(studentId) || {}, membershipSyncDate)) return;
+              const targetMap = isPendingClassStartEntry(studentEntry)
+                ? pendingClassIdsByStudentId
+                : activeClassIdsByStudentId;
+              const currentStatusClassIds = targetMap.get(studentId) || [];
+              currentStatusClassIds.push(classId);
+              targetMap.set(studentId, currentStatusClassIds);
+              if (isPendingClassStartEntry(studentEntry)) return;
               const subject = normalizeTicketSubject(classData.subject);
               if (!subject) return;
               const currentSubjects = classSubjectsByStudentId.get(studentId) || [];
@@ -2674,20 +2690,26 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           .map(student => ({
             student,
             expectedClassIds: uniqueStrings(classIdsByStudentId.get(String(student.id || '')) || []),
+            expectedActiveClassIds: uniqueStrings(activeClassIdsByStudentId.get(String(student.id || '')) || []),
+            expectedPendingClassIds: uniqueStrings(pendingClassIdsByStudentId.get(String(student.id || '')) || []),
             expectedInstruments: uniqueStrings(classSubjectsByStudentId.get(String(student.id || '')) || [])
           }))
-          .filter(({ student, expectedClassIds, expectedInstruments }) => (
+          .filter(({ student, expectedClassIds, expectedActiveClassIds, expectedPendingClassIds, expectedInstruments }) => (
             !haveSameStringValues(student.classes || [], expectedClassIds)
             || !haveSameStringValues(student.instruments || [], expectedInstruments)
+            || !haveSameStringValues(student.pendingStartClassIds || [], expectedPendingClassIds)
+            || Boolean(student.pendingStartOnly) !== (expectedPendingClassIds.length > 0 && expectedActiveClassIds.length === 0)
           ));
 
         for (let start = 0; start < studentsToUpdate.length; start += 400) {
           if (cancelled) return;
           const batch = writeBatch(db);
-          studentsToUpdate.slice(start, start + 400).forEach(({ student, expectedClassIds, expectedInstruments }) => {
+          studentsToUpdate.slice(start, start + 400).forEach(({ student, expectedClassIds, expectedActiveClassIds, expectedPendingClassIds, expectedInstruments }) => {
             batch.update(doc(db, 'artifacts', appId, 'students', student.id), {
               classes: expectedClassIds,
               instruments: expectedInstruments,
+              pendingStartClassIds: expectedPendingClassIds,
+              pendingStartOnly: expectedPendingClassIds.length > 0 && expectedActiveClassIds.length === 0,
               classMembershipSyncedAt: new Date().toISOString(),
               instrumentMembershipSyncedAt: new Date().toISOString()
             });
@@ -2886,12 +2908,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   };
 
   const isLastDayOfMonth = useMemo(() => {
-    const tomorrow = new Date();
+    const tomorrow = new Date(pollClock);
     tomorrow.setDate(tomorrow.getDate() + 1);
     return tomorrow.getDate() === 1;
-  }, []);
+  }, [pollClock]);
 
-  const todayStr = useMemo(() => getTodayLocalString(), []);
+  const todayStr = useMemo(() => getTodayLocalString(), [pollClock]);
   const nextMonthStartStr = useMemo(() => getNextMonthStartString(todayStr), [todayStr]);
   const nextMonthEndStr = useMemo(() => getNextMonthEndString(todayStr), [todayStr]);
 
@@ -3124,18 +3146,18 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   };
 
   const isMaintenancePeriodActiveForDate = (period = {}, dateStr = todayStr) => {
-    if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(period.status)) return false;
+    if (!period || ['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(period.status || '').toLowerCase())) return false;
     return Boolean(period.from && period.until && period.from <= dateStr && period.until >= dateStr);
   };
 
   const isMaintenancePeriodOverlappingRange = (period = {}, fromDate = todayStr, untilDate = todayStr) => {
-    if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(period.status)) return false;
+    if (!period || ['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(period.status || '').toLowerCase())) return false;
     return doDateRangesOverlap(fromDate, untilDate, period.from, period.until);
   };
 
   const getStudentMaintenancePeriods = (studentId) => {
     if (!studentId) return [];
-    return maintenancePeriods.filter(period => period.studentId === studentId && !['cancelled', 'cancelada', 'finalizada'].includes(period.status));
+    return maintenancePeriods.filter(period => period.studentId === studentId && !['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(period.status || '').toLowerCase()));
   };
 
   const getActiveStudentMaintenancePeriods = (studentId, dateStr = todayStr) => {
@@ -3517,10 +3539,11 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const crmStatus = studentInfo?.globalStatus || 'activo';
         const isDropped = crmStatus === 'baja';
         const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, todayStr);
-        const isMaintenance = !isDropped && !isPastEnd && isStudentInMaintenance(studentEntry.id, todayStr);
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
         const endDate = getStudentClassEndDate(studentEntry, studentInfo);
-        const isFutureStart = !isDropped && !isPastEnd && Boolean(startDate && startDate > todayStr);
+        const isPendingStart = !isDropped && !isPastEnd && isPendingClassStartEntry(studentEntry);
+        const isMaintenance = !isPendingStart && !isDropped && !isPastEnd && isStudentInMaintenance(studentEntry.id, todayStr);
+        const isFutureStart = !isPendingStart && !isDropped && !isPastEnd && Boolean(startDate && startDate > todayStr);
         const isCommitted = !isDropped && !isPastEnd;
 
         return {
@@ -3532,6 +3555,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           endDate,
           isDropped,
           isMaintenance,
+          isPendingStart,
           isFutureStart,
           isCommitted
         };
@@ -3547,6 +3571,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       committedCount,
       freeSpots,
       maintenanceCount: studentRows.filter(student => student.isMaintenance).length,
+      pendingStartCount: studentRows.filter(student => student.isPendingStart).length,
       futureStartCount: studentRows.filter(student => student.isFutureStart).length
     };
   };
@@ -3569,6 +3594,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const studentId = String(studentEntry?.id || studentEntry?.studentId || '').trim();
       const studentInfo = students.find(student => String(student.id || '') === studentId) || {};
       if (studentInfo.globalStatus === 'baja') return null;
+      if (isPendingClassStartEntry(studentEntry)) return null;
 
       const from = getStudentClassStartDate(studentEntry, studentInfo);
       const until = getStudentClassEndDate(studentEntry, studentInfo);
@@ -4215,14 +4241,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       return Boolean(key && key !== pacoTeacherKey && key !== 'sin asignar');
     };
     const isMaintenancePeriodForReference = period => {
-      if (!period || ['cancelled', 'cancelada', 'finalizada'].includes(String(period.status || '').toLowerCase())) return false;
+      if (!period || ['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(period.status || '').toLowerCase())) return false;
       return Boolean(period.from && period.until && period.from <= referenceDate && period.until >= referenceDate);
     };
     const isStudentMaintenanceForReference = (studentId, crmStatus, studentEntry = {}) => {
       const hasPeriod = maintenanceSnapshot.some(period => period.studentId === studentId && isMaintenancePeriodForReference(period));
-      const isLegacy = crmStatus === 'congelado' || studentEntry.isPaused === true;
-      if (isLegacy && !hasPeriod && studentId) legacyMaintenanceStudents.add(studentId);
-      return hasPeriod || isLegacy;
+      return hasPeriod;
     };
     const isRelocationActiveForBI = relocation => {
       if (!relocation || ['cancelled', 'cancelada', 'finalizada'].includes(String(relocation.status || '').toLowerCase())) return false;
@@ -4238,9 +4262,10 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
         const startDate = getStudentClassStartDate(studentEntry, studentInfo);
         const endDate = getStudentClassEndDate(studentEntry, studentInfo);
-        const isFutureStart = !isDropped && !isPastEnd && Boolean(startDate && startDate > referenceDate);
-        const isMaintenance = !isDropped && !isPastEnd && isStudentMaintenanceForReference(studentEntry.id, crmStatus, studentEntry);
-        const isActive = !isDropped && !isPastEnd && !isMaintenance && !isFutureStart;
+        const isPendingStart = !isDropped && !isPastEnd && isPendingClassStartEntry(studentEntry);
+        const isFutureStart = !isPendingStart && !isDropped && !isPastEnd && Boolean(startDate && startDate > referenceDate);
+        const isMaintenance = !isPendingStart && !isDropped && !isPastEnd && isStudentMaintenanceForReference(studentEntry.id, crmStatus, studentEntry);
+        const isActive = !isDropped && !isPastEnd && !isPendingStart && !isMaintenance && !isFutureStart;
         const displayName = studentEntry.name || studentEntry.studentName || studentInfo?.alias || studentInfo?.name || 'Alumno';
         const email = studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '';
         return {
@@ -4253,6 +4278,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           endDate,
           isDropped,
           isPastEnd,
+          isPendingStart,
           isFutureStart,
           isMaintenance,
           isActive,
@@ -4355,7 +4381,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
           cost: isPaidTeacher(share.teacher) ? share.hoursMonthly * teacherHourlyCost : 0
         }));
     };
-    const getBIClassStatusLabel = ({ financialActiveCount, operationalActiveCount, maintenanceCount, futureStartCount, relocatedInCount, relocatedOutCount }) => {
+    const getBIClassStatusLabel = ({ financialActiveCount, operationalActiveCount, maintenanceCount, pendingStartCount, futureStartCount, relocatedInCount, relocatedOutCount }) => {
       if (operationalActiveCount > 0) {
         if (relocatedInCount > 0) return 'OPERATIVA · incluye recolocación temporal de entrada';
         return 'OPERATIVA';
@@ -4363,6 +4389,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       if (financialActiveCount > 0 && relocatedOutCount > 0) return 'SIN SESIÓN TEMPORAL · cuota y plaza conservadas en origen';
       if (maintenanceCount > 0 && futureStartCount > 0) return 'HIBERNADA · reservas / mantenimiento';
       if (maintenanceCount > 0) return 'HIBERNADA · solo mantenimiento';
+      if (pendingStartCount > 0) return 'HIBERNADA · grupo en formación';
       if (futureStartCount > 0) return 'HIBERNADA · inicio futuro';
       return 'HIBERNADA · sin alumnos activos';
     };
@@ -4373,10 +4400,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       const activeStudents = financialRows.filter(student => student.isActive);
       const operationalActiveStudents = operationalRows.filter(student => student.isActive);
       const maintenanceStudents = financialRows.filter(student => student.isMaintenance);
+      const pendingStartStudents = financialRows.filter(student => student.isPendingStart);
       const futureStartStudents = financialRows.filter(student => student.isFutureStart);
       const numAlumnos = activeStudents.length;
       const numAlumnosOperativos = operationalActiveStudents.length;
       const numCongelados = maintenanceStudents.length;
+      const numInicioPendiente = pendingStartStudents.length;
       const numInicioFuturo = futureStartStudents.length;
       const numPlazasComprometidas = financialRows.length;
       const numImpagos = activeStudents.filter(student => student.status === 'impago').length;
@@ -4417,6 +4446,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         financialActiveCount: numAlumnos,
         operationalActiveCount: numAlumnosOperativos,
         maintenanceCount: numCongelados,
+        pendingStartCount: numInicioPendiente,
         futureStartCount: numInicioFuturo,
         relocatedInCount: numRecolocadosDentro,
         relocatedOutCount: numRecolocadosFuera
@@ -4443,6 +4473,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
         numAlumnos,
         numAlumnosOperativos,
         numCongelados,
+        numInicioPendiente,
         numInicioFuturo,
         numPlazasComprometidas,
         numImpagos,
@@ -4738,6 +4769,13 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
     if (isStudentInMaintenance(student?.id, todayStr)) return 'mantenimiento';
 
     const assignedClasses = getStudentAssignedClasses(student?.id);
+    const hasActiveClass = assignedClasses.some(classData => (
+      (classData.students || []).some(entry => entry.id === student?.id && !isPendingClassStartEntry(entry))
+    ));
+    const hasPendingStartClass = assignedClasses.some(classData => (
+      (classData.students || []).some(entry => entry.id === student?.id && isPendingClassStartEntry(entry))
+    ));
+    if (hasPendingStartClass && !hasActiveClass) return 'inicio_pendiente';
     if (administrativeStatus === 'activo' && assignedClasses.length === 0) return 'sin_plaza';
 
     return administrativeStatus;
@@ -5355,6 +5393,93 @@ La inscripción ya está registrada en AdminPortal > Talleres y aparece a títul
     return () => { cancelled = true; };
   }, [workshopRegistrations, db, appId, user?.email, user?.uid]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const notifyNewCallResponses = async () => {
+      const responsesToNotify = callResponses.filter(response => (
+        (response.status || 'pending') === 'pending'
+        && Boolean(response.adminNotificationEmailRequestedAt)
+        && !response.adminNotificationEmailSentAt
+        && !response.adminNotificationEmailClaimedAt
+        && !callEmailClaimsRef.current.has(response.id)
+      ));
+
+      for (const response of responsesToNotify) {
+        if (cancelled) return;
+        callEmailClaimsRef.current.add(response.id);
+        const responseRef = doc(db, 'artifacts', appId, 'callResponses', response.id);
+        const claimedAt = new Date().toISOString();
+        let claimed = false;
+
+        try {
+          await runTransaction(db, async transaction => {
+            const responseSnap = await transaction.get(responseRef);
+            if (!responseSnap.exists()) return;
+            const currentData = responseSnap.data();
+            if (
+              (currentData.status || 'pending') !== 'pending'
+              || currentData.adminNotificationEmailSentAt
+              || currentData.adminNotificationEmailClaimedAt
+            ) return;
+            transaction.update(responseRef, {
+              adminNotificationEmailClaimedAt: claimedAt,
+              adminNotificationEmailClaimedBy: user?.email || user?.uid || 'admin'
+            });
+            claimed = true;
+          });
+
+          if (!claimed || cancelled) continue;
+
+          const body = `NUEVA CANDIDATURA EN CONVOCATORIA
+
+CONVOCATORIA: ${response.callTitle || response.callId || 'Convocatoria'}
+ALUMNO: ${response.studentName || 'Sin nombre'}
+EMAIL: ${response.studentEmail || 'Sin email'}
+INSTRUMENTO: ${response.instrument || 'No indicado'}
+SEDE: ${response.site || 'No indicada'}
+PROFESOR: ${response.teacher || 'No indicado'}
+FECHA: ${new Date(response.resubmittedAt || response.submittedAt || response.updatedAt || Date.now()).toLocaleString('es-ES')}
+
+COMENTARIO:
+${response.comment || 'Sin comentario.'}
+
+La candidatura está disponible en AdminPortal > Tablón > Convocatorias.`;
+
+          const sent = await sendNotificationEmail({
+            to: ADMIN_GESTION_EMAIL,
+            subject: `Nueva candidatura: ${response.callTitle || response.studentName || 'Convocatoria'}`,
+            body,
+            type: 'notificacion_email',
+            callResponseId: response.id,
+            callId: response.callId || response.announcementId || ''
+          });
+
+          await updateDoc(responseRef, sent ? {
+            adminNotificationEmailSentAt: new Date().toISOString(),
+            adminNotificationEmailRecipient: ADMIN_GESTION_EMAIL
+          } : {
+            adminNotificationEmailFailedAt: new Date().toISOString(),
+            adminNotificationEmailClaimedAt: '',
+            adminNotificationEmailClaimedBy: ''
+          });
+        } catch (error) {
+          if (claimed) {
+            updateDoc(responseRef, {
+              adminNotificationEmailFailedAt: new Date().toISOString(),
+              adminNotificationEmailClaimedAt: '',
+              adminNotificationEmailClaimedBy: ''
+            }).catch(() => {});
+          }
+          console.error('No se pudo enviar el aviso de nueva candidatura:', response.id, error);
+        }
+      }
+    };
+
+    notifyNewCallResponses();
+    return () => { cancelled = true; };
+  }, [callResponses, db, appId, user?.email, user?.uid]);
+
   const sendTeacherNotification = async ({ teacherName, subject, body, type = 'cambio_administrativo', ...metadata }) => {
     const to = getTeacherEmail(teacherName);
     const now = new Date().toISOString();
@@ -5831,6 +5956,35 @@ Si tienes cualquier problema para activar tu cuenta o acceder, escríbenos a ${S
 Un saludo,
 Coordinación Escuela Los Mitos`;
   };
+
+  const buildPendingClassStartEmailBody = ({ studentName, classData }) => `Hola ${studentName},
+
+Hemos registrado tu plaza para:
+
+· ${formatClassLine(classData)}
+Profesor/a: ${classData.teacher || 'Profesor/a'}
+
+Actualmente el grupo se encuentra en formación y todavía no tiene una fecha de inicio confirmada. Tu inscripción ya cuenta para alcanzar el número mínimo necesario para abrirlo, pero aún no debes acudir a clase.
+
+En cuanto el grupo esté completo y confirmemos la fecha de comienzo, te enviaremos toda la información y las instrucciones para activar tu Área del Alumno.
+
+No necesitas realizar ninguna otra gestión por ahora.
+
+Un saludo,
+Coordinación Escuela Los Mitos`;
+
+  const buildPendingClassStartTeacherEmailBody = ({ teacherName, displayName, classData }) => `Hola ${teacherName || 'profesor/a'},
+
+Desde coordinación hemos incorporado a ${displayName} al cupo de tu grupo en formación:
+
+· ${formatClassLine(classData)}
+
+La plaza cuenta para el aforo y para alcanzar el mínimo del grupo, pero el alumno todavía no tiene fecha de inicio y no debe aparecer en la lista ordinaria de asistencia.
+
+Te avisaremos cuando se confirme la apertura.
+
+Un saludo,
+Coordinación Los Mitos.`;
 
   const buildNewFixedStudentTeacherEmailBody = ({ teacherName, displayName, classData, classStartDate, contextLabel = 'en tu clase' }) => {
     const formattedStartDate = formatDateSpanish(classStartDate || todayStr);
@@ -8398,7 +8552,7 @@ Coordinación Los Mitos.`
       ...businessIntelligence.porInstrumento.map(i => `${i.name}: ingresos ${money(i.ingresos)} · coste ${money(i.costes)} · margen ${money(i.beneficio)} · ${i.numGrupos || 0} grupo/s operativos · ${i.numGruposHibernados || 0} hibernado/s`),
       '',
       'DETALLE POR CLASE',
-      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · ${c.estadoOperativo || (c.isHibernated ? 'HIBERNADA' : 'OPERATIVA')} · matrículas con ingreso ${c.numAlumnos} · asistentes operativos ${c.numAlumnosOperativos} · mantenimiento ${c.numCongelados} · inicio futuro ${c.numInicioFuturo || 0} · recolocados fuera/dentro ${c.numRecolocadosFuera || 0}/${c.numRecolocadosDentro || 0} · plazas comprometidas ${c.numPlazasComprometidas || 0} · horas computables ${(c.horasComputables || 0).toFixed(1)} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}${c.teacherCostShares?.some(share => share.isSubstitute) ? ` · reparto coste: ${c.teacherCostShares.map(share => `${share.teacher} ${money(share.cost)}`).join(' / ')}` : ''}`),
+      ...businessIntelligence.clasesRentabilidad.map(c => `${c.subject} · ${c.teacher} · ${c.sede} · ${getDayName(c.dayOfWeek)} ${c.time} · ${c.estadoOperativo || (c.isHibernated ? 'HIBERNADA' : 'OPERATIVA')} · matrículas con ingreso ${c.numAlumnos} · asistentes operativos ${c.numAlumnosOperativos} · mantenimiento ${c.numCongelados} · inicio pendiente ${c.numInicioPendiente || 0} · inicio futuro ${c.numInicioFuturo || 0} · recolocados fuera/dentro ${c.numRecolocadosFuera || 0}/${c.numRecolocadosDentro || 0} · plazas comprometidas ${c.numPlazasComprometidas || 0} · horas computables ${(c.horasComputables || 0).toFixed(1)} · ingresos ${money(c.ingresos)} · coste ${money(c.coste)} · margen ${money(c.beneficio)}${c.teacherCostShares?.some(share => share.isSubstitute) ? ` · reparto coste: ${c.teacherCostShares.map(share => `${share.teacher} ${money(share.cost)}`).join(' / ')}` : ''}`),
       ...(biProjectionMode === 'proyeccion' && biProjectionInputs.meta.skippedPending.length > 0 ? [
         '',
         'SOLICITUDES PENDIENTES NO SIMULADAS',
@@ -10157,9 +10311,10 @@ Coordinación Los Mitos.`
     const startDate = getStudentClassStartDate(studentEntry, studentInfo);
     const endDate = getStudentClassEndDate(studentEntry, studentInfo);
     const isPastEnd = hasStudentClassEndedBeforeDate(studentEntry, studentInfo, referenceDate);
-    const isFutureStart = Boolean(startDate && startDate > referenceDate);
+    const isPendingStart = isPendingClassStartEntry(studentEntry);
+    const isFutureStart = !isPendingStart && Boolean(startDate && startDate > referenceDate);
     const projectedMaintenanceActive = projected && isProjectedMaintenanceActiveForArchitectDate(studentEntry, referenceDate);
-    const isMaintenance = projectedStatus !== 'baja' && !isPastEnd && (
+    const isMaintenance = !isPendingStart && projectedStatus !== 'baja' && !isPastEnd && (
       projectedMaintenanceActive ||
       isStudentInMaintenance(studentEntry.id, referenceDate)
     );
@@ -10172,6 +10327,7 @@ Coordinación Los Mitos.`
       displayName,
       email,
       status: projectedStatus,
+      isPendingStart,
       isMaintenance,
       isFutureStart,
       isRelocated,
@@ -10180,7 +10336,7 @@ Coordinación Los Mitos.`
       endDate,
       isPastEnd,
       ...extra,
-      isActive: projectedStatus !== 'baja' && !isPastEnd && !isMaintenance && !isFutureStart && !extra.isRelocatedOut
+      isActive: projectedStatus !== 'baja' && !isPastEnd && !isPendingStart && !isMaintenance && !isFutureStart && !extra.isRelocatedOut
     };
   };
 
@@ -12398,6 +12554,7 @@ ${startDateWarning}
     const [searchName, setSearchName] = useState('');
     const [emailInput, setEmailInput] = useState('');
     const [classStartDateInput, setClassStartDateInput] = useState(() => isPunctualClass(c) ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
+    const [pendingStartSelected, setPendingStartSelected] = useState(false);
     const [privateOpeningSelected, setPrivateOpeningSelected] = useState(false);
     const [saving, setSaving] = useState(false);
     const maxCap = parseInt(c.capacity, 10) || 0;
@@ -12405,6 +12562,7 @@ ${startDateWarning}
     const currentCount = planningStudents.length;
     const activeCount = planningStudents.filter(student => student.isActive).length;
     const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
+    const pendingStartCount = planningStudents.filter(student => student.isPendingStart).length;
     const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
     const relocatedInCount = planningStudents.filter(student => student.isRelocated).length;
     const relocatedOutCount = planningStudents.filter(student => student.isRelocatedOut).length;
@@ -12421,7 +12579,7 @@ ${startDateWarning}
       (emailInput && s.email === emailInput.trim().toLowerCase())
     );
     const willCreateStudentForAdd = Boolean(searchName.trim()) && !matchedStudentForAdd;
-    const showClassStartDateForAdd = willCreateStudentForAdd && !isPunctual;
+    const showClassStartDateForAdd = willCreateStudentForAdd && !isPunctual && !pendingStartSelected;
     const classStartDateWarningForAdd = showClassStartDateForAdd
       ? getClassStartDateWarning(classStartDateInput, c.dayOfWeek, todayStr)
       : '';
@@ -12455,15 +12613,15 @@ ${startDateWarning}
           studentId = Date.now().toString();
         }
 
-        const selectedClassStartDate = createdNow && !isPunctual
+        const selectedClassStartDate = createdNow && !isPunctual && !pendingStartSelected
           ? normalizeStudentClassStartDate(classStartDateInput)
           : '';
-        if (createdNow && !isPunctual && !selectedClassStartDate) {
+        if (createdNow && !isPunctual && !pendingStartSelected && !selectedClassStartDate) {
           alert('Elige la fecha de inicio de las clases.');
           setSaving(false);
           return;
         }
-        const startDateWarning = createdNow && !isPunctual
+        const startDateWarning = createdNow && !isPunctual && !pendingStartSelected
           ? getClassStartDateWarning(selectedClassStartDate, c.dayOfWeek, todayStr)
           : '';
         if (startDateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:
@@ -12474,7 +12632,9 @@ ${startDateWarning}
           setSaving(false);
           return;
         }
-        const classStartDateForClass = createdNow
+        const classStartDateForClass = pendingStartSelected
+          ? ''
+          : createdNow
           ? selectedClassStartDate
           : normalizeStudentClassStartDate(existingStudent?.classStartDate || '');
 
@@ -12482,6 +12642,12 @@ ${startDateWarning}
           const studentUpdate = {
             email: existingStudent.email || emailInput.trim().toLowerCase(),
             updatedAt: new Date().toISOString(),
+            ...(pendingStartSelected ? {
+              pendingStartOnly: getStudentAssignedClasses(studentId).every(assignedClass => (
+                (assignedClass.students || []).some(entry => entry.id === studentId && isPendingClassStartEntry(entry))
+              )),
+              pendingStartClassIds: uniqueStrings([...(existingStudent.pendingStartClassIds || []), c.id])
+            } : {}),
             ...(existingStudent.globalStatus === 'baja' ? {
               globalStatus: 'activo',
               scheduledBaja: false,
@@ -12515,11 +12681,14 @@ ${startDateWarning}
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido desde panel de clase',
-            classStartDate: selectedClassStartDate
+            classStartDate: selectedClassStartDate,
+            pendingStartOnly: pendingStartSelected,
+            pendingStartClassIds: pendingStartSelected ? [c.id] : []
           });
         }
         const fixedStudentsBefore = (c.students || []).filter(isFixedClassStudent);
         const isPrivateOpeningStarter = !isPunctual
+          && !pendingStartSelected
           && c.allowPrivateOpening === true
           && privateOpeningSelected
           && fixedStudentsBefore.length === 0;
@@ -12529,7 +12698,10 @@ ${startDateWarning}
           email: existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase(),
           classStartDate: classStartDateForClass,
           isPaused: false,
-          status: 'present',
+          status: pendingStartSelected ? 'pending_start' : 'present',
+          enrollmentStatus: pendingStartSelected ? 'pending_start' : 'active',
+          pendingStart: pendingStartSelected,
+          ...(pendingStartSelected ? { pendingStartCreatedAt: new Date().toISOString() } : {}),
           isRecovery: false,
           ...(isPrivateOpeningStarter ? {
             provisionalPrivateOpening: true,
@@ -12555,37 +12727,142 @@ ${startDateWarning}
         if (!isPunctual) {
           await sendTeacherNotification({
             teacherName: c.teacher,
-            subject: `Nuevo alumno fijo: ${displayName} (${c.subject})`,
-            body: buildNewFixedStudentTeacherEmailBody({
-              teacherName: c.teacher,
-              displayName,
-              classData: c,
-              classStartDate: classStartDateForClass,
-              contextLabel: 'en tu clase'
-            })
+            subject: pendingStartSelected
+              ? `Alumno en grupo en formación: ${displayName} (${c.subject})`
+              : `Nuevo alumno fijo: ${displayName} (${c.subject})`,
+            body: pendingStartSelected
+              ? buildPendingClassStartTeacherEmailBody({ teacherName: c.teacher, displayName, classData: c })
+              : buildNewFixedStudentTeacherEmailBody({
+                teacherName: c.teacher,
+                displayName,
+                classData: c,
+                classStartDate: classStartDateForClass,
+                contextLabel: 'en tu clase'
+              })
           });
 
-          initialEmailSent = await sendInitialClassAssignmentEmailIfNeeded({
-            studentId,
-            existingStudent,
-            createdNow,
-            studentName: searchName.trim(),
-            studentEmail: existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase(),
-            classData: c,
-            classStartDate: selectedClassStartDate
-          });
+          if (pendingStartSelected) {
+            const pendingEmail = existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase();
+            initialEmailSent = await sendStudentNotification({
+              studentEmail: pendingEmail,
+              subject: 'Inscripción registrada · grupo en formación',
+              body: buildPendingClassStartEmailBody({ studentName: searchName.trim(), classData: c })
+            });
+            if (initialEmailSent) {
+              await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), {
+                pendingStartEmailSentAt: new Date().toISOString(),
+                pendingStartEmailClassId: c.id || null
+              });
+            }
+          } else {
+            initialEmailSent = await sendInitialClassAssignmentEmailIfNeeded({
+              studentId,
+              existingStudent,
+              createdNow,
+              studentName: searchName.trim(),
+              studentEmail: existingStudent ? (existingStudent.email || emailInput.trim().toLowerCase()) : emailInput.trim().toLowerCase(),
+              classData: c,
+              classStartDate: selectedClassStartDate
+            });
+          }
         }
 
-        alert(isPunctual
+        alert(pendingStartSelected
+          ? `✅ Alumno añadido al cupo del grupo en formación, sin fecha de inicio.${initialEmailSent ? ' Alumno avisado por email.' : ' No se ha podido enviar el email al alumno.'}`
+          : isPunctual
           ? `✅ Alumno añadido a clase puntual. No se han enviado correos de alumno fijo.`
           : createdNow
             ? `✅ Alumno nuevo añadido. Fecha de inicio: ${formatDateSpanish(selectedClassStartDate)}. Profesor avisado por correo.${initialEmailSent ? ' Alumno avisado por email de plaza confirmada.' : ' No se ha enviado email al alumno porque no hay email válido o ya constaba enviado.'}`
             : `✅ Alumno existente añadido. Profesor avisado por correo. No se ha enviado email al alumno porque no es alta inicial.`);
         setSearchName('');
         setEmailInput('');
+        setPendingStartSelected(false);
         setClassStartDateInput(isPunctual ? todayStr : getNextClassDateForDay(c.dayOfWeek, todayStr));
       } catch (e) {
         alert("Error al matricular: " + e.message);
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    const confirmPendingStudentStart = async (planningStudent) => {
+      const classEntry = (c.students || []).find(entry => entry.id === planningStudent.id && isPendingClassStartEntry(entry));
+      if (!classEntry) return;
+      const proposedDate = getNextClassDateForDay(c.dayOfWeek, todayStr);
+      const answer = window.prompt(
+        `Indica la fecha de inicio de ${planningStudent.displayName} (AAAA-MM-DD).`,
+        proposedDate
+      );
+      if (answer === null) return;
+      const selectedDate = normalizeStudentClassStartDate(answer);
+      if (!selectedDate) return alert('Debes indicar una fecha de inicio.');
+      const dateWarning = getClassStartDateWarning(selectedDate, c.dayOfWeek, todayStr);
+      if (dateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:\n\n${dateWarning}\n\n¿Quieres continuar igualmente?`)) return;
+
+      const studentInfo = students.find(student => student.id === planningStudent.id) || {};
+      const updatedStudents = (c.students || []).map(entry => (
+        entry.id === planningStudent.id && isPendingClassStartEntry(entry)
+          ? {
+            ...entry,
+            classStartDate: selectedDate,
+            pendingStart: false,
+            enrollmentStatus: 'active',
+            status: 'present',
+            pendingStartActivatedAt: new Date().toISOString(),
+            pendingStartActivatedBy: user?.email || 'admin'
+          }
+          : entry
+      ));
+      const remainingPendingClassIds = (studentInfo.pendingStartClassIds || []).filter(classId => String(classId) !== String(c.id));
+      const now = new Date().toISOString();
+
+      try {
+        setSaving(true);
+        await updateDoc(doc(db, c.refPath), {
+          ...withClassStudentIndex(updatedStudents),
+          ...getFormationActivationPatch(c, updatedStudents)
+        });
+        await updateDoc(doc(db, 'artifacts', appId, 'students', planningStudent.id), {
+          pendingStartOnly: false,
+          pendingStartClassIds: remainingPendingClassIds,
+          ...(studentInfo.classStartDate ? {} : { classStartDate: selectedDate }),
+          pendingStartActivatedAt: now,
+          updatedAt: now
+        });
+
+        await sendTeacherNotification({
+          teacherName: c.teacher,
+          subject: `Inicio confirmado: ${planningStudent.displayName} (${c.subject})`,
+          body: buildNewFixedStudentTeacherEmailBody({
+            teacherName: c.teacher,
+            displayName: planningStudent.displayName,
+            classData: c,
+            classStartDate: selectedDate,
+            contextLabel: 'en tu clase'
+          })
+        });
+        const studentEmail = studentInfo.email || classEntry.email || '';
+        const studentEmailSent = await sendStudentNotification({
+          studentEmail,
+          subject: 'Plaza confirmada en Escuela Los Mitos',
+          body: buildInitialClassAssignmentEmailBody({
+            studentName: studentInfo.name || planningStudent.displayName,
+            studentEmail,
+            classData: c,
+            classStartDate: selectedDate
+          })
+        });
+        if (studentEmailSent) {
+          await updateDoc(doc(db, 'artifacts', appId, 'students', planningStudent.id), {
+            firstClassEmailSentAt: now,
+            firstClassEmailClassId: c.id || null,
+            firstClassEmailClassLine: formatClassLine(c),
+            firstClassEmailStartDate: selectedDate
+          });
+        }
+        alert(`✅ Inicio confirmado para el ${formatDateSpanish(selectedDate)}.${studentEmailSent ? ' Alumno y profesor avisados.' : ' Profesor avisado; revisa el email del alumno.'}`);
+      } catch (error) {
+        alert(`No se pudo confirmar el inicio: ${error.message}`);
       } finally {
         setSaving(false);
       }
@@ -12660,6 +12937,23 @@ ${startDateWarning}
                 {saving ? '...' : 'Añadir'}
               </button>
             </div>
+            {!isPunctual && (
+              <label className="mt-4 flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pendingStartSelected}
+                  onChange={event => {
+                    setPendingStartSelected(event.target.checked);
+                    if (event.target.checked) setPrivateOpeningSelected(false);
+                  }}
+                  className="mt-0.5 w-4 h-4 accent-amber-600"
+                />
+                <span className="text-xs font-bold text-amber-950 leading-relaxed">
+                  <strong className="block uppercase tracking-widest text-[10px] mb-1">Grupo en formación · sin fecha de inicio</strong>
+                  Cuenta la plaza dentro del cupo, pero el alumno no aparecerá en asistencia ni podrá activar el portal hasta que confirmes su fecha de comienzo.
+                </span>
+              </label>
+            )}
             {showClassStartDateForAdd && (
               <div className="mt-4 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl">
                 <label className="text-[10px] font-black uppercase text-emerald-700 mb-1 flex items-center gap-1"><Calendar className="w-3 h-3"/> Fecha de inicio de las clases *</label>
@@ -12678,7 +12972,7 @@ ${startDateWarning}
                 <p className="mt-2 text-[10px] font-bold text-zinc-500 leading-relaxed">Solo se pide para alumnos completamente nuevos. Por defecto se propone el próximo día real de esta clase: {getDayName(c.dayOfWeek)}.</p>
               </div>
             )}
-            {canUsePrivateOpeningForAdd && (
+            {canUsePrivateOpeningForAdd && !pendingStartSelected && (
               <label className="mt-4 flex items-start gap-3 p-4 bg-violet-50 border border-violet-200 rounded-2xl cursor-pointer">
                 <input type="checkbox" checked={privateOpeningSelected} onChange={e => setPrivateOpeningSelected(e.target.checked)} className="mt-0.5 w-4 h-4 accent-violet-600" />
                 <span className="text-xs font-bold text-violet-950 leading-relaxed">
@@ -12691,10 +12985,12 @@ ${startDateWarning}
           <div className="flex-1 overflow-y-auto pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
               Alumnos Matriculados ({currentCount}/{c.capacity}) · Activos: {activeCount}
-              {(maintenanceCount > 0 || futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) && (
+              {(maintenanceCount > 0 || pendingStartCount > 0 || futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) && (
                 <span className="block mt-1 text-[10px] text-zinc-500">
                   {maintenanceCount > 0 ? `${maintenanceCount} en mantenimiento` : ''}
-                  {maintenanceCount > 0 && (futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
+                  {maintenanceCount > 0 && (pendingStartCount > 0 || futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
+                  {pendingStartCount > 0 ? `${pendingStartCount} con inicio pendiente` : ''}
+                  {pendingStartCount > 0 && (futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
                   {futureStartCount > 0 ? `${futureStartCount} con inicio futuro` : ''}
                   {futureStartCount > 0 && (relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) ? ' · ' : ''}
                   {relocatedInCount > 0 ? `${relocatedInCount} recolocado(s) aquí` : ''}
@@ -12712,6 +13008,7 @@ ${startDateWarning}
             ) : (
               planningStudents.map(s => {
                 const statusTags = [
+                  s.isPendingStart ? { label: 'Inicio pendiente', className: 'bg-amber-50 text-amber-800 border-amber-200' } : null,
                   s.status === 'impago' ? { label: 'Impago', className: 'bg-red-50 text-red-700 border-red-100' } : null,
                   s.status === 'baja' ? { label: 'Baja', className: 'bg-zinc-100 text-zinc-500 border-zinc-200' } : null,
                   s.isMaintenance ? { label: 'Mantenimiento', className: 'bg-sky-50 text-sky-700 border-sky-100' } : null,
@@ -12749,9 +13046,16 @@ ${startDateWarning}
                       )}
                     </div>
                     {!s.isRelocated && (
-                      <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.displayName)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors shrink-0" title="Expulsar SOLO de esta clase">
-                        <UserMinus className="w-4 h-4"/>
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {s.isPendingStart && (
+                          <button type="button" onClick={() => confirmPendingStudentStart(s)} disabled={saving} className="px-3 py-2 bg-amber-100 text-amber-800 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors disabled:opacity-50" title="Asignar fecha y activar al alumno">
+                            Confirmar inicio
+                          </button>
+                        )}
+                        <button onClick={() => handleRemoveFromSpecificClass(c, s.id, s.displayName)} className="p-2 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-colors" title="Expulsar SOLO de esta clase">
+                          <UserMinus className="w-4 h-4"/>
+                        </button>
+                      </div>
                     )}
                   </div>
                 )
@@ -13229,9 +13533,9 @@ ${startDateWarning}
                                 {c.numAlumnos} cuota(s)
                               </span>
                               {c.numAlumnosOperativos !== c.numAlumnos && <div className="mt-1 text-[9px] font-black text-violet-600 uppercase">{c.numAlumnosOperativos} en sesión</div>}
-                              {(c.numCongelados > 0 || c.numInicioFuturo > 0 || c.numImpagos > 0) && (
+                              {(c.numCongelados > 0 || c.numInicioPendiente > 0 || c.numInicioFuturo > 0 || c.numImpagos > 0) && (
                                 <div className="mt-1 text-[9px] font-bold text-zinc-400 uppercase leading-tight">
-                                  {c.numCongelados > 0 ? `Mant. ${c.numCongelados} ` : ''}{c.numInicioFuturo > 0 ? `Inicio futuro ${c.numInicioFuturo} ` : ''}{c.numImpagos > 0 ? `Impago ${c.numImpagos}` : ''}
+                                  {c.numCongelados > 0 ? `Mant. ${c.numCongelados} ` : ''}{c.numInicioPendiente > 0 ? `Inicio pendiente ${c.numInicioPendiente} ` : ''}{c.numInicioFuturo > 0 ? `Inicio futuro ${c.numInicioFuturo} ` : ''}{c.numImpagos > 0 ? `Impago ${c.numImpagos}` : ''}
                                 </div>
                               )}
                               {(c.numRecolocadosFuera > 0 || c.numRecolocadosDentro > 0) && <div className="mt-1 text-[9px] font-bold text-sky-600 uppercase">Recol. fuera/dentro {c.numRecolocadosFuera || 0}/{c.numRecolocadosDentro || 0}</div>}
@@ -13850,9 +14154,19 @@ ${startDateWarning}
               </div>
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
-                <div className="flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
+                <select value={filterStatus} onChange={event => setFilterStatus(event.target.value)} className="md:hidden w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-black text-xs uppercase tracking-widest outline-none focus:border-black">
+                  <option value="activo">Activos</option>
+                  <option value="inicio_pendiente">Inicio pendiente</option>
+                  <option value="sin_plaza">Sin plaza</option>
+                  <option value="mantenimiento">Mantenimiento</option>
+                  <option value="impago">Impagos</option>
+                  <option value="baja">Bajas</option>
+                  <option value="sin_activar">Sin activar</option>
+                </select>
+                <div className="hidden md:flex bg-white p-1 rounded-xl border border-zinc-200 shadow-sm">
                   {[
                     { id: 'activo', label: 'Activos' },
+                    { id: 'inicio_pendiente', label: 'Inicio pendiente' },
                     { id: 'sin_plaza', label: 'Sin plaza' },
                     { id: 'mantenimiento', label: 'Mantenimiento' },
                     { id: 'impago', label: 'Impagos' },
@@ -13954,6 +14268,11 @@ ${startDateWarning}
                                   <AlertCircle className="w-3 h-3" /> Sin plaza
                                 </span>
                               )}
+                              {operationalStatus === 'inicio_pendiente' && (
+                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                                  <Timer className="w-3 h-3" /> Inicio pendiente
+                                </span>
+                              )}
                               {operationalStatus === 'mantenimiento' && (
                                 <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
                                   <Snowflake className="w-3 h-3" /> Mantenimiento
@@ -13981,9 +14300,10 @@ ${startDateWarning}
                                   const maintenancePeriod = getActiveStudentMaintenancePeriod(student.id, todayStr);
                                   const classStartDate = getStudentClassStartDate(studentInClass, student);
                                   const startsLater = classStartDate && classStartDate > todayStr;
+                                  const isPendingStart = isPendingClassStartEntry(studentInClass);
                                   return (
-                                    <button type="button" key={c.id} onClick={() => setViewClassModal(c)} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 ${isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600 hover:bg-blue-100' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100' : 'bg-zinc-100 border-zinc-200 text-zinc-500 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200'}`} title={`Abrir clase · Profesor: ${getOfficialTeacherName(c.teacher)}${isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
-                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isMaintenanceNow ? ' · Mantenimiento' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
+                                    <button type="button" key={c.id} onClick={() => setViewClassModal(c)} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 ${isPendingStart ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100' : isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600 hover:bg-blue-100' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100' : 'bg-zinc-100 border-zinc-200 text-zinc-500 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200'}`} title={`Abrir clase · Profesor: ${getOfficialTeacherName(c.teacher)}${isPendingStart ? ' · Inicio pendiente' : isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
+                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isPendingStart ? ' · Inicio pendiente' : isMaintenanceNow ? ' · Mantenimiento' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
                                     </button>
                                   );
                                 })}
@@ -14326,10 +14646,11 @@ ${startDateWarning}
                                                       .map(student => student.displayName)
                                                       .filter(Boolean);
                                                    const maintenanceCount = planningStudents.filter(student => student.isMaintenance).length;
+                                                   const pendingStartCount = planningStudents.filter(student => student.isPendingStart).length;
                                                    const futureStartCount = planningStudents.filter(student => student.isFutureStart).length;
                                                    const relocatedCount = planningStudents.filter(student => student.isRelocated).length;
                                                    const relocatedOutCount = temporaryRelocations.filter(rel => rel.sourceClassId === c.id && isTemporaryRelocationActiveForDate(rel, archDate || todayStr)).length;
-                                                   const committedCount = planningStudents.filter(student => student.isActive || student.isMaintenance || student.isFutureStart).length;
+                                                   const committedCount = planningStudents.filter(student => student.isActive || student.isMaintenance || student.isPendingStart || student.isFutureStart).length;
                                                    const activeCount = activeStudents.length;
                                                    const isHibernatedCard = activeCount === 0;
                                                    const capacityLabel = c.capacity ? `${committedCount}/${c.capacity}` : `${committedCount}/—`;
@@ -14337,9 +14658,11 @@ ${startDateWarning}
                                                    const visibleStudentNames = fixedActiveStudents.slice(0, 5);
                                                    const hiddenStudentCount = Math.max(fixedActiveStudents.length - visibleStudentNames.length, 0);
                                                    const teacherTheme = getTeacherColorTheme(c.teacher, settings);
-                                                   const hibernationReason = maintenanceCount > 0 && futureStartCount > 0
-                                                      ? 'Reservas / mantenimiento'
-                                                      : maintenanceCount > 0
+                                                   const hibernationReason = pendingStartCount > 0
+                                                      ? 'Grupo en formación'
+                                                      : maintenanceCount > 0 && futureStartCount > 0
+                                                        ? 'Reservas / mantenimiento'
+                                                        : maintenanceCount > 0
                                                         ? 'Solo mantenimiento'
                                                         : futureStartCount > 0
                                                           ? 'Inicio futuro'
@@ -14359,6 +14682,11 @@ ${startDateWarning}
                                                            <div className="min-w-0">
                                                              <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
                                                              <div className="text-[10px] font-bold truncate mt-1" style={mutedTextStyle}>Prof: {c.teacher}</div>
+                                                             {isPunctualClass(c) && (
+                                                               <div className={`mt-1 inline-flex px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${isHibernatedCard ? 'bg-amber-100 text-amber-800' : 'bg-white/20 text-white'}`}>
+                                                                 Puntual · {formatDateSpanish(c.date || c.specificDate)}
+                                                               </div>
+                                                             )}
                                                              {c.temporaryClassChange && (
                                                                <div className={`mt-1 text-[9px] font-black uppercase tracking-widest ${isHibernatedCard ? 'text-violet-700' : 'text-white'}`}>
                                                                  Cambio temporal · hasta {formatDateSpanish(normalizeTemporaryClassChangeDate(c.temporaryClassChange.until))}
@@ -14386,9 +14714,9 @@ ${startDateWarning}
                                                             </div>
                                                          )}
 
-                                                         {(maintenanceCount > 0 || futureStartCount > 0 || relocatedCount > 0 || relocatedOutCount > 0 || isHibernatedCard) && (
+                                                         {(maintenanceCount > 0 || pendingStartCount > 0 || futureStartCount > 0 || relocatedCount > 0 || relocatedOutCount > 0 || isHibernatedCard) && (
                                                             <div className={`mt-1 text-[8px] font-black uppercase tracking-widest ${isHibernatedCard ? 'text-slate-500' : ''}`} style={isHibernatedCard ? undefined : { color: 'rgba(255,255,255,.68)' }}>
-                                                               Activos {activeCapacityLabel}{maintenanceCount > 0 ? ` · ${maintenanceCount} mant.` : ''}{futureStartCount > 0 ? ` · ${futureStartCount} futuro` : ''}{relocatedCount > 0 ? ` · ${relocatedCount} recol. aquí` : ''}{relocatedOutCount > 0 ? ` · ${relocatedOutCount} recol. fuera` : ''}
+                                                               Activos {activeCapacityLabel}{maintenanceCount > 0 ? ` · ${maintenanceCount} mant.` : ''}{pendingStartCount > 0 ? ` · ${pendingStartCount} inicio pendiente` : ''}{futureStartCount > 0 ? ` · ${futureStartCount} futuro` : ''}{relocatedCount > 0 ? ` · ${relocatedCount} recol. aquí` : ''}{relocatedOutCount > 0 ? ` · ${relocatedOutCount} recol. fuera` : ''}
                                                             </div>
                                                          )}
 
@@ -14474,10 +14802,12 @@ ${startDateWarning}
                                 .sort((a, b) => a.displayName.localeCompare(b.displayName, 'es'));
                               const activeStudents = planningStudents.filter(student => student.isActive);
                               const maintenanceStudents = planningStudents.filter(student => student.isMaintenance);
+                              const pendingStartStudents = planningStudents.filter(student => student.isPendingStart);
                               const futureStartStudents = planningStudents.filter(student => student.isFutureStart);
                               const relocatedStudents = planningStudents.filter(student => student.isRelocated);
                               const activeC = activeStudents.length;
                               const maintenanceC = maintenanceStudents.length;
+                              const pendingStartC = pendingStartStudents.length;
                               const futureStartC = futureStartStudents.length;
                               const relocatedC = relocatedStudents.length;
                               const isHibernated = activeC === 0;
@@ -14511,10 +14841,10 @@ ${startDateWarning}
                                       Del {formatDateSpanish(normalizeTemporaryClassChangeDate(c.upcomingTemporaryClassChange.from))} al {formatDateSpanish(normalizeTemporaryClassChangeDate(c.upcomingTemporaryClassChange.until))}: {getDayName(Number(c.upcomingTemporaryClassChange.dayOfWeek))} {c.upcomingTemporaryClassChange.time}h · {c.upcomingTemporaryClassChange.sede} ({c.upcomingTemporaryClassChange.sala}) · {getOfficialTeacherName(c.upcomingTemporaryClassChange.teacher)}
                                     </div>
                                   )}
-                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? '💤 Hibernada' : `${activeC}/${c.capacity} activos`}</div>
-                                  {(maintenanceC > 0 || futureStartC > 0 || relocatedC > 0) && (
+                                  <div className="text-right text-xs font-black mt-2" style={{ color: teacherTheme.text }}>{isHibernated ? `💤 ${pendingStartC > 0 ? 'Grupo en formación' : 'Hibernada'}` : `${activeC}/${c.capacity} activos`}</div>
+                                  {(maintenanceC > 0 || pendingStartC > 0 || futureStartC > 0 || relocatedC > 0) && (
                                     <div className="text-right text-[9px] font-black uppercase tracking-widest mt-1" style={{ color: teacherTheme.text }}>
-                                      {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
+                                      {maintenanceC > 0 ? `${maintenanceC} mant.` : ''}{maintenanceC > 0 && (pendingStartC > 0 || futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{pendingStartC > 0 ? `${pendingStartC} inicio pendiente` : ''}{pendingStartC > 0 && (futureStartC > 0 || relocatedC > 0) ? ' · ' : ''}{futureStartC > 0 ? `${futureStartC} inicio futuro` : ''}{futureStartC > 0 && relocatedC > 0 ? ' · ' : ''}{relocatedC > 0 ? `${relocatedC} recol.` : ''}
                                     </div>
                                   )}
 

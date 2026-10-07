@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   ClipboardList, History, BarChart3, Check, X, AlertCircle, Save, Mail, 
   Trash2, Calendar, Clock, User, Music, RefreshCw, Play, 
@@ -283,6 +283,7 @@ const getStudentClassEndDate = (studentEntry = {}, studentInfo = {}) => {
 };
 
 const hasClassStartedForDate = (studentEntry = {}, studentInfo = {}, targetDate = '') => {
+  if (studentEntry.pendingStart === true || String(studentEntry.enrollmentStatus || '').toLowerCase() === 'pending_start') return false;
   const startDate = getStudentClassStartDate(studentEntry, studentInfo);
   return !startDate || !targetDate || startDate <= targetDate;
 };
@@ -713,8 +714,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [availability, setAvailability] = useState({ 1:[], 2:[], 3:[], 4:[], 5:[], 6:[] });
   const [newSlot, setNewSlot] = useState({ day: null, start: '', end: '' });
   const [scheduleView, setScheduleView] = useState('schedule');
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [calendarMonth, setCalendarMonth] = useState(() => getTodayLocalString().slice(0, 7));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => getTodayLocalString());
 
   const [settings, setSettings] = useState({
     hourlyRate: 17.33,
@@ -742,7 +743,21 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   });
   const [isSavingTask, setIsSavingTask] = useState(false);
   const [notification, setNotification] = useState(null);
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(() => getTodayLocalString());
+  const localDayRef = useRef(getTodayLocalString());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const previousDay = localDayRef.current;
+      const nextDay = getTodayLocalString();
+      if (nextDay === previousDay) return;
+      setDate(current => current === previousDay ? nextDay : current);
+      setSelectedCalendarDate(current => current === previousDay ? nextDay : current);
+      setCalendarMonth(current => current === previousDay.slice(0, 7) ? nextDay.slice(0, 7) : current);
+      localDayRef.current = nextDay;
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, []);
   
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
   const availableMonths = useMemo(() => generateLast12Months(), []);
@@ -1979,7 +1994,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return temporaryRelocations.filter(rel => isTemporaryRelocationActiveForDate(rel, targetDate));
   };
 
-  const isMaintenanceStatusClosed = (status = '') => ['cancelled', 'cancelada', 'finalizada'].includes(status);
+  const isMaintenanceStatusClosed = (status = '') => ['cancelled', 'cancelada', 'finalizada', 'expired'].includes(String(status || '').toLowerCase());
 
   const isMaintenancePeriodActiveForDate = (period = {}, targetDate = date) => {
     if (!period || isMaintenanceStatusClosed(period.status)) return false;
@@ -2000,16 +2015,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     return `mantenimiento temporal · ${formatDateSpanish(period.from)} - ${formatDateSpanish(period.until)}`;
   };
 
-  const isLegacyPausedStillValid = (student = {}) => {
-    if (student.isPaused !== true) return false;
-    const studentInfo = globalStudents.find(g => g.id === student.id) || {};
-    return studentInfo?.globalStatus === 'congelado';
-  };
-
   const isAttendanceBlockedStudent = (student = {}, targetDate = date) => Boolean(
     student.isMaintenance ||
-    isStudentInMaintenance(student.id, targetDate) ||
-    isLegacyPausedStillValid(student)
+    isStudentInMaintenance(student.id, targetDate)
   );
 
   const enrichStudentMaintenanceState = (studentEntry = {}, targetDate = date) => {
@@ -2471,15 +2479,16 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   }, [calendarMonth, selectedCalendarDate, teacherScheduleModel, centers, settings.vacaciones, settings.festivos]);
 
   const sanitizeTemplateStudentForSave = (student = {}) => {
-    const studentInfo = globalStudents.find(g => g.id === student.id) || {};
-    const keepLegacyPaused = student.isPaused === true && studentInfo?.globalStatus === 'congelado';
-
     const cleanStudent = {
       id: student.id,
       name: student.name,
       email: student.email || '',
-      isPaused: Boolean(keepLegacyPaused && !student.isMaintenance)
+      isPaused: false
     };
+
+    if (student.pendingStart === true) cleanStudent.pendingStart = true;
+    if (student.enrollmentStatus) cleanStudent.enrollmentStatus = student.enrollmentStatus;
+    if (student.pendingStartCreatedAt) cleanStudent.pendingStartCreatedAt = student.pendingStartCreatedAt;
 
     if (student.classStartDate) cleanStudent.classStartDate = student.classStartDate;
     if (student.startDate) cleanStudent.startDate = student.startDate;
@@ -2670,7 +2679,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     }
 
     const studentInfo = globalStudents.find(s => s.id === gestion.studentId);
-    if (studentInfo?.globalStatus === 'baja' || studentInfo?.globalStatus === 'impago' || studentInfo?.globalStatus === 'congelado' || isStudentInMaintenance(gestion.studentId, recoveryDate)) {
+    if (studentInfo?.globalStatus === 'baja' || studentInfo?.globalStatus === 'impago' || isStudentInMaintenance(gestion.studentId, recoveryDate)) {
       showNotification({ type: 'error', text: 'El alumno no está operativo para recuperación en esa fecha. Coordina la recuperación desde administración.' });
       return;
     }
@@ -2979,6 +2988,16 @@ ${report?.closingDutyRequired === true
       if (globalStudentInfo?.globalStatus === 'baja') return;
       const enrichedStudent = enrichStudentMaintenanceState(studentEntry, date);
       const relocationOut = relocatedOutByStudentId.get(studentEntry.id);
+
+      if (studentEntry.pendingStart === true || String(studentEntry.enrollmentStatus || '').toLowerCase() === 'pending_start') {
+        pushNonComputableStudent({
+          ...enrichedStudent,
+          status: 'pending_start',
+          nonComputableReason: 'pending_start',
+          nonComputableLabel: 'Grupo en formación · fecha de inicio pendiente'
+        });
+        return;
+      }
 
       if (studentEntry.isRecovery && studentEntry.recoveryDate && studentEntry.recoveryDate !== date) {
         pushNonComputableStudent({

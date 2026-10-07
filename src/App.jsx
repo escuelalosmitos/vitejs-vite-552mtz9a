@@ -45,11 +45,16 @@ const getFutureAccessBlockMessage = (classStartDate) => (
   `Tu plaza está reservada. Podrás activar y usar tu Área del Alumno a partir del ${formatDateSpanish(classStartDate)}.`
 );
 
+const getPendingStartAccessBlockMessage = () => (
+  'Tu plaza está registrada en un grupo en formación, pero todavía no tiene fecha de inicio. Te avisaremos cuando el grupo esté confirmado y puedas activar tu Área del Alumno.'
+);
+
 const hasStudentPortalEntitlement = (studentData = {}) => {
   const status = String(studentData.globalStatus || 'activo').toLowerCase();
   const hasClasses = Array.isArray(studentData.classes) && studentData.classes.length > 0;
+  const hasUsableClasses = hasClasses && studentData.pendingStartOnly !== true;
   const hasExtraService = studentData.hasMitobox === true || studentData.hasMitoverso === true || studentData.hasGymusik === true;
-  return status !== 'baja' && (hasClasses || hasExtraService);
+  return status !== 'baja' && (hasUsableClasses || hasExtraService);
 };
 
 const getStudentDocumentPriority = (studentDocument, authenticatedUser) => {
@@ -168,6 +173,7 @@ export default function App() {
 
         const studentData = studentDocument.data();
         if (!hasStudentPortalEntitlement(studentData)) {
+          if (studentData.pendingStartOnly === true) setAuthError(getPendingStartAccessBlockMessage());
           setAccessRole('denied');
           return;
         }
@@ -253,7 +259,9 @@ export default function App() {
           }, { merge: true });
         } else {
           await deleteUser(credential.user);
-          setAuthError('Acceso denegado: este correo no tiene ahora mismo clases ni servicios activos.');
+          setAuthError(studentDocument?.data()?.pendingStartOnly === true
+            ? getPendingStartAccessBlockMessage()
+            : 'Acceso denegado: este correo no tiene ahora mismo clases ni servicios activos.');
           return;
         }
       }

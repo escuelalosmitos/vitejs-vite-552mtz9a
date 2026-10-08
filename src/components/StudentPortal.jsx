@@ -2434,12 +2434,12 @@ export default function StudentPortal({ user, logout, db, appId }) {
       return undefined;
     }
 
-    const trayNotificationsQuery = query(
-      collection(db, 'artifacts', appId, 'trayNotifications'),
-      where('recipientEmails', 'array-contains', authenticatedEmail)
+    const privateInboxReference = collection(
+      db,
+      'artifacts', appId, 'studentNotificationInbox', authenticatedEmail, 'items'
     );
     return onSnapshot(
-      trayNotificationsQuery,
+      privateInboxReference,
       (snapshot) => setTrayNotifications(snapshot.docs.map(notificationDoc => ({ id: notificationDoc.id, ...notificationDoc.data() }))),
       (error) => {
         console.error('Error al cargar las notificaciones privadas', error);

@@ -653,6 +653,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [calendarMonth, setCalendarMonth] = useState(() => formatLocalDateString(new Date()).slice(0, 7));
   const [selectedCalendarDay, setSelectedCalendarDay] = useState('');
   const [announcements, setAnnouncements] = useState([]); 
+  const [trayNotifications, setTrayNotifications] = useState([]);
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [expandedAnnouncementId, setExpandedAnnouncementId] = useState(null);
   const [myPollResponses, setMyPollResponses] = useState([]);
@@ -2295,11 +2296,33 @@ export default function StudentPortal({ user, logout, db, appId }) {
         source: announcement
       };
     });
+    const nowLocal = getLocalDateTimeString(new Date(pollClock));
+    const directNotificationItems = trayNotifications
+      .filter(notification => (
+        (!notification.publishAt || notification.publishAt <= nowLocal)
+        && (!notification.expiresAt || notification.expiresAt > nowLocal)
+      ))
+      .map(notification => {
+        const timestamp = toTimestamp(notification.publishAt || notification.createdAt || notification.updatedAt || notification.id);
+        const key = buildKey(timestamp, 'tray_notice', notification.id);
+        return {
+          key,
+          id: notification.id,
+          type: 'tray_notice',
+          area: 'tray',
+          label: 'Recordatorio de la escuela',
+          title: notification.title || 'Recordatorio',
+          description: notification.content || '',
+          timestamp,
+          areaUnread: key > String(profile?.lastSeenNotificationTray || ''),
+          source: notification
+        };
+      });
 
-    return [...workshopItems, ...announcementItems]
+    return [...workshopItems, ...announcementItems, ...directNotificationItems]
       .sort((left, right) => right.key.localeCompare(left.key))
-      .slice(0, 8);
-  }, [visibleWorkshops, visibleAnnouncements, profile?.lastSeenExtras, profile?.lastSeenTablon, pollClock]);
+      .slice(0, 6);
+  }, [visibleWorkshops, visibleAnnouncements, trayNotifications, profile?.lastSeenExtras, profile?.lastSeenTablon, profile?.lastSeenNotificationTray, pollClock]);
 
   const latestPortalNotificationKey = portalNotifications[0]?.key || '';
   const newTrayNotifications = portalNotifications.filter(item => (
@@ -2660,6 +2683,19 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => console.error('Error al cargar candidaturas de convocatorias', error)
     );
 
+    const trayNotificationsQuery = query(
+      collection(db, 'artifacts', appId, 'trayNotifications'),
+      where('recipientStudentIds', 'array-contains', String(profile.id))
+    );
+    const unsubTrayNotifications = onSnapshot(
+      trayNotificationsQuery,
+      (snapshot) => setTrayNotifications(snapshot.docs.map(notificationDoc => ({ id: notificationDoc.id, ...notificationDoc.data() }))),
+      (error) => {
+        console.error('Error al cargar las notificaciones privadas', error);
+        setTrayNotifications([]);
+      }
+    );
+
     const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentEmail', '==', studentEmail));
     const processTicketsSnapshot = (snapshot, filterLegacyResults = false) => {
       let validTicketsCount = 0;
@@ -2732,6 +2768,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubWorkshopRegistrations();
       unsubPollResponses();
       unsubCallResponses();
+      unsubTrayNotifications();
       unsubTickets(); 
     };
   }, [profile?.id, profileClassIdsSignature, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, classCatalog, classesRetryNonce, db, appId, user.email]);
@@ -5576,7 +5613,30 @@ END:VCALENDAR`;
               {portalNotifications.length > 0 ? (
                 <div className="max-h-[min(28rem,calc(100vh-10rem))] overflow-y-auto">
                   {portalNotifications.map(item => {
-                    const ItemIcon = item.type === 'workshop' ? Sparkles : Megaphone;
+                    const ItemIcon = item.type === 'workshop' ? Sparkles : item.type === 'tray_notice' ? Bell : Megaphone;
+                    if (item.type === 'tray_notice') {
+                      const safeUrl = getSafeAnnouncementUrl(item.source?.url || '');
+                      return (
+                        <article key={item.key} className="p-4 border-b border-zinc-100 last:border-b-0 bg-emerald-50/40 flex items-start gap-3">
+                          <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 bg-emerald-100 text-emerald-700">
+                            <ItemIcon className="w-4 h-4" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-emerald-700">
+                              {item.label} · {formatPortalNotificationTime(item.timestamp)}
+                              {item.areaUnread && <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" aria-label="Notificación nueva"></span>}
+                            </span>
+                            <strong className="block text-sm font-black text-slate-900 mt-1 leading-tight">{item.title}</strong>
+                            <p className="text-[11px] font-medium text-zinc-600 mt-2 leading-relaxed whitespace-pre-wrap break-words">{item.description}</p>
+                            {safeUrl && (
+                              <a href={safeUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-emerald-800 hover:text-emerald-950">
+                                Abrir enlace <ChevronRight className="w-3 h-3" />
+                              </a>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    }
                     return (
                       <button
                         type="button"
@@ -5593,7 +5653,7 @@ END:VCALENDAR`;
                             {item.areaUnread && <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" aria-label="Contenido pendiente de consultar"></span>}
                           </span>
                           <strong className="block text-sm font-black text-slate-900 mt-1 leading-tight truncate">{item.title}</strong>
-                          <span className="block text-[11px] font-medium text-zinc-500 mt-1 leading-snug line-clamp-2">{item.description}</span>
+                          <span className="text-[11px] font-medium text-zinc-500 mt-1 leading-snug" style={{ display: '-webkit-box', WebkitLineClamp: 5, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{item.description}</span>
                           <span className="mt-2 text-[10px] font-black uppercase tracking-widest text-slate-800 flex items-center gap-1 group-hover:gap-2 transition-all">
                             {item.type === 'workshop' ? 'Ver taller' : 'Abrir publicación'} <ChevronRight className="w-3 h-3" />
                           </span>

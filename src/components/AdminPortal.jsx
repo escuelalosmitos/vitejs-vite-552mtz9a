@@ -70,6 +70,8 @@ const createEmptyAnnouncementDraft = () => ({
   title: '',
   content: '',
   url: '',
+  trayPublishAt: '',
+  trayExpiresAt: '',
   pinned: false,
   pinnedUntil: '',
   pollAnswerType: 'single',
@@ -2092,6 +2094,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [gestiones, setGestiones] = useState([]);
   const [students, setStudents] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
+  const [trayNotifications, setTrayNotifications] = useState([]);
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
   const uniqueAttendanceRecords = useMemo(() => dedupeAttendanceRecords(allRecords), [allRecords]);
@@ -2184,6 +2187,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [newAnnounce, setNewAnnounce] = useState(createEmptyAnnouncementDraft);
   const [announceEmailOptions, setAnnounceEmailOptions] = useState({ enabled: false, targetType: 'all', targetValue: '' });
   const [editingAnnouncementId, setEditingAnnouncementId] = useState(null);
+  const [editingTrayNotificationId, setEditingTrayNotificationId] = useState(null);
   const [expandedPollResultsId, setExpandedPollResultsId] = useState(null);
   const [expandedCallResponsesId, setExpandedCallResponsesId] = useState(null);
   const [pollClock, setPollClock] = useState(Date.now());
@@ -2454,7 +2458,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   useEffect(() => {
     if (!needsAnnouncementsData) return undefined;
     setDeferredDataStatus(previous => ({ ...previous, announcements: 'loading' }));
-    return subscribeVerifiedAdminSnapshot({
+    const unsubscribeAnnouncements = subscribeVerifiedAdminSnapshot({
       reference: collection(db, 'artifacts', appId, 'announcements'),
       label: 'los avisos',
       applySnapshot: snap => {
@@ -2462,6 +2466,20 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
       },
       onStatus: status => setDeferredDataStatus(previous => ({ ...previous, announcements: status }))
     });
+    const unsubscribeTrayNotifications = subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'trayNotifications'),
+      label: 'las notificaciones breves',
+      applySnapshot: snap => {
+        setTrayNotifications(snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((left, right) => String(right.createdAt || right.publishAt || '').localeCompare(String(left.createdAt || left.publishAt || ''))));
+      },
+      onStatus: () => {}
+    });
+    return () => {
+      unsubscribeAnnouncements();
+      unsubscribeTrayNotifications();
+    };
   }, [needsAnnouncementsData, appId, db, deferredRetryVersion]);
 
   // La disponibilidad se necesita al crear/editar clases y dentro del panel de profesores.
@@ -5581,6 +5599,15 @@ ${body}`,
     if (targetType === 'profesor') {
       return allOfficialTeacherNames;
     }
+    if (targetType === 'student') {
+      return students
+        .filter(student => student?.id && student.globalStatus !== 'baja')
+        .map(student => ({
+          value: String(student.id),
+          label: `${student.alias || student.name || 'Alumno'}${student.email ? ` · ${student.email}` : ''}`
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label, 'es'));
+    }
     return [];
   };
 
@@ -5617,7 +5644,18 @@ ${body}`,
   };
 
   const getAnnouncementStudentTargets = (emailOptions = announceEmailOptions) => {
-    if ((emailOptions.targetType || 'all') === 'teachers') return [];
+    const targetType = emailOptions.targetType || 'all';
+    if (targetType === 'teachers') return [];
+    if (targetType === 'student') {
+      const selectedStudent = students.find(student => String(student.id || '') === String(emailOptions.targetValue || ''));
+      if (!selectedStudent || selectedStudent.globalStatus === 'baja') return [];
+      return [{
+        email: normalizeEmail(selectedStudent.email || ''),
+        name: selectedStudent.alias || selectedStudent.name || '',
+        studentId: String(selectedStudent.id),
+        classes: selectedStudent.classes || []
+      }];
+    }
 
     const byStudent = new Map();
 
@@ -5667,6 +5705,12 @@ ${body}`,
     if (targetType === 'sede') return targetValue ? `Sede: ${targetValue}` : 'Sede no seleccionada';
     if (targetType === 'instrumento') return targetValue ? `Instrumento: ${targetValue}` : 'Instrumento no seleccionado';
     if (targetType === 'profesor') return targetValue ? `Alumnos de profesor/a: ${targetValue}` : 'Profesor no seleccionado';
+    if (targetType === 'student') {
+      const selectedStudent = students.find(student => String(student.id || '') === targetValue);
+      return selectedStudent
+        ? `Alumno/a: ${selectedStudent.alias || selectedStudent.name || selectedStudent.email || targetValue}`
+        : 'Alumno no seleccionado';
+    }
     return 'Filtro personalizado';
   };
 
@@ -8296,7 +8340,72 @@ Coordinación Los Mitos.`
     downloadTextFile(`Convocatoria_${String(call.title || 'candidaturas').replace(/[^a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]+/g, '_')}_${getTodayLocalString()}.csv`, csv, 'text/csv;charset=utf-8');
   };
 
+  const postTrayNotification = async () => {
+    const title = String(newAnnounce.title || '').trim();
+    const content = String(newAnnounce.content || '').trim();
+    if (!title || !content) return alert('Rellena el título y el texto de la notificación.');
+    if (content.length > 400) return alert('La notificación breve no puede superar los 400 caracteres.');
+
+    const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
+    if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
+
+    const audienceOptions = {
+      targetType: announceEmailOptions.targetType || 'all',
+      targetValue: announceEmailOptions.targetValue || ''
+    };
+    if (!['all'].includes(audienceOptions.targetType) && !String(audienceOptions.targetValue || '').trim()) {
+      return alert('Selecciona el segmento o el alumno destinatario.');
+    }
+
+    const recipients = getAnnouncementStudentTargets(audienceOptions);
+    const recipientStudentIds = [...new Set(recipients.map(recipient => String(recipient.studentId || '')).filter(Boolean))];
+    if (recipientStudentIds.length === 0) return alert('El filtro elegido no contiene ningún alumno destinatario.');
+
+    const publishAt = String(newAnnounce.trayPublishAt || '').trim() || getLocalDateTimeInputValue();
+    const expiresAt = String(newAnnounce.trayExpiresAt || '').trim();
+    if (expiresAt && expiresAt <= publishAt) return alert('La fecha de retirada debe ser posterior a la de publicación.');
+
+    const now = new Date().toISOString();
+    const payload = {
+      type: 'tray_notice',
+      title,
+      content,
+      url: cleanUrl || '',
+      publishAt,
+      expiresAt,
+      audienceType: audienceOptions.targetType,
+      audienceValue: audienceOptions.targetValue || '',
+      audienceLabel: getAnnouncementTargetLabel(audienceOptions),
+      recipientStudentIds,
+      recipientCount: recipientStudentIds.length,
+      updatedAt: now,
+      updatedBy: user?.email || user?.uid || 'admin'
+    };
+
+    try {
+      if (editingTrayNotificationId) {
+        await updateDoc(doc(db, 'artifacts', appId, 'trayNotifications', editingTrayNotificationId), payload);
+        alert('Notificación breve actualizada.');
+      } else {
+        const notificationRef = doc(collection(db, 'artifacts', appId, 'trayNotifications'));
+        await setDoc(notificationRef, {
+          ...payload,
+          createdAt: now,
+          createdBy: user?.email || user?.uid || 'admin'
+        });
+        alert(publishAt > getLocalDateTimeInputValue() ? 'Notificación breve programada.' : 'Notificación breve publicada.');
+      }
+      setEditingTrayNotificationId(null);
+      setEditingAnnouncementId(null);
+      setNewAnnounce(createEmptyAnnouncementDraft());
+      setAnnounceEmailOptions({ enabled: false, targetType: 'all', targetValue: '' });
+    } catch (error) {
+      alert('No se ha podido guardar la notificación breve: ' + error.message);
+    }
+  };
+
   const postAnnouncement = async () => {
+    if (newAnnounce.type === 'tray_notice') return postTrayNotification();
     const isPoll = newAnnounce.type === 'poll';
     const isCall = newAnnounce.type === 'call';
     if (!newAnnounce.title || (!isPoll && !newAnnounce.content)) {
@@ -8452,12 +8561,15 @@ Coordinación Los Mitos.`
   };
 
   const startEditAnnouncement = (ann) => {
+    setEditingTrayNotificationId(null);
     setEditingAnnouncementId(ann.id);
     setNewAnnounce({
       type: ann.type === 'poll' ? 'poll' : (ann.type === 'call' ? 'call' : 'notice'),
       title: ann.title || '',
       content: ann.content || '',
       url: normalizeAnnouncementUrl(ann.url) || '',
+      trayPublishAt: '',
+      trayExpiresAt: '',
       pinned: ann.pinned === true,
       pinnedUntil: ann.pinnedUntil || '',
       pollAnswerType: ann.pollAnswerType || 'single',
@@ -8478,10 +8590,41 @@ Coordinación Los Mitos.`
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
   };
 
+  const startEditTrayNotification = (notification) => {
+    setEditingAnnouncementId(null);
+    setEditingTrayNotificationId(notification.id);
+    setNewAnnounce({
+      ...createEmptyAnnouncementDraft(),
+      type: 'tray_notice',
+      title: notification.title || '',
+      content: notification.content || '',
+      url: normalizeAnnouncementUrl(notification.url) || '',
+      trayPublishAt: notification.publishAt || '',
+      trayExpiresAt: notification.expiresAt || ''
+    });
+    setAnnounceEmailOptions({
+      enabled: false,
+      targetType: notification.audienceType || 'all',
+      targetValue: notification.audienceValue || ''
+    });
+    setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
+  };
+
   const cancelEditAnnouncement = () => {
     setEditingAnnouncementId(null);
+    setEditingTrayNotificationId(null);
     setNewAnnounce(createEmptyAnnouncementDraft());
     setAnnounceEmailOptions({ enabled: false, targetType: 'all', targetValue: '' });
+  };
+
+  const deleteTrayNotification = async (notification) => {
+    if (!notification?.id || !window.confirm('¿Borrar esta notificación de la bandeja de los alumnos?')) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'trayNotifications', notification.id));
+      if (editingTrayNotificationId === notification.id) cancelEditAnnouncement();
+    } catch (error) {
+      alert('No se ha podido borrar la notificación breve: ' + error.message);
+    }
   };
 
 
@@ -15537,20 +15680,53 @@ ${startDateWarning}
                       if (type !== 'notice' && announceEmailOptions.targetType === 'teachers') {
                         setAnnounceEmailOptions(prev => ({ ...prev, targetType: 'all', targetValue: '' }));
                       }
+                      if (type !== 'tray_notice' && announceEmailOptions.targetType === 'student') {
+                        setAnnounceEmailOptions(prev => ({ ...prev, enabled: false, targetType: 'all', targetValue: '' }));
+                      }
+                      if (type === 'tray_notice') {
+                        setNewAnnounce(prev => ({
+                          ...prev,
+                          type,
+                          pinned: false,
+                          pinnedUntil: '',
+                          trayPublishAt: prev.trayPublishAt || getLocalDateTimeInputValue()
+                        }));
+                        setAnnounceEmailOptions(prev => ({ ...prev, enabled: false }));
+                      }
                     }}
-                    disabled={hasProtectedAnnouncementResponses(editingAnnouncementId)}
+                    disabled={Boolean(editingAnnouncementId || editingTrayNotificationId)}
                     className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-xs uppercase tracking-widest disabled:opacity-60"
                   >
                     <option value="notice">Aviso</option>
                     <option value="poll">Encuesta</option>
                     <option value="call">Convocatoria</option>
+                    <option value="tray_notice">Notificación breve</option>
                   </select>
                 </div>
-                <input type="text" placeholder={newAnnounce.type === 'poll' ? 'Pregunta de la encuesta...' : (newAnnounce.type === 'call' ? 'Título de la convocatoria...' : 'Titular impactante...')} value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-sm" />
-                <textarea placeholder={newAnnounce.type === 'poll' ? 'Explicación opcional...' : (newAnnounce.type === 'call' ? 'Explica la actividad, compromisos, ensayos y criterios relevantes...' : 'Detalles del aviso...')} value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
+                {newAnnounce.type === 'tray_notice' && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+                    <p className="text-xs font-black uppercase tracking-widest text-emerald-900">Solo minibandeja</p>
+                    <p className="text-xs text-emerald-800 font-semibold mt-1">Este recordatorio no aparecerá en el Tablón ni en Extras. El alumno verá aquí el texto completo.</p>
+                  </div>
+                )}
+                <input type="text" placeholder={newAnnounce.type === 'poll' ? 'Pregunta de la encuesta...' : (newAnnounce.type === 'call' ? 'Título de la convocatoria...' : newAnnounce.type === 'tray_notice' ? 'Título breve del recordatorio...' : 'Titular impactante...')} value={newAnnounce.title} onChange={e => setNewAnnounce({...newAnnounce, title: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-black text-sm" />
+                <textarea maxLength={newAnnounce.type === 'tray_notice' ? 400 : undefined} placeholder={newAnnounce.type === 'poll' ? 'Explicación opcional...' : (newAnnounce.type === 'call' ? 'Explica la actividad, compromisos, ensayos y criterios relevantes...' : newAnnounce.type === 'tray_notice' ? 'Escribe el recordatorio breve que se mostrará completo...' : 'Detalles del aviso...')} value={newAnnounce.content} onChange={e => setNewAnnounce({...newAnnounce, content: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none min-h-[100px] resize-y font-medium text-sm" />
+                {newAnnounce.type === 'tray_notice' && <p className="text-right text-[10px] font-black uppercase tracking-widest text-zinc-400 -mt-3">{String(newAnnounce.content || '').length}/400 caracteres</p>}
                 <input type="url" placeholder="URL opcional, por ejemplo https://..." value={newAnnounce.url} onChange={e => setNewAnnounce({...newAnnounce, url: e.target.value})} className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none font-bold text-sm" />
-                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">Si añades URL, el alumno verá un botón clicable en el tablón.</p>
-                {announceEmailOptions.targetType !== 'teachers' && <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
+                <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest -mt-2">{newAnnounce.type === 'tray_notice' ? 'Si añades URL, aparecerá un acceso directo dentro de la notificación.' : 'Si añades URL, el alumno verá un botón clicable en el tablón.'}</p>
+                {newAnnounce.type === 'tray_notice' && (
+                  <div className="grid md:grid-cols-2 gap-3 bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-emerald-900 mb-2">Publicar desde</label>
+                      <input type="datetime-local" value={newAnnounce.trayPublishAt || ''} onChange={e => setNewAnnounce(prev => ({ ...prev, trayPublishAt: e.target.value }))} className="w-full p-3 bg-white border border-emerald-200 rounded-xl outline-none font-bold text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-emerald-900 mb-2">Retirar el (opcional)</label>
+                      <input type="datetime-local" value={newAnnounce.trayExpiresAt || ''} onChange={e => setNewAnnounce(prev => ({ ...prev, trayExpiresAt: e.target.value }))} className="w-full p-3 bg-white border border-emerald-200 rounded-xl outline-none font-bold text-sm" />
+                    </div>
+                  </div>
+                )}
+                {newAnnounce.type !== 'tray_notice' && announceEmailOptions.targetType !== 'teachers' && <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3">
                   <label className="flex items-start gap-3 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -15652,8 +15828,8 @@ ${startDateWarning}
                 )}
                 <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4 space-y-4">
                   <div>
-                    <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Destinatarios en el Tablón</span>
-                    <span className="block text-xs text-sky-700 font-semibold mt-1">La publicación aparecerá únicamente a los alumnos incluidos en el filtro.</span>
+                    <span className="block text-xs font-black uppercase tracking-widest text-sky-900">{newAnnounce.type === 'tray_notice' ? 'Destinatarios de la notificación' : 'Destinatarios en el Tablón'}</span>
+                    <span className="block text-xs text-sky-700 font-semibold mt-1">{newAnnounce.type === 'tray_notice' ? 'El aviso solo podrá leerlo el alumnado incluido en este filtro.' : 'La publicación aparecerá únicamente a los alumnos incluidos en el filtro.'}</span>
                   </div>
                   <div className="grid md:grid-cols-2 gap-3">
                     <select
@@ -15671,6 +15847,7 @@ ${startDateWarning}
                       <option value="sede">Solo una sede</option>
                       <option value="instrumento">Solo un instrumento</option>
                       <option value="profesor">Solo alumnos de un profesor</option>
+                      {newAnnounce.type === 'tray_notice' && <option value="student">Una persona concreta</option>}
                     </select>
                     {!['all', 'teachers'].includes(announceEmailOptions.targetType) && (
                       <select
@@ -15681,15 +15858,15 @@ ${startDateWarning}
                       >
                         <option value="">Selecciona...</option>
                         {getAnnouncementTargetOptions(announceEmailOptions.targetType).map(opt => (
-                          <option key={opt} value={opt}>{opt}</option>
+                          <option key={typeof opt === 'string' ? opt : opt.value} value={typeof opt === 'string' ? opt : opt.value}>{typeof opt === 'string' ? opt : opt.label}</option>
                         ))}
                       </select>
                     )}
                     <div className="md:col-span-2 text-[11px] font-bold text-sky-800 bg-white/70 rounded-xl px-3 py-2">
-                      Destinatarios estimados con email: {getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
+                      {newAnnounce.type === 'tray_notice' ? 'Destinatarios de bandeja' : 'Destinatarios estimados con email'}: {newAnnounce.type === 'tray_notice' ? getAnnouncementStudentTargets(announceEmailOptions).length : getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
                     </div>
                   </div>
-                  <label className="flex items-start gap-3 cursor-pointer select-none pt-2 border-t border-sky-100">
+                  {newAnnounce.type !== 'tray_notice' && <label className="flex items-start gap-3 cursor-pointer select-none pt-2 border-t border-sky-100">
                     <input
                       type="checkbox"
                       checked={announceEmailOptions.enabled}
@@ -15700,13 +15877,13 @@ ${startDateWarning}
                       <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email a esos destinatarios</span>
                       <span className="block text-xs text-sky-700 font-semibold mt-1">Úsalo cuando la publicación requiera atención especial. No se envía nada si dejas esta casilla desmarcada.</span>
                     </span>
-                  </label>
+                  </label>}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
-                    {editingAnnouncementId ? <Save className="w-4 h-4"/> : <Megaphone className="w-4 h-4"/>} {editingAnnouncementId ? 'Guardar Cambios' : newAnnounce.type === 'poll' ? 'Publicar Encuesta' : newAnnounce.type === 'call' ? 'Publicar Convocatoria' : 'Publicar Aviso'}
+                    {editingAnnouncementId || editingTrayNotificationId ? <Save className="w-4 h-4"/> : <Megaphone className="w-4 h-4"/>} {editingAnnouncementId || editingTrayNotificationId ? 'Guardar Cambios' : newAnnounce.type === 'poll' ? 'Publicar Encuesta' : newAnnounce.type === 'call' ? 'Publicar Convocatoria' : newAnnounce.type === 'tray_notice' ? 'Publicar Notificación' : 'Publicar Aviso'}
                   </button>
-                  {editingAnnouncementId && (
+                  {(editingAnnouncementId || editingTrayNotificationId) && (
                     <button onClick={cancelEditAnnouncement} className="bg-zinc-100 text-zinc-600 px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-200">
                       <X className="w-4 h-4"/> Cancelar edición
                     </button>
@@ -15714,6 +15891,44 @@ ${startDateWarning}
                 </div>
               </div>
             </div>
+            {trayNotifications.length > 0 && (
+              <section className="space-y-3">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-widest text-emerald-900">Notificaciones de bandeja</h3>
+                    <p className="text-xs font-semibold text-zinc-500 mt-1">Avisos breves que no aparecen en el Tablón ni en Extras.</p>
+                  </div>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{trayNotifications.length} total</span>
+                </div>
+                {trayNotifications.map(notification => {
+                  const nowLocal = getLocalDateTimeInputValue(new Date(pollClock));
+                  const isScheduled = Boolean(notification.publishAt && notification.publishAt > nowLocal);
+                  const isExpired = Boolean(notification.expiresAt && notification.expiresAt <= nowLocal);
+                  return (
+                    <article key={notification.id} className={`bg-white rounded-2xl border shadow-sm p-5 flex flex-col md:flex-row md:items-start justify-between gap-4 ${editingTrayNotificationId === notification.id ? 'border-emerald-400 ring-2 ring-emerald-100' : 'border-emerald-100'}`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                          <span className="inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-emerald-100 text-emerald-800">Solo bandeja</span>
+                          <span className={`inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isExpired ? 'bg-zinc-100 text-zinc-500' : isScheduled ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>{isExpired ? 'Retirada' : isScheduled ? 'Programada' : 'Visible'}</span>
+                        </div>
+                        <h4 className="font-black text-slate-900">{notification.title}</h4>
+                        <p className="text-sm text-zinc-600 whitespace-pre-wrap mt-1">{notification.content}</p>
+                        <div className="flex flex-wrap gap-2 mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                          <span>{notification.audienceLabel || getAnnouncementTargetLabel({ targetType: notification.audienceType, targetValue: notification.audienceValue })}</span>
+                          <span>· {notification.recipientCount || (notification.recipientStudentIds || []).length} destinatario(s)</span>
+                          {notification.publishAt && <span>· Desde {new Date(notification.publishAt).toLocaleString('es-ES')}</span>}
+                          {notification.expiresAt && <span>· Hasta {new Date(notification.expiresAt).toLocaleString('es-ES')}</span>}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 shrink-0">
+                        <button type="button" onClick={() => startEditTrayNotification(notification)} className="p-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-colors" title="Editar notificación"><Pencil className="w-4 h-4"/></button>
+                        <button type="button" onClick={() => deleteTrayNotification(notification)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors" title="Borrar notificación"><Trash2 className="w-4 h-4"/></button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </section>
+            )}
             <div className="space-y-3">
               {announcements.slice(0, visibleAnnouncementsCount).map(ann => {
                 const isPoll = ann.type === 'poll';

@@ -8385,6 +8385,24 @@ Coordinación Los Mitos.`
       updatedBy: user?.email || user?.uid || 'admin'
     };
 
+    // Cada bandeja privada solo necesita el contenido visible. Las listas de
+    // destinatarios se conservan exclusivamente en el documento maestro para
+    // evitar repetirlas en cada copia y superar el límite de tamaño del lote.
+    const buildInboxItem = (notificationId, metadata = {}) => ({
+      notificationId,
+      type: payload.type,
+      title: payload.title,
+      content: payload.content,
+      url: payload.url,
+      publishAt: payload.publishAt,
+      expiresAt: payload.expiresAt,
+      audienceLabel: payload.audienceLabel,
+      updatedAt: payload.updatedAt,
+      updatedBy: payload.updatedBy,
+      createdAt: metadata.createdAt || now,
+      createdBy: metadata.createdBy || user?.email || user?.uid || 'admin'
+    });
+
     try {
       if (editingTrayNotificationId) {
         const notificationRef = doc(db, 'artifacts', appId, 'trayNotifications', editingTrayNotificationId);
@@ -8403,12 +8421,10 @@ Coordinación Los Mitos.`
         recipientEmails.forEach(email => batch.set(doc(
           db,
           'artifacts', appId, 'studentNotificationInbox', email, 'items', editingTrayNotificationId
-        ), {
-          ...payload,
-          notificationId: editingTrayNotificationId,
+        ), buildInboxItem(editingTrayNotificationId, {
           createdAt: previousNotification.createdAt || now,
           createdBy: previousNotification.createdBy || user?.email || user?.uid || 'admin'
-        }));
+        })));
 
         await batch.commit();
         alert('Notificación breve actualizada.');
@@ -8424,10 +8440,7 @@ Coordinación Los Mitos.`
         recipientEmails.forEach(email => batch.set(doc(
           db,
           'artifacts', appId, 'studentNotificationInbox', email, 'items', notificationRef.id
-        ), {
-          ...notificationData,
-          notificationId: notificationRef.id
-        }));
+        ), buildInboxItem(notificationRef.id, notificationData)));
         await batch.commit();
         alert(publishAt > getLocalDateTimeInputValue() ? 'Notificación breve programada.' : 'Notificación breve publicada.');
       }

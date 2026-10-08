@@ -2424,6 +2424,29 @@ export default function StudentPortal({ user, logout, db, appId }) {
     };
   }, [user.email, settingsRetryNonce]);
 
+  // Las notificaciones privadas no dependen de que el catálogo de clases haya
+  // terminado de cargar. Esto permite recibirlas también a alumnos sin clase
+  // fija, con acceso solo a servicios o durante una incidencia del catálogo.
+  useEffect(() => {
+    if (!profile?.id) {
+      setTrayNotifications([]);
+      return undefined;
+    }
+
+    const trayNotificationsQuery = query(
+      collection(db, 'artifacts', appId, 'trayNotifications'),
+      where('recipientStudentIds', 'array-contains', String(profile.id))
+    );
+    return onSnapshot(
+      trayNotificationsQuery,
+      (snapshot) => setTrayNotifications(snapshot.docs.map(notificationDoc => ({ id: notificationDoc.id, ...notificationDoc.data() }))),
+      (error) => {
+        console.error('Error al cargar las notificaciones privadas', error);
+        setTrayNotifications([]);
+      }
+    );
+  }, [profile?.id, db, appId]);
+
   useEffect(() => {
     if (!profile) {
       setSchoolCalendar([]);
@@ -2683,19 +2706,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
       (error) => console.error('Error al cargar candidaturas de convocatorias', error)
     );
 
-    const trayNotificationsQuery = query(
-      collection(db, 'artifacts', appId, 'trayNotifications'),
-      where('recipientStudentIds', 'array-contains', String(profile.id))
-    );
-    const unsubTrayNotifications = onSnapshot(
-      trayNotificationsQuery,
-      (snapshot) => setTrayNotifications(snapshot.docs.map(notificationDoc => ({ id: notificationDoc.id, ...notificationDoc.data() }))),
-      (error) => {
-        console.error('Error al cargar las notificaciones privadas', error);
-        setTrayNotifications([]);
-      }
-    );
-
     const ticketsQuery = query(collectionGroup(db, 'tickets'), where('studentEmail', '==', studentEmail));
     const processTicketsSnapshot = (snapshot, filterLegacyResults = false) => {
       let validTicketsCount = 0;
@@ -2768,7 +2778,6 @@ export default function StudentPortal({ user, logout, db, appId }) {
       unsubWorkshopRegistrations();
       unsubPollResponses();
       unsubCallResponses();
-      unsubTrayNotifications();
       unsubTickets(); 
     };
   }, [profile?.id, profileClassIdsSignature, settingsLoaded, isStudentClassIndexReady, classCatalogLoaded, classCatalog, classesRetryNonce, db, appId, user.email]);

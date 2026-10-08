@@ -167,6 +167,31 @@ const uniqueStrings = (values = []) => [...new Set((values || [])
   .map(value => String(value || '').trim())
   .filter(Boolean))];
 
+const getAttendanceRecordVersion = (record = {}) => {
+  const timestamp = Date.parse(record.savedAt || record.updatedAt || record.completedAt || record.incidentReportedAt || '');
+  if (Number.isFinite(timestamp)) return timestamp;
+  const numericId = Number(record.id);
+  return Number.isFinite(numericId) ? numericId : 0;
+};
+
+const dedupeAttendanceRecords = (recordsList = []) => {
+  const bySession = new Map();
+
+  (recordsList || []).forEach((record, index) => {
+    const classId = String(record?.classId || '').trim();
+    const recordDate = String(record?.date || '').trim();
+    const sessionKey = classId && recordDate
+      ? `${recordDate}|${classId}`
+      : `record|${record?.refPath || record?.id || index}`;
+    const previous = bySession.get(sessionKey);
+    if (!previous || getAttendanceRecordVersion(record) >= getAttendanceRecordVersion(previous)) {
+      bySession.set(sessionKey, record);
+    }
+  });
+
+  return [...bySession.values()];
+};
+
 const sameStringSet = (left = [], right = []) => {
   const a = uniqueStrings(left).sort();
   const b = uniqueStrings(right).sort();
@@ -2069,6 +2094,7 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
   const [announcements, setAnnouncements] = useState([]);
   const [allClasses, setAllClasses] = useState([]);
   const [allRecords, setAllRecords] = useState([]);
+  const uniqueAttendanceRecords = useMemo(() => dedupeAttendanceRecords(allRecords), [allRecords]);
   const [availabilities, setAvailabilities] = useState({}); 
   const [allTickets, setAllTickets] = useState([]);
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
@@ -3019,12 +3045,12 @@ export default function AdminPortal({ user, logout, db, appId, switchToTeacher }
 
     (settings.teachersList || []).forEach(name => register(name));
     allClasses.forEach(classData => register(classData.teacher));
-    allRecords.forEach(record => register(record.teacher));
+    uniqueAttendanceRecords.forEach(record => register(record.teacher));
     payrollAdjustments.forEach(adjustment => register(adjustment.teacher));
     teacherEvaluations.forEach(evaluation => register(evaluation.teacherName || evaluation.teacher || evaluation.teacherDisplayName || evaluation.profesor));
     Object.keys(availabilities || {}).forEach(key => register(key));
     return names;
-  }, [settings.teachersList, allClasses, allRecords, payrollAdjustments, teacherEvaluations, availabilities]);
+  }, [settings.teachersList, allClasses, uniqueAttendanceRecords, payrollAdjustments, teacherEvaluations, availabilities]);
 
   const getOfficialTeacherName = (name, fallback = 'Sin Asignar') => {
     const cleanName = cleanTeacherDisplayName(name);
@@ -10804,7 +10830,7 @@ Coordinación Los Mitos.`
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
-    const thisMonthRecords = allRecords.filter(r => (r.date || '').startsWith(targetMonth) && !r.isRenounced);
+    const thisMonthRecords = uniqueAttendanceRecords.filter(r => (r.date || '').startsWith(targetMonth) && !r.isRenounced);
     const thisMonthAdjustments = payrollAdjustments.filter(a => a.month === targetMonth);
     const thisMonthVacationDates = (settings.vacaciones || []).filter(date => String(date || '').startsWith(targetMonth));
     const payroll = {};
@@ -10889,7 +10915,7 @@ Coordinación Los Mitos.`
     });
 
     return Object.entries(payroll).map(([teacherKey, data]) => {
-      const teacherRecords = allRecords.filter(record => normalizeTeacherKey(record.teacher) === teacherKey);
+      const teacherRecords = uniqueAttendanceRecords.filter(record => normalizeTeacherKey(record.teacher) === teacherKey);
       const vacationCalculation = calculateVacationPayroll({
         targetMonth,
         vacationDates: thisMonthVacationDates,
@@ -10911,7 +10937,7 @@ Coordinación Los Mitos.`
       };
     }).filter(t => t.realHours !== 0 || t.vacationHours !== 0 || t.adjustmentHours !== 0 || configuredTeacherKeys.has(t.teacherKey))
       .sort((a, b) => b.totalHours - a.totalHours);
-  }, [allRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, settings.vacaciones, selectedPayrollMonth, recurringClassesOnly, students, maintenancePeriods, temporaryRelocations]);
+  }, [uniqueAttendanceRecords, payrollAdjustments, settings.hourlyRate, settings.teachersList, settings.vacaciones, selectedPayrollMonth, recurringClassesOnly, students, maintenancePeriods, temporaryRelocations]);
 
   const copyPayrollReport = async () => {
     if (teachersPayroll.length === 0) {

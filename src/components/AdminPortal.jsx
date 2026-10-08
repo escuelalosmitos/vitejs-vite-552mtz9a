@@ -8359,7 +8359,9 @@ Coordinación Los Mitos.`
 
     const recipients = getAnnouncementStudentTargets(audienceOptions);
     const recipientStudentIds = [...new Set(recipients.map(recipient => String(recipient.studentId || '')).filter(Boolean))];
+    const recipientEmails = [...new Set(recipients.map(recipient => normalizeEmail(recipient.email || '')).filter(Boolean))];
     if (recipientStudentIds.length === 0) return alert('El filtro elegido no contiene ningún alumno destinatario.');
+    if (recipientEmails.length === 0) return alert('Los alumnos seleccionados no tienen un correo válido para recibir la notificación.');
 
     const publishAt = String(newAnnounce.trayPublishAt || '').trim() || getLocalDateTimeInputValue();
     const expiresAt = String(newAnnounce.trayExpiresAt || '').trim();
@@ -8377,6 +8379,7 @@ Coordinación Los Mitos.`
       audienceValue: audienceOptions.targetValue || '',
       audienceLabel: getAnnouncementTargetLabel(audienceOptions),
       recipientStudentIds,
+      recipientEmails,
       recipientCount: recipientStudentIds.length,
       updatedAt: now,
       updatedBy: user?.email || user?.uid || 'admin'

@@ -2428,14 +2428,15 @@ export default function StudentPortal({ user, logout, db, appId }) {
   // terminado de cargar. Esto permite recibirlas también a alumnos sin clase
   // fija, con acceso solo a servicios o durante una incidencia del catálogo.
   useEffect(() => {
-    if (!profile?.id) {
+    const authenticatedEmail = String(user?.email || '').trim().toLowerCase();
+    if (!profile?.id || !authenticatedEmail) {
       setTrayNotifications([]);
       return undefined;
     }
 
     const trayNotificationsQuery = query(
       collection(db, 'artifacts', appId, 'trayNotifications'),
-      where('recipientStudentIds', 'array-contains', String(profile.id))
+      where('recipientEmails', 'array-contains', authenticatedEmail)
     );
     return onSnapshot(
       trayNotificationsQuery,
@@ -2445,7 +2446,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
         setTrayNotifications([]);
       }
     );
-  }, [profile?.id, db, appId]);
+  }, [profile?.id, user?.email, db, appId]);
 
   useEffect(() => {
     if (!profile) {
@@ -4226,7 +4227,9 @@ END:VCALENDAR`;
       ...g,
       effectiveDate: normalizeClassDate(g.scheduledEffectiveDate || g.bajaEffectiveDate || g.effectiveDate || g.scheduledBajaEffectiveDate || '')
     }))
-    .filter(g => !g.effectiveDate || g.effectiveDate >= todayStr)
+    // Una gestión histórica sin fecha efectiva no demuestra que exista una
+    // baja pendiente. Solo mostramos el aviso cuando hay una fecha vigente.
+    .filter(g => Boolean(g.effectiveDate && g.effectiveDate >= todayStr))
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0] || null;
   const shouldShowBajaRevocationNotice = Boolean(profile?.scheduledBaja || scheduledBajaGestion);
   const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');

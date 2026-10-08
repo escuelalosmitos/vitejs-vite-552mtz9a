@@ -8387,15 +8387,48 @@ Coordinación Los Mitos.`
 
     try {
       if (editingTrayNotificationId) {
-        await updateDoc(doc(db, 'artifacts', appId, 'trayNotifications', editingTrayNotificationId), payload);
+        const notificationRef = doc(db, 'artifacts', appId, 'trayNotifications', editingTrayNotificationId);
+        const previousNotification = trayNotifications.find(notification => notification.id === editingTrayNotificationId) || {};
+        const previousRecipientEmails = [...new Set((previousNotification.recipientEmails || []).map(normalizeEmail).filter(Boolean))];
+        const nextRecipientEmailSet = new Set(recipientEmails);
+        const batch = writeBatch(db);
+
+        batch.update(notificationRef, payload);
+        previousRecipientEmails
+          .filter(email => !nextRecipientEmailSet.has(email))
+          .forEach(email => batch.delete(doc(
+            db,
+            'artifacts', appId, 'studentNotificationInbox', email, 'items', editingTrayNotificationId
+          )));
+        recipientEmails.forEach(email => batch.set(doc(
+          db,
+          'artifacts', appId, 'studentNotificationInbox', email, 'items', editingTrayNotificationId
+        ), {
+          ...payload,
+          notificationId: editingTrayNotificationId,
+          createdAt: previousNotification.createdAt || now,
+          createdBy: previousNotification.createdBy || user?.email || user?.uid || 'admin'
+        }));
+
+        await batch.commit();
         alert('Notificación breve actualizada.');
       } else {
         const notificationRef = doc(collection(db, 'artifacts', appId, 'trayNotifications'));
-        await setDoc(notificationRef, {
+        const notificationData = {
           ...payload,
           createdAt: now,
           createdBy: user?.email || user?.uid || 'admin'
-        });
+        };
+        const batch = writeBatch(db);
+        batch.set(notificationRef, notificationData);
+        recipientEmails.forEach(email => batch.set(doc(
+          db,
+          'artifacts', appId, 'studentNotificationInbox', email, 'items', notificationRef.id
+        ), {
+          ...notificationData,
+          notificationId: notificationRef.id
+        }));
+        await batch.commit();
         alert(publishAt > getLocalDateTimeInputValue() ? 'Notificación breve programada.' : 'Notificación breve publicada.');
       }
       setEditingTrayNotificationId(null);
@@ -8623,7 +8656,14 @@ Coordinación Los Mitos.`
   const deleteTrayNotification = async (notification) => {
     if (!notification?.id || !window.confirm('¿Borrar esta notificación de la bandeja de los alumnos?')) return;
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'trayNotifications', notification.id));
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'artifacts', appId, 'trayNotifications', notification.id));
+      [...new Set((notification.recipientEmails || []).map(normalizeEmail).filter(Boolean))]
+        .forEach(email => batch.delete(doc(
+          db,
+          'artifacts', appId, 'studentNotificationInbox', email, 'items', notification.id
+        )));
+      await batch.commit();
       if (editingTrayNotificationId === notification.id) cancelEditAnnouncement();
     } catch (error) {
       alert('No se ha podido borrar la notificación breve: ' + error.message);

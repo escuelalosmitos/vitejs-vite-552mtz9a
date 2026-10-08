@@ -670,6 +670,7 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
+  const [showNotificationTray, setShowNotificationTray] = useState(false);
   const classLoadRetryRef = useRef({ attempts: 0, timer: null });
   const classCatalogRetryRef = useRef({ attempts: 0, timer: null });
 
@@ -2242,9 +2243,110 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const latestAnnounceId = visibleAnnouncements.length > 0 ? Math.max(...visibleAnnouncements.map(a => Number(a.id))).toString() : null;
   const hasUnreadNews = latestAnnounceId && profile?.lastSeenTablon !== latestAnnounceId;
 
+  const portalNotifications = useMemo(() => {
+    const toTimestamp = (value) => {
+      if (typeof value?.toMillis === 'function') return value.toMillis();
+      if (Number.isFinite(Number(value?.seconds))) return Number(value.seconds) * 1000;
+      const numericValue = Number(value);
+      if (Number.isFinite(numericValue) && numericValue > 0) return numericValue;
+      const parsedValue = Date.parse(String(value || ''));
+      return Number.isFinite(parsedValue) ? parsedValue : 0;
+    };
+    const buildKey = (timestamp, type, id) => `${String(timestamp).padStart(13, '0')}|${type}|${id}`;
+    const workshopItems = visibleWorkshops
+      .filter(workshop => (
+        workshop.status === 'published'
+        && (!workshop.publishAt || workshop.publishAt <= getLocalDateTimeString(new Date(pollClock)))
+        && (!workshop.registrationDeadline || new Date(workshop.registrationDeadline).getTime() > pollClock)
+      ))
+      .map(workshop => {
+        const timestamp = toTimestamp(workshop.publishedAt || workshop.publishAt || workshop.createdAt || workshop.id);
+        const workshopSeenKey = `${workshop.publishedAt || workshop.createdAt || workshop.publishAt || ''}|${workshop.id}`;
+        return {
+          key: buildKey(timestamp, 'workshop', workshop.id),
+          id: workshop.id,
+          type: 'workshop',
+          area: 'extras',
+          label: 'Nuevo taller',
+          title: workshop.title || 'Nuevo taller disponible',
+          description: workshop.shortDescription || 'Consulta fechas, plazas e inscripción.',
+          timestamp,
+          areaUnread: workshopSeenKey > String(profile?.lastSeenExtras || ''),
+          source: workshop
+        };
+      });
+    const announcementItems = visibleAnnouncements.map(announcement => {
+      const timestamp = toTimestamp(announcement.publishedAt || announcement.createdAt || announcement.publishAt || announcement.id);
+      const typeLabel = announcement.type === 'poll'
+        ? 'Nueva encuesta'
+        : announcement.type === 'call'
+          ? 'Nueva convocatoria'
+          : 'Nuevo aviso';
+      return {
+        key: buildKey(timestamp, 'announcement', announcement.id),
+        id: announcement.id,
+        type: 'announcement',
+        area: 'news',
+        label: typeLabel,
+        title: announcement.title || 'Nueva publicación en el tablón',
+        description: announcement.content || announcement.callResponsePrompt || 'Consulta la información publicada por la escuela.',
+        timestamp,
+        areaUnread: Number(announcement.id || 0) > Number(profile?.lastSeenTablon || 0),
+        source: announcement
+      };
+    });
+
+    return [...workshopItems, ...announcementItems]
+      .sort((left, right) => right.key.localeCompare(left.key))
+      .slice(0, 8);
+  }, [visibleWorkshops, visibleAnnouncements, profile?.lastSeenExtras, profile?.lastSeenTablon, pollClock]);
+
+  const latestPortalNotificationKey = portalNotifications[0]?.key || '';
+  const newTrayNotifications = portalNotifications.filter(item => (
+    item.areaUnread && item.key > String(profile?.lastSeenNotificationTray || '')
+  ));
+  const hasUnreadNotificationTray = newTrayNotifications.length > 0;
+
+  const formatPortalNotificationTime = (timestamp) => {
+    if (!timestamp) return '';
+    const notificationDate = new Date(timestamp);
+    if (Number.isNaN(notificationDate.getTime())) return '';
+    const currentDate = new Date(pollClock);
+    const notificationDay = formatLocalDateString(notificationDate);
+    const currentDay = formatLocalDateString(currentDate);
+    const yesterday = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() - 1);
+    if (notificationDay === currentDay) return 'Hoy';
+    if (notificationDay === formatLocalDateString(yesterday)) return 'Ayer';
+    return notificationDate.toLocaleDateString('es-ES', { day: '2-digit', month: 'short' });
+  };
+
+  const toggleNotificationTray = () => {
+    const willOpen = !showNotificationTray;
+    setShowNotificationTray(willOpen);
+    if (!willOpen || !profile?.id || !latestPortalNotificationKey) return;
+    if (latestPortalNotificationKey <= String(profile.lastSeenNotificationTray || '')) return;
+
+    setProfile(previous => previous ? ({ ...previous, lastSeenNotificationTray: latestPortalNotificationKey }) : previous);
+    updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+      lastSeenNotificationTray: latestPortalNotificationKey
+    }).catch(error => console.error('No se pudo marcar la minibandeja como vista:', error));
+  };
+
+  const openPortalNotification = (item) => {
+    setShowNotificationTray(false);
+    if (item.type === 'workshop') {
+      setActiveTab('extras');
+      openWorkshopModal(item.source);
+      return;
+    }
+    setExpandedAnnouncementId(item.id);
+    setActiveTab('news');
+  };
+
   // Actualiza la marca de tiempo del tablón en Firestore cuando el alumno entra a la pestaña 'news'
   useEffect(() => {
     if (activeTab === 'news' && hasUnreadNews && profile?.id) {
+      setProfile(previous => previous ? ({ ...previous, lastSeenTablon: latestAnnounceId }) : previous);
       updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
         lastSeenTablon: latestAnnounceId
       }).catch(e => console.error("Error al actualizar estado del tablón:", e));
@@ -5435,9 +5537,83 @@ END:VCALENDAR`;
       )}
 
       <header className="bg-white p-5 sticky top-0 z-50 shadow-sm border-b border-zinc-200">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
+        <div className="max-w-3xl mx-auto flex items-center justify-between relative">
           <div className="flex items-center gap-3"><div className="bg-black p-2 rounded-xl text-white"><Music className="w-5 h-5"/></div><div><h1 className="text-lg font-black uppercase leading-none">Mi Portal</h1><span className="text-[10px] font-bold text-zinc-400 uppercase">{profile.name}</span></div></div>
-          <button onClick={logout} className="p-2 text-zinc-400 hover:text-rose-500 transition-colors"><LogOut className="w-5 h-5" /></button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleNotificationTray}
+              aria-label="Abrir notificaciones"
+              aria-expanded={showNotificationTray}
+              className={`relative p-2.5 rounded-xl transition-colors ${showNotificationTray ? 'bg-black text-white' : 'text-zinc-500 hover:text-black hover:bg-zinc-100'}`}
+            >
+              <Bell className="w-5 h-5" />
+              {hasUnreadNotificationTray && (
+                <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-red-500 text-white border-2 border-white text-[9px] font-black flex items-center justify-center tabular-nums">
+                  {newTrayNotifications.length > 9 ? '9+' : newTrayNotifications.length}
+                </span>
+              )}
+            </button>
+            <button onClick={logout} className="p-2.5 text-zinc-400 hover:text-rose-500 transition-colors"><LogOut className="w-5 h-5" /></button>
+          </div>
+
+          {showNotificationTray && (
+            <section className="absolute top-14 right-0 w-80 max-w-[calc(100vw-2rem)] bg-white border border-zinc-200 rounded-2xl shadow-2xl overflow-hidden z-[70] animate-in fade-in slide-in-from-top-2 duration-200" aria-label="Minibandeja de notificaciones">
+              <div className="p-4 border-b border-zinc-100 flex items-center justify-between gap-3 bg-white">
+                <div>
+                  <h2 className="font-black uppercase tracking-tight text-slate-900">Notificaciones</h2>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-0.5">
+                    {portalNotifications.filter(item => item.areaUnread).length > 0
+                      ? `${portalNotifications.filter(item => item.areaUnread).length} pendiente(s) de consultar`
+                      : 'Todo consultado'}
+                  </p>
+                </div>
+                <button type="button" onClick={() => setShowNotificationTray(false)} aria-label="Cerrar notificaciones" className="p-2 bg-zinc-100 text-zinc-500 hover:text-black rounded-xl transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {portalNotifications.length > 0 ? (
+                <div className="max-h-[min(28rem,calc(100vh-10rem))] overflow-y-auto">
+                  {portalNotifications.map(item => {
+                    const ItemIcon = item.type === 'workshop' ? Sparkles : Megaphone;
+                    return (
+                      <button
+                        type="button"
+                        key={item.key}
+                        onClick={() => openPortalNotification(item)}
+                        className="w-full p-4 border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50 transition-colors text-left flex items-start gap-3 group"
+                      >
+                        <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${item.type === 'workshop' ? 'bg-violet-100 text-violet-700' : 'bg-zinc-900 text-white'}`}>
+                          <ItemIcon className="w-4 h-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                            {item.label} · {formatPortalNotificationTime(item.timestamp)}
+                            {item.areaUnread && <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" aria-label="Contenido pendiente de consultar"></span>}
+                          </span>
+                          <strong className="block text-sm font-black text-slate-900 mt-1 leading-tight truncate">{item.title}</strong>
+                          <span className="block text-[11px] font-medium text-zinc-500 mt-1 leading-snug line-clamp-2">{item.description}</span>
+                          <span className="mt-2 text-[10px] font-black uppercase tracking-widest text-slate-800 flex items-center gap-1 group-hover:gap-2 transition-all">
+                            {item.type === 'workshop' ? 'Ver taller' : 'Abrir publicación'} <ChevronRight className="w-3 h-3" />
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-8 text-center">
+                  <Bell className="w-8 h-8 text-zinc-300 mx-auto mb-3" />
+                  <p className="text-xs font-black uppercase tracking-widest text-zinc-400">Todavía no hay notificaciones</p>
+                </div>
+              )}
+
+              <div className="px-4 py-3 bg-zinc-50 border-t border-zinc-100">
+                <p className="text-[10px] font-bold text-zinc-500 leading-relaxed">Las bolitas de Extras y Tablón permanecen hasta que visites cada contenido.</p>
+              </div>
+            </section>
+          )}
         </div>
       </header>
 

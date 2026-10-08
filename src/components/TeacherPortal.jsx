@@ -7,7 +7,7 @@ import {
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
   Megaphone, Send, Link as LinkIcon, ChevronLeft, ChevronRight
 } from 'lucide-react';
-import { collection, query, where, documentId, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
+import { collection, query, where, documentId, getDoc, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
 import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
 import GymusikTeacher from './GymusikTeacher';
 
@@ -40,6 +40,40 @@ const normalizeConfigId = (value = '', fallback = 'item') => {
 const uniqueStrings = (values = []) => [...new Set((values || [])
   .map(value => String(value || '').trim())
   .filter(Boolean))];
+
+const getLogicalClassKey = (classData = {}) => String(
+  classData.id || classData.classId || classData.refPath || ''
+).trim();
+
+const getRecordVersion = (record = {}) => {
+  const timestamp = Date.parse(record.savedAt || record.updatedAt || record.completedAt || '');
+  if (Number.isFinite(timestamp)) return timestamp;
+  const numericId = Number(record.id);
+  return Number.isFinite(numericId) ? numericId : 0;
+};
+
+const dedupeAttendanceRecords = (recordsList = []) => {
+  const bySession = new Map();
+
+  (recordsList || []).forEach((record, index) => {
+    const classId = String(record?.classId || '').trim();
+    const recordDate = String(record?.date || '').trim();
+    const sessionKey = classId && recordDate
+      ? `${recordDate}|${classId}`
+      : `record|${record?.refPath || record?.id || index}`;
+    const previous = bySession.get(sessionKey);
+    if (!previous || getRecordVersion(record) >= getRecordVersion(previous)) {
+      bySession.set(sessionKey, record);
+    }
+  });
+
+  return [...bySession.values()];
+};
+
+const buildAttendanceRecordId = (session = {}, sessionDate = '') => {
+  const classKey = session.classId || session.id || session.refPath || `${session.time || 'hora'}-${session.subject || 'clase'}`;
+  return `attendance-${normalizeConfigId(sessionDate, 'fecha')}-${normalizeConfigId(classKey, 'clase')}`;
+};
 
 const DEFAULT_CENTERS = LEGACY_CENTER_NAMES.map(name => ({
   id: normalizeConfigId(name, 'sede'),
@@ -684,14 +718,17 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [recurringClasses, setRecurringClasses] = useState([]);
   const [externalRecurringClasses, setExternalRecurringClasses] = useState([]);
   const allRecurringClasses = useMemo(() => {
-    const byReference = new Map();
+    const byLogicalClass = new Map();
     [...recurringClasses, ...externalRecurringClasses].forEach(classData => {
       if (!classData) return;
-      byReference.set(classData.refPath || classData.id, classData);
+      const logicalKey = getLogicalClassKey(classData);
+      if (!logicalKey || byLogicalClass.has(logicalKey)) return;
+      byLogicalClass.set(logicalKey, classData);
     });
-    return [...byReference.values()];
+    return [...byLogicalClass.values()];
   }, [recurringClasses, externalRecurringClasses]);
   const [records, setRecords] = useState([]);
+  const uniqueRecords = useMemo(() => dedupeAttendanceRecords(records), [records]);
   const [dailyReports, setDailyReports] = useState([]);
   const [globalStudents, setGlobalStudents] = useState([]);
   const [tickets, setTickets] = useState([]); 
@@ -763,6 +800,8 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const availableMonths = useMemo(() => generateLast12Months(), []);
 
   const [currentSession, setCurrentSession] = useState(null);
+  const [isSavingAttendance, setIsSavingAttendance] = useState(false);
+  const attendanceSaveLockRef = useRef(false);
   const [gymusikSessionsOnDate, setGymusikSessionsOnDate] = useState(0);
   const [isSendingReport, setIsSendingReport] = useState(false);
   
@@ -959,11 +998,23 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const recurringReadySources = new Set();
 
     const publishDirectRecurringClasses = () => {
-      const byPath = new Map();
+      const byLogicalClass = new Map();
       recurringBuckets.forEach(classes => classes.forEach(classData => {
-        byPath.set(classData.refPath || classData.id, classData);
+        const logicalKey = getLogicalClassKey(classData);
+        if (!logicalKey) return;
+        const previous = byLogicalClass.get(logicalKey);
+        if (!previous) {
+          byLogicalClass.set(logicalKey, classData);
+          return;
+        }
+
+        const previousVersion = Date.parse(previous.updatedAt || previous.createdAt || '');
+        const candidateVersion = Date.parse(classData.updatedAt || classData.createdAt || '');
+        if (Number.isFinite(candidateVersion) && (!Number.isFinite(previousVersion) || candidateVersion > previousVersion)) {
+          byLogicalClass.set(logicalKey, classData);
+        }
       }));
-      const myClasses = [...byPath.values()].filter(classData => (
+      const myClasses = [...byLogicalClass.values()].filter(classData => (
         isSameTeacher(classData.teacher, myName)
         || classData.originalTeacherUid === user.uid
         || recurringOwnerUids.includes(String(classData.ownerUid || ''))
@@ -1890,10 +1941,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const completedTeacherTasks = visibleTeacherTasks.filter(isTeacherTaskClosed);
 
   const recordsForSelectedDate = useMemo(() => {
-    return records
+    return uniqueRecords
       .filter(record => record.date === date)
       .sort((a, b) => String(a.time).localeCompare(String(b.time)));
-  }, [records, date]);
+  }, [uniqueRecords, date]);
 
   const selectedDailyReport = useMemo(() => {
     return dailyReports.find(report => report.id === date);
@@ -1906,7 +1957,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const dashboardItems = useMemo(() => {
     const selectedDayOfWeek = getDayOfWeek(date);
     const items = [];
-    const recordsToday = records.filter(r => r.date === date);
+    const recordsToday = uniqueRecords.filter(r => r.date === date);
 
     const scheduledToday = allRecurringClasses
       .map(classData => getEffectiveClassForDate(classData, date))
@@ -1935,7 +1986,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     });
 
     return items.sort((a, b) => (a.data.time || '').localeCompare(b.data.time || ''));
-  }, [date, records, allRecurringClasses, temporaryClassChanges, settings.teachersList, centers]);
+  }, [date, uniqueRecords, allRecurringClasses, temporaryClassChanges, settings.teachersList, centers]);
 
   const isExpiredDate = useMemo(() => {
     const classDate = new Date(date);
@@ -2153,10 +2204,10 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const vacationCalculation = calculateVacationPayroll({
       targetMonth,
       vacationDates,
-      records,
+      records: uniqueRecords,
       scheduledHoursByDate
     });
-    const currentRecords = records.filter(record => record.date?.startsWith(targetMonth) && !record.isRenounced);
+    const currentRecords = uniqueRecords.filter(record => record.date?.startsWith(targetMonth) && !record.isRenounced);
     const currentHours = currentRecords.reduce((hours, record) => hours + normalizeNumber(record.duration || 60) / 60, 0);
     const adjustmentItems = payrollAdjustments
       .filter(adjustment => adjustment.month === targetMonth && normalizeTeacherKey(adjustment.teacher) === teacherKey)
@@ -2177,7 +2228,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       totalHours: totalHours.toFixed(2),
       earnings: earnings.toFixed(2)
     };
-  }, [records, selectedPayrollMonth, settings.vacaciones, settings.hourlyRate, payrollAdjustments, allRecurringClasses, globalStudents, maintenancePeriods, temporaryRelocations, user, staffProfile]);
+  }, [uniqueRecords, selectedPayrollMonth, settings.vacaciones, settings.hourlyRate, payrollAdjustments, allRecurringClasses, globalStudents, maintenancePeriods, temporaryRelocations, user, staffProfile]);
 
   const closingChecklistApplies = date >= CLOSING_CHECKLIST_START_DATE;
 
@@ -3414,6 +3465,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
   };
 
   const checkDeadHourAndSave = () => {
+    if (attendanceSaveLockRef.current || isSavingAttendance) return;
     if (!currentSession.subject || !currentSession.capacity) {
       showNotification({ type: 'error', text: 'El instrumento y la capacidad son obligatorios.' });
       return;
@@ -3467,7 +3519,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
     if (!savedRecord?.classId || isPunctualClass(currentSession)) return;
 
     const recordsBySession = new Map();
-    [...records, savedRecord]
+    [...uniqueRecords, savedRecord]
       .filter(record => record.classId === savedRecord.classId)
       .forEach(record => {
         const sessionKey = `${record.classId}|${record.date || ''}|${record.time || ''}`;
@@ -3553,8 +3605,27 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
   };
 
   const executeSaveRecord = async (deadHourNote = null, isRenounced = false, options = {}) => {
+    if (!user || !currentSession) return false;
+    if (attendanceSaveLockRef.current) return false;
+
+    attendanceSaveLockRef.current = true;
+    setIsSavingAttendance(true);
+
     try {
-      const recordId = Date.now().toString();
+      const recordId = buildAttendanceRecordId(currentSession, date);
+      const recordRef = doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId);
+      const alreadySavedLocally = uniqueRecords.some(record => (
+        String(record.date || '') === String(date || '')
+        && String(record.classId || '') === String(currentSession.classId || '')
+      ));
+
+      if (alreadySavedLocally || (await getDoc(recordRef)).exists()) {
+        showNotification({ type: 'success', text: 'Esta asistencia ya estaba guardada. No se ha creado un registro duplicado.' });
+        setCurrentSession(null);
+        setDeadHourModal(null);
+        return false;
+      }
+
       const currentMonth = date.substring(0, 7);
       
       const nonComputableReason = isRenounced
@@ -3684,10 +3755,12 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         nonComputableDetail: nonComputableInfo?.detail || '',
         deadHourNote: !isRenounced && deadHourNote ? deadHourNote : '',
         isDeadHourWorked: Boolean(!isRenounced && deadHourNote),
+        savedAt: new Date().toISOString(),
+        recordKeyVersion: 2,
         students: currentSession.students.map(s => ({ ...s }))
       };
 
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', recordId), savedRecord);
+      await setDoc(recordRef, savedRecord);
 
       const templateStudents = getTemplateStudentsForSave(currentSession);
 
@@ -3727,10 +3800,15 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       showNotification({ type: 'success', text: isRenounced ? 'Renuncia registrada con éxito.' : 'Lista guardada correctamente.' });
       setCurrentSession(null);
       setDeadHourModal(null);
+      return true;
     } catch (error) {
       console.error(error);
       window.alert(`No se ha podido guardar la asistencia. La ventana queda abierta para que no pierdas la información.\n\nError: ${error.message || error}`);
       showNotification({ type: 'error', text: 'Hubo un error al guardar los datos.' });
+      return false;
+    } finally {
+      attendanceSaveLockRef.current = false;
+      setIsSavingAttendance(false);
     }
   };
 
@@ -3824,7 +3902,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
       return;
     }
 
-    const existingRecord = records.find(record => record.date === date && record.classId === classData.id);
+    const existingRecord = uniqueRecords.find(record => record.date === date && record.classId === classData.id);
     if (existingRecord) {
       showNotification({ type: 'error', text: 'Esta clase ya tiene un registro guardado.' });
       return;
@@ -3853,7 +3931,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
       classData.roomId || classData.sala || 'Sala 1'
     );
     const nonComputableInfo = getNonComputableInfo('last_minute_class_not_taught');
-    const recordId = `no-impartida-${classData.id}-${date}`.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const recordId = buildAttendanceRecordId(classData, date);
     const savedAt = new Date().toISOString();
     const studentsSnapshot = affectedStudents.map(student => ({
       ...student,
@@ -3891,6 +3969,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
       incidentReportedByUid: user.uid,
       incidentReportedByEmail: user.email || '',
       incidentReportedByName: getOfficialTeacherName(),
+      savedAt,
+      recordKeyVersion: 2,
       schoolOwesClass: true,
       affectedStudentIds: affectedStudents.map(student => student.id).filter(Boolean),
       affectedStudentNames: affectedStudents.map(student => student.name || 'Alumno'),
@@ -5257,8 +5337,8 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                         Guardar Previsión
                       </button>
                     )}
-                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate} className={`${!isFutureDate ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
-                      <Save className="w-5 h-5" /> Guardar Asistencia
+                    <button onClick={checkDeadHourAndSave} disabled={isOverCapacity || isFutureDate || isSavingAttendance} className={`${!isFutureDate ? 'w-full' : 'w-full sm:w-1/2'} font-black uppercase tracking-widest text-xs py-4 px-6 rounded-2xl flex items-center justify-center gap-2 transition-all shadow-lg ${(isOverCapacity || isFutureDate || isSavingAttendance) ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed' : 'bg-black hover:bg-zinc-800 text-white active:scale-95'}`}>
+                      {isSavingAttendance ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} {isSavingAttendance ? 'Guardando asistencia...' : 'Guardar Asistencia'}
                     </button>
                   </div>
                 </div>
@@ -5809,14 +5889,14 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
         {activeTab === 'history' && (
           <div className="space-y-6">
             <h2 className="text-2xl font-black text-slate-800 mb-8 uppercase tracking-tight">Historial de Clases</h2>
-            {records.length === 0 ? (
+            {uniqueRecords.length === 0 ? (
               <div className="text-center py-16 bg-white rounded-3xl border border-zinc-200 shadow-sm">
                 <History className="w-16 h-16 text-zinc-200 mx-auto mb-4" />
                 <h3 className="text-lg font-bold uppercase tracking-widest text-zinc-400">No hay registros aún</h3>
               </div>
             ) : (
               <>
-                {records.slice(0, historyLimit).map((record) => (
+                {uniqueRecords.slice(0, historyLimit).map((record) => (
                   <div key={record.id} className={`bg-white rounded-3xl shadow-sm border p-6 md:p-8 ${record.isRenounced ? 'border-amber-200 opacity-80' : 'border-zinc-200'}`}>
                     <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 pb-6 border-b border-zinc-100 gap-4">
                       <div>
@@ -5866,7 +5946,7 @@ Alumnos activos reales: ${activeStudents.length}${effectiveStudents.length !== a
                   </div>
                 ))}
                 
-                {historyLimit < records.length && (
+                {historyLimit < uniqueRecords.length && (
                   <div className="text-center pt-4 pb-8">
                     <button 
                       onClick={() => setHistoryLimit(prev => prev + 10)}

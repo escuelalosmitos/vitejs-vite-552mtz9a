@@ -245,6 +245,12 @@ service cloud.firestore {
         && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'];
     }
 
+    function studentCanReadTrayNotification(appId) {
+      return hasStudentAccess(appId)
+        && resource.data.recipientStudentIds is list
+        && ownStudentId(appId) in resource.data.recipientStudentIds;
+    }
+
     // Única lectura sin iniciar sesión.
     match /publicData/classAvailability {
       allow read: if true;
@@ -301,7 +307,7 @@ service cloud.firestore {
         (ownsStudentRecord(appId, studentId) || ownStudentEmailRecord())
         && request.resource.data.email == resource.data.email
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak'
+          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'lastSeenNotificationTray', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak'
         ])
       );
     }
@@ -320,6 +326,11 @@ service cloud.firestore {
           'pollVoteCounts', 'pollResponseCount', 'pollLastResponseAt'
         ])
       );
+    }
+
+    match /artifacts/{appId}/trayNotifications/{notificationId} {
+      allow get, list: if isAdmin() || studentCanReadTrayNotification(appId);
+      allow create, update, delete: if isAdmin();
     }
 
     match /artifacts/{appId}/workshops/{workshopId} {

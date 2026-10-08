@@ -247,8 +247,8 @@ service cloud.firestore {
 
     function studentCanReadTrayNotification(appId) {
       return hasStudentAccess(appId)
-        && resource.data.recipientStudentIds is list
-        && ownStudentId(appId) in resource.data.recipientStudentIds;
+        && resource.data.recipientEmails is list
+        && authEmail() in resource.data.recipientEmails;
     }
 
     // Única lectura sin iniciar sesión.

@@ -245,12 +245,6 @@ service cloud.firestore {
         && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'];
     }
 
-    function studentCanReadTrayNotification(appId) {
-      return hasStudentAccess(appId)
-        && resource.data.recipientEmails is list
-        && authEmail() in resource.data.recipientEmails;
-    }
-
     // Única lectura sin iniciar sesión.
     match /publicData/classAvailability {
       allow read: if true;
@@ -329,7 +323,12 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/trayNotifications/{notificationId} {
-      allow get, list: if isAdmin() || studentCanReadTrayNotification(appId);
+      allow get, list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /artifacts/{appId}/studentNotificationInbox/{studentEmail}/items/{notificationId} {
+      allow get, list: if signedIn() && studentEmail == authEmail();
       allow create, update, delete: if isAdmin();
     }
 

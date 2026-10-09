@@ -5,6 +5,7 @@ import { Music, Lock, RefreshCw, UserPlus, Eye, EyeOff } from 'lucide-react';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, deleteUser, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, collection, query, where, getDoc, getDocs, updateDoc, setDoc, doc } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 
 // --- MÓDULOS ---
 import TeacherPortal from './components/TeacherPortal.jsx';
@@ -24,6 +25,7 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 const appId = 'default-app-id';
 const ADMIN_EMAIL = 'paco@escuelalosmitos.com';
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec';
@@ -437,6 +439,7 @@ export default function App() {
         user={user} 
         logout={handleLogout} 
         db={db} 
+        storage={storage}
         appId={appId} 
         switchToTeacher={() => setViewMode('teacher')} 
       />
@@ -459,5 +462,5 @@ export default function App() {
     );
   }
 
-  return <StudentPortal user={user} logout={handleLogout} db={db} appId={appId} />;
+  return <StudentPortal user={user} logout={handleLogout} db={db} storage={storage} appId={appId} />;
 }

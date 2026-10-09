@@ -3597,13 +3597,16 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const handleSaveAvatar = async () => {
     if (!avatarEditor || !profile?.id || !user?.uid || !storage) return;
     setAvatarSaving(true);
+    let uploadedAvatarPath = '';
     try {
       const avatarBlob = await buildCroppedAvatarBlob(avatarEditor);
-      const avatarPath = `studentAvatars/${user.uid}/${profile.id}/profile.webp`;
+      const avatarVersion = Date.now();
+      const avatarPath = `studentAvatars/${user.uid}/${profile.id}/profile-${avatarVersion}.webp`;
+      uploadedAvatarPath = avatarPath;
       const updatedAt = new Date().toISOString();
       await uploadBytes(storageRef(storage, avatarPath), avatarBlob, {
         contentType: 'image/webp',
-        cacheControl: 'private,max-age=3600',
+        cacheControl: 'private,no-store,max-age=0',
         customMetadata: {
           ownerUid: user.uid,
           studentId: String(profile.id)
@@ -3624,6 +3627,9 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         deleteObject(storageRef(storage, previousAvatarPath)).catch(() => {});
       }
     } catch (error) {
+      if (uploadedAvatarPath) {
+        deleteObject(storageRef(storage, uploadedAvatarPath)).catch(() => {});
+      }
       console.error('No se ha podido guardar la foto de perfil:', error);
       const permissionError = ['storage/unauthorized', 'storage/unauthenticated'].includes(error?.code);
       setNotification({

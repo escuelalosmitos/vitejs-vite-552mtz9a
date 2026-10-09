@@ -8,6 +8,7 @@ import {
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
 import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
+import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
@@ -2052,7 +2053,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
   );
 };
 
-export default function AdminPortal({ user, logout, db, appId, switchToTeacher }) {
+export default function AdminPortal({ user, logout, db, storage, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
   const [servicesSubTab, setServicesSubTab] = useState('mitobox');
   const [loading, setLoading] = useState(true);
@@ -11824,6 +11825,63 @@ ${valueOrDash(comments.privateNote)}`,
     const [classStartDate, setClassStartDate] = useState(editStudentModal.classStartDate || '');
     
     const [saving, setSaving] = useState(false);
+    const [avatarUrl, setAvatarUrl] = useState('');
+    const [avatarError, setAvatarError] = useState('');
+    const [removingAvatar, setRemovingAvatar] = useState(false);
+
+    useEffect(() => {
+      let active = true;
+      let localObjectUrl = '';
+      setAvatarUrl('');
+      setAvatarError('');
+      if (!storage || !editStudentModal.avatarPath) return undefined;
+
+      getBlob(storageRef(storage, editStudentModal.avatarPath), 320 * 1024)
+        .then(blob => {
+          if (!active) return;
+          localObjectUrl = URL.createObjectURL(blob);
+          setAvatarUrl(localObjectUrl);
+        })
+        .catch(error => {
+          if (!active) return;
+          console.error('No se ha podido cargar la foto del alumno:', error);
+          setAvatarError('La ficha tiene una foto asociada, pero no se ha podido cargar.');
+        });
+
+      return () => {
+        active = false;
+        if (localObjectUrl) URL.revokeObjectURL(localObjectUrl);
+      };
+    }, [storage, editStudentModal.avatarPath]);
+
+    const handleRemoveProfilePhoto = async () => {
+      if (!editStudentModal.avatarPath || !storage) return;
+      if (!window.confirm(`¿Retirar la foto de perfil de ${editStudentModal.alias || editStudentModal.name || 'este alumno'}?`)) return;
+      setRemovingAvatar(true);
+      try {
+        await deleteObject(storageRef(storage, editStudentModal.avatarPath)).catch(error => {
+          if (error?.code !== 'storage/object-not-found') throw error;
+        });
+        await updateDoc(doc(db, 'artifacts', appId, 'students', editStudentModal.id), {
+          avatarPath: deleteField(),
+          avatarUpdatedAt: deleteField()
+        });
+        setEditStudentModal(previous => {
+          if (!previous) return previous;
+          const next = { ...previous };
+          delete next.avatarPath;
+          delete next.avatarUpdatedAt;
+          return next;
+        });
+        setAvatarUrl('');
+        alert('Foto de perfil retirada. El alumno volverá a ver la corchea.');
+      } catch (error) {
+        console.error('No se ha podido retirar la foto del alumno:', error);
+        alert('No se ha podido retirar la foto de perfil. Revisa las reglas de Storage.');
+      } finally {
+        setRemovingAvatar(false);
+      }
+    };
 
     const handleSave = async () => {
       if (!name.trim()) return alert("El nombre principal es obligatorio.");
@@ -11865,11 +11923,28 @@ ${valueOrDash(comments.privateNote)}`,
 
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative">
+        <div className="bg-white rounded-3xl max-w-sm w-full p-8 shadow-2xl relative max-h-[calc(100vh-2rem)] overflow-y-auto">
           <button onClick={() => setEditStudentModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-slate-800 mb-6">
             <Pencil className="w-8 h-8 text-black" />
             <h2 className="text-xl font-black uppercase tracking-tight">Editar Alumno</h2>
+          </div>
+          <div className="mb-6 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 shrink-0 rounded-full overflow-hidden bg-black text-white flex items-center justify-center border-2 border-white shadow-md">
+                {avatarUrl ? <img src={avatarUrl} alt={`Foto de ${editStudentModal.name || 'alumno'}`} className="w-full h-full object-cover" /> : <Music className="w-7 h-7" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Foto de perfil</p>
+                <p className="text-xs font-bold text-zinc-600 mt-1">{editStudentModal.avatarPath ? (avatarUrl ? 'Foto cargada' : 'Cargando fotografía…') : 'Utiliza la corchea predeterminada'}</p>
+                {editStudentModal.avatarPath && (
+                  <button type="button" onClick={handleRemoveProfilePhoto} disabled={removingAvatar} className="mt-2 text-[10px] font-black uppercase tracking-widest text-rose-600 hover:text-rose-800 disabled:opacity-50">
+                    {removingAvatar ? 'Retirando…' : 'Retirar fotografía'}
+                  </button>
+                )}
+              </div>
+            </div>
+            {avatarError && <p className="mt-3 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">{avatarError}</p>}
           </div>
           <div className="space-y-4 mb-6">
             <div>

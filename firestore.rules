@@ -301,8 +301,11 @@ service cloud.firestore {
         (ownsStudentRecord(appId, studentId) || ownStudentEmailRecord())
         && request.resource.data.email == resource.data.email
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'lastSeenNotificationTray', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak'
+          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'lastSeenNotificationTray', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak',
+          'avatarPath', 'avatarUpdatedAt'
         ])
+        && (!('avatarPath' in request.resource.data)
+          || request.resource.data.avatarPath == 'studentAvatars/' + request.auth.uid + '/' + studentId + '/profile.webp')
       );
     }
 

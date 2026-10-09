@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
-import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch } from 'firebase/firestore';
+import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch, deleteField } from 'firebase/firestore';
+import { deleteObject, getBlob, ref as storageRef, uploadBytes } from 'firebase/storage';
 import {
   buildMitoboxReservationGroupId,
   buildMitoboxReservationId,
@@ -16,6 +17,70 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
+const AVATAR_OUTPUT_SIZE = 256;
+const AVATAR_MAX_SOURCE_BYTES = 12 * 1024 * 1024;
+const AVATAR_MAX_STORED_BYTES = 300 * 1024;
+
+const loadAvatarSourceImage = sourceUrl => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error('No se ha podido leer la imagen seleccionada.'));
+  image.src = sourceUrl;
+});
+
+const canvasToAvatarBlob = (canvas, quality) => new Promise((resolve, reject) => {
+  canvas.toBlob(blob => {
+    if (blob) resolve(blob);
+    else reject(new Error('No se ha podido preparar la fotografía.'));
+  }, 'image/webp', quality);
+});
+
+const buildCroppedAvatarBlob = async ({ sourceUrl, zoom = 1, offsetX = 0, offsetY = 0 }) => {
+  const image = await loadAvatarSourceImage(sourceUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = AVATAR_OUTPUT_SIZE;
+  canvas.height = AVATAR_OUTPUT_SIZE;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Este navegador no permite recortar la fotografía.');
+
+  const safeZoom = Math.min(3, Math.max(1, Number(zoom) || 1));
+  const baseScale = Math.max(AVATAR_OUTPUT_SIZE / image.naturalWidth, AVATAR_OUTPUT_SIZE / image.naturalHeight);
+  const drawWidth = image.naturalWidth * baseScale * safeZoom;
+  const drawHeight = image.naturalHeight * baseScale * safeZoom;
+  const horizontalTravel = Math.max(0, (drawWidth - AVATAR_OUTPUT_SIZE) / 2);
+  const verticalTravel = Math.max(0, (drawHeight - AVATAR_OUTPUT_SIZE) / 2);
+  const drawX = (AVATAR_OUTPUT_SIZE - drawWidth) / 2 + (Math.max(-100, Math.min(100, Number(offsetX) || 0)) / 100) * horizontalTravel;
+  const drawY = (AVATAR_OUTPUT_SIZE - drawHeight) / 2 + (Math.max(-100, Math.min(100, Number(offsetY) || 0)) / 100) * verticalTravel;
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, AVATAR_OUTPUT_SIZE, AVATAR_OUTPUT_SIZE);
+  context.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+
+  let blob = await canvasToAvatarBlob(canvas, 0.84);
+  if (blob.size > AVATAR_MAX_STORED_BYTES) blob = await canvasToAvatarBlob(canvas, 0.7);
+  if (blob.size > AVATAR_MAX_STORED_BYTES) throw new Error('La fotografía sigue ocupando demasiado después de comprimirla. Prueba con otra imagen.');
+  return blob;
+};
+
+const getAvatarPreviewStyle = ({ naturalWidth, naturalHeight, zoom = 1, offsetX = 0, offsetY = 0 } = {}, previewSize = 224) => {
+  const imageWidth = Math.max(1, Number(naturalWidth) || previewSize);
+  const imageHeight = Math.max(1, Number(naturalHeight) || previewSize);
+  const safeZoom = Math.min(3, Math.max(1, Number(zoom) || 1));
+  const scale = Math.max(previewSize / imageWidth, previewSize / imageHeight) * safeZoom;
+  const drawWidth = imageWidth * scale;
+  const drawHeight = imageHeight * scale;
+  const horizontalTravel = Math.max(0, (drawWidth - previewSize) / 2);
+  const verticalTravel = Math.max(0, (drawHeight - previewSize) / 2);
+  const left = (previewSize - drawWidth) / 2 + (Math.max(-100, Math.min(100, Number(offsetX) || 0)) / 100) * horizontalTravel;
+  const top = (previewSize - drawHeight) / 2 + (Math.max(-100, Math.min(100, Number(offsetY) || 0)) / 100) * verticalTravel;
+
+  return {
+    width: `${drawWidth}px`,
+    height: `${drawHeight}px`,
+    left: `${left}px`,
+    top: `${top}px`
+  };
+};
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Combo", "Sensibilización", "Violín"];
 
 const normalizeTicketSubject = (value = '') => String(value || '').trim();
@@ -630,7 +695,7 @@ const getMonthNames = () => {
   };
 };
 
-export default function StudentPortal({ user, logout, db, appId }) {
+export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [profileLoadError, setProfileLoadError] = useState('');
@@ -730,6 +795,13 @@ export default function StudentPortal({ user, logout, db, appId }) {
   const [showSocialModal, setShowSocialModal] = useState(false);
   const [showWhatsappModal, setShowWhatsappModal] = useState(false);
   const [whatsappConfirmModal, setWhatsappConfirmModal] = useState(null);
+  const [showAvatarMenu, setShowAvatarMenu] = useState(false);
+  const [avatarEditor, setAvatarEditor] = useState(null);
+  const [avatarObjectUrl, setAvatarObjectUrl] = useState('');
+  const [avatarLoadError, setAvatarLoadError] = useState('');
+  const [avatarSaving, setAvatarSaving] = useState(false);
+  const [avatarRemoving, setAvatarRemoving] = useState(false);
+  const avatarInputRef = useRef(null);
 
   useEffect(() => {
     window.requestAnimationFrame(() => {
@@ -744,6 +816,40 @@ export default function StudentPortal({ user, logout, db, appId }) {
     const timer = window.setInterval(() => setPollClock(Date.now()), 60000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    let localObjectUrl = '';
+    setAvatarLoadError('');
+
+    if (!storage || !profile?.avatarPath) {
+      setAvatarObjectUrl('');
+      return undefined;
+    }
+
+    getBlob(storageRef(storage, profile.avatarPath), AVATAR_MAX_STORED_BYTES + 1024)
+      .then(blob => {
+        if (!active) return;
+        localObjectUrl = URL.createObjectURL(blob);
+        setAvatarObjectUrl(localObjectUrl);
+      })
+      .catch(error => {
+        if (!active) return;
+        console.error('No se ha podido cargar la foto de perfil:', error);
+        setAvatarObjectUrl('');
+        setAvatarLoadError('No se ha podido cargar la foto guardada. Puedes sustituirla o eliminarla.');
+      });
+
+    return () => {
+      active = false;
+      if (localObjectUrl) URL.revokeObjectURL(localObjectUrl);
+    };
+  }, [storage, profile?.avatarPath, profile?.avatarUpdatedAt]);
+
+  const avatarEditorSourceUrl = avatarEditor?.sourceUrl || '';
+  useEffect(() => () => {
+    if (avatarEditorSourceUrl) URL.revokeObjectURL(avatarEditorSourceUrl);
+  }, [avatarEditorSourceUrl]);
 
   const timeRules = getMonthNames();
   const dToday = new Date(pollClock);
@@ -3457,6 +3563,110 @@ export default function StudentPortal({ user, logout, db, appId }) {
     }
   };
 
+  const handleAvatarFileSelected = async event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setNotification({ type: 'error', text: 'Selecciona un archivo de imagen.' });
+      return;
+    }
+    if (file.size > AVATAR_MAX_SOURCE_BYTES) {
+      setNotification({ type: 'error', text: 'La imagen original no puede superar 12 MB.' });
+      return;
+    }
+
+    const sourceUrl = URL.createObjectURL(file);
+    try {
+      const image = await loadAvatarSourceImage(sourceUrl);
+      setShowAvatarMenu(false);
+      setAvatarEditor({
+        sourceUrl,
+        naturalWidth: image.naturalWidth,
+        naturalHeight: image.naturalHeight,
+        zoom: 1,
+        offsetX: 0,
+        offsetY: 0
+      });
+    } catch (error) {
+      URL.revokeObjectURL(sourceUrl);
+      setNotification({ type: 'error', text: error.message || 'No se ha podido leer la imagen seleccionada.' });
+    }
+  };
+
+  const handleSaveAvatar = async () => {
+    if (!avatarEditor || !profile?.id || !user?.uid || !storage) return;
+    setAvatarSaving(true);
+    try {
+      const avatarBlob = await buildCroppedAvatarBlob(avatarEditor);
+      const avatarPath = `studentAvatars/${user.uid}/${profile.id}/profile.webp`;
+      const updatedAt = new Date().toISOString();
+      await uploadBytes(storageRef(storage, avatarPath), avatarBlob, {
+        contentType: 'image/webp',
+        cacheControl: 'private,max-age=3600',
+        customMetadata: {
+          ownerUid: user.uid,
+          studentId: String(profile.id)
+        }
+      });
+      await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+        avatarPath,
+        avatarUpdatedAt: updatedAt
+      });
+
+      const previousAvatarPath = profile.avatarPath;
+      setProfile(previous => previous ? ({ ...previous, avatarPath, avatarUpdatedAt: updatedAt }) : previous);
+      setAvatarEditor(null);
+      setNotification({ type: 'success', text: 'Foto de perfil actualizada.' });
+      window.setTimeout(() => setNotification(null), 2500);
+
+      if (previousAvatarPath && previousAvatarPath !== avatarPath) {
+        deleteObject(storageRef(storage, previousAvatarPath)).catch(() => {});
+      }
+    } catch (error) {
+      console.error('No se ha podido guardar la foto de perfil:', error);
+      const permissionError = ['storage/unauthorized', 'storage/unauthenticated'].includes(error?.code);
+      setNotification({
+        type: 'error',
+        text: permissionError
+          ? 'Firebase Storage no permite todavía guardar la foto. Revisa y publica storage.rules.'
+          : (error?.message || 'No se ha podido guardar la foto de perfil.')
+      });
+    } finally {
+      setAvatarSaving(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    if (!profile?.avatarPath || !profile?.id || !storage) return;
+    if (!window.confirm('¿Eliminar tu foto de perfil y volver a mostrar la corchea?')) return;
+    setAvatarRemoving(true);
+    try {
+      await deleteObject(storageRef(storage, profile.avatarPath)).catch(error => {
+        if (error?.code !== 'storage/object-not-found') throw error;
+      });
+      await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+        avatarPath: deleteField(),
+        avatarUpdatedAt: deleteField()
+      });
+      setProfile(previous => {
+        if (!previous) return previous;
+        const next = { ...previous };
+        delete next.avatarPath;
+        delete next.avatarUpdatedAt;
+        return next;
+      });
+      setShowAvatarMenu(false);
+      setNotification({ type: 'success', text: 'Foto de perfil eliminada.' });
+      window.setTimeout(() => setNotification(null), 2500);
+    } catch (error) {
+      console.error('No se ha podido eliminar la foto de perfil:', error);
+      setNotification({ type: 'error', text: 'No se ha podido eliminar la foto de perfil.' });
+    } finally {
+      setAvatarRemoving(false);
+    }
+  };
+
   const checkRegistration = async () => {
     setLoading(true);
     setProfileLoadError('');
@@ -5575,6 +5785,85 @@ END:VCALENDAR`;
           </div>
         </div>
       )}
+
+      <input
+        ref={avatarInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        onChange={handleAvatarFileSelected}
+        className="hidden"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+
+      {showAvatarMenu && (
+        <div className="fixed inset-0 bg-black/80 z-[120] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl max-w-sm w-full p-7 shadow-2xl relative text-center">
+            <button type="button" onClick={() => setShowAvatarMenu(false)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full" aria-label="Cerrar foto de perfil"><X className="w-5 h-5"/></button>
+            <div className="w-28 h-28 mx-auto rounded-full overflow-hidden bg-black text-white flex items-center justify-center border-4 border-white shadow-xl mb-4">
+              {avatarObjectUrl
+                ? <img src={avatarObjectUrl} alt="Tu foto de perfil" className="w-full h-full object-cover" />
+                : <Music className="w-12 h-12" />}
+            </div>
+            <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">Foto de perfil</h2>
+            <p className="text-xs font-medium text-zinc-500 mt-2 mb-6 leading-relaxed">Por ahora solo podrás verla tú y Administración. La imagen se recortará y comprimirá antes de guardarse.</p>
+            {avatarLoadError && <p className="mb-4 text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3">{avatarLoadError}</p>}
+            <div className="space-y-3">
+              <button type="button" onClick={() => avatarInputRef.current?.click()} className="w-full bg-black hover:bg-zinc-800 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2">
+                <Camera className="w-4 h-4"/> {profile?.avatarPath ? 'Cambiar fotografía' : 'Elegir fotografía'}
+              </button>
+              {profile?.avatarPath && (
+                <button type="button" onClick={handleRemoveAvatar} disabled={avatarRemoving} className="w-full bg-rose-50 hover:bg-rose-100 text-rose-700 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50">
+                  {avatarRemoving ? 'Eliminando…' : 'Eliminar fotografía'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {avatarEditor && (
+        <div className="fixed inset-0 bg-black/85 z-[125] flex items-start sm:items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl relative my-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
+            <button type="button" onClick={() => !avatarSaving && setAvatarEditor(null)} disabled={avatarSaving} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-40" aria-label="Cancelar recorte"><X className="w-5 h-5"/></button>
+            <div className="mb-6 pr-10">
+              <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">Ajustar fotografía</h2>
+              <p className="text-xs font-medium text-zinc-500 mt-1">Centra la parte que quieres mostrar dentro del círculo.</p>
+            </div>
+
+            <div className="w-56 h-56 max-w-full aspect-square mx-auto rounded-full overflow-hidden bg-zinc-200 border-4 border-white shadow-xl relative">
+              <img
+                src={avatarEditor.sourceUrl}
+                alt="Vista previa del recorte"
+                className="absolute max-w-none select-none pointer-events-none"
+                style={getAvatarPreviewStyle(avatarEditor)}
+              />
+            </div>
+
+            <div className="space-y-4 mt-7">
+              <label className="block">
+                <span className="flex justify-between text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2"><span>Zoom</span><span>{Number(avatarEditor.zoom).toFixed(1)}×</span></span>
+                <input type="range" min="1" max="3" step="0.05" value={avatarEditor.zoom} onChange={event => setAvatarEditor(previous => ({ ...previous, zoom: Number(event.target.value) }))} className="w-full accent-black" />
+              </label>
+              <label className="block">
+                <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2 block">Posición horizontal</span>
+                <input type="range" min="-100" max="100" step="1" value={avatarEditor.offsetX} onChange={event => setAvatarEditor(previous => ({ ...previous, offsetX: Number(event.target.value) }))} className="w-full accent-black" />
+              </label>
+              <label className="block">
+                <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2 block">Posición vertical</span>
+                <input type="range" min="-100" max="100" step="1" value={avatarEditor.offsetY} onChange={event => setAvatarEditor(previous => ({ ...previous, offsetY: Number(event.target.value) }))} className="w-full accent-black" />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mt-7">
+              <button type="button" onClick={() => setAvatarEditor(null)} disabled={avatarSaving} className="bg-zinc-100 text-zinc-600 py-4 rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-40">Cancelar</button>
+              <button type="button" onClick={handleSaveAvatar} disabled={avatarSaving} className="bg-black hover:bg-zinc-800 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50">
+                {avatarSaving ? 'Guardando…' : 'Guardar foto'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       
       {notification && (
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
@@ -5587,7 +5876,15 @@ END:VCALENDAR`;
 
       <header className="bg-white p-5 sticky top-0 z-50 shadow-sm border-b border-zinc-200">
         <div className="max-w-3xl mx-auto flex items-center justify-between relative">
-          <div className="flex items-center gap-3"><div className="bg-black p-2 rounded-xl text-white"><Music className="w-5 h-5"/></div><div><h1 className="text-lg font-black uppercase leading-none">Mi Portal</h1><span className="text-[10px] font-bold text-zinc-400 uppercase">{profile.name}</span></div></div>
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => setShowAvatarMenu(true)} className="relative w-10 h-10 rounded-xl overflow-hidden bg-black text-white flex items-center justify-center shadow-sm hover:ring-2 hover:ring-zinc-300 transition-all" aria-label={profile?.avatarPath ? 'Cambiar foto de perfil' : 'Añadir foto de perfil'} title={profile?.avatarPath ? 'Cambiar foto de perfil' : 'Añadir foto de perfil'}>
+              {avatarObjectUrl
+                ? <img src={avatarObjectUrl} alt="" className="w-full h-full object-cover" />
+                : <Music className="w-5 h-5"/>}
+              <span className="absolute -right-1 -bottom-1 w-4 h-4 rounded-full bg-white text-black border border-zinc-200 flex items-center justify-center"><Camera className="w-2.5 h-2.5"/></span>
+            </button>
+            <div><h1 className="text-lg font-black uppercase leading-none">Mi Portal</h1><span className="text-[10px] font-bold text-zinc-400 uppercase">{profile.name}</span></div>
+          </div>
           <div className="flex items-center gap-1">
             <button
               type="button"

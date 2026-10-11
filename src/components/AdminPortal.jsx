@@ -255,6 +255,26 @@ const getFormationActivationPatch = (classData = {}, classStudents = [], reached
   };
 };
 
+const normalizeRecoveryAccessPolicy = (value = 'auto') => (
+  ['auto', 'allowed', 'blocked'].includes(String(value || '').trim())
+    ? String(value || '').trim()
+    : 'auto'
+);
+
+const isClassRecoveryEnabled = (classData = {}) => {
+  const policy = normalizeRecoveryAccessPolicy(classData.recoveryAccess);
+  if (policy === 'allowed') return true;
+  if (policy === 'blocked') return false;
+
+  // Compatibilidad con una posible configuración binaria anterior.
+  if (classData.allowRecoveries === false) return false;
+  if (classData.allowRecoveries === true) return true;
+
+  // En automático, una clase que sigue aplazando su inicio continúa en
+  // formación y no debe usarse como destino de recuperaciones.
+  return classData.autoAdvanceStartDate !== true;
+};
+
 const ADMIN_STARTUP_DATA_LABELS = {
   gestiones: 'Bandeja de gestiones',
   students: 'Alumnos',
@@ -1075,7 +1095,7 @@ const StableModalRenderer = ({ render }) => {
 
 
 
-const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly, getTeacherEmail, db, appId, user }) => {
+const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly, students, getTeacherEmail, db, appId, user }) => {
   const teacherOptions = useMemo(() => {
     const officialNames = new Map();
     [...(settings?.teachersList || []), ...(recurringClassesOnly || []).map(c => c.teacher)]
@@ -1092,6 +1112,10 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
     title: '',
     details: '',
     person: '',
+    relatedStudentId: '',
+    studentVisible: false,
+    studentPortalTitle: 'Administración está gestionando una cuestión relacionada con tu ficha',
+    studentPortalMessage: 'No necesitas hacer nada por ahora. Nos pondremos en contacto contigo si necesitamos más información.',
     type: 'tarea_manual',
     teacherName: teacherOptions[0] || '',
     priority: 'normal',
@@ -1099,18 +1123,32 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
   });
 
   const [form, setForm] = useState(buildInitialForm);
+  const [studentSearch, setStudentSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const wasOpenRef = useRef(false);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
       setForm(buildInitialForm());
+      setStudentSearch('');
       setSaving(false);
     }
     wasOpenRef.current = Boolean(open);
   }, [open]);
 
   const isTeacherAssignment = form.type === 'encargo_profesor';
+  const selectedStudent = (students || []).find(student => student.id === form.relatedStudentId) || null;
+  const filteredStudents = useMemo(() => {
+    const needle = studentSearch.trim().toLocaleLowerCase('es');
+    return [...(students || [])]
+      .filter(student => {
+        if (!needle) return true;
+        return [student.name, student.alias, student.email]
+          .filter(Boolean)
+          .some(value => String(value).toLocaleLowerCase('es').includes(needle));
+      })
+      .sort((left, right) => String(left.alias || left.name || '').localeCompare(String(right.alias || right.name || ''), 'es'));
+  }, [students, studentSearch]);
 
   const handleClose = () => {
     if (saving) return;
@@ -1128,6 +1166,21 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
 
     if (isTeacherAssignment && !String(form.teacherName || '').trim()) {
       alert('Selecciona el profesor destinatario del encargo.');
+      return;
+    }
+
+    if (!isTeacherAssignment && form.studentVisible && !selectedStudent) {
+      alert('Selecciona el alumno al que quieres mostrar la gestión.');
+      return;
+    }
+
+    if (!isTeacherAssignment && form.studentVisible && !String(selectedStudent?.email || '').trim()) {
+      alert('Ese alumno no tiene correo de acceso y no puede recibir la gestión en su portal.');
+      return;
+    }
+
+    if (!isTeacherAssignment && form.studentVisible && !form.studentPortalTitle.trim()) {
+      alert('Escribe el título que verá el alumno en su portal.');
       return;
     }
 
@@ -1160,18 +1213,44 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
       }
 
       const taskId = `manual-${Date.now()}`;
+      const relatedStudentName = selectedStudent
+        ? (selectedStudent.useAlias && selectedStudent.alias ? selectedStudent.alias : selectedStudent.name)
+        : form.person.trim();
+      const relatedStudentEmail = String(selectedStudent?.email || '').trim().toLowerCase();
       const taskPayload = {
         type: form.type || 'tarea_manual',
         title,
-        details,
-        studentId: null,
-        studentName: form.person.trim() || 'Tarea manual',
-        studentEmail: '',
+        // Un alumno con permiso de lectura recibe el documento completo. Las
+        // notas internas se guardan aparte para que nunca viajen a StudentPortal.
+        details: form.studentVisible ? '' : details,
+        hasPrivateDetails: Boolean(form.studentVisible && details),
+        studentId: form.studentVisible ? (selectedStudent?.id || null) : null,
+        studentName: relatedStudentName || 'Tarea manual',
+        // Solo se indexa por el correo del alumno cuando Administración ha
+        // decidido mostrarle esta gestión en su portal.
+        studentEmail: form.studentVisible ? relatedStudentEmail : '',
+        relatedStudentId: selectedStudent?.id || null,
+        relatedStudentEmail,
+        studentVisible: Boolean(form.studentVisible && selectedStudent),
+        studentPortalTitle: form.studentVisible ? form.studentPortalTitle.trim() : '',
+        studentPortalMessage: form.studentVisible ? form.studentPortalMessage.trim() : '',
         source: 'manual_admin',
         status: 'pendiente',
-        date: now
+        date: now,
+        createdBy: user?.email || 'admin'
       };
-      await setDoc(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
+      const taskBatch = writeBatch(db);
+      taskBatch.set(doc(db, 'artifacts', appId, 'gestiones', taskId), taskPayload);
+      if (form.studentVisible && details) {
+        taskBatch.set(doc(db, 'artifacts', appId, 'gestionPrivateNotes', taskId), {
+          gestionId: taskId,
+          details,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: user?.email || 'admin'
+        });
+      }
+      await taskBatch.commit();
 
       alert('✅ Tarea manual añadida a la bandeja.');
       onClose?.();
@@ -1247,9 +1326,53 @@ const ManualTaskModalOverlay = ({ open, onClose, settings, recurringClassesOnly,
               </div>
             </>
           ) : (
-            <div>
-              <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Persona relacionada</label>
-              <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: Sara, madre de Hugo, Norman..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Buscar alumno relacionado</label>
+                <input type="search" value={studentSearch} onChange={e => setStudentSearch(e.target.value)} placeholder="Nombre, alias o correo..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Alumno de la escuela</label>
+                <select value={form.relatedStudentId} onChange={e => setForm(prev => ({ ...prev, relatedStudentId: e.target.value, person: '' }))} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black">
+                  <option value="">Sin vincular a un alumno</option>
+                  {filteredStudents.map(student => (
+                    <option key={student.id} value={student.id}>
+                      {student.useAlias && student.alias ? `${student.alias} · ${student.name}` : student.name}{student.email ? ` · ${student.email}` : ' · sin correo'}
+                    </option>
+                  ))}
+                </select>
+                {studentSearch && filteredStudents.length === 0 && <p className="text-[10px] font-bold text-amber-700 mt-1">No hay alumnos que coincidan con la búsqueda.</p>}
+              </div>
+              {!form.relatedStudentId && (
+                <div>
+                  <label className="text-[10px] font-black uppercase text-zinc-400 mb-1 block">Persona externa o referencia libre <span className="text-zinc-300">(opcional)</span></label>
+                  <input type="text" value={form.person} onChange={e => setForm(prev => ({ ...prev, person: e.target.value }))} placeholder="Ej: madre de Hugo, proveedor..." className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-black" />
+                </div>
+              )}
+
+              {selectedStudent && (
+                <div className={`rounded-2xl border-2 p-4 ${form.studentVisible ? 'bg-blue-50 border-blue-200' : 'bg-zinc-50 border-zinc-200'}`}>
+                  <label className="flex items-start gap-3 cursor-pointer">
+                    <input type="checkbox" checked={form.studentVisible} onChange={e => setForm(prev => ({ ...prev, studentVisible: e.target.checked }))} className="mt-0.5 w-4 h-4 accent-blue-600" />
+                    <span>
+                      <span className="block text-[10px] font-black uppercase tracking-widest text-slate-800">Mostrar esta gestión al alumno</span>
+                      <span className="block mt-1 text-[9px] font-bold leading-relaxed text-zinc-600">Aparecerá en Inicio → En trámite. Las notas internas no serán visibles.</span>
+                    </span>
+                  </label>
+                  {form.studentVisible && (
+                    <div className="mt-4 space-y-3 border-t border-blue-100 pt-4">
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-blue-700 mb-1 block">Título para el alumno *</label>
+                        <input value={form.studentPortalTitle} onChange={e => setForm(prev => ({ ...prev, studentPortalTitle: e.target.value }))} className="w-full p-3 bg-white border-2 border-blue-100 rounded-xl font-bold text-sm outline-none focus:border-blue-500" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-blue-700 mb-1 block">Mensaje para el alumno</label>
+                        <textarea value={form.studentPortalMessage} onChange={e => setForm(prev => ({ ...prev, studentPortalMessage: e.target.value }))} className="w-full p-3 bg-white border-2 border-blue-100 rounded-xl font-medium text-sm outline-none focus:border-blue-500 min-h-[85px] resize-y" />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -2196,6 +2319,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
+  const [studentDossierModal, setStudentDossierModal] = useState(null);
   const [temporaryRelocationModal, setTemporaryRelocationModal] = useState(null);
   const [manualTaskModal, setManualTaskModal] = useState(false);
   const [payrollAdjustModal, setPayrollAdjustModal] = useState(null);
@@ -3800,7 +3924,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         mitoboxOccupancy,
         freeSpots: seatData.freeSpots,
         cancelledDates: Array.isArray(clase.cancelledDates) ? clase.cancelledDates : [],
-        isWebVisible: clase.isWebVisible === true
+        isWebVisible: clase.isWebVisible === true,
+        recoveryEnabled: isClassRecoveryEnabled(clase)
       };
     }).filter(clase => clase.id && clase.subject && clase.time);
 
@@ -5786,8 +5911,29 @@ ${portalAction} accediendo a tu portal.`;
     falta_reiterada: '12 clases sin asistir ni avisar',
     ajuste_cuota_apertura_grupo: 'Ajustar cuota al formarse el grupo',
     reserva_mitobox: 'Reserva Mitobox',
-    tarea_manual: 'Tarea manual'
+    tarea_manual: 'Tarea manual',
+    llamada: 'Llamada pendiente',
+    seguimiento: 'Seguimiento',
+    incidencia_manual: 'Incidencia'
   }[type] || String(type || 'tarea_manual').replace(/_/g, ' '));
+
+  const showGestionDetails = async gestion => {
+    if (!gestion) return;
+    if (!gestion.hasPrivateDetails) {
+      setGestionDetailsModal(gestion);
+      return;
+    }
+    try {
+      const privateSnapshot = await getDoc(doc(db, 'artifacts', appId, 'gestionPrivateNotes', gestion.id));
+      setGestionDetailsModal({
+        ...gestion,
+        details: privateSnapshot.exists() ? String(privateSnapshot.data().details || '') : ''
+      });
+    } catch (error) {
+      console.error('No se pudieron cargar las notas internas del trámite:', error);
+      setGestionDetailsModal({ ...gestion, details: '', privateDetailsLoadError: true });
+    }
+  };
 
   const isExtraServiceGestion = (gestion = {}) => isExtraServiceGestionType(gestion?.type || '');
 
@@ -6737,6 +6883,10 @@ ${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(act
         const targetClass = operationalClasses.find(c => c.id === requestedClass);
         if (!targetClass) {
           return fail(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
+        }
+
+        if (type === 'recuperacion' && !isClassRecoveryEnabled(targetClass)) {
+          return fail(`⚠️ No se puede aprobar esta recuperación.\n\nLa clase de destino ya no admite recuperaciones. Puede estar todavía en formación o haber sido bloqueada expresamente desde su configuración.`);
         }
 
         let matchedRecoveryTicket = null;
@@ -9834,6 +9984,7 @@ Coordinación Los Mitos.`
       capacity: officialClass.capacity ?? '',
       duration: officialClass.duration ?? 60,
       cuotaBase: officialClass.cuotaBase ?? 0,
+      recoveryAccess: normalizeRecoveryAccessPolicy(officialClass.recoveryAccess),
       notes: officialClass.notes || ''
     });
     setTemporaryClassData({
@@ -10094,6 +10245,7 @@ Coordinación Los Mitos.`
       capacity: editClassData.capacity,
       duration: Number(editClassData.duration) || 60,
       cuotaBase: Number(editClassData.cuotaBase) || 0,
+      recoveryAccess: normalizeRecoveryAccessPolicy(editClassData.recoveryAccess),
       notes: editClassData.notes || '',
       date: editClassData.isRecurring ? null : editClassData.specificDate,
       updatedAt: new Date().toISOString(),
@@ -11990,6 +12142,226 @@ ${valueOrDash(comments.privateNote)}`,
     );
   };
 
+  const StudentDossierModalOverlay = () => {
+    if (!studentDossierModal) return null;
+    const [section, setSection] = useState('summary');
+    const [dossierGestiones, setDossierGestiones] = useState(null);
+    const [dossierHistoryLoading, setDossierHistoryLoading] = useState(true);
+    const student = students.find(item => item.id === studentDossierModal.id) || studentDossierModal;
+    const studentEmail = String(student.email || '').trim().toLowerCase();
+    const matchesStudent = record => (
+      String(record?.studentId || record?.relatedStudentId || '') === String(student.id || '')
+      || Boolean(studentEmail && [record?.studentEmail, record?.relatedStudentEmail, record?.email]
+        .some(value => String(value || '').trim().toLowerCase() === studentEmail))
+    );
+    const studentTickets = allTickets
+      .filter(matchesStudent)
+      .sort((left, right) => String(right.createdAt || right.validFrom || '').localeCompare(String(left.createdAt || left.validFrom || '')));
+    const fallbackGestiones = gestiones
+      .filter(matchesStudent)
+      .sort((left, right) => new Date(right.date || right.updatedAt || 0) - new Date(left.date || left.updatedAt || 0));
+    const studentGestiones = dossierGestiones || fallbackGestiones;
+
+    useEffect(() => {
+      let active = true;
+      setDossierHistoryLoading(true);
+      const gestionesRef = collection(db, 'artifacts', appId, 'gestiones');
+      const queries = [
+        query(gestionesRef, where('studentId', '==', student.id)),
+        query(gestionesRef, where('relatedStudentId', '==', student.id))
+      ];
+      if (studentEmail) queries.push(query(gestionesRef, where('studentEmail', '==', studentEmail)));
+
+      Promise.all(queries.map(reference => getDocs(reference)))
+        .then(snapshots => {
+          if (!active) return;
+          const merged = new Map();
+          snapshots.forEach(snapshot => snapshot.docs.forEach(documentSnapshot => merged.set(documentSnapshot.id, { id: documentSnapshot.id, ...documentSnapshot.data() })));
+          setDossierGestiones([...merged.values()].sort((left, right) => new Date(right.date || right.updatedAt || 0) - new Date(left.date || left.updatedAt || 0)));
+        })
+        .catch(error => {
+          console.error('No se ha podido cargar el histórico específico del alumno:', error);
+          if (active) setDossierGestiones(fallbackGestiones);
+        })
+        .finally(() => {
+          if (active) setDossierHistoryLoading(false);
+        });
+
+      return () => { active = false; };
+    }, [student.id, studentEmail]);
+    const recoveryGestiones = studentGestiones.filter(gestion => gestion.type === 'recuperacion');
+    const openRecoveries = recoveryGestiones.filter(gestion => (
+      gestion.status === 'pendiente'
+      || (gestion.status === 'completado' && gestion.recoveryDate && gestion.recoveryDate >= todayStr)
+    ));
+    const openProcedures = studentGestiones.filter(gestion => (
+      gestion.type !== 'recuperacion'
+      && (gestion.status === 'pendiente' || gestion.executionMode === 'scheduled')
+    ));
+    const resolvedHistory = studentGestiones
+      .filter(gestion => ['completado', 'rechazado', 'cancelado', 'archivado'].includes(String(gestion.status || '').toLowerCase()))
+      .slice(0, 20);
+    const assignedClasses = getStudentAssignedClasses(student.id);
+    const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, future: 0, used: 0, expired: 0, pending: 0, scheduled: 0, committed: 0, free: 0 };
+    const operationalStatus = getStudentOperationalStatus(student);
+
+    const getTicketView = ticket => {
+      if (ticket.voided) return { label: 'Anulado', className: 'bg-red-100 text-red-700' };
+      if (ticket.isUsed) return { label: 'Utilizado', className: 'bg-zinc-200 text-zinc-700' };
+      if (ticket.validUntil && ticket.validUntil < todayStr) return { label: 'Caducado', className: 'bg-zinc-100 text-zinc-500' };
+      if (ticket.validFrom && ticket.validFrom > todayStr) return { label: 'Futuro', className: 'bg-blue-100 text-blue-700' };
+      const committed = recoveryGestiones.some(gestion => (
+        (gestion.status === 'pendiente' || (gestion.status === 'completado' && (!gestion.recoveryDate || gestion.recoveryDate >= todayStr)))
+        && ((ticket.refPath && gestion.ticketRefPath === ticket.refPath) || (ticket.id && gestion.ticketId === ticket.id))
+      ));
+      return committed
+        ? { label: 'Comprometido', className: 'bg-amber-100 text-amber-800' }
+        : { label: 'Disponible', className: 'bg-emerald-100 text-emerald-700' };
+    };
+
+    const getProcedureStatusView = status => ({
+      pendiente: { label: 'Pendiente', className: 'bg-amber-100 text-amber-800' },
+      completado: { label: 'Completado', className: 'bg-emerald-100 text-emerald-700' },
+      rechazado: { label: 'Rechazado', className: 'bg-red-100 text-red-700' },
+      cancelado: { label: 'Cancelado', className: 'bg-zinc-200 text-zinc-600' },
+      archivado: { label: 'Archivado', className: 'bg-zinc-100 text-zinc-500' }
+    }[String(status || '').toLowerCase()] || { label: status || 'Sin estado', className: 'bg-zinc-100 text-zinc-600' });
+
+    const openGestionDetails = gestion => {
+      setStudentDossierModal(null);
+      showGestionDetails(gestion);
+    };
+
+    const renderGestionRows = (items, emptyText) => (
+      <div className="space-y-3">
+        {items.length === 0 && <div className="rounded-2xl border-2 border-dashed border-zinc-200 p-8 text-center text-xs font-bold text-zinc-400">{emptyText}</div>}
+        {items.map(gestion => {
+          const statusView = getProcedureStatusView(gestion.status);
+          return (
+            <button key={gestion.id} type="button" onClick={() => openGestionDetails(gestion)} className="w-full text-left rounded-2xl border border-zinc-200 bg-white p-4 hover:border-indigo-300 hover:shadow-sm transition-all">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-indigo-600">{getGestionTypeLabel(gestion.type)}</p>
+                  <p className="mt-1 text-sm font-black text-slate-900">{gestion.title || getGestionTypeLabel(gestion.type)}</p>
+                  <p className="mt-1 text-[10px] font-bold text-zinc-500">
+                    {gestion.recoveryDate ? `Recuperación: ${formatDateSpanish(gestion.recoveryDate)} · ` : ''}
+                    {gestion.date ? formatDateSpanish(gestion.date) : 'Fecha no registrada'}
+                  </p>
+                </div>
+                <span className={`shrink-0 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${statusView.className}`}>{statusView.label}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
+
+    const sectionOptions = [
+      { id: 'summary', label: 'Resumen', count: null },
+      { id: 'recoveries', label: 'Recuperaciones', count: openRecoveries.length },
+      { id: 'procedures', label: 'Trámites', count: openProcedures.length },
+      { id: 'history', label: 'Historial', count: resolvedHistory.length }
+    ];
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[125] flex items-start lg:items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto">
+        <div className="bg-zinc-50 rounded-3xl max-w-5xl w-full shadow-2xl relative my-3 sm:my-6 max-h-[calc(100vh-1.5rem)] overflow-y-auto">
+          <button onClick={() => setStudentDossierModal(null)} className="absolute top-4 right-4 z-10 text-zinc-400 hover:text-black bg-white border border-zinc-200 p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
+
+          <div className="bg-slate-950 text-white rounded-t-3xl p-6 sm:p-8 pr-16">
+            <div className="flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center shrink-0"><User className="w-6 h-6"/></div>
+              <div className="min-w-0">
+                <p className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Ficha del alumno</p>
+                <h2 className="text-xl sm:text-2xl font-black tracking-tight truncate">{student.useAlias && student.alias ? student.alias : student.name}</h2>
+                {student.useAlias && student.alias && <p className="text-xs font-bold text-zinc-400 mt-1">Titular: {student.name}</p>}
+                <p className="text-xs font-bold text-zinc-400 mt-1 truncate">{student.email || 'Sin correo de acceso'}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="sticky top-0 z-[5] bg-white border-b border-zinc-200 p-2 sm:px-5 overflow-x-auto">
+            <div className="flex gap-2 min-w-max">
+              {sectionOptions.map(option => (
+                <button key={option.id} type="button" onClick={() => setSection(option.id)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${section === option.id ? 'bg-black text-white' : 'text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}>
+                  {option.label}{option.count !== null ? ` · ${option.count}` : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-4 sm:p-7">
+            {section === 'summary' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-slate-900">{assignedClasses.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Clases activas</p></div>
+                  <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-emerald-600">{ticketStats.free}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Tickets libres</p></div>
+                  <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-amber-600">{openRecoveries.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Recuperaciones abiertas</p></div>
+                  <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-blue-600">{openProcedures.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Trámites abiertos</p></div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <section className="rounded-2xl bg-white border border-zinc-200 p-5">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-4">Estado y servicios</h3>
+                    <div className="space-y-3 text-xs font-bold text-zinc-600">
+                      <div className="flex justify-between gap-4"><span>Estado operativo</span><span className="uppercase text-slate-900">{String(operationalStatus || '').replace(/_/g, ' ')}</span></div>
+                      <div className="flex justify-between gap-4"><span>Portal</span><span className={student.claimed ? 'text-emerald-700' : 'text-amber-700'}>{student.claimed ? 'Activado' : 'Pendiente'}</span></div>
+                      <div className="flex justify-between gap-4"><span>Mitobox</span><span>{student.hasMitobox ? 'Activo' : 'No'}</span></div>
+                      <div className="flex justify-between gap-4"><span>Mitoverso</span><span>{student.hasMitoverso ? 'Activo' : 'No'}</span></div>
+                      <div className="flex justify-between gap-4"><span>Gymusik</span><span>{student.hasGymusik ? 'Activo' : 'No'}</span></div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl bg-white border border-zinc-200 p-5">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-4">Clases actuales</h3>
+                    <div className="space-y-2">
+                      {assignedClasses.length === 0 && <p className="text-xs font-bold text-zinc-400">No tiene una plaza fija activa.</p>}
+                      {assignedClasses.map(classData => <button key={classData.id} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-zinc-50 border border-zinc-100 hover:border-indigo-200 text-xs font-bold text-slate-700">{formatClassLine(classData)}</button>)}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            )}
+
+            {section === 'recoveries' && (
+              <div className="space-y-6">
+                <section>
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-3">Solicitudes y recuperaciones programadas</h3>
+                  {renderGestionRows(openRecoveries, 'No hay recuperaciones pendientes ni futuras.')}
+                </section>
+                <section>
+                  <div className="flex items-center justify-between gap-3 mb-3"><h3 className="text-xs font-black uppercase tracking-widest text-slate-900">Tickets</h3><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">{studentTickets.length} registrados</span></div>
+                  <div className="space-y-3">
+                    {studentTickets.length === 0 && <div className="rounded-2xl border-2 border-dashed border-zinc-200 p-8 text-center text-xs font-bold text-zinc-400">No hay tickets registrados.</div>}
+                    {studentTickets.slice(0, 30).map(ticket => {
+                      const ticketView = getTicketView(ticket);
+                      return <div key={ticket.refPath || ticket.id} className="rounded-2xl bg-white border border-zinc-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="text-sm font-black text-slate-900">{ticket.subject || 'Ticket flexible'}</p><p className="text-[10px] font-bold text-zinc-500 mt-1">Válido: {ticket.validFrom ? formatDateSpanish(ticket.validFrom) : 'sin inicio'} — {ticket.validUntil ? formatDateSpanish(ticket.validUntil) : 'sin caducidad'}</p></div><span className={`shrink-0 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ticketView.className}`}>{ticketView.label}</span></div>;
+                    })}
+                    {studentTickets.length > 30 && <p className="text-center text-[10px] font-bold text-zinc-400">Se muestran los 30 tickets más recientes.</p>}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {section === 'procedures' && (
+              <section>
+                <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-3">Trámites y gestiones abiertas</h3>
+                {renderGestionRows(openProcedures, 'No hay trámites pendientes para este alumno.')}
+              </section>
+            )}
+
+            {section === 'history' && (
+              <section>
+                <div className="mb-3"><h3 className="text-xs font-black uppercase tracking-widest text-slate-900">Historial reciente</h3><p className="text-[10px] font-bold text-zinc-500 mt-1">Últimos 20 trámites resueltos del alumno.{dossierHistoryLoading ? ' Actualizando…' : ''}</p></div>
+                {renderGestionRows(resolvedHistory, 'No hay trámites resueltos en el histórico reciente.')}
+              </section>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const EditWebModalOverlay = () => {
     if (!editWebModal) return null;
     const [formData, setFormData] = useState({
@@ -12360,6 +12732,16 @@ ${valueOrDash(comments.privateNote)}`,
           </div>
 
           <div className="mb-6">
+            <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl mb-4">
+              <h4 className="text-[10px] font-black uppercase text-amber-800 tracking-widest mb-3 flex items-center gap-1"><Ticket className="w-4 h-4"/> Recuperaciones</h4>
+              <label className="text-[10px] font-black uppercase text-amber-800 mb-1 block">Admitir alumnos que recuperan</label>
+              <select value={editClassData.recoveryAccess} onChange={e => setEditClassData({...editClassData, recoveryAccess: e.target.value})} className="w-full p-3 bg-white border-2 border-amber-200 rounded-xl font-black text-sm outline-none focus:border-amber-500">
+                <option value="auto">Automático</option>
+                <option value="allowed">Sí, permitir</option>
+                <option value="blocked">No permitir</option>
+              </select>
+              <p className="text-[9px] text-amber-800 mt-2 font-bold leading-relaxed">En automático, una clase en formación queda fuera de las listas de recuperación y se habilita al alcanzar su mínimo. No afecta a su visibilidad ni a las inscripciones de la web.</p>
+            </div>
             <label className="text-[10px] font-black uppercase text-zinc-500 mb-1 block">Notas internas</label>
             <textarea value={editClassData.notes} onChange={e => setEditClassData({...editClassData, notes: e.target.value})} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none min-h-[80px]" placeholder="Notas internas de la clase..." />
           </div>
@@ -13417,6 +13799,7 @@ ${startDateWarning}
         onClose={() => setManualTaskModal(false)}
         settings={settings}
         recurringClassesOnly={recurringClassesOnly}
+        students={students}
         getTeacherEmail={getTeacherEmail}
         db={db}
         appId={appId}
@@ -13426,6 +13809,7 @@ ${startDateWarning}
       {notesModal && <StableModalRenderer key={`notes-${notesModal.id || 'open'}`} render={NotesModalOverlay} />}
       {changeClassModal && <StableModalRenderer key={`change-class-${changeClassModal.id || 'open'}`} render={ChangeClassModalOverlay} />}
       {editStudentModal && <StableModalRenderer key={`edit-student-${editStudentModal.id || 'open'}`} render={EditStudentModalOverlay} />} 
+      {studentDossierModal && <StableModalRenderer key={`student-dossier-${studentDossierModal.id || 'open'}`} render={StudentDossierModalOverlay} />}
       {serviceStudentModal && (
         <div className="fixed inset-0 bg-black/80 z-[120] flex items-start sm:items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl relative my-4">
@@ -14179,7 +14563,7 @@ ${startDateWarning}
                             <div className="min-w-0"><p className="font-black text-slate-900 leading-tight">{g.studentName || 'Sin alumno'}</p><p className="text-[10px] text-zinc-400 truncate">{g.studentEmail || ''}</p><p className="text-[10px] font-bold text-zinc-400 mt-1">{formatDateSpanish(g.date)}</p></div>
                             <span className={`shrink-0 px-2 py-1 rounded border text-[9px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>{getGestionTypeLabel(g.type || 'tarea')}</span>
                           </div>
-                          <button type="button" onClick={() => setGestionDetailsModal(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
+                          <button type="button" onClick={() => showGestionDetails(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
                           <div className="grid grid-cols-2 gap-2">
                             {gestionRequiresTadosi(g) && <button onClick={() => markGestionTadosiDone(g)} disabled={isGestionTadosiDone(g)} className="px-3 py-2.5 bg-amber-100 text-amber-800 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:bg-emerald-100 disabled:text-emerald-700">{isGestionTadosiDone(g) ? 'Tadosi hecho' : 'Marcar Tadosi'}</button>}
                             <button onClick={() => updateGestionStatus(g.id, 'completado', g)} disabled={!isGestionReadyForExecution(g)} className="px-3 py-2.5 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-30">Completar</button>
@@ -14305,7 +14689,7 @@ ${startDateWarning}
                             })()}
                           </td>
                           <td className="p-4 min-w-[240px]">
-                            <button type="button" onClick={() => setGestionDetailsModal(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
+                            <button type="button" onClick={() => showGestionDetails(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
                           </td>
                           <td className="p-4 text-right whitespace-nowrap">
                             <div className="flex justify-end gap-2">
@@ -14354,7 +14738,7 @@ ${startDateWarning}
                     {visibleResolvedGestiones.map(g => (
                       <div key={`resolved-mobile-${g.id}`} className="p-4 space-y-3">
                         <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="font-black text-slate-900 leading-tight">{g.studentName || 'Sin alumno'}</p><p className="text-[10px] font-bold text-zinc-400 mt-1">{formatDateSpanish(g.date)}</p></div><span className={`shrink-0 px-2 py-1 rounded border text-[9px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>{getGestionTypeLabel(g.type || 'tarea')}</span></div>
-                        <button type="button" onClick={() => setGestionDetailsModal(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
+                        <button type="button" onClick={() => showGestionDetails(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
                         <span className={`inline-flex px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>Cerrado · {g.status}</span>
                       </div>
                     ))}
@@ -14381,7 +14765,7 @@ ${startDateWarning}
                               </span>
                             </td>
                             <td className="p-4">
-                              <button type="button" onClick={() => setGestionDetailsModal(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
+                              <button type="button" onClick={() => showGestionDetails(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
                             </td>
                             <td className="p-4 text-right whitespace-nowrap">
                               <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest ${g.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : g.status === 'archivado' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
@@ -14634,6 +15018,9 @@ ${startDateWarning}
                           </td>
                           <td className="p-4 text-center">
                             <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => setStudentDossierModal(student)} className="p-2.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-600 hover:text-white transition-colors" title="Ver ficha completa del alumno">
+                                <ClipboardList className="w-4 h-4"/>
+                              </button>
                               <button onClick={() => setEditStudentModal(student)} className="p-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
                                 <Pencil className="w-4 h-4"/>
                               </button>

@@ -4436,7 +4436,7 @@ END:VCALENDAR`;
   };
 
   const pendingAbsences = [];
-  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente');
+  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.studentVisible !== false);
   const scheduledBajaGestion = myGestiones
     .filter(g => g.type === 'baja' && ['completado', 'programada', 'programado'].includes(String(g.status || '').toLowerCase()))
     .map(g => ({
@@ -4813,6 +4813,7 @@ END:VCALENDAR`;
     if (isClassSearch && targetInstrument && (gestionModal.type !== 'cambio_horario' || resolvedSourceClass)) {
       availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
+        if (isTicketRedemption && c.recoveryEnabled === false) return false;
         
         const activeStudents = Number.isFinite(Number(c.activeStudentCount))
           ? Number(c.activeStudentCount)
@@ -6337,8 +6338,9 @@ END:VCALENDAR`;
                   {pendingProcedures.map(proc => (
                     <div key={proc.id} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
                        <div>
-                         <p className="text-xs font-black uppercase text-slate-800 tracking-tight">{proc.title}</p>
-                         <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">Solicitado el {new Date(proc.date).toLocaleDateString('es-ES')}</p>
+                         <p className="text-xs font-black uppercase text-slate-800 tracking-tight">{proc.studentPortalTitle || proc.title}</p>
+                         {proc.studentPortalMessage && <p className="text-[11px] font-medium text-zinc-600 mt-1.5 leading-relaxed">{proc.studentPortalMessage}</p>}
+                         <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">{proc.source === 'manual_admin' ? 'Abierto por Administración el' : 'Solicitado el'} {new Date(proc.date).toLocaleDateString('es-ES')}</p>
                        </div>
                        <span className="text-[10px] font-black uppercase tracking-widest bg-blue-100 text-blue-700 px-3 py-1.5 rounded-lg">
                          En revisión

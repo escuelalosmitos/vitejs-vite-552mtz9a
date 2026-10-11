@@ -12632,8 +12632,8 @@ ${valueOrDash(comments.privateNote)}`,
     const isTeacherChanged = !isSameTeacher(editClassData.teacher, editClassModal.teacher);
 
     return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
-        <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative my-8">
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-xl w-full p-5 sm:p-8 shadow-2xl relative my-3 sm:my-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100vh-4rem)] overflow-y-auto overscroll-contain">
           <button onClick={closeEditClassModal} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <h2 className="text-xl font-black uppercase tracking-tight mb-2 flex items-center gap-2"><Pencil className="text-amber-600"/> Editar Clase</h2>
           <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mb-6">
@@ -13550,8 +13550,8 @@ ${startDateWarning}
       }
     };
     return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in">
-        <div className="bg-white rounded-3xl max-w-xl w-full p-8 shadow-2xl relative max-h-[90vh] flex flex-col">
+      <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
+        <div className="bg-white rounded-3xl max-w-xl w-full p-5 sm:p-8 shadow-2xl relative my-3 sm:my-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100vh-4rem)] overflow-y-auto overscroll-contain">
           <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           
           <button onClick={() => handleDeleteClassGlobal(c)} className="absolute top-4 right-14 text-red-500 hover:text-white hover:bg-red-500 bg-red-50 p-2 rounded-full transition-colors" title="Borrar Clase DEFINITIVAMENTE"><Trash2 className="w-5 h-5"/></button>
@@ -13664,7 +13664,7 @@ ${startDateWarning}
               </label>
             )}
           </div>
-          <div className="flex-1 overflow-y-auto pr-2 space-y-3">
+          <div className="pr-1 sm:pr-2 space-y-3">
             <h3 className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-2">
               Alumnos Matriculados ({currentCount}/{c.capacity}) · Activos: {activeCount}
               {(maintenanceCount > 0 || pendingStartCount > 0 || futureStartCount > 0 || relocatedInCount > 0 || relocatedOutCount > 0 || absenceCount > 0) && (

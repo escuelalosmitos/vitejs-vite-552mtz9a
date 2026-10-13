@@ -12193,7 +12193,33 @@ ${valueOrDash(comments.privateNote)}`,
     const resolvedHistory = studentGestiones
       .filter(gestion => ['completado', 'rechazado', 'cancelado', 'archivado'].includes(String(gestion.status || '').toLowerCase()))
       .slice(0, 20);
-    const assignedClasses = getStudentAssignedClasses(student.id);
+    const assignedClassMemberships = recurringClassesOnly
+      .map(classData => {
+        const studentEntry = (classData.students || []).find(entry => (
+          entry.id === student.id && isStudentClassCommittedOnDate(entry, student, todayStr)
+        ));
+        return studentEntry ? { classData, studentEntry } : null;
+      })
+      .filter(Boolean);
+    const primaryClassMemberships = assignedClassMemberships.filter(({ studentEntry }) => isFixedClassStudent(studentEntry));
+    const upcomingRecoveryMemberships = assignedClassMemberships.filter(({ studentEntry }) => (
+      !isFixedClassStudent(studentEntry)
+      && (
+        studentEntry.isRecovery === true
+        || studentEntry.type === 'recovery'
+        || studentEntry.status === 'recovery'
+      )
+      && (!studentEntry.recoveryDate || studentEntry.recoveryDate >= todayStr)
+    ));
+    const temporaryClassMemberships = assignedClassMemberships.filter(({ studentEntry }) => (
+      !isFixedClassStudent(studentEntry)
+      && !(
+        studentEntry.isRecovery === true
+        || studentEntry.type === 'recovery'
+        || studentEntry.status === 'recovery'
+      )
+      && (!getStudentClassStartDate(studentEntry, student) || getStudentClassStartDate(studentEntry, student) <= todayStr)
+    ));
     const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, future: 0, used: 0, expired: 0, pending: 0, scheduled: 0, committed: 0, free: 0 };
     const operationalStatus = getStudentOperationalStatus(student);
 
@@ -12256,11 +12282,11 @@ ${valueOrDash(comments.privateNote)}`,
     ];
 
     return (
-      <div className="fixed inset-0 bg-black/80 z-[125] flex items-start lg:items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto">
-        <div className="bg-zinc-50 rounded-3xl max-w-5xl w-full shadow-2xl relative my-3 sm:my-6 max-h-[calc(100vh-1.5rem)] overflow-y-auto">
+      <div className="fixed inset-0 bg-black/80 z-[125] flex items-start lg:items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto lg:overflow-hidden">
+        <div className="bg-zinc-50 rounded-3xl max-w-5xl w-full shadow-2xl relative my-3 sm:my-6 max-h-[calc(100vh-1.5rem)] overflow-y-auto lg:h-[min(820px,calc(100vh-3rem))] lg:max-h-none lg:overflow-hidden lg:flex lg:flex-col">
           <button onClick={() => setStudentDossierModal(null)} className="absolute top-4 right-4 z-10 text-zinc-400 hover:text-black bg-white border border-zinc-200 p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
 
-          <div className="bg-black text-white rounded-t-3xl p-6 sm:p-8 pr-16">
+          <div className="bg-black text-white rounded-t-3xl p-6 sm:p-8 pr-16 lg:shrink-0">
             <div className="flex items-start gap-4">
               <div className="w-16 h-16 rounded-2xl overflow-hidden bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
                 {avatarUrl ? <img src={avatarUrl} alt={`Foto de ${student.name || 'alumno'}`} className="w-full h-full object-cover"/> : <Music className="w-7 h-7 text-white"/>}
@@ -12276,7 +12302,7 @@ ${valueOrDash(comments.privateNote)}`,
             </div>
           </div>
 
-          <div className="sticky top-0 z-[5] bg-white border-b border-zinc-200 p-2 sm:px-5 overflow-x-auto">
+          <div className="sticky top-0 z-[5] bg-white border-b border-zinc-200 p-2 sm:px-5 overflow-x-auto lg:shrink-0">
             <div className="flex gap-2 min-w-max">
               {sectionOptions.map(option => (
                 <button key={option.id} type="button" onClick={() => setSection(option.id)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${section === option.id ? 'bg-black text-white' : 'text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}>
@@ -12286,11 +12312,11 @@ ${valueOrDash(comments.privateNote)}`,
             </div>
           </div>
 
-          <div className="p-4 sm:p-7">
+          <div className="p-4 sm:p-7 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
             {section === 'summary' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-slate-900">{assignedClasses.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Clases activas</p></div>
+                  <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-slate-900">{primaryClassMemberships.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Plazas principales</p></div>
                   <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-emerald-600">{ticketStats.free}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Tickets libres</p></div>
                   <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-amber-600">{openRecoveries.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Recuperaciones abiertas</p></div>
                   <div className="rounded-2xl bg-white border border-zinc-200 p-4"><p className="text-2xl font-black text-blue-600">{openProcedures.length}</p><p className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Trámites abiertos</p></div>
@@ -12309,10 +12335,43 @@ ${valueOrDash(comments.privateNote)}`,
                   </section>
 
                   <section className="rounded-2xl bg-white border border-zinc-200 p-5">
-                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-4">Clases actuales</h3>
-                    <div className="space-y-2">
-                      {assignedClasses.length === 0 && <p className="text-xs font-bold text-zinc-400">No tiene una plaza fija activa.</p>}
-                      {assignedClasses.map(classData => <button key={classData.id} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-zinc-50 border border-zinc-100 hover:border-indigo-200 text-xs font-bold text-slate-700">{formatClassLine(classData)}</button>)}
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-4">Clases y plazas</h3>
+                    <div className="space-y-4">
+                      <div>
+                        <p className="mb-2 text-[9px] font-black uppercase tracking-widest text-zinc-400">Plazas principales</p>
+                        <div className="space-y-2">
+                          {primaryClassMemberships.length === 0 && <p className="text-xs font-bold text-zinc-400">No tiene una plaza principal asignada.</p>}
+                          {primaryClassMemberships.map(({ classData, studentEntry }) => {
+                            const pendingStart = isPendingClassStartEntry(studentEntry) || hasFutureClassStartDate(studentEntry, student, todayStr);
+                            return (
+                              <button key={classData.id} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-zinc-50 border border-zinc-100 hover:border-indigo-200 text-xs font-bold text-slate-700">
+                                <span className="block">{formatClassLine(classData)}</span>
+                                <span className={`mt-1 inline-flex px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${pendingStart ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'}`}>{pendingStart ? 'Inicio pendiente' : 'Clase principal'}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {(upcomingRecoveryMemberships.length > 0 || temporaryClassMemberships.length > 0) && (
+                        <div className="pt-3 border-t border-zinc-100">
+                          <p className="mb-2 text-[9px] font-black uppercase tracking-widest text-zinc-400">Asignaciones puntuales</p>
+                          <div className="space-y-2">
+                            {upcomingRecoveryMemberships.map(({ classData, studentEntry }) => (
+                              <button key={`recovery-${classData.id}`} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-amber-50 border border-amber-100 hover:border-amber-300 text-xs font-bold text-slate-700">
+                                <span className="block">{formatClassLine(classData)}</span>
+                                <span className="mt-1 inline-flex px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[8px] font-black uppercase tracking-widest">Recuperación{studentEntry.recoveryDate ? ` · ${formatDateSpanish(studentEntry.recoveryDate)}` : ''}</span>
+                              </button>
+                            ))}
+                            {temporaryClassMemberships.map(({ classData }) => (
+                              <button key={`temporary-${classData.id}`} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-violet-50 border border-violet-100 hover:border-violet-300 text-xs font-bold text-slate-700">
+                                <span className="block">{formatClassLine(classData)}</span>
+                                <span className="mt-1 inline-flex px-2 py-0.5 rounded bg-violet-100 text-violet-800 text-[8px] font-black uppercase tracking-widest">Asignación temporal</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </section>
                 </div>
@@ -15003,7 +15062,7 @@ ${startDateWarning}
                             )}
                           </td>
                           <td className="p-4 text-center">
-                            <div className="flex flex-wrap items-center justify-center gap-2">
+                            <div className="flex flex-nowrap items-center justify-center gap-2">
                               <button onClick={() => setStudentDossierModal(student)} className="px-3 py-2.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-600 hover:text-white transition-colors text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-1.5" title="Ver ficha completa del alumno">
                                 <ClipboardList className="w-4 h-4"/> Ficha
                               </button>

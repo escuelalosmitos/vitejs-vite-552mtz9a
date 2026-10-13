@@ -753,6 +753,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [selectedNewClass, setSelectedNewClass] = useState(null);
   const [selectedSourceClass, setSelectedSourceClass] = useState(null);
   const [recoveryTickets, setRecoveryTickets] = useState([]);
+  const [recoveryTicketLedger, setRecoveryTicketLedger] = useState([]);
   const [selectedRecoveryTicketId, setSelectedRecoveryTicketId] = useState('');
   const [selectedRecoverySubject, setSelectedRecoverySubject] = useState('');
   const [bajaTotalRequested, setBajaTotalRequested] = useState(false);
@@ -2819,9 +2820,11 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
       let futureSummerTicketsCount = 0;
       let activeSummerTicketsCount = 0;
       const activeTicketDetails = [];
+      const ticketLedger = [];
       snapshot.forEach(ticketDoc => {
         const data = ticketDoc.data();
         if (filterLegacyResults && String(data.studentId || '') !== String(profile.id)) return;
+        ticketLedger.push({ id: ticketDoc.id, refPath: ticketDoc.ref.path, ...data });
         const isPending = !data.isUsed && !data.voided;
         const isAlreadyValid = !data.validFrom || data.validFrom <= todayStr;
         const isNotExpired = !data.validUntil || data.validUntil >= todayStr;
@@ -2840,6 +2843,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
           futureSummerTicketsCount++;
         }
       });
+      ticketLedger.sort((a, b) => String(b.originalDate || b.createdAt || '').localeCompare(String(a.originalDate || a.createdAt || '')));
+      setRecoveryTicketLedger(ticketLedger);
       activeTicketDetails.sort((a, b) => String(a.validUntil || '9999-12-31').localeCompare(String(b.validUntil || '9999-12-31')));
       setRecoveryTickets(activeTicketDetails);
       setProfile(prev => prev ? {
@@ -2858,6 +2863,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
       legacyTicketsStarted = true;
       console.error('La consulta privada de tickets falló', queryError);
       setRecoveryTickets([]);
+      setRecoveryTicketLedger([]);
       setNotification({ text: 'No se han podido comprobar tus tickets de recuperación. Reintenta recargando la página.', type: 'error' });
     };
     unsubFilteredTickets = onSnapshot(
@@ -3869,6 +3875,12 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         type: 'aviso_ausencia',
         title: `Falta a clase: ${absenceModal.clase.subject}`,
         details: `El alumno no asistirá el ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h. ${!isLate && wantsTicket ? '(Aviso en plazo)' : '(Aviso fuera de plazo o sin justificar)'}`,
+        absenceDate: absenceModal.dateStr,
+        absenceSubject: absenceModal.clase.subject || '',
+        absenceTime: absenceModal.clase.time || '',
+        wantsRecovery: Boolean(!isLate && wantsTicket),
+        ticketEligible: Boolean(!isLate && wantsTicket),
+        ticketOutcome: !isLate && wantsTicket ? 'awaiting_attendance' : 'not_requested',
         requestedClass: absenceModal.clase.id,
         requestedTeacher: absenceModal.clase.teacher || '',
         teacherKeys: [normalizeTeacherKey(absenceModal.clase.teacher)],
@@ -4435,8 +4447,37 @@ END:VCALENDAR`;
     }, 3500); 
   };
 
-  const pendingAbsences = [];
-  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.studentVisible !== false);
+  const getAbsenceGestionDate = (gestion = {}) => {
+    if (gestion.absenceDate) return gestion.absenceDate;
+    const legacyMatch = String(gestion.details || '').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    return legacyMatch ? `${legacyMatch[3]}-${legacyMatch[2]}-${legacyMatch[1]}` : '';
+  };
+  const absenceTrackingItems = myGestiones
+    .filter(gestion => gestion.type === 'aviso_ausencia' && gestion.studentVisible !== false)
+    .map(gestion => {
+      const absenceDate = getAbsenceGestionDate(gestion);
+      const subject = gestion.absenceSubject || String(gestion.title || '').replace(/^Falta a clase:\s*/i, '') || 'Clase';
+      const wantsRecovery = typeof gestion.wantsRecovery === 'boolean'
+        ? gestion.wantsRecovery
+        : String(gestion.details || '').includes('(Aviso en plazo)');
+      const linkedTicket = recoveryTicketLedger.find(ticket => (
+        (ticket.absenceGestionId && ticket.absenceGestionId === gestion.id)
+        || (absenceDate && ticket.originalDate === absenceDate && normalizeTicketSubject(ticket.subject) === normalizeTicketSubject(subject))
+      )) || null;
+      const outcome = gestion.ticketOutcome || (linkedTicket ? 'generated' : (wantsRecovery ? 'awaiting_attendance' : 'not_requested'));
+      return { gestion, absenceDate, subject, wantsRecovery, linkedTicket, outcome };
+    })
+    .filter(item => {
+      if (item.linkedTicket?.isUsed || item.linkedTicket?.voided) return false;
+      if (item.linkedTicket && (!item.linkedTicket.validUntil || item.linkedTicket.validUntil >= todayStr)) return true;
+      if (item.absenceDate >= todayStr) return true;
+      const elapsedDays = Math.floor((Date.now() - new Date(`${item.absenceDate}T12:00:00`).getTime()) / 86400000);
+      if (item.wantsRecovery && ['awaiting_attendance', 'limit_reached', 'attended'].includes(item.outcome)) return Number.isFinite(elapsedDays) && elapsedDays <= 14;
+      return false;
+    })
+    .sort((left, right) => String(right.absenceDate || right.gestion.date || '').localeCompare(String(left.absenceDate || left.gestion.date || '')))
+    .slice(0, 6);
+  const pendingProcedures = myGestiones.filter(g => g.status === 'pendiente' && g.studentVisible !== false && g.type !== 'aviso_ausencia');
   const scheduledBajaGestion = myGestiones
     .filter(g => g.type === 'baja' && ['completado', 'programada', 'programado'].includes(String(g.status || '').toLowerCase()))
     .map(g => ({
@@ -4664,24 +4705,6 @@ END:VCALENDAR`;
     setGestionModal(gestionPayload);
   };
   
-  if (profile) {
-    effectiveMyClasses.forEach(clase => {
-      if (clase.exceptions) {
-        Object.keys(clase.exceptions).forEach(dateStr => {
-          if (dateStr >= todayStr) {
-            const status = clase.exceptions[dateStr][profile.id];
-            if (status === 'notified') {
-              pendingAbsences.push({
-                subject: clase.subject,
-                date: dateStr
-              });
-            }
-          }
-        });
-      }
-    });
-  }
-
   const getValidRecoveryDates = (dayOfWeekStr, recoveryTicket = null) => {
     const targetDay = parseInt(dayOfWeekStr);
     const validDates = [];
@@ -6318,23 +6341,60 @@ END:VCALENDAR`;
             </div>
             </>}
 
-            {(pendingProcedures.length > 0 || pendingAbsences.length > 0) && (
+            {(pendingProcedures.length > 0 || absenceTrackingItems.length > 0) && (
               <div className="bg-white rounded-3xl p-6 shadow-sm border border-zinc-200 mt-6">
                 <h3 className="font-black text-slate-800 uppercase tracking-tight text-lg mb-4 flex items-center gap-2">
                   <Clock className="w-5 h-5 text-amber-500"/> En Trámite
                 </h3>
                 <div className="space-y-3">
-                  {pendingAbsences.map((abs, i) => (
-                    <div key={`abs-${i}`} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
-                       <div>
-                         <p className="text-xs font-black uppercase text-slate-800 tracking-tight">Falta: {abs.subject}</p>
-                         <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">{formatDateSpanish(abs.date)}</p>
-                       </div>
-                       <span className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-amber-100 text-amber-700">
-                         Esperando Ticket
-                       </span>
-                    </div>
-                  ))}
+                  {absenceTrackingItems.map(item => {
+                    const ticketIsFuture = Boolean(item.linkedTicket?.validFrom && item.linkedTicket.validFrom > todayStr);
+                    const ticketIsActive = Boolean(item.linkedTicket && !ticketIsFuture && (!item.linkedTicket.validUntil || item.linkedTicket.validUntil >= todayStr));
+                    const beforeAbsence = Boolean(item.absenceDate && item.absenceDate >= todayStr);
+                    const statusLabel = !item.wantsRecovery
+                      ? 'Aviso registrado · sin ticket'
+                      : item.outcome === 'limit_reached'
+                        ? 'Aviso registrado · límite alcanzado'
+                        : item.outcome === 'attended'
+                          ? 'Asistencia registrada · sin ticket'
+                          : ticketIsFuture
+                            ? `Ticket generado · disponible ${formatDateSpanish(item.linkedTicket.validFrom)}`
+                            : ticketIsActive
+                              ? 'Ticket disponible'
+                              : beforeAbsence
+                                ? 'Aviso registrado · ticket solicitado'
+                                : 'Pendiente de validar por el profesor';
+                    const statusClass = ticketIsActive
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : !item.wantsRecovery || ['limit_reached', 'attended'].includes(item.outcome)
+                        ? 'bg-zinc-100 text-zinc-600'
+                        : 'bg-amber-100 text-amber-700';
+                    const explanation = !item.wantsRecovery
+                      ? 'El profesor ha recibido tu aviso. Esta falta no generará recuperación.'
+                      : ticketIsFuture
+                        ? `El ticket ya está creado y podrá canjearse del ${formatDateSpanish(item.linkedTicket.validFrom)} al ${formatDateSpanish(item.linkedTicket.validUntil)}.`
+                        : ticketIsActive
+                          ? `Ya puedes canjearlo en Recuperaciones${item.linkedTicket.validUntil ? ` hasta el ${formatDateSpanish(item.linkedTicket.validUntil)}` : ''}.`
+                          : beforeAbsence
+                            ? 'El ticket se generará cuando el profesor cierre la asistencia y será válido en el periodo indicado por la normativa.'
+                            : item.outcome === 'limit_reached'
+                              ? 'La ausencia quedó registrada, pero no generó ticket porque ya se había alcanzado el límite aplicable.'
+                              : item.outcome === 'attended'
+                                ? 'Finalmente constas como asistente, por lo que no se ha generado ticket.'
+                                : 'La ausencia ya se produjo. El ticket aparecerá cuando el profesor cierre la asistencia.';
+                    return (
+                      <div key={item.gestion.id} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl">
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-black uppercase text-slate-800 tracking-tight">Ausencia comunicada · {item.subject}</p>
+                            <p className="text-[10px] font-bold text-zinc-500 uppercase mt-1">{item.absenceDate ? formatDateSpanish(item.absenceDate) : 'Fecha no registrada'}{item.gestion.absenceTime ? ` · ${item.gestion.absenceTime}h` : ''}</p>
+                          </div>
+                          <span className={`text-[9px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg ${statusClass}`}>{statusLabel}</span>
+                        </div>
+                        <p className="mt-3 text-[11px] font-bold text-zinc-500 leading-relaxed">{explanation}</p>
+                      </div>
+                    );
+                  })}
                   {pendingProcedures.map(proc => (
                     <div key={proc.id} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl flex items-center justify-between">
                        <div>

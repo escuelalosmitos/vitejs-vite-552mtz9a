@@ -3648,6 +3648,24 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const targetUid = user.uid;
 
       const ticketPromises = currentSession.students.map(async (s) => {
+        const absenceGestion = gestiones.find(gestion => (
+          gestion.type === 'aviso_ausencia'
+          && String(gestion.studentId || '') === String(s.id || '')
+          && (!gestion.requestedClass || String(gestion.requestedClass) === String(currentSession.classId || ''))
+          && (
+            String(gestion.absenceDate || '') === String(date || '')
+            || String(gestion.details || '').includes(formatDateSpanish(date))
+          )
+        )) || null;
+        const settleAbsenceGestion = async payload => {
+          if (!absenceGestion) return;
+          await updateDoc(doc(db, 'artifacts', appId, 'gestiones', absenceGestion.id), {
+            status: 'completado',
+            attendanceResolvedAt: new Date().toISOString(),
+            ...payload
+          });
+        };
+
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
         if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !isAttendanceBlockedStudent(s, date)) {
           const isSummerTicket = isSummerRecoveryDate(date);
@@ -3655,10 +3673,11 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           if (isSummerTicket || monthTickets.length < 2) {
             const { validFrom, validUntil, recoveryPolicy } = generateTicketDates(date);
             const ticketId = Date.now().toString() + '-' + s.id;
+            const ticketRef = doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId);
             const studentEmail = String(
               globalStudents.find(student => String(student.id) === String(s.id))?.email || s.email || ''
             ).trim().toLowerCase();
-            await setDoc(doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId), {
+            await setDoc(ticketRef, {
               studentId: s.id,
               studentEmail,
               studentName: s.name,
@@ -3677,12 +3696,26 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               isUsed: false,
               recoveryPolicy,
               isSummerTicket,
+              absenceGestionId: absenceGestion?.id || '',
               createdAt: new Date().toISOString()
             });
+            await settleAbsenceGestion({
+              ticketOutcome: 'generated',
+              generatedTicketId: ticketId,
+              generatedTicketRefPath: ticketRef.path,
+              ticketValidFrom: validFrom,
+              ticketValidUntil: validUntil
+            });
+          } else {
+            await settleAbsenceGestion({ ticketOutcome: 'limit_reached' });
           }
+        } else if (!s.isRecovery && absenceGestion && s.originalException === 'notified_no_ticket') {
+          await settleAbsenceGestion({ ticketOutcome: 'not_requested' });
+        } else if (!s.isRecovery && absenceGestion && s.status === 'present') {
+          await settleAbsenceGestion({ ticketOutcome: 'attended' });
         }
         
-        if (s.isRecovery && s.status === 'present') {
+        if (s.isRecovery && ['present', 'absent', 'notified'].includes(s.status) && nonComputableReason !== 'auto_cancelled_all_notified') {
           const linkedTicket = tickets.find(t => (
             t.studentId === s.id
             && (

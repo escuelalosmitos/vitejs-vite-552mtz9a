@@ -11977,63 +11977,6 @@ ${valueOrDash(comments.privateNote)}`,
     const [classStartDate, setClassStartDate] = useState(editStudentModal.classStartDate || '');
     
     const [saving, setSaving] = useState(false);
-    const [avatarUrl, setAvatarUrl] = useState('');
-    const [avatarError, setAvatarError] = useState('');
-    const [removingAvatar, setRemovingAvatar] = useState(false);
-
-    useEffect(() => {
-      let active = true;
-      let localObjectUrl = '';
-      setAvatarUrl('');
-      setAvatarError('');
-      if (!storage || !editStudentModal.avatarPath) return undefined;
-
-      getBlob(storageRef(storage, editStudentModal.avatarPath), 320 * 1024)
-        .then(blob => {
-          if (!active) return;
-          localObjectUrl = URL.createObjectURL(blob);
-          setAvatarUrl(localObjectUrl);
-        })
-        .catch(error => {
-          if (!active) return;
-          console.error('No se ha podido cargar la foto del alumno:', error);
-          setAvatarError('La ficha tiene una foto asociada, pero no se ha podido cargar.');
-        });
-
-      return () => {
-        active = false;
-        if (localObjectUrl) URL.revokeObjectURL(localObjectUrl);
-      };
-    }, [storage, editStudentModal.avatarPath]);
-
-    const handleRemoveProfilePhoto = async () => {
-      if (!editStudentModal.avatarPath || !storage) return;
-      if (!window.confirm(`¿Retirar la foto de perfil de ${editStudentModal.alias || editStudentModal.name || 'este alumno'}?`)) return;
-      setRemovingAvatar(true);
-      try {
-        await deleteObject(storageRef(storage, editStudentModal.avatarPath)).catch(error => {
-          if (error?.code !== 'storage/object-not-found') throw error;
-        });
-        await updateDoc(doc(db, 'artifacts', appId, 'students', editStudentModal.id), {
-          avatarPath: deleteField(),
-          avatarUpdatedAt: deleteField()
-        });
-        setEditStudentModal(previous => {
-          if (!previous) return previous;
-          const next = { ...previous };
-          delete next.avatarPath;
-          delete next.avatarUpdatedAt;
-          return next;
-        });
-        setAvatarUrl('');
-        alert('Foto de perfil retirada. El alumno volverá a ver la corchea.');
-      } catch (error) {
-        console.error('No se ha podido retirar la foto del alumno:', error);
-        alert('No se ha podido retirar la foto de perfil. Revisa las reglas de Storage.');
-      } finally {
-        setRemovingAvatar(false);
-      }
-    };
 
     const handleSave = async () => {
       if (!name.trim()) return alert("El nombre principal es obligatorio.");
@@ -12080,23 +12023,6 @@ ${valueOrDash(comments.privateNote)}`,
           <div className="flex items-center gap-3 text-slate-800 mb-6">
             <Pencil className="w-8 h-8 text-black" />
             <h2 className="text-xl font-black uppercase tracking-tight">Editar Alumno</h2>
-          </div>
-          <div className="mb-6 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 shrink-0 rounded-full overflow-hidden bg-black text-white flex items-center justify-center border-2 border-white shadow-md">
-                {avatarUrl ? <img src={avatarUrl} alt={`Foto de ${editStudentModal.name || 'alumno'}`} className="w-full h-full object-cover" /> : <Music className="w-7 h-7" />}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Foto de perfil</p>
-                <p className="text-xs font-bold text-zinc-600 mt-1">{editStudentModal.avatarPath ? (avatarUrl ? 'Foto cargada' : 'Cargando fotografía…') : 'Utiliza la corchea predeterminada'}</p>
-                {editStudentModal.avatarPath && (
-                  <button type="button" onClick={handleRemoveProfilePhoto} disabled={removingAvatar} className="mt-2 text-[10px] font-black uppercase tracking-widest text-rose-600 hover:text-rose-800 disabled:opacity-50">
-                    {removingAvatar ? 'Retirando…' : 'Retirar fotografía'}
-                  </button>
-                )}
-              </div>
-            </div>
-            {avatarError && <p className="mt-3 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">{avatarError}</p>}
           </div>
           <div className="space-y-4 mb-6">
             <div>
@@ -12146,7 +12072,13 @@ ${valueOrDash(comments.privateNote)}`,
     if (!studentDossierModal) return null;
     const [section, setSection] = useState('summary');
     const [dossierGestiones, setDossierGestiones] = useState(null);
-    const [dossierHistoryLoading, setDossierHistoryLoading] = useState(true);
+    const [dossierHistoryLoading, setDossierHistoryLoading] = useState(false);
+    const [dossierHistoryLoaded, setDossierHistoryLoaded] = useState(false);
+    const [avatarUrl, setAvatarUrl] = useState('');
+    const [avatarError, setAvatarError] = useState('');
+    const [removingAvatar, setRemovingAvatar] = useState(false);
+    const [notesText, setNotesText] = useState(studentDossierModal.internalNotes || '');
+    const [savingNotes, setSavingNotes] = useState(false);
     const student = students.find(item => item.id === studentDossierModal.id) || studentDossierModal;
     const studentEmail = String(student.email || '').trim().toLowerCase();
     const matchesStudent = record => (
@@ -12160,9 +12092,37 @@ ${valueOrDash(comments.privateNote)}`,
     const fallbackGestiones = gestiones
       .filter(matchesStudent)
       .sort((left, right) => new Date(right.date || right.updatedAt || 0) - new Date(left.date || left.updatedAt || 0));
-    const studentGestiones = dossierGestiones || fallbackGestiones;
+    const studentGestiones = dossierHistoryLoaded && dossierGestiones ? dossierGestiones : fallbackGestiones;
 
     useEffect(() => {
+      setNotesText(student.internalNotes || '');
+    }, [student.id, student.internalNotes]);
+
+    useEffect(() => {
+      let active = true;
+      let localObjectUrl = '';
+      setAvatarUrl('');
+      setAvatarError('');
+      if (!storage || !student.avatarPath) return undefined;
+      getBlob(storageRef(storage, student.avatarPath), 320 * 1024)
+        .then(blob => {
+          if (!active) return;
+          localObjectUrl = URL.createObjectURL(blob);
+          setAvatarUrl(localObjectUrl);
+        })
+        .catch(error => {
+          if (!active) return;
+          console.error('No se ha podido cargar la foto del alumno:', error);
+          setAvatarError('La fotografía está asociada, pero no se ha podido cargar.');
+        });
+      return () => {
+        active = false;
+        if (localObjectUrl) URL.revokeObjectURL(localObjectUrl);
+      };
+    }, [storage, student.id, student.avatarPath, student.avatarUpdatedAt]);
+
+    useEffect(() => {
+      if (section !== 'history' || dossierHistoryLoaded) return undefined;
       let active = true;
       setDossierHistoryLoading(true);
       const gestionesRef = collection(db, 'artifacts', appId, 'gestiones');
@@ -12178,6 +12138,7 @@ ${valueOrDash(comments.privateNote)}`,
           const merged = new Map();
           snapshots.forEach(snapshot => snapshot.docs.forEach(documentSnapshot => merged.set(documentSnapshot.id, { id: documentSnapshot.id, ...documentSnapshot.data() })));
           setDossierGestiones([...merged.values()].sort((left, right) => new Date(right.date || right.updatedAt || 0) - new Date(left.date || left.updatedAt || 0)));
+          setDossierHistoryLoaded(true);
         })
         .catch(error => {
           console.error('No se ha podido cargar el histórico específico del alumno:', error);
@@ -12188,7 +12149,38 @@ ${valueOrDash(comments.privateNote)}`,
         });
 
       return () => { active = false; };
-    }, [student.id, studentEmail]);
+    }, [section, dossierHistoryLoaded, student.id, studentEmail]);
+
+    const saveInternalNotes = async () => {
+      setSavingNotes(true);
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'students', student.id), { internalNotes: notesText, updatedAt: new Date().toISOString() });
+        alert('Anotaciones internas guardadas.');
+      } catch (error) {
+        alert('No se han podido guardar las anotaciones.');
+      } finally {
+        setSavingNotes(false);
+      }
+    };
+
+    const removeDossierAvatar = async () => {
+      if (!student.avatarPath || !storage) return;
+      if (!window.confirm(`¿Retirar la foto de perfil de ${student.alias || student.name || 'este alumno'}?`)) return;
+      setRemovingAvatar(true);
+      try {
+        await deleteObject(storageRef(storage, student.avatarPath)).catch(error => {
+          if (error?.code !== 'storage/object-not-found') throw error;
+        });
+        await updateDoc(doc(db, 'artifacts', appId, 'students', student.id), { avatarPath: deleteField(), avatarUpdatedAt: deleteField() });
+        setAvatarUrl('');
+        alert('Foto de perfil retirada.');
+      } catch (error) {
+        console.error('No se ha podido retirar la foto del alumno:', error);
+        alert('No se ha podido retirar la foto de perfil.');
+      } finally {
+        setRemovingAvatar(false);
+      }
+    };
     const recoveryGestiones = studentGestiones.filter(gestion => gestion.type === 'recuperacion');
     const openRecoveries = recoveryGestiones.filter(gestion => (
       gestion.status === 'pendiente'
@@ -12268,14 +12260,18 @@ ${valueOrDash(comments.privateNote)}`,
         <div className="bg-zinc-50 rounded-3xl max-w-5xl w-full shadow-2xl relative my-3 sm:my-6 max-h-[calc(100vh-1.5rem)] overflow-y-auto">
           <button onClick={() => setStudentDossierModal(null)} className="absolute top-4 right-4 z-10 text-zinc-400 hover:text-black bg-white border border-zinc-200 p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
 
-          <div className="bg-slate-950 text-white rounded-t-3xl p-6 sm:p-8 pr-16">
+          <div className="bg-black text-white rounded-t-3xl p-6 sm:p-8 pr-16">
             <div className="flex items-start gap-4">
-              <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center shrink-0"><User className="w-6 h-6"/></div>
+              <div className="w-16 h-16 rounded-2xl overflow-hidden bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+                {avatarUrl ? <img src={avatarUrl} alt={`Foto de ${student.name || 'alumno'}`} className="w-full h-full object-cover"/> : <Music className="w-7 h-7 text-white"/>}
+              </div>
               <div className="min-w-0">
                 <p className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Ficha del alumno</p>
-                <h2 className="text-xl sm:text-2xl font-black tracking-tight truncate">{student.useAlias && student.alias ? student.alias : student.name}</h2>
+                <h2 className="text-xl sm:text-2xl font-black tracking-tight truncate text-white">{student.useAlias && student.alias ? student.alias : student.name}</h2>
                 {student.useAlias && student.alias && <p className="text-xs font-bold text-zinc-400 mt-1">Titular: {student.name}</p>}
                 <p className="text-xs font-bold text-zinc-400 mt-1 truncate">{student.email || 'Sin correo de acceso'}</p>
+                {student.avatarPath && <button type="button" onClick={removeDossierAvatar} disabled={removingAvatar} className="mt-2 text-[9px] font-black uppercase tracking-widest text-rose-300 hover:text-white disabled:opacity-50">{removingAvatar ? 'Retirando…' : 'Retirar fotografía'}</button>}
+                {avatarError && <p className="mt-2 text-[9px] font-bold text-amber-300">{avatarError}</p>}
               </div>
             </div>
           </div>
@@ -12306,9 +12302,9 @@ ${valueOrDash(comments.privateNote)}`,
                     <div className="space-y-3 text-xs font-bold text-zinc-600">
                       <div className="flex justify-between gap-4"><span>Estado operativo</span><span className="uppercase text-slate-900">{String(operationalStatus || '').replace(/_/g, ' ')}</span></div>
                       <div className="flex justify-between gap-4"><span>Portal</span><span className={student.claimed ? 'text-emerald-700' : 'text-amber-700'}>{student.claimed ? 'Activado' : 'Pendiente'}</span></div>
-                      <div className="flex justify-between gap-4"><span>Mitobox</span><span>{student.hasMitobox ? 'Activo' : 'No'}</span></div>
-                      <div className="flex justify-between gap-4"><span>Mitoverso</span><span>{student.hasMitoverso ? 'Activo' : 'No'}</span></div>
-                      <div className="flex justify-between gap-4"><span>Gymusik</span><span>{student.hasGymusik ? 'Activo' : 'No'}</span></div>
+                      <div className="flex items-center justify-between gap-4"><span>Mitobox</span><button type="button" onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${student.hasMitobox ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-500'}`}>{student.hasMitobox ? 'Activo' : 'Desactivado'}</button></div>
+                      <div className="flex items-center justify-between gap-4"><span>Mitoverso</span><button type="button" onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700' : 'bg-zinc-100 text-zinc-500'}`}>{student.hasMitoverso ? 'Activo' : 'Desactivado'}</button></div>
+                      <div className="flex justify-between gap-4"><span>Gymusik</span><span className="uppercase text-emerald-700">{{ preenrolled: 'Preinscrito', active: 'Activo', paused: 'En pausa', cancelled: 'Baja' }[student.gymusikStatus] || (student.hasGymusik ? 'Activo' : 'No inscrito')}</span></div>
                     </div>
                   </section>
 
@@ -12320,11 +12316,20 @@ ${valueOrDash(comments.privateNote)}`,
                     </div>
                   </section>
                 </div>
+
+                <section className="rounded-2xl bg-white border border-zinc-200 p-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3"><div><h3 className="text-xs font-black uppercase tracking-widest text-slate-900">Anotaciones internas</h3><p className="text-[10px] font-bold text-zinc-500 mt-1">Información privada para coordinación y profesorado.</p></div><button type="button" onClick={saveInternalNotes} disabled={savingNotes} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50">{savingNotes ? 'Guardando…' : 'Guardar anotaciones'}</button></div>
+                  <textarea value={notesText} onChange={event => setNotesText(event.target.value)} placeholder="Anotaciones internas del alumno…" className="w-full min-h-[120px] p-4 bg-zinc-50 border-2 border-zinc-200 rounded-2xl text-sm font-medium text-slate-800 outline-none focus:border-indigo-500 resize-y"/>
+                </section>
               </div>
             )}
 
             {section === 'recoveries' && (
               <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <button type="button" onClick={() => grantRecoveryTicket(student)} className="flex-1 px-4 py-3 bg-amber-100 text-amber-800 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-amber-200"><Gift className="w-4 h-4 inline mr-1"/> Otorgar tickets</button>
+                  <button type="button" onClick={() => resetStudentTickets(student)} className="flex-1 px-4 py-3 bg-red-50 text-red-700 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white"><Ticket className="w-4 h-4 inline mr-1"/> Anular tickets pendientes</button>
+                </div>
                 <section>
                   <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-3">Solicitudes y recuperaciones programadas</h3>
                   {renderGestionRows(openRecoveries, 'No hay recuperaciones pendientes ni futuras.')}
@@ -12344,10 +12349,14 @@ ${valueOrDash(comments.privateNote)}`,
             )}
 
             {section === 'procedures' && (
-              <section>
-                <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-3">Trámites y gestiones abiertas</h3>
-                {renderGestionRows(openProcedures, 'No hay trámites pendientes para este alumno.')}
-              </section>
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button type="button" onClick={() => { setStudentDossierModal(null); setChangeClassModal(student); }} className="px-4 py-3 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"><ArrowRightLeft className="w-4 h-4 inline mr-1"/> Cambio de clase</button>
+                  <button type="button" onClick={() => { setStudentDossierModal(null); setTemporaryRelocationModal(student); }} className="px-4 py-3 bg-violet-100 text-violet-800 rounded-xl text-[10px] font-black uppercase tracking-widest"><Clock className="w-4 h-4 inline mr-1"/> Recolocación temporal</button>
+                </div>
+                <section><h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-3">Trámites y gestiones abiertas</h3>{renderGestionRows(openProcedures, 'No hay trámites pendientes para este alumno.')}</section>
+                {['sin_plaza', 'impago', 'mantenimiento'].includes(operationalStatus) && <section className="rounded-2xl border border-red-200 bg-red-50 p-5"><h3 className="text-xs font-black uppercase tracking-widest text-red-900">Zona administrativa sensible</h3><p className="text-xs font-bold text-red-700 mt-2">La baja inmediata elimina sus plazas y cancela los servicios vinculados.</p><button type="button" onClick={() => { setStudentDossierModal(null); executeImmediateFinalBajaFromCrm(student.id, student.name); }} className="mt-4 px-4 py-3 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"><UserMinus className="w-4 h-4 inline mr-1"/> Baja inmediata y definitiva</button></section>}
+              </div>
             )}
 
             {section === 'history' && (
@@ -14879,13 +14888,12 @@ ${startDateWarning}
 
             <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse table-auto">
+                <table className="w-full text-left border-collapse table-fixed">
                   <thead>
                     <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                      <th className="p-4 font-black w-[30%]">Alumno</th>
-                      <th className="p-4 font-black text-center w-[20%]">Extras / Tickets</th>
-                      <th className="p-4 font-black text-center w-[20%]">Acciones Admin</th>
-                      <th className="p-4 font-black text-right w-[30%]">Estado</th>
+                      <th className="p-4 font-black w-[55%]">Alumno</th>
+                      <th className="p-4 font-black text-center w-[20%]">Acciones</th>
+                      <th className="p-4 font-black text-right w-[25%]">Estado</th>
                     </tr>
                   </thead>
                   <tbody className="text-sm font-medium text-slate-700">
@@ -14910,7 +14918,7 @@ ${startDateWarning}
                       });
 
                       if (filtered.length === 0) {
-                        return <tr><td colSpan="4" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
+                        return <tr><td colSpan="3" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
                       }
 
                       return filtered.map(student => {
@@ -14995,52 +15003,13 @@ ${startDateWarning}
                             )}
                           </td>
                           <td className="p-4 text-center">
-                            <div className="flex items-center justify-center gap-2">
-                              <button onClick={() => setNotesModal(student)} className="p-2 bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white rounded-lg transition-all" title="Notas Internas">
-                                <FileText className="w-4 h-4" />
-                              </button>
-                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-colors ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700' : 'bg-zinc-100 text-zinc-400'}`} title="Mitoverso">
-                                M+
-                              </button>
-                              <button onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-colors ${student.hasMitobox ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`} title="Mitobox">
-                                MB
-                              </button>
-                              {(() => {
-                                const ticketStats = ticketStatsByStudent[student.id] || { total: 0, active: 0, future: 0, used: 0, expired: 0, pending: 0, scheduled: 0, committed: 0, free: 0 };
-                                const hasOvercommittedTickets = ticketStats.committed > ticketStats.active;
-                                return (
-                                  <span className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[9px] font-black uppercase tracking-widest ${hasOvercommittedTickets ? 'bg-red-100 text-red-800' : ticketStats.total > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-400'}`} title={`Tickets generados: ${ticketStats.total} · Activos hoy: ${ticketStats.active} · Verano activos: ${ticketStats.summerActive || 0} · Libres reales: ${ticketStats.free} · Comprometidos: ${ticketStats.committed} (${ticketStats.pending} pendientes + ${ticketStats.scheduled} programados) · Futuros: ${ticketStats.future} · Verano futuros: ${ticketStats.summerFuture || 0} · Usados/anulados: ${ticketStats.used} · Caducados: ${ticketStats.expired}`}>
-                                    <Ticket className="w-3 h-3"/> {ticketStats.free}/{ticketStats.active}
-                                  </span>
-                                );
-                              })()}
-                            </div>
-                          </td>
-                          <td className="p-4 text-center">
-                            <div className="flex items-center justify-center gap-2">
-                              <button onClick={() => setStudentDossierModal(student)} className="p-2.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-600 hover:text-white transition-colors" title="Ver ficha completa del alumno">
-                                <ClipboardList className="w-4 h-4"/>
+                            <div className="flex flex-wrap items-center justify-center gap-2">
+                              <button onClick={() => setStudentDossierModal(student)} className="px-3 py-2.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-600 hover:text-white transition-colors text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-1.5" title="Ver ficha completa del alumno">
+                                <ClipboardList className="w-4 h-4"/> Ficha
                               </button>
                               <button onClick={() => setEditStudentModal(student)} className="p-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
                                 <Pencil className="w-4 h-4"/>
                               </button>
-                              <button onClick={() => setChangeClassModal(student)} className="p-2.5 bg-zinc-800 text-white rounded-lg hover:bg-black transition-colors" title="Programar cambio de clase">
-                                <ArrowRightLeft className="w-4 h-4"/>
-                              </button>
-                              <button onClick={() => setTemporaryRelocationModal(student)} className="p-2.5 bg-violet-100 text-violet-700 rounded-lg hover:bg-violet-600 hover:text-white transition-colors" title="Recolocar temporalmente sin liberar su plaza formal">
-                                <Clock className="w-4 h-4"/>
-                              </button>
-                              <button onClick={() => grantRecoveryTicket(student)} className="p-2.5 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors" title="Regalar Ticket de Recuperación">
-                                <Gift className="w-4 h-4"/>
-                              </button>
-                              <button onClick={() => resetStudentTickets(student)} className="p-2.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-600 hover:text-white transition-colors" title="Anular tickets pendientes">
-                                <Ticket className="w-4 h-4"/>
-                              </button>
-                              {['sin_plaza', 'impago', 'mantenimiento'].includes(operationalStatus) && (
-                                <button onClick={() => executeImmediateFinalBajaFromCrm(student.id, student.name)} className="p-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors" title="Baja inmediata y definitiva">
-                                  <UserMinus className="w-4 h-4"/>
-                                </button>
-                              )}
                             </div>
                           </td>
                           <td className="p-4 text-right">

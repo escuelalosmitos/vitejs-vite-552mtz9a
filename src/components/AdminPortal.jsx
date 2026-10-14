@@ -2389,6 +2389,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [isImporting, setIsImporting] = useState(false);
   const [centerEditor, setCenterEditor] = useState(null);
   const [savingCenter, setSavingCenter] = useState(false);
+  const [showPastSchoolDates, setShowPastSchoolDates] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -3085,6 +3086,16 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const todayStr = useMemo(() => getTodayLocalString(), [pollClock]);
   const nextMonthStartStr = useMemo(() => getNextMonthStartString(todayStr), [todayStr]);
   const nextMonthEndStr = useMemo(() => getNextMonthEndString(todayStr), [todayStr]);
+  const getVisibleSchoolDates = dates => [...(dates || [])]
+    .filter(date => showPastSchoolDates || String(date || '') >= todayStr)
+    .sort();
+  const pastSchoolDatesCount = useMemo(() => (
+    [
+      ...(settings.vacaciones || []),
+      ...(settings.festivos || []),
+      ...centers.flatMap(center => center.holidays || [])
+    ].filter(date => String(date || '') < todayStr).length
+  ), [settings.vacaciones, settings.festivos, centers, todayStr]);
 
   const operationalClasses = useMemo(() => {
     return allClasses.filter(c => isOperationalClass(c, todayStr));
@@ -16939,7 +16950,7 @@ ${startDateWarning}
                     <section className="border-t border-emerald-100 pt-6">
                       <h5 className="text-[10px] font-black uppercase tracking-widest text-emerald-800 mb-3">Festivos locales</h5>
                       <div className="flex gap-2"><input id="centerEditorHolidayInput" type="date" className="flex-1 p-3 bg-white border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none"/><button type="button" onClick={() => { const input = document.getElementById('centerEditorHolidayInput'); addHolidayToCenterEditor(input?.value); if (input) input.value = ''; }} className="px-5 py-3 bg-emerald-600 text-white rounded-xl"><Plus className="w-4 h-4"/></button></div>
-                      <div className="flex flex-wrap gap-2 mt-3">{(centerEditor.holidays || []).sort().map(date => <span key={date} className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-emerald-100 rounded-lg text-xs font-bold text-emerald-900">{formatDateSpanish(date)}<button type="button" onClick={() => setCenterEditor({...centerEditor, holidays: centerEditor.holidays.filter(item => item !== date)})} className="text-red-500"><X className="w-3 h-3"/></button></span>)}</div>
+                      <div className="flex flex-wrap gap-2 mt-3">{getVisibleSchoolDates(centerEditor.holidays).map(date => <span key={date} className={`inline-flex items-center gap-2 px-3 py-2 bg-white border rounded-lg text-xs font-bold ${date < todayStr ? 'border-zinc-200 text-zinc-500' : 'border-emerald-100 text-emerald-900'}`}>{formatDateSpanish(date)}{date < todayStr && <span className="text-[8px] font-black uppercase tracking-widest">Pasado</span>}<button type="button" onClick={() => setCenterEditor({...centerEditor, holidays: centerEditor.holidays.filter(item => item !== date)})} className="text-red-500"><X className="w-3 h-3"/></button></span>)}</div>
                     </section>
 
                     <div className="flex flex-col sm:flex-row gap-3">
@@ -16953,7 +16964,10 @@ ${startDateWarning}
 
             {/* CALENDARIO ESCOLAR */}
             <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
-              <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
+                {pastSchoolDatesCount > 0 && <button type="button" onClick={() => setShowPastSchoolDates(value => !value)} className="self-start sm:self-auto px-3 py-2 bg-zinc-100 text-zinc-600 hover:bg-black hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors">{showPastSchoolDates ? 'Ocultar histórico' : `Ver histórico · ${pastSchoolDatesCount}`}</button>}
+              </div>
               <div className="mb-5 bg-purple-50 border border-purple-100 text-purple-900 rounded-2xl p-4 text-xs font-bold leading-relaxed">
                 Las fechas marcadas como vacaciones cierran la escuela, pero no generan automáticamente horas para todo el profesorado. Solo se computan cuando coinciden con sus días habituales de trabajo, y su valor se calcula según la media de jornada de los 11 meses anteriores o del historial disponible.
               </div>
@@ -16971,26 +16985,29 @@ ${startDateWarning}
                 <div>
                   <h4 className="font-black text-purple-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><Palmtree className="w-3 h-3"/> Vacaciones</h4>
                   <div className="space-y-1">
-                    {(settings.vacaciones || []).sort().map(v => (
-                      <div key={v} className="flex justify-between items-center p-2 bg-purple-50 rounded-lg text-xs font-bold text-purple-900">{formatDateSpanish(v)} <button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-purple-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-purple-500 hover:text-red-500"/></button></div>
+                    {getVisibleSchoolDates(settings.vacaciones).map(v => (
+                      <div key={v} className={`flex justify-between items-center p-2 rounded-lg text-xs font-bold ${v < todayStr ? 'bg-zinc-50 text-zinc-500' : 'bg-purple-50 text-purple-900'}`}><span>{formatDateSpanish(v)}{v < todayStr && <span className="ml-2 text-[8px] font-black uppercase tracking-widest">Pasado</span>}</span><button onClick={() => {const s = {...settings, vacaciones: settings.vacaciones.filter(x => x !== v)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-purple-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-purple-500 hover:text-red-500"/></button></div>
                     ))}
+                    {getVisibleSchoolDates(settings.vacaciones).length === 0 && <p className="text-[10px] font-bold text-zinc-400 py-2">No hay fechas próximas.</p>}
                   </div>
                 </div>
                 <div>
                   <h4 className="font-black text-amber-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><PartyPopper className="w-3 h-3"/> Festivos (Global)</h4>
                   <div className="space-y-1">
-                    {(settings.festivos || []).sort().map(f => (
-                      <div key={f} className="flex justify-between items-center p-2 bg-amber-50 rounded-lg text-xs font-bold text-amber-900">{formatDateSpanish(f)} <button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-amber-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-amber-500 hover:text-red-500"/></button></div>
+                    {getVisibleSchoolDates(settings.festivos).map(f => (
+                      <div key={f} className={`flex justify-between items-center p-2 rounded-lg text-xs font-bold ${f < todayStr ? 'bg-zinc-50 text-zinc-500' : 'bg-amber-50 text-amber-900'}`}><span>{formatDateSpanish(f)}{f < todayStr && <span className="ml-2 text-[8px] font-black uppercase tracking-widest">Pasado</span>}</span><button onClick={() => {const s = {...settings, festivos: settings.festivos.filter(x => x !== f)}; setSettings(s); saveGlobalSettings(s);}} className="p-1 hover:bg-amber-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-amber-500 hover:text-red-500"/></button></div>
                     ))}
+                    {getVisibleSchoolDates(settings.festivos).length === 0 && <p className="text-[10px] font-bold text-zinc-400 py-2">No hay fechas próximas.</p>}
                   </div>
                 </div>
                 {centers.map(center => (
                   <div key={center.id}>
                     <h4 className="font-black text-blue-600 uppercase tracking-widest text-[10px] mb-2 flex items-center gap-1"><MapPin className="w-3 h-3"/> {center.name}</h4>
                     <div className="space-y-1">
-                      {(center.holidays || []).sort().map(f => (
-                        <div key={f} className="flex justify-between items-center p-2 bg-blue-50 rounded-lg text-xs font-bold text-blue-900">{formatDateSpanish(f)} <button onClick={() => { const nextCenters = centers.map(item => item.id === center.id ? {...item, holidays: (item.holidays || []).filter(date => date !== f)} : item); const s = {...settings, centers: nextCenters}; setSettings(s); saveGlobalSettings(s); }} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
+                      {getVisibleSchoolDates(center.holidays).map(f => (
+                        <div key={f} className={`flex justify-between items-center p-2 rounded-lg text-xs font-bold ${f < todayStr ? 'bg-zinc-50 text-zinc-500' : 'bg-blue-50 text-blue-900'}`}><span>{formatDateSpanish(f)}{f < todayStr && <span className="ml-2 text-[8px] font-black uppercase tracking-widest">Pasado</span>}</span><button onClick={() => { const nextCenters = centers.map(item => item.id === center.id ? {...item, holidays: (item.holidays || []).filter(date => date !== f)} : item); const s = {...settings, centers: nextCenters}; setSettings(s); saveGlobalSettings(s); }} className="p-1 hover:bg-blue-100 rounded transition-colors"><Trash2 className="w-3 h-3 text-blue-500 hover:text-red-500"/></button></div>
                       ))}
+                      {getVisibleSchoolDates(center.holidays).length === 0 && <p className="text-[10px] font-bold text-zinc-400 py-2">No hay fechas próximas.</p>}
                     </div>
                   </div>
                 ))}

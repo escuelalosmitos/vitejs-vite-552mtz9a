@@ -4464,15 +4464,18 @@ END:VCALENDAR`;
         (ticket.absenceGestionId && ticket.absenceGestionId === gestion.id)
         || (absenceDate && ticket.originalDate === absenceDate && normalizeTicketSubject(ticket.subject) === normalizeTicketSubject(subject))
       )) || null;
-      const outcome = gestion.ticketOutcome || (linkedTicket ? 'generated' : (wantsRecovery ? 'awaiting_attendance' : 'not_requested'));
+      const ticketVoidedForAttendance = linkedTicket?.voided === true && linkedTicket?.voidReason === 'attendance_confirmed';
+      const outcome = ticketVoidedForAttendance
+        ? 'attended'
+        : (gestion.ticketOutcome || (linkedTicket ? 'generated' : (wantsRecovery ? 'awaiting_attendance' : 'not_requested')));
       return { gestion, absenceDate, subject, wantsRecovery, linkedTicket, outcome };
     })
     .filter(item => {
-      if (item.linkedTicket?.isUsed || item.linkedTicket?.voided) return false;
+      if ((item.linkedTicket?.isUsed || item.linkedTicket?.voided) && !['attended', 'attended_ticket_already_used'].includes(item.outcome)) return false;
       if (item.linkedTicket && (!item.linkedTicket.validUntil || item.linkedTicket.validUntil >= todayStr)) return true;
       if (item.absenceDate >= todayStr) return true;
       const elapsedDays = Math.floor((Date.now() - new Date(`${item.absenceDate}T12:00:00`).getTime()) / 86400000);
-      if (item.wantsRecovery && ['awaiting_attendance', 'limit_reached', 'attended'].includes(item.outcome)) return Number.isFinite(elapsedDays) && elapsedDays <= 14;
+      if (item.wantsRecovery && ['awaiting_attendance', 'limit_reached', 'attended', 'attended_ticket_already_used'].includes(item.outcome)) return Number.isFinite(elapsedDays) && elapsedDays <= 14;
       return false;
     })
     .sort((left, right) => String(right.absenceDate || right.gestion.date || '').localeCompare(String(left.absenceDate || left.gestion.date || '')))
@@ -6348,13 +6351,16 @@ END:VCALENDAR`;
                 </h3>
                 <div className="space-y-3">
                   {absenceTrackingItems.map(item => {
-                    const ticketIsFuture = Boolean(item.linkedTicket?.validFrom && item.linkedTicket.validFrom > todayStr);
-                    const ticketIsActive = Boolean(item.linkedTicket && !ticketIsFuture && (!item.linkedTicket.validUntil || item.linkedTicket.validUntil >= todayStr));
+                    const linkedTicketIsUsable = Boolean(item.linkedTicket && !item.linkedTicket.isUsed && !item.linkedTicket.voided);
+                    const ticketIsFuture = Boolean(linkedTicketIsUsable && item.linkedTicket?.validFrom && item.linkedTicket.validFrom > todayStr);
+                    const ticketIsActive = Boolean(linkedTicketIsUsable && !ticketIsFuture && (!item.linkedTicket.validUntil || item.linkedTicket.validUntil >= todayStr));
                     const beforeAbsence = Boolean(item.absenceDate && item.absenceDate >= todayStr);
                     const statusLabel = !item.wantsRecovery
                       ? 'Aviso registrado · sin ticket'
                       : item.outcome === 'limit_reached'
                         ? 'Aviso registrado · límite alcanzado'
+                        : item.outcome === 'attended_ticket_already_used'
+                          ? 'Asistencia registrada · requiere revisión'
                         : item.outcome === 'attended'
                           ? 'Asistencia registrada · sin ticket'
                           : ticketIsFuture
@@ -6366,11 +6372,17 @@ END:VCALENDAR`;
                                 : 'Pendiente de validar por el profesor';
                     const statusClass = ticketIsActive
                       ? 'bg-emerald-100 text-emerald-700'
+                      : item.outcome === 'attended_ticket_already_used'
+                        ? 'bg-red-100 text-red-700'
                       : !item.wantsRecovery || ['limit_reached', 'attended'].includes(item.outcome)
                         ? 'bg-zinc-100 text-zinc-600'
                         : 'bg-amber-100 text-amber-700';
                     const explanation = !item.wantsRecovery
                       ? 'El profesor ha recibido tu aviso. Esta falta no generará recuperación.'
+                      : item.outcome === 'attended_ticket_already_used'
+                        ? 'Finalmente constas como asistente. Administración está revisando una incidencia relacionada con este ticket.'
+                      : item.outcome === 'attended'
+                        ? 'Finalmente constas como asistente, por lo que no se ha generado ticket.'
                       : ticketIsFuture
                         ? `El ticket ya está creado y podrá canjearse del ${formatDateSpanish(item.linkedTicket.validFrom)} al ${formatDateSpanish(item.linkedTicket.validUntil)}.`
                         : ticketIsActive
@@ -6379,9 +6391,7 @@ END:VCALENDAR`;
                             ? 'El ticket se generará cuando el profesor cierre la asistencia y será válido en el periodo indicado por la normativa.'
                             : item.outcome === 'limit_reached'
                               ? 'La ausencia quedó registrada, pero no generó ticket porque ya se había alcanzado el límite aplicable.'
-                              : item.outcome === 'attended'
-                                ? 'Finalmente constas como asistente, por lo que no se ha generado ticket.'
-                                : 'La ausencia ya se produjo. El ticket aparecerá cuando el profesor cierre la asistencia.';
+                              : 'La ausencia ya se produjo. El ticket aparecerá cuando el profesor cierre la asistencia.';
                     return (
                       <div key={item.gestion.id} className="p-4 bg-zinc-50 border border-zinc-100 rounded-2xl">
                         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">

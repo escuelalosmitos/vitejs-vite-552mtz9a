@@ -7,7 +7,7 @@ import {
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
   Megaphone, Send, Link as LinkIcon, ChevronLeft, ChevronRight
 } from 'lucide-react';
-import { collection, query, where, documentId, getDoc, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
+import { collection, query, where, documentId, getDoc, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction, writeBatch } from 'firebase/firestore';
 import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
 import GymusikTeacher from './GymusikTeacher';
 
@@ -3646,8 +3646,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const effectiveNotesUpdatedByName = notesUpdatePayload.notesUpdatedByName || currentSession.notesUpdatedByName || '';
 
       const targetUid = user.uid;
+      const attendanceSavedAt = new Date().toISOString();
+      const attendanceBatch = writeBatch(db);
 
-      const ticketPromises = currentSession.students.map(async (s) => {
+      currentSession.students.forEach((s) => {
         const absenceGestion = gestiones.find(gestion => (
           gestion.type === 'aviso_ausencia'
           && String(gestion.studentId || '') === String(s.id || '')
@@ -3657,27 +3659,114 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
             || String(gestion.details || '').includes(formatDateSpanish(date))
           )
         )) || null;
-        const settleAbsenceGestion = async payload => {
+        const settleAbsenceGestion = payload => {
           if (!absenceGestion) return;
-          await updateDoc(doc(db, 'artifacts', appId, 'gestiones', absenceGestion.id), {
+          attendanceBatch.set(doc(db, 'artifacts', appId, 'gestiones', absenceGestion.id), {
             status: 'completado',
-            attendanceResolvedAt: new Date().toISOString(),
+            attendanceResolvedAt: attendanceSavedAt,
             ...payload
-          });
+          }, { merge: true });
         };
 
+        const relatedAbsenceTickets = tickets.filter(ticket => {
+          if (String(ticket.studentId || '') !== String(s.id || '')) return false;
+          if (ticket.isGift === true || ticket.subjectScope === 'any') return false;
+
+          const exactGestionMatch = Boolean(
+            absenceGestion?.id
+            && ticket.absenceGestionId
+            && String(ticket.absenceGestionId) === String(absenceGestion.id)
+          );
+          if (exactGestionMatch) return true;
+
+          const legacyDateAndSubjectMatch = (
+            String(ticket.originalDate || '') === String(date || '')
+            && normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es') === normalizeTicketSubject(currentSession.subject).toLocaleLowerCase('es')
+          );
+          if (!legacyDateAndSubjectMatch) return false;
+
+          return !ticket.originalClassId
+            || String(ticket.originalClassId) === String(currentSession.classId || '');
+        });
+        const existingAbsenceTicket = relatedAbsenceTickets.find(ticket => !ticket.voided) || null;
+
+        // Si finalmente vino, el aviso se conserva como trazabilidad pero nunca
+        // debe producir una recuperación. También anulamos un ticket previo no
+        // consumido por si la asistencia se rectificó después de cerrar la lista.
+        if (!s.isRecovery && s.status === 'present' && (absenceGestion || relatedAbsenceTickets.length > 0)) {
+          const unusedTickets = relatedAbsenceTickets.filter(ticket => !ticket.isUsed && !ticket.voided);
+          const alreadyConsumedTickets = relatedAbsenceTickets.filter(ticket => ticket.isUsed && !ticket.voided);
+
+          unusedTickets.forEach(ticket => {
+            const ticketRef = ticket.refPath
+              ? doc(db, ticket.refPath)
+              : doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticket.id);
+            attendanceBatch.set(ticketRef, {
+              isUsed: true,
+              voided: true,
+              voidReason: 'attendance_confirmed',
+              voidedAt: attendanceSavedAt,
+              voidedBy: String(user.email || '').trim().toLowerCase(),
+              attendanceCorrectedOn: date,
+              attendanceClassId: currentSession.classId || ''
+            }, { merge: true });
+          });
+
+          const hasConsumedConflict = alreadyConsumedTickets.length > 0;
+          settleAbsenceGestion({
+            ticketOutcome: hasConsumedConflict ? 'attended_ticket_already_used' : 'attended',
+            attendanceStatus: 'present',
+            invalidatedTicketIds: unusedTickets.map(ticket => ticket.id),
+            ticketConflictIds: alreadyConsumedTickets.map(ticket => ticket.id)
+          });
+
+          if (hasConsumedConflict) {
+            const conflictId = `attendance-ticket-conflict-${normalizeConfigId(date, 'fecha')}-${normalizeConfigId(currentSession.classId, 'clase')}-${normalizeConfigId(s.id, 'alumno')}`;
+            attendanceBatch.set(doc(db, 'artifacts', appId, 'gestiones', conflictId), {
+              type: 'incidencia_ticket_asistencia',
+              title: 'Ticket ya utilizado tras corregir una asistencia',
+              details: `${s.name} consta finalmente como asistente en ${currentSession.subject} del ${formatDateSpanish(date)}, pero el ticket relacionado ya había sido utilizado. Requiere revisión administrativa.`,
+              studentId: s.id,
+              studentName: s.name,
+              studentEmail: String(globalStudents.find(student => String(student.id) === String(s.id))?.email || s.email || '').trim().toLowerCase(),
+              requestedClass: currentSession.classId || '',
+              requestedTeacher: getOfficialTeacherName(),
+              teacherKeys: [normalizeTeacherKey(getOfficialTeacherName())],
+              teacherEmails: [String(user.email || '').trim().toLowerCase()],
+              relatedTicketIds: alreadyConsumedTickets.map(ticket => ticket.id),
+              status: 'pendiente',
+              source: 'attendance_ticket_reconciliation',
+              date: attendanceSavedAt,
+              createdAt: attendanceSavedAt,
+              createdBy: String(user.email || '').trim().toLowerCase()
+            }, { merge: true });
+          }
+        }
+
         // 👇 FIX: Solo le damos ticket si el status es 'notified' pero NO era un aviso sin derecho a ticket ('notified_no_ticket')
-        if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !isAttendanceBlockedStudent(s, date)) {
+        else if (s.status === 'notified' && s.originalException !== 'notified_no_ticket' && !s.isRecovery && !isAttendanceBlockedStudent(s, date)) {
           const isSummerTicket = isSummerRecoveryDate(date);
-          const monthTickets = tickets.filter(t => t.studentId === s.id && t.originalDate.startsWith(currentMonth));
-          if (isSummerTicket || monthTickets.length < 2) {
+          const monthTickets = tickets.filter(t => (
+            String(t.studentId || '') === String(s.id || '')
+            && String(t.originalDate || '').startsWith(currentMonth)
+            && !t.voided
+          ));
+          if (existingAbsenceTicket) {
+            settleAbsenceGestion({
+              ticketOutcome: 'generated',
+              generatedTicketId: existingAbsenceTicket.id,
+              generatedTicketRefPath: existingAbsenceTicket.refPath || '',
+              ticketValidFrom: existingAbsenceTicket.validFrom || '',
+              ticketValidUntil: existingAbsenceTicket.validUntil || ''
+            });
+          } else if (isSummerTicket || monthTickets.length < 2) {
             const { validFrom, validUntil, recoveryPolicy } = generateTicketDates(date);
-            const ticketId = Date.now().toString() + '-' + s.id;
+            const ticketId = `absence-${normalizeConfigId(absenceGestion?.id || `${date}-${currentSession.classId}-${s.id}`, 'ticket')}`;
             const ticketRef = doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketId);
             const studentEmail = String(
               globalStudents.find(student => String(student.id) === String(s.id))?.email || s.email || ''
             ).trim().toLowerCase();
-            await setDoc(ticketRef, {
+            attendanceBatch.set(ticketRef, {
               studentId: s.id,
               studentEmail,
               studentName: s.name,
@@ -3691,15 +3780,17 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               createdByEmail: String(user.email || '').trim().toLowerCase(),
               originalDate: date,
               originalMonth: currentMonth,
+              originalClassId: currentSession.classId || '',
+              originalClassRefPath: currentSession.refPath || '',
               validFrom,
               validUntil,
               isUsed: false,
               recoveryPolicy,
               isSummerTicket,
               absenceGestionId: absenceGestion?.id || '',
-              createdAt: new Date().toISOString()
-            });
-            await settleAbsenceGestion({
+              createdAt: attendanceSavedAt
+            }, { merge: true });
+            settleAbsenceGestion({
               ticketOutcome: 'generated',
               generatedTicketId: ticketId,
               generatedTicketRefPath: ticketRef.path,
@@ -3707,12 +3798,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               ticketValidUntil: validUntil
             });
           } else {
-            await settleAbsenceGestion({ ticketOutcome: 'limit_reached' });
+            settleAbsenceGestion({ ticketOutcome: 'limit_reached' });
           }
         } else if (!s.isRecovery && absenceGestion && s.originalException === 'notified_no_ticket') {
-          await settleAbsenceGestion({ ticketOutcome: 'not_requested' });
-        } else if (!s.isRecovery && absenceGestion && s.status === 'present') {
-          await settleAbsenceGestion({ ticketOutcome: 'attended' });
+          settleAbsenceGestion({ ticketOutcome: 'not_requested' });
         }
         
         if (s.isRecovery && ['present', 'absent', 'notified'].includes(s.status) && nonComputableReason !== 'auto_cancelled_all_notified') {
@@ -3745,16 +3834,15 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
           const ticketRef = ticketToUse.refPath
             ? doc(db, ticketToUse.refPath)
             : doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketToUse.id);
-          await setDoc(ticketRef, {
+          attendanceBatch.set(ticketRef, {
             isUsed: true,
-            usedAt: new Date().toISOString(),
+            usedAt: attendanceSavedAt,
             usedOn: date,
             usedInSubject: currentSession.subject,
             usedInClassId: currentSession.classId || ''
           }, { merge: true });
         }
       });
-      await Promise.all(ticketPromises);
 
       const currentLocation = getLocationIdentity(
         currentSession.centerId || currentSession.sede || 'Tarragona',
@@ -3788,12 +3876,10 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         nonComputableDetail: nonComputableInfo?.detail || '',
         deadHourNote: !isRenounced && deadHourNote ? deadHourNote : '',
         isDeadHourWorked: Boolean(!isRenounced && deadHourNote),
-        savedAt: new Date().toISOString(),
+        savedAt: attendanceSavedAt,
         recordKeyVersion: 2,
         students: currentSession.students.map(s => ({ ...s }))
       };
-
-      await setDoc(recordRef, savedRecord);
 
       const templateStudents = getTemplateStudentsForSave(currentSession);
 
@@ -3804,7 +3890,8 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         persistedSchedule.roomId || persistedSchedule.sala || 'Sala 1'
       );
         
-      await setDoc(targetPath, {
+      attendanceBatch.set(recordRef, savedRecord);
+      attendanceBatch.set(targetPath, {
         dayOfWeek: persistedSchedule.dayOfWeek,
         date: currentSession.date || null,
         time: persistedSchedule.time,
@@ -3823,6 +3910,8 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         studentIds: getClassStudentIds(templateStudents),
         exceptions: currentSession.exceptions || {}
       }, { merge: true });
+
+      await attendanceBatch.commit();
 
       try {
         await createRepeatedAbsenceAlerts(savedRecord);

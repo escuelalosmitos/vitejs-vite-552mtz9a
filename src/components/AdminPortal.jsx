@@ -12174,6 +12174,43 @@ ${valueOrDash(comments.privateNote)}`,
       }
     };
 
+    const voidTicketBecauseStudentAttended = async ticket => {
+      if (!ticket?.refPath || ticket.isUsed || ticket.voided) return;
+      if (!window.confirm(`¿Confirmar que ${student.name} finalmente asistió a la clase que originó este ticket?\n\nSe anulará únicamente este ticket y el aviso de ausencia quedará resuelto como asistencia.`)) return;
+
+      const now = new Date().toISOString();
+      try {
+        const batch = writeBatch(db);
+        batch.set(doc(db, ticket.refPath), {
+          isUsed: true,
+          voided: true,
+          voidReason: 'attendance_confirmed',
+          voidedAt: now,
+          voidedBy: user?.email || 'admin',
+          attendanceCorrectedOn: ticket.originalDate || '',
+          attendanceClassId: ticket.originalClassId || ''
+        }, { merge: true });
+
+        if (ticket.absenceGestionId) {
+          batch.set(doc(db, 'artifacts', appId, 'gestiones', ticket.absenceGestionId), {
+            status: 'completado',
+            attendanceResolvedAt: now,
+            attendanceStatus: 'present',
+            ticketOutcome: 'attended',
+            invalidatedTicketIds: [ticket.id],
+            correctedBy: user?.email || 'admin',
+            correctedAt: now
+          }, { merge: true });
+        }
+
+        await batch.commit();
+        alert('Ticket anulado. El aviso queda registrado como asistencia final sin derecho a recuperación.');
+      } catch (error) {
+        console.error('No se ha podido reconciliar el ticket con la asistencia:', error);
+        alert(`No se ha podido anular este ticket: ${error.message || error}`);
+      }
+    };
+
     const removeDossierAvatar = async () => {
       if (!student.avatarPath || !storage) return;
       if (!window.confirm(`¿Retirar la foto de perfil de ${student.alias || student.name || 'este alumno'}?`)) return;
@@ -12410,7 +12447,7 @@ ${valueOrDash(comments.privateNote)}`,
                     {studentTickets.length === 0 && <div className="rounded-2xl border-2 border-dashed border-zinc-200 p-8 text-center text-xs font-bold text-zinc-400">No hay tickets registrados.</div>}
                     {studentTickets.slice(0, 30).map(ticket => {
                       const ticketView = getTicketView(ticket);
-                      return <div key={ticket.refPath || ticket.id} className="rounded-2xl bg-white border border-zinc-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="text-sm font-black text-slate-900">{ticket.subject || 'Ticket flexible'}</p><p className="text-[10px] font-bold text-zinc-500 mt-1">Válido: {ticket.validFrom ? formatDateSpanish(ticket.validFrom) : 'sin inicio'} — {ticket.validUntil ? formatDateSpanish(ticket.validUntil) : 'sin caducidad'}</p></div><span className={`shrink-0 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ticketView.className}`}>{ticketView.label}</span></div>;
+                      return <div key={ticket.refPath || ticket.id} className="rounded-2xl bg-white border border-zinc-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="text-sm font-black text-slate-900">{ticket.subject || 'Ticket flexible'}</p><p className="text-[10px] font-bold text-zinc-500 mt-1">Válido: {ticket.validFrom ? formatDateSpanish(ticket.validFrom) : 'sin inicio'} — {ticket.validUntil ? formatDateSpanish(ticket.validUntil) : 'sin caducidad'}</p></div><div className="flex flex-wrap items-center gap-2"><span className={`shrink-0 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${ticketView.className}`}>{ticketView.label}</span>{(ticket.absenceGestionId || (ticket.originalDate && ticket.isGift !== true)) && !ticket.isUsed && !ticket.voided && <button type="button" onClick={() => voidTicketBecauseStudentAttended(ticket)} className="shrink-0 px-3 py-1.5 rounded-lg bg-zinc-100 text-zinc-700 hover:bg-zinc-800 hover:text-white text-[9px] font-black uppercase tracking-widest">Finalmente asistió</button>}</div></div>;
                     })}
                     {studentTickets.length > 30 && <p className="text-center text-[10px] font-bold text-zinc-400">Se muestran los 30 tickets más recientes.</p>}
                   </div>

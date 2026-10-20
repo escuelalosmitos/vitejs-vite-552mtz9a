@@ -2230,6 +2230,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [maintenancePeriods, setMaintenancePeriods] = useState([]);
   const [teacherTasks, setTeacherTasks] = useState([]);
   const [teacherEvaluations, setTeacherEvaluations] = useState([]);
+  const [latestTeacherEvaluationAt, setLatestTeacherEvaluationAt] = useState('');
+  const [teacherEvaluationsSeenAt, setTeacherEvaluationsSeenAt] = useState('');
+  const [teacherEvaluationReadStateLoaded, setTeacherEvaluationReadStateLoaded] = useState(false);
   const [workshopRegistrations, setWorkshopRegistrations] = useState([]);
   const [pollResponses, setPollResponses] = useState([]);
   const [callResponses, setCallResponses] = useState([]);
@@ -2238,7 +2241,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   
   const [settings, setSettings] = useState({ 
     festivos: [], festivosTarragona: [], festivosReus: [], vacaciones: [], contract: '', teacherRules: '', 
-    hourlyRate: 17.33, costeEmpresa: 22, gastosFijos: { global: 0, tarragona: 0, reus: 0 }, fixedCostsNotes: '',
+    hourlyRate: 17.33, costeEmpresa: 23.84, gastosFijos: { global: 0, tarragona: 0, reus: 0 }, fixedCostsNotes: '',
     generalTasks: [], prizes: { mensual: '', trimestral: '', anual: '' }, teachersList: [], teacherColors: {}, teacherEmails: {},
     roomCapacities: defaultRoomCapacities, instrumentos: defaultInstrumentos,
     centers: normalizeCenters([], {})
@@ -2345,6 +2348,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [archSede, setArchSede] = useState('Tarragona');
   const [informeSubTab, setInformeSubTab] = useState('resumen'); // 'resumen', 'sedes', 'instrumentos', 'profesores', 'semaforo'
   const [biProjectionMode, setBiProjectionMode] = useState('actual'); // 'actual' o 'proyeccion'
+  const [biMonthlySnapshots, setBiMonthlySnapshots] = useState([]);
+  const [selectedBiHistoryMonth, setSelectedBiHistoryMonth] = useState('');
+  const biSnapshotSaveRef = useRef('');
 
   // ESTADOS MODALES CLASES
   const [createClassModal, setCreateClassModal] = useState(false);
@@ -2359,6 +2365,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [socialModalText, setSocialModalText] = useState(''); 
   const [photosModalOpen, setPhotosModalOpen] = useState(false);
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
+  const [selectedSourceClassForChange, setSelectedSourceClassForChange] = useState('');
   
   const [newClassData, setNewClassData] = useState({
     isRecurring: true, specificDate: new Date().toISOString().split('T')[0], 
@@ -2378,6 +2385,10 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
 
   const [selectedPayrollMonth, setSelectedPayrollMonth] = useState(new Date().toISOString().substring(0, 7));
   const [teacherPanelTab, setTeacherPanelTab] = useState('evaluations');
+  const [teacherStatsPeriod, setTeacherStatsPeriod] = useState('month');
+  const [teacherStatsAnchor, setTeacherStatsAnchor] = useState(new Date().toISOString().substring(0, 10));
+  const [teacherDisciplinaryEvents, setTeacherDisciplinaryEvents] = useState([]);
+  const [disciplinaryDraft, setDisciplinaryDraft] = useState({ teacher: '', severity: 'leve', date: getTodayLocalString(), details: '' });
   const [selectedAvailabilityTeacher, setSelectedAvailabilityTeacher] = useState('');
   const [teacherEvaluationPeriod, setTeacherEvaluationPeriod] = useState('all');
   const [expandedEvaluationTeacher, setExpandedEvaluationTeacher] = useState(null);
@@ -2505,7 +2516,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
           centers: normalizedCenters,
           instrumentos: data.instrumentos || defaultInstrumentos,
           teacherColors: data.teacherColors || {},
-          costeEmpresa: data.costeEmpresa || 22,
+          costeEmpresa: data.costeEmpresa || 23.84,
           centersSchemaVersion: 1
         }));
         if (!Array.isArray(data.centers) || data.centers.length === 0) {
@@ -2575,7 +2586,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
 
   const needsAnnouncementsData = Boolean(activatedDataAreas.announcements || activatedDataAreas.gamification);
   const needsAvailabilityData = Boolean(activatedDataAreas.classes || activatedDataAreas.teachers || activatedDataAreas.mitobox);
-  const needsTeacherHistoryData = Boolean(activatedDataAreas.teachers);
+  const needsTeacherHistoryData = Boolean(activatedDataAreas.teachers || activatedDataAreas.informes);
   const needsPollResponsesData = Boolean(activatedDataAreas.announcements);
   const needsCallResponsesData = Boolean(activatedDataAreas.announcements);
 
@@ -2675,12 +2686,53 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       onStatus: status => setDeferredDataStatus(previous => ({ ...previous, teacherEvaluations: status }))
     });
 
+    const unsubTeacherDisciplinaryEvents = subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'teacherDisciplinaryEvents'),
+      label: 'el registro disciplinario docente',
+      applySnapshot: snap => {
+        setTeacherDisciplinaryEvents(snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || ''))));
+      },
+      onStatus: () => {}
+    });
+
     return () => {
       unsubRecords();
       unsubPayrollAdjustments();
       unsubTeacherEvaluations();
+      unsubTeacherDisciplinaryEvents();
     };
   }, [needsTeacherHistoryData, appId, db, deferredRetryVersion]);
+
+  useEffect(() => {
+    if (!user?.uid) return undefined;
+    const readStateRef = doc(db, 'artifacts', appId, 'adminUiState', user.uid);
+    getDoc(readStateRef)
+      .then(snapshot => setTeacherEvaluationsSeenAt(String(snapshot.data()?.teacherEvaluationsSeenAt || '')))
+      .catch(error => console.warn('No se pudo cargar el estado de lectura de evaluaciones:', error))
+      .finally(() => setTeacherEvaluationReadStateLoaded(true));
+
+    return onSnapshot(
+      query(collection(db, 'artifacts', appId, 'teacherEvaluations'), orderBy('createdAt', 'desc'), limit(1)),
+      snapshot => {
+        const latest = snapshot.docs[0]?.data();
+        setLatestTeacherEvaluationAt(String(latest?.createdAt || latest?.date || ''));
+      },
+      error => console.warn('No se pudo comprobar si hay evaluaciones nuevas:', error)
+    );
+  }, [appId, db, user?.uid]);
+
+  useEffect(() => {
+    if (activeTab !== 'teachers' || !user?.uid || !teacherEvaluationReadStateLoaded || !latestTeacherEvaluationAt) return;
+    if (String(latestTeacherEvaluationAt) <= String(teacherEvaluationsSeenAt || '')) return;
+    setTeacherEvaluationsSeenAt(latestTeacherEvaluationAt);
+    setDoc(doc(db, 'artifacts', appId, 'adminUiState', user.uid), {
+      teacherEvaluationsSeenAt: latestTeacherEvaluationAt,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user?.email || 'admin'
+    }, { merge: true }).catch(error => console.warn('No se pudo marcar las evaluaciones como vistas:', error));
+  }, [activeTab, appId, db, user?.uid, user?.email, teacherEvaluationReadStateLoaded, latestTeacherEvaluationAt, teacherEvaluationsSeenAt]);
 
   useEffect(() => {
     if (!needsPollResponsesData) return undefined;
@@ -2707,6 +2759,18 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       onStatus: status => setDeferredDataStatus(previous => ({ ...previous, callResponses: status }))
     });
   }, [needsCallResponsesData, appId, db, deferredRetryVersion]);
+
+  useEffect(() => {
+    if (!activatedDataAreas.informes) return undefined;
+    return subscribeVerifiedAdminSnapshot({
+      reference: collection(db, 'artifacts', appId, 'biMonthlySnapshots'),
+      label: 'los cierres mensuales de BI',
+      applySnapshot: snap => setBiMonthlySnapshots(snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => String(b.month || b.id || '').localeCompare(String(a.month || a.id || '')))),
+      onStatus: () => {}
+    });
+  }, [activatedDataAreas.informes, appId, db, deferredRetryVersion]);
 
   // Mantiene coherente el índice privado de alumnos de cada clase. La primera
   // ejecución activa la versión del índice y las siguientes reparan cualquier
@@ -4404,7 +4468,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const activeUniqueStudents = new Set();
     const activeUniqueBySede = new Map(centerNamesForReporting.map(sede => [sede, new Set()]));
     const legacyMaintenanceStudents = new Set();
-    const teacherHourlyCost = Number(settings.costeEmpresa || 22);
+    const teacherHourlyCost = Number(settings.costeEmpresa || 23.84);
     const pacoTeacherKey = normalizeTeacherKey('Paco');
     const getStudentInfoForBI = studentId => studentById.get(studentId) || {};
     const getStudentIdentityKey = (student = {}, fallback = '') => {
@@ -4842,13 +4906,60 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     projectionMeta: biProjectionInputs.meta
   }), [biProjectionInputs, temporaryRelocations, temporaryClassChanges, settings, nextMonthStartStr, nextMonthEndStr, officialTeacherNameMap]);
 
-  const businessIntelligence = biProjectionMode === 'proyeccion'
-    ? projectedBusinessIntelligence
-    : currentBusinessIntelligence;
+  const currentMonthAvoidedCompanyCost = useMemo(() => {
+    const month = String(currentMonthStartStr || '').slice(0, 7);
+    const companyHourlyCost = Math.max(0, Number(settings.costeEmpresa) || 0);
+    const records = uniqueAttendanceRecords.filter(record => (
+      String(record.date || '').startsWith(month)
+      && (record.isRenounced === true || record.isNonComputable === true)
+    ));
+    const hours = records.reduce((sum, record) => sum + ((Number(String(record.duration || 60).replace(',', '.')) || 60) / 60), 0);
+    const byReason = records.reduce((acc, record) => {
+      const reason = record.nonComputableReason || 'sin_motivo';
+      acc[reason] = (acc[reason] || 0) + 1;
+      return acc;
+    }, {});
+    return { records: records.length, hours, amount: hours * companyHourlyCost, companyHourlyCost, byReason };
+  }, [uniqueAttendanceRecords, currentMonthStartStr, settings.costeEmpresa]);
+
+  const selectedBiSnapshot = biMonthlySnapshots.find(snapshot => snapshot.month === selectedBiHistoryMonth || snapshot.id === selectedBiHistoryMonth) || null;
+
+  const businessIntelligence = biProjectionMode === 'historico' && selectedBiSnapshot?.businessIntelligence
+    ? selectedBiSnapshot.businessIntelligence
+    : biProjectionMode === 'proyeccion'
+      ? projectedBusinessIntelligence
+      : currentBusinessIntelligence;
+  const displayedAvoidedCompanyCost = biProjectionMode === 'historico'
+    ? (selectedBiSnapshot?.avoidedCompanyCost || { records: 0, hours: 0, amount: 0, companyHourlyCost: Number(settings.costeEmpresa) || 0, byReason: {} })
+    : currentMonthAvoidedCompanyCost;
   const biPeriodLabel = (() => {
     const date = parseLocalDateString(businessIntelligence.periodStart);
     return date ? date.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }) : '';
   })();
+
+  useEffect(() => {
+    if (activeTab !== 'informes' || !currentBusinessIntelligence?.periodStart) return;
+    const month = String(currentBusinessIntelligence.periodStart).slice(0, 7);
+    const signature = JSON.stringify({
+      month,
+      updated: currentBusinessIntelligence,
+      avoided: currentMonthAvoidedCompanyCost
+    });
+    if (biSnapshotSaveRef.current === signature) return;
+    biSnapshotSaveRef.current = signature;
+    const serializableBusinessIntelligence = JSON.parse(JSON.stringify(currentBusinessIntelligence));
+    setDoc(doc(db, 'artifacts', appId, 'biMonthlySnapshots', month), {
+      month,
+      businessIntelligence: serializableBusinessIntelligence,
+      avoidedCompanyCost: currentMonthAvoidedCompanyCost,
+      source: 'from_activation_forward',
+      updatedAt: new Date().toISOString(),
+      updatedBy: user?.email || 'admin'
+    }, { merge: true }).catch(error => {
+      biSnapshotSaveRef.current = '';
+      console.warn('No se pudo guardar la foto mensual de BI:', error);
+    });
+  }, [activeTab, appId, db, user?.email, currentBusinessIntelligence, currentMonthAvoidedCompanyCost]);
 
   const ticketStatsByStudent = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
@@ -8106,21 +8217,19 @@ Coordinación Los Mitos.`
     }
   };
 
-  const createManualScheduledClassChange = async (student, targetClass) => {
-    if (!student?.id || !targetClass?.id) return;
+  const createManualScheduledClassChange = async (student, targetClass, sourceClass) => {
+    if (!student?.id || !targetClass?.id || !sourceClass?.id) return;
     if (student.globalStatus === 'baja') {
       alert(`${student.name} está dado de baja. No se puede programar un cambio de clase.`);
       return;
     }
 
-    const oldClasses = recurringClassesOnly.filter(c =>
-      c.id !== targetClass.id &&
-      c.subject === targetClass.subject &&
-      (c.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, todayStr))
-    );
+    const isValidSource = sourceClass.id !== targetClass.id
+      && recurringClassesOnly.some(c => c.id === sourceClass.id)
+      && (sourceClass.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, todayStr));
 
-    if (oldClasses.length === 0) {
-      alert(`${student.name} no tiene una plaza activa de ${targetClass.subject} que pueda cambiarse a este grupo.`);
+    if (!isValidSource) {
+      alert(`${student.name} ya no tiene activa la plaza de origen seleccionada. Cierra la ventana y vuelve a intentarlo.`);
       return;
     }
 
@@ -8137,31 +8246,29 @@ Coordinación Los Mitos.`
       return;
     }
 
-    const sourceLines = oldClasses.map(c => `· ${formatClassLine(c)}`).join('\n');
-    if (!window.confirm(`¿Programar el cambio de clase de ${student.name}?\n\nHorario actual:\n${sourceLines}\n\nNuevo horario:\n· ${formatClassLine(targetClass)}\n\nA continuación indicarás el último día en el horario actual. El nuevo horario comenzará al día siguiente.`)) return;
+    if (!window.confirm(`¿Programar el cambio de clase de ${student.name}?\n\nClase de origen:\n· ${formatClassLine(sourceClass)}\n\nClase de destino:\n· ${formatClassLine(targetClass)}\n\nA continuación indicarás el último día en la clase de origen. La nueva plaza comenzará al día siguiente.`)) return;
 
     const now = new Date().toISOString();
     const gestionId = `cambio-manual-${student.id}-${Date.now()}`;
-    const singleSourceClass = oldClasses.length === 1 ? oldClasses[0] : null;
     const gestionData = {
       id: gestionId,
       type: 'cambio_horario',
       status: 'pendiente',
       title: 'Cambio de clase programado desde Alumnos CRM',
-      details: 'Cambio creado manualmente desde Alumnos CRM. El alumno conserva el horario actual hasta la fecha de fin seleccionada.',
+      details: `Cambio creado manualmente desde Alumnos CRM${sourceClass.subject !== targetClass.subject ? `, con cambio de instrumento de ${sourceClass.subject} a ${targetClass.subject}` : ''}. El alumno conserva la clase de origen hasta la fecha de fin seleccionada.`,
       studentId: student.id,
       studentName: student.name,
       studentEmail: student.email || '',
       requestedClass: targetClass.id,
       requestedClassLine: formatClassLine(targetClass),
       requestedTeacher: targetClass.teacher || '',
-      affectedClassIds: oldClasses.map(c => c.id),
-      affectedClassLines: oldClasses.map(c => formatClassLine(c)),
-      ...(singleSourceClass ? {
-        sourceClassId: singleSourceClass.id,
-        sourceClassLine: formatClassLine(singleSourceClass),
-        sourceClassRefPath: singleSourceClass.refPath || ''
-      } : {}),
+      affectedClassIds: [sourceClass.id],
+      affectedClassLines: [formatClassLine(sourceClass)],
+      sourceClassId: sourceClass.id,
+      sourceClassLine: formatClassLine(sourceClass),
+      sourceClassRefPath: sourceClass.refPath || '',
+      sourceInstrument: sourceClass.subject || '',
+      requestedInstrument: targetClass.subject || '',
       date: now,
       source: 'manual_admin',
       skipTadosi: true,
@@ -8178,7 +8285,11 @@ Coordinación Los Mitos.`
         await deleteDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId));
         return;
       }
-      if (result?.ok) setChangeClassModal(null);
+      if (result?.ok) {
+        setChangeClassModal(null);
+        setSelectedSourceClassForChange('');
+        setSelectedInstForChange('');
+      }
     } catch (error) {
       console.error('Error al programar el cambio manual:', error);
       alert(`❌ Error al programar el cambio de clase: ${error.message}`);
@@ -8884,7 +8995,7 @@ Coordinación Los Mitos.`
     const lines = [
       'INFORME BI · ESCUELA LOS MITOS',
       `Generado: ${dateLabel}`,
-      `Vista: ${biProjectionMode === 'proyeccion' ? 'PROYECCIÓN DEL MES SIGUIENTE · escenario con solicitudes pendientes' : 'ACTUAL'}`,
+      `Vista: ${biProjectionMode === 'proyeccion' ? 'PROYECCIÓN DEL MES SIGUIENTE · escenario con solicitudes pendientes' : biProjectionMode === 'historico' ? `HISTÓRICO · ${selectedBiHistoryMonth || biPeriodLabel}` : 'ACTUAL'}`,
       `Periodo de referencia: ${formatDateSpanish(businessIntelligence.periodStart)} - ${formatDateSpanish(businessIntelligence.periodEnd)}`,
       '',
       'RESUMEN GLOBAL',
@@ -8897,6 +9008,7 @@ Coordinación Los Mitos.`
       `Impagos incluidos como plaza activa/riesgo: ${businessIntelligence.totalImpagos || 0}`,
       `Ingresos totales estimados: ${money(businessIntelligence.totalIngresos)}`,
       `Coste profesores previsto: ${money(businessIntelligence.costeTotalProfesores)} (solo clases operativas)`,
+      ...(biProjectionMode !== 'proyeccion' ? [`Coste empresarial evitado por horas no liquidables: ${money(displayedAvoidedCompanyCost.amount)} (${Number(displayedAvoidedCompanyCost.hours || 0).toFixed(1)} h · ${displayedAvoidedCompanyCost.records || 0} registros · coste empresa ${money(displayedAvoidedCompanyCost.companyHourlyCost)}/h)`] : []),
       `Clases operativas: ${businessIntelligence.totalClasesOperativas || 0} · Hibernadas/no computables: ${businessIntelligence.totalClasesHibernadas || 0}`,
       `Horas semanales computables: ${(businessIntelligence.totalHorasSemanalesOperativas || 0).toFixed(1)} · Hibernadas no computadas: ${(businessIntelligence.totalHorasSemanalesHibernadas || 0).toFixed(1)}`,
       `Gastos fijos: ${money(businessIntelligence.totalFijos)}`,
@@ -8949,7 +9061,7 @@ Coordinación Los Mitos.`
       'Nota: este informe es una previsión operativa, no sustituye la contabilidad real de Tadosi. Los cambios temporales logísticos de una clase no alteran las cifras; solo se reasigna el coste cuando cambia el profesor.'
     ];
 
-    const filename = `Informe_BI_Los_Mitos_${biProjectionMode === 'proyeccion' ? 'Proyeccion_' : 'Actual_'}${getTodayLocalString()}.txt`;
+    const filename = `Informe_BI_Los_Mitos_${biProjectionMode === 'proyeccion' ? 'Proyeccion_' : biProjectionMode === 'historico' ? `Historico_${selectedBiHistoryMonth || ''}_` : 'Actual_'}${getTodayLocalString()}.txt`;
     downloadTextFile(filename, lines.join('\n'), 'text/plain;charset=utf-8');
   };
 
@@ -11131,6 +11243,34 @@ Coordinación Los Mitos.`
 
   const dangerRowsForView = dangerViewMode === 'proyeccion' ? projectedDangerRows : dangerRows;
 
+  const locatorRowsForView = useMemo(() => {
+    const sourceClasses = dangerViewMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly;
+    return sortDangerRows(sourceClasses.map(clase => {
+      const analysis = buildDangerClassAnalysis(clase, dangerViewMode === 'proyeccion');
+      const planningRows = getClassStudentPlanningData(clase, dangerViewMode === 'proyeccion');
+      const pendingStudents = planningRows.filter(student => student.isPendingStart);
+      return {
+        classData: clase,
+        ...clase,
+        ...analysis,
+        pendingStudents,
+        pendingCount: pendingStudents.length,
+        isFormation: pendingStudents.length > 0 || clase.autoAdvanceStartDate === true,
+        isInactive: analysis.activeCount === 0 && analysis.maintenanceCount === 0 && analysis.futureStartCount === 0 && pendingStudents.length === 0
+      };
+    }));
+  }, [dangerViewMode, projectedPlanningClasses, recurringClassesOnly, students, maintenancePeriods, todayStr]);
+
+  const locatorRowsByCategory = useMemo(() => ({
+    web: locatorRowsForView.filter(row => row.isWebVisible === true),
+    formation: locatorRowsForView.filter(row => row.isFormation),
+    demand: locatorRowsForView.filter(row => row.isFormation && row.pendingCount > 0),
+    inactive: locatorRowsForView.filter(row => row.isInactive),
+    ocupacion: dangerRowsForView
+  }), [locatorRowsForView, dangerRowsForView]);
+
+  const displayedLocatorRows = locatorRowsByCategory[dangerSubView] || dangerRowsForView;
+
   const groupDangerRows = (rows = [], mode = 'ocupacion') => {
     if (mode === 'profesor') return rows.reduce((acc, row) => {
       const key = row.teacher || 'Sin profesor';
@@ -11179,17 +11319,24 @@ Coordinación Los Mitos.`
   };
 
   const dangerContactRows = useMemo(() => {
-    return dangerRowsForView
-      .filter(row => row.statusKey === 'critico' && row.activeStudents.length > 0)
-      .flatMap(row => row.activeStudents.map(student => ({
-        key: `${row.id}-${student.id}`,
-        studentName: student.displayName,
-        email: student.email || 'sin email',
-        classLine: `${row.subject || 'Clase'} · ${getDayName(row.dayOfWeek)} ${row.time || ''}h · ${row.sede || 'Tarragona'} · ${row.teacher || 'Sin profesor'}`,
-        row
-      })))
+    return locatorRowsForView
+      .filter(row => row.pendingCount > 0 || (row.activeCount === 1 && Number(row.cap || 0) > 1))
+      .flatMap(row => {
+        const people = [
+          ...(row.pendingStudents || []).map(student => ({ ...student, reason: 'En espera de apertura' })),
+          ...(row.activeCount === 1 && Number(row.cap || 0) > 1 ? row.activeStudents.map(student => ({ ...student, reason: 'Único alumno del grupo' })) : [])
+        ];
+        return people.map(student => ({
+          key: `${row.id}-${student.id}-${student.reason}`,
+          studentName: student.displayName,
+          email: student.email || 'sin email',
+          reason: student.reason,
+          classLine: `${row.subject || 'Clase'} · ${getDayName(row.dayOfWeek)} ${row.time || ''}h · ${row.sede || 'Tarragona'} · ${row.teacher || 'Sin profesor'}`,
+          row
+        }));
+      })
       .sort((a, b) => a.studentName.localeCompare(b.studentName, 'es'));
-  }, [dangerRowsForView]);
+  }, [locatorRowsForView]);
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
@@ -11539,6 +11686,110 @@ Coordinación Los Mitos.`
       questionAverages
     };
   }, [filteredTeacherEvaluations, teacherEvaluationStats]);
+
+  const teacherStatsRange = useMemo(() => {
+    const anchor = parseLocalDateString(teacherStatsAnchor) || new Date();
+    const year = anchor.getFullYear();
+    const month = anchor.getMonth();
+    let start;
+    let end;
+    if (teacherStatsPeriod === 'quarter') {
+      const quarterStart = Math.floor(month / 3) * 3;
+      start = new Date(year, quarterStart, 1);
+      end = new Date(year, quarterStart + 3, 0);
+    } else if (teacherStatsPeriod === 'year') {
+      start = new Date(year, 0, 1);
+      end = new Date(year, 11, 31);
+    } else if (teacherStatsPeriod === 'course') {
+      const courseStartYear = month >= 8 ? year : year - 1;
+      start = new Date(courseStartYear, 8, 1);
+      end = new Date(courseStartYear + 1, 7, 31);
+    } else {
+      start = new Date(year, month, 1);
+      end = new Date(year, month + 1, 0);
+    }
+    const toLocalDate = value => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+    return { from: toLocalDate(start), until: toLocalDate(end) };
+  }, [teacherStatsAnchor, teacherStatsPeriod]);
+
+  const teacherActivityStats = useMemo(() => {
+    const periodRecords = uniqueAttendanceRecords.filter(record => {
+      const date = String(record.date || '').slice(0, 10);
+      return date >= teacherStatsRange.from && date <= teacherStatsRange.until;
+    });
+    return allTeacherNamesForPanel.map(name => {
+      const teacherKey = normalizeTeacherKey(name);
+      const records = periodRecords.filter(record => normalizeTeacherKey(record.teacher) === teacherKey);
+      const taught = records.filter(record => !record.isRenounced && !record.isNonComputable);
+      const renounced = records.filter(record => (
+        record.nonComputableReason === 'teacher_renounced_dead_hour'
+        || ((record.isRenounced === true || record.isNonComputable === true) && !record.nonComputableReason)
+      ));
+      const emergency = records.filter(record => record.nonComputableReason === 'last_minute_class_not_taught');
+      const deadWorked = records.filter(record => record.isDeadHourWorked === true);
+      const deadRenounced = records.filter(record => record.nonComputableReason === 'teacher_renounced_dead_hour');
+      const latestReset = teacherDisciplinaryEvents
+        .filter(event => normalizeTeacherKey(event.teacher) === teacherKey && event.type === 'cycle_reset')
+        .sort((a, b) => String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || '')))[0];
+      const activeDisciplinary = teacherDisciplinaryEvents.filter(event => (
+        normalizeTeacherKey(event.teacher) === teacherKey
+        && event.type !== 'cycle_reset'
+        && (!latestReset || String(event.date || event.createdAt || '') > String(latestReset.date || latestReset.createdAt || ''))
+      ));
+      const hours = list => list.reduce((sum, record) => sum + ((Number(String(record.duration || 60).replace(',', '.')) || 60) / 60), 0);
+      return {
+        name,
+        taughtCount: taught.length,
+        taughtHours: hours(taught),
+        renouncedCount: renounced.length,
+        renouncedPercent: records.length ? (renounced.length / records.length) * 100 : 0,
+        emergencyCount: emergency.length,
+        deadWorkedCount: deadWorked.length,
+        deadRenouncedCount: deadRenounced.length,
+        disciplinary: {
+          leve: activeDisciplinary.filter(event => event.severity === 'leve').length,
+          grave: activeDisciplinary.filter(event => event.severity === 'grave').length,
+          muy_grave: activeDisciplinary.filter(event => event.severity === 'muy_grave').length
+        }
+      };
+    }).sort((a, b) => b.taughtHours - a.taughtHours || a.name.localeCompare(b.name, 'es'));
+  }, [uniqueAttendanceRecords, teacherStatsRange, allTeacherNamesForPanel, teacherDisciplinaryEvents]);
+
+  const saveTeacherDisciplinaryEvent = async () => {
+    if (!disciplinaryDraft.teacher || !disciplinaryDraft.date || !disciplinaryDraft.details.trim()) {
+      alert('Selecciona profesor, fecha y describe el hecho registrado.');
+      return;
+    }
+    const eventId = `falta-${normalizeConfigId(disciplinaryDraft.teacher, 'profesor')}-${Date.now()}`;
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'teacherDisciplinaryEvents', eventId), {
+        ...disciplinaryDraft,
+        type: 'disciplinary_event',
+        createdAt: new Date().toISOString(),
+        createdBy: user?.email || 'admin'
+      });
+      setDisciplinaryDraft(previous => ({ ...previous, details: '' }));
+    } catch (error) {
+      alert(`No se pudo registrar la falta: ${error.message}`);
+    }
+  };
+
+  const resetTeacherDisciplinaryCycle = async teacherName => {
+    if (!window.confirm(`¿Iniciar un nuevo cómputo disciplinario para ${teacherName}? El histórico se conservará.`)) return;
+    const eventId = `reinicio-${normalizeConfigId(teacherName, 'profesor')}-${Date.now()}`;
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'teacherDisciplinaryEvents', eventId), {
+        teacher: teacherName,
+        type: 'cycle_reset',
+        date: getTodayLocalString(),
+        details: 'Reinicio manual del cómputo disciplinario. El histórico anterior se conserva.',
+        createdAt: new Date().toISOString(),
+        createdBy: user?.email || 'admin'
+      });
+    } catch (error) {
+      alert(`No se pudo reiniciar el cómputo: ${error.message}`);
+    }
+  };
 
   const teacherAvailabilityPanel = useMemo(() => {
     const teacherName = getOfficialTeacherName(selectedAvailabilityTeacher, '');
@@ -12458,7 +12709,7 @@ ${valueOrDash(comments.privateNote)}`,
             {section === 'procedures' && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <button type="button" onClick={() => { setStudentDossierModal(null); setChangeClassModal(student); }} className="px-4 py-3 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"><ArrowRightLeft className="w-4 h-4 inline mr-1"/> Cambio de clase</button>
+                  <button type="button" onClick={() => { setStudentDossierModal(null); setSelectedSourceClassForChange(''); setSelectedInstForChange(''); setChangeClassModal(student); }} className="px-4 py-3 bg-slate-900 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"><ArrowRightLeft className="w-4 h-4 inline mr-1"/> Cambio de clase</button>
                   <button type="button" onClick={() => { setStudentDossierModal(null); setTemporaryRelocationModal(student); }} className="px-4 py-3 bg-violet-100 text-violet-800 rounded-xl text-[10px] font-black uppercase tracking-widest"><Clock className="w-4 h-4 inline mr-1"/> Recolocación temporal</button>
                 </div>
                 <section><h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-3">Trámites y gestiones abiertas</h3>{renderGestionRows(openProcedures, 'No hay trámites pendientes para este alumno.')}</section>
@@ -13065,25 +13316,40 @@ ${valueOrDash(comments.privateNote)}`,
   const ChangeClassModalOverlay = () => {
     if (!changeClassModal) return null;
     const student = changeClassModal;
-    const targetInstrument = selectedInstForChange || (student.instruments && student.instruments[0]);
-    const availableClasses = targetInstrument ? recurringClassesOnly.filter(c => c.subject === targetInstrument && getCommercialFreeSpots(c) > 0) : [];
+    const sourceClasses = recurringClassesOnly.filter(c =>
+      (c.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, todayStr))
+    );
+    const effectiveSourceId = selectedSourceClassForChange || (sourceClasses.length === 1 ? sourceClasses[0].id : '');
+    const sourceClass = sourceClasses.find(c => c.id === effectiveSourceId) || null;
+    const targetInstrument = selectedInstForChange;
+    const availableClasses = targetInstrument && sourceClass ? recurringClassesOnly.filter(c =>
+      c.id !== sourceClass.id
+      && c.subject === targetInstrument
+      && getCommercialFreeSpots(c) > 0
+    ) : [];
     return (
       <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
         <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative my-8">
-          <button onClick={() => setChangeClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button onClick={() => { setChangeClassModal(null); setSelectedSourceClassForChange(''); setSelectedInstForChange(''); }} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 mb-6"><ArrowRightLeft className="w-8 h-8 text-blue-600"/><h2 className="text-xl font-black uppercase">Programar cambio</h2></div>
           <p className="text-xs text-zinc-500 font-bold mb-4 uppercase tracking-widest">Alumno: <span className="text-black">{student.name}</span></p>
-          <p className="text-xs text-blue-800 font-bold mb-4 bg-blue-50 border border-blue-100 rounded-xl p-3 leading-relaxed">El alumno seguirá en su horario actual hasta la fecha que indiques. El nuevo horario empezará al día siguiente.</p>
+          <p className="text-xs text-blue-800 font-bold mb-4 bg-blue-50 border border-blue-100 rounded-xl p-3 leading-relaxed">Selecciona primero la plaza que abandona y después el instrumento y grupo de destino. Puede ser un instrumento distinto. La nueva plaza empezará al día siguiente de finalizar la de origen.</p>
+          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Plaza de origen</label>
+          <select value={effectiveSourceId} onChange={e => setSelectedSourceClassForChange(e.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 rounded-xl font-bold text-sm">
+            <option value="">Selecciona la clase que abandona…</option>
+            {sourceClasses.map(c => <option key={c.id} value={c.id}>{c.subject} · {getDayName(c.dayOfWeek)} {c.time}h · {c.sede} · {c.teacher}</option>)}
+          </select>
+          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1 block">Instrumento de destino</label>
           <select value={selectedInstForChange} onChange={e => setSelectedInstForChange(e.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 rounded-xl font-bold text-sm">
             <option value="">Selecciona Instrumento...</option>
             {(settings.instrumentos || defaultInstrumentos).map(i => <option key={i} value={i}>{i}</option>)}
           </select>
           <div className="max-h-64 overflow-y-auto space-y-2 pr-2">
             {availableClasses.length === 0 ? (
-              <p className="text-center text-xs text-zinc-400 font-bold p-4 border-2 border-dashed rounded-xl">No hay grupos libres para este instrumento.</p>
+              <p className="text-center text-xs text-zinc-400 font-bold p-4 border-2 border-dashed rounded-xl">{!sourceClass ? 'Selecciona primero la plaza de origen.' : !targetInstrument ? 'Selecciona el instrumento de destino.' : 'No hay grupos operativos con plaza libre para este instrumento.'}</p>
             ) : (
               availableClasses.map(c => (
-                <div key={c.id} onClick={() => createManualScheduledClassChange(student, c)} className="p-3 rounded-xl border-2 border-zinc-100 hover:border-blue-500 cursor-pointer transition-colors">
+                <div key={c.id} onClick={() => createManualScheduledClassChange(student, c, sourceClass)} className="p-3 rounded-xl border-2 border-zinc-100 hover:border-blue-500 cursor-pointer transition-colors">
                   <div className="flex justify-between font-black text-sm uppercase"><span>{getDayName(c.dayOfWeek)}</span><span>{c.time}h</span></div>
                   <div className="text-xs text-zinc-500 mt-1 flex justify-between"><span>Prof: {c.teacher}</span> <span className="text-blue-600 font-bold">{getCommercialFreeSpots(c)} plazas libres fijas</span></div>
                 </div>
@@ -14014,8 +14280,8 @@ ${startDateWarning}
             { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
             { id: 'mitobox', icon: DoorOpen, label: 'Servicios', notificationCount: unreadMitoboxReservations.length }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
-            { id: 'danger', icon: AlertTriangle, label: 'En Peligro' },
-            { id: 'teachers', icon: Calculator, label: 'Profesores' },
+            { id: 'danger', icon: Search, label: 'Localizador clases' },
+            { id: 'teachers', icon: Calculator, label: 'Profesores', notificationCount: teacherEvaluationReadStateLoaded && latestTeacherEvaluationAt && String(latestTeacherEvaluationAt) > String(teacherEvaluationsSeenAt || '') ? 1 : 0 },
             { id: 'announcements', icon: Megaphone, label: 'Tablón', notificationCount: unreadAnnouncementResponses.length },
             { id: 'workshops', icon: PartyPopper, label: 'Talleres', notificationCount: unreadWorkshopRegistrations.length },
             { id: 'gamification', icon: Trophy, label: 'Retos' },
@@ -14091,7 +14357,9 @@ ${startDateWarning}
                 <div className="flex bg-zinc-200 p-1 rounded-xl border border-zinc-300">
                   <button type="button" onClick={() => setBiProjectionMode('actual')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${biProjectionMode === 'actual' ? 'bg-white text-slate-900 shadow-sm' : 'text-zinc-500'}`}>Actual</button>
                   <button type="button" onClick={() => setBiProjectionMode('proyeccion')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${biProjectionMode === 'proyeccion' ? 'bg-violet-600 text-white shadow-sm' : 'text-zinc-500'}`}>Proyección mes siguiente</button>
+                  <button type="button" disabled={biMonthlySnapshots.length === 0} onClick={() => { const month = selectedBiHistoryMonth || biMonthlySnapshots[0]?.month || biMonthlySnapshots[0]?.id || ''; setSelectedBiHistoryMonth(month); setBiProjectionMode('historico'); }} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all disabled:opacity-40 ${biProjectionMode === 'historico' ? 'bg-sky-700 text-white shadow-sm' : 'text-zinc-500'}`}>Histórico</button>
                 </div>
+                {biProjectionMode === 'historico' && <select value={selectedBiHistoryMonth} onChange={event => setSelectedBiHistoryMonth(event.target.value)} className="bg-white border border-zinc-200 px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest"><option value="">Selecciona mes…</option>{biMonthlySnapshots.map(snapshot => <option key={snapshot.id} value={snapshot.month || snapshot.id}>{new Date(`${snapshot.month || snapshot.id}-01T12:00:00`).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}</option>)}</select>}
                 <button onClick={handleDownloadBIReport} className="w-full sm:w-auto bg-slate-900 hover:bg-black text-white px-5 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                   <FileText className="w-4 h-4"/> Generar informe
                 </button>
@@ -14101,11 +14369,13 @@ ${startDateWarning}
             <div className={`rounded-2xl border p-5 ${biProjectionMode === 'proyeccion' ? 'bg-violet-50 border-violet-200' : 'bg-sky-50 border-sky-200'}`}>
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
-                  <p className={`text-[10px] font-black uppercase tracking-widest ${biProjectionMode === 'proyeccion' ? 'text-violet-700' : 'text-sky-700'}`}>{biProjectionMode === 'proyeccion' ? 'Escenario potencial' : 'Situación actual'} · {biPeriodLabel}</p>
+                  <p className={`text-[10px] font-black uppercase tracking-widest ${biProjectionMode === 'proyeccion' ? 'text-violet-700' : 'text-sky-700'}`}>{biProjectionMode === 'proyeccion' ? 'Escenario potencial' : biProjectionMode === 'historico' ? 'Foto mensual guardada' : 'Situación actual'} · {biPeriodLabel}</p>
                   <p className="text-sm font-bold text-slate-700 mt-1">
                     {biProjectionMode === 'proyeccion'
                       ? `Foto prevista al ${formatDateSpanish(nextMonthStartStr)} incorporando ${biProjectionInputs.meta.appliedPending.length} solicitud(es) pendiente(s) de la Bandeja.`
-                      : `Foto operativa al ${formatDateSpanish(todayStr)}. Las solicitudes todavía pendientes no alteran esta vista.`}
+                      : biProjectionMode === 'historico'
+                        ? `Informe mensual conservado desde la activación de esta función. No se reconstruyen meses anteriores.`
+                        : `Foto operativa al ${formatDateSpanish(todayStr)}. Las solicitudes todavía pendientes no alteran esta vista.`}
                   </p>
                   <p className="text-[11px] font-semibold text-zinc-500 mt-1">Las recolocaciones conservan cuota y plaza en origen. Los cambios temporales logísticos no cambian las cifras; un profesor sustituto sí recibe el coste de sus sesiones.</p>
                 </div>
@@ -14174,6 +14444,11 @@ ${startDateWarning}
                   </div>
                   <PieChart className="absolute -bottom-6 -right-6 w-32 h-32 text-zinc-800 opacity-50 pointer-events-none" />
                 </div>
+
+                {biProjectionMode !== 'proyeccion' && <div className="md:col-span-2 lg:col-span-4 bg-amber-50 border border-amber-200 p-6 rounded-3xl shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div><div className="flex items-center gap-2 text-amber-700"><Timer className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste empresarial evitado</h3></div><p className="text-[11px] font-bold text-amber-800/80 mt-2">Horas finalmente no liquidables según los registros diarios. Se calcula con el coste empresa configurado, no con el salario/hora.</p></div>
+                  <div className="lg:text-right shrink-0"><p className="text-4xl font-black text-amber-900 tracking-tighter">+{Number(displayedAvoidedCompanyCost.amount || 0).toLocaleString('es-ES', { maximumFractionDigits: 2 })}€</p><p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{Number(displayedAvoidedCompanyCost.hours || 0).toFixed(1)} h · {displayedAvoidedCompanyCost.records || 0} registros · {Number(displayedAvoidedCompanyCost.companyHourlyCost || 0).toFixed(2)} €/h</p></div>
+                </div>}
 
                 <div className="md:col-span-2 lg:col-span-4 bg-white border border-zinc-200 p-5 rounded-3xl shadow-sm grid grid-cols-2 lg:grid-cols-6 gap-4">
                   <div><span className="block text-2xl font-black text-slate-900">{businessIntelligence.totalAlumnosActivosUnicos || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Alumnos únicos activos</span></div>
@@ -15247,9 +15522,6 @@ ${startDateWarning}
                   <button onClick={() => setClassesViewMode('profesores')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'profesores' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
                     <User className="w-3 h-3 inline mr-1" /> Profesores
                   </button>
-                  <button onClick={() => setClassesViewMode('hibernadas')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'hibernadas' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
-                    <Ghost className="w-3 h-3 inline mr-1" /> Hibernadas ({hibernatedClasses.length})
-                  </button>
                   <button onClick={() => setClassesViewMode('salas')} className={`flex-1 sm:flex-none px-4 py-2 rounded-lg text-[10px] font-black uppercase transition-all ${classesViewMode === 'salas' ? 'bg-white shadow-sm text-slate-800' : 'text-zinc-500 hover:text-slate-800'}`}>
                     <LayoutGrid className="w-3 h-3 inline mr-1" /> Salas (Arquitecto)
                   </button>
@@ -15702,18 +15974,18 @@ ${startDateWarning}
           </div>
         )}
 
-        {/* --- 5. CLASES EN PELIGRO --- */}
+        {/* --- 5. LOCALIZADOR DE CLASES --- */}
         {activeTab === 'danger' && (
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="bg-red-100 p-3 rounded-xl"><AlertTriangle className="w-6 h-6 text-red-600"/></div>
+                <div className="bg-indigo-100 p-3 rounded-xl"><Search className="w-6 h-6 text-indigo-600"/></div>
                 <div>
-                  <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Grupos en Peligro</h2>
+                  <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Localizador de clases</h2>
                   <p className="text-zinc-500 font-medium text-sm">
                     {dangerViewMode === 'actual'
-                      ? 'Vista real actual con criterios afinados por aforo.'
-                      : 'Vista proyectada: aplica virtualmente las gestiones pendientes para anticipar el mes que viene.'}
+                      ? 'Localiza ofertas web, grupos en formación, alumnos que requieren contacto y clases inactivas.'
+                      : 'Proyección del mes siguiente aplicando virtualmente las gestiones pendientes.'}
                   </p>
                 </div>
               </div>
@@ -15737,16 +16009,17 @@ ${startDateWarning}
             <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-4">
               <div className="flex flex-wrap gap-2">
                 {[
-                  { id: 'ocupacion', label: 'Por ocupación' },
-                  { id: 'profesor', label: 'Por profesor' },
-                  { id: 'sede', label: 'Por sede' },
-                  { id: 'dia', label: 'Por día' },
-                  { id: 'contactar', label: `A contactar (${dangerContactRows.length})` }
+                  { id: 'web', label: `Ofertadas en web (${locatorRowsByCategory.web.length})` },
+                  { id: 'formation', label: `En formación (${locatorRowsByCategory.formation.length})` },
+                  { id: 'demand', label: `Formación con espera (${locatorRowsByCategory.demand.length})` },
+                  { id: 'contactar', label: `Contactar (${dangerContactRows.length})` },
+                  { id: 'ocupacion', label: `Ocupación / riesgo (${dangerRowsForView.length})` },
+                  { id: 'inactive', label: `Inactivas (${locatorRowsByCategory.inactive.length})` }
                 ].map(view => (
                   <button
                     key={view.id}
                     onClick={() => setDangerSubView(view.id)}
-                    className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerSubView === view.id ? 'bg-red-600 text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}
+                    className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerSubView === view.id ? 'bg-indigo-600 text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}
                   >
                     {view.label}
                   </button>
@@ -15756,10 +16029,10 @@ ${startDateWarning}
 
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               {[
-                { label: 'Críticas', count: dangerRowsForView.filter(row => row.statusKey === 'critico').length, className: 'bg-red-50 border-red-200 text-red-900' },
-                { label: 'Revisar', count: dangerRowsForView.filter(row => row.statusKey === 'revisar').length, className: 'bg-amber-50 border-amber-200 text-amber-900' },
-                { label: 'Vacías', count: dangerRowsForView.filter(row => row.statusKey === 'vacia').length, className: 'bg-zinc-50 border-zinc-200 text-zinc-700' },
-                { label: 'Solo mant.', count: dangerRowsForView.filter(row => row.statusKey === 'solo_mantenimiento').length, className: 'bg-blue-50 border-blue-200 text-blue-900' }
+                { label: 'Ofertadas web', count: locatorRowsByCategory.web.length, className: 'bg-blue-50 border-blue-200 text-blue-900' },
+                { label: 'En formación', count: locatorRowsByCategory.formation.length, className: 'bg-violet-50 border-violet-200 text-violet-900' },
+                { label: 'Personas a contactar', count: dangerContactRows.length, className: 'bg-amber-50 border-amber-200 text-amber-900' },
+                { label: 'Inactivas', count: locatorRowsByCategory.inactive.length, className: 'bg-zinc-50 border-zinc-200 text-zinc-700' }
               ].map(item => (
                 <div key={item.label} className={`rounded-2xl border-2 p-4 ${item.className}`}>
                   <p className="text-[10px] font-black uppercase tracking-widest opacity-70">{item.label}</p>
@@ -15769,8 +16042,8 @@ ${startDateWarning}
             </div>
 
             <div className="bg-slate-50 border border-slate-200 text-slate-700 rounded-2xl p-4 text-xs font-bold leading-relaxed">
-              <strong className="uppercase tracking-widest text-[10px] text-slate-900 block mb-2">Criterios activos</strong>
-              Grupos de 8: <strong>crítico ≤3</strong>, revisar ≤5. Grupos de 4: <strong>crítico ≤1</strong>, revisar ≤2. Grupos de 5: <strong>crítico ≤1</strong>, revisar ≤2. Las clases 1/1 quedan fuera de esta vista.
+              <strong className="uppercase tracking-widest text-[10px] text-slate-900 block mb-2">Qué reúne cada categoría</strong>
+              “Formación con espera” identifica turnos con alumnos cuyo inicio aún está pendiente. “Contactar” reúne esas personas y también al alumno que se ha quedado solo en un grupo. La vista de ocupación conserva los umbrales de riesgo anteriores; las clases 1/1 no se consideran grupos en riesgo.
             </div>
 
             {dangerViewMode === 'proyeccion' && (
@@ -15790,7 +16063,7 @@ ${startDateWarning}
                 <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
                   <div className="p-5 border-b border-zinc-100 bg-red-50">
                     <h3 className="font-black uppercase tracking-tight text-red-900 flex items-center gap-2"><Mail className="w-5 h-5"/> Alumnos a contactar</h3>
-                    <p className="text-xs font-bold text-red-700 mt-1">Solo alumnos activos de clases en estado crítico. No incluye clases en “Revisar”.</p>
+                    <p className="text-xs font-bold text-red-700 mt-1">Alumnos en espera de apertura y alumnos que se han quedado solos en un grupo operativo.</p>
                   </div>
                   <div className="divide-y divide-zinc-100">
                     {dangerContactRows.map(item => (
@@ -15798,6 +16071,7 @@ ${startDateWarning}
                         <div>
                           <p className="font-black text-slate-900 uppercase tracking-tight">{item.studentName}</p>
                           <p className="text-xs font-bold text-zinc-500">{item.email}</p>
+                          <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{item.reason}</p>
                           <p className="text-[10px] font-black uppercase tracking-widest text-red-700 mt-1">{item.classLine}</p>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
@@ -15815,15 +16089,15 @@ ${startDateWarning}
                   </div>
                 </div>
               )
-            ) : dangerRowsForView.length === 0 ? (
+            ) : displayedLocatorRows.length === 0 ? (
               <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                 <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
-                <h3 className="text-lg font-black text-slate-800 uppercase">Grupos sanos</h3>
-                <p className="text-zinc-500 text-sm">No hay clases grupales con riesgo según los criterios actuales.</p>
+                <h3 className="text-lg font-black text-slate-800 uppercase">Sin resultados</h3>
+                <p className="text-zinc-500 text-sm">No hay clases que cumplan el criterio seleccionado.</p>
               </div>
             ) : (
               <div className="space-y-6">
-                {Object.entries(groupDangerRows(dangerRowsForView, dangerSubView)).map(([groupName, rows]) => (
+                {Object.entries(groupDangerRows(displayedLocatorRows, dangerSubView === 'ocupacion' ? 'ocupacion' : 'sede')).map(([groupName, rows]) => (
                   <section key={`${dangerViewMode}-${dangerSubView}-${groupName}`} className="bg-white rounded-3xl border border-zinc-200 shadow-sm p-5">
                     <div className="flex items-center justify-between gap-3 mb-4">
                       <h3 className="font-black uppercase tracking-tight text-slate-900 flex items-center gap-2">
@@ -15942,7 +16216,7 @@ ${startDateWarning}
               )}
             </header>
 
-            <div className="bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm grid grid-cols-1 sm:grid-cols-4 gap-2">
               <button
                 onClick={() => setTeacherPanelTab('evaluations')}
                 className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'evaluations' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
@@ -15961,7 +16235,50 @@ ${startDateWarning}
               >
                 <Clock className="w-4 h-4"/> Disponibilidad
               </button>
+              <button
+                onClick={() => setTeacherPanelTab('activity')}
+                className={`px-4 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 ${teacherPanelTab === 'activity' ? 'bg-black text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100'}`}
+              >
+                <Activity className="w-4 h-4"/> Actividad y faltas
+              </button>
             </div>
+
+            {teacherPanelTab === 'activity' && (
+              <div className="space-y-6">
+                <div className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-sm flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                  <div><h3 className="text-lg font-black uppercase tracking-tight text-slate-800">Estadísticas docentes</h3><p className="text-xs font-bold text-zinc-400 mt-1">Datos procedentes de los registros diarios, sin alterar nóminas ni asistencias.</p></div>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <select value={teacherStatsPeriod} onChange={event => setTeacherStatsPeriod(event.target.value)} className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-black uppercase tracking-widest"><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option><option value="course">Curso escolar</option></select>
+                    <input type="date" value={teacherStatsAnchor} onChange={event => setTeacherStatsAnchor(event.target.value)} className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl text-xs font-black" />
+                  </div>
+                </div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Periodo: {formatDateSpanish(teacherStatsRange.from)} — {formatDateSpanish(teacherStatsRange.until)}</p>
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  {teacherActivityStats.map(stat => <article key={stat.name} className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-sm">
+                    <div className="flex items-start justify-between gap-3"><h4 className="font-black uppercase text-slate-900">{stat.name}</h4><button type="button" onClick={() => resetTeacherDisciplinaryCycle(stat.name)} className="text-[9px] font-black uppercase tracking-widest text-zinc-400 hover:text-red-600">Reiniciar cómputo</button></div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">
+                      <div className="bg-emerald-50 rounded-xl p-3"><span className="block text-xl font-black text-emerald-800">{stat.taughtCount}</span><span className="text-[9px] font-black uppercase text-emerald-600">Clases · {stat.taughtHours.toFixed(1)} h</span></div>
+                      <div className="bg-amber-50 rounded-xl p-3"><span className="block text-xl font-black text-amber-800">{stat.renouncedPercent.toFixed(1)}%</span><span className="text-[9px] font-black uppercase text-amber-600">Renunciadas ({stat.renouncedCount})</span></div>
+                      <div className="bg-red-50 rounded-xl p-3"><span className="block text-xl font-black text-red-800">{stat.emergencyCount}</span><span className="text-[9px] font-black uppercase text-red-600">Emergencia sin dar</span></div>
+                      <div className="bg-blue-50 rounded-xl p-3"><span className="block text-xl font-black text-blue-800">{stat.deadWorkedCount}</span><span className="text-[9px] font-black uppercase text-blue-600">Horas muertas ocupadas</span></div>
+                      <div className="bg-zinc-100 rounded-xl p-3"><span className="block text-xl font-black text-zinc-800">{stat.deadRenouncedCount}</span><span className="text-[9px] font-black uppercase text-zinc-500">Horas muertas sin ocupar</span></div>
+                      <div className="bg-violet-50 rounded-xl p-3"><span className="block text-sm font-black text-violet-900">{stat.disciplinary.leve} / {stat.disciplinary.grave} / {stat.disciplinary.muy_grave}</span><span className="text-[9px] font-black uppercase text-violet-600">Leves / graves / muy graves</span></div>
+                    </div>
+                  </article>)}
+                </div>
+                <div className="bg-slate-900 text-white rounded-2xl p-5 shadow-lg">
+                  <h3 className="font-black uppercase tracking-tight">Registrar falta disciplinaria</h3>
+                  <p className="text-xs font-bold text-slate-400 mt-1">El reinicio abre un nuevo cómputo; nunca borra el histórico anterior.</p>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+                    <select value={disciplinaryDraft.teacher} onChange={event => setDisciplinaryDraft(previous => ({ ...previous, teacher: event.target.value }))} className="p-3 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold"><option value="">Profesor…</option>{allTeacherNamesForPanel.map(name => <option key={name} value={name}>{name}</option>)}</select>
+                    <select value={disciplinaryDraft.severity} onChange={event => setDisciplinaryDraft(previous => ({ ...previous, severity: event.target.value }))} className="p-3 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold"><option value="leve">Leve</option><option value="grave">Grave</option><option value="muy_grave">Muy grave</option></select>
+                    <input type="date" value={disciplinaryDraft.date} onChange={event => setDisciplinaryDraft(previous => ({ ...previous, date: event.target.value }))} className="p-3 bg-slate-800 border border-slate-700 rounded-xl text-xs font-bold" />
+                    <button type="button" onClick={saveTeacherDisciplinaryEvent} className="bg-red-600 hover:bg-red-500 rounded-xl px-4 py-3 text-[10px] font-black uppercase tracking-widest">Registrar falta</button>
+                    <textarea value={disciplinaryDraft.details} onChange={event => setDisciplinaryDraft(previous => ({ ...previous, details: event.target.value }))} placeholder="Hechos y observaciones…" className="md:col-span-4 min-h-24 p-3 bg-slate-800 border border-slate-700 rounded-xl text-sm font-medium" />
+                  </div>
+                </div>
+              </div>
+            )}
 
             {teacherPanelTab === 'evaluations' && (
               <div className="space-y-6">

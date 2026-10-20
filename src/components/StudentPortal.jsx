@@ -779,6 +779,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [workshopsLoaded, setWorkshopsLoaded] = useState(false);
   const [workshopModal, setWorkshopModal] = useState(null);
   const [workshopAnswers, setWorkshopAnswers] = useState({});
+  const [workshopPaymentConfirmation, setWorkshopPaymentConfirmation] = useState(null);
   const [isSendingWorkshopRegistration, setIsSendingWorkshopRegistration] = useState(false);
 
   const [triviaModal, setTriviaModal] = useState(false);
@@ -1630,6 +1631,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     !isStudentClassScheduledToEnd(c) &&
     (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
   ));
+  const isOnlyPrivateSeatStudent = fixedSeatClasses.length === 1
+    && Math.max(1, Number(fixedSeatClasses[0]?.capacity) || 1) === 1;
 
   const studentCenters = [...new Map(
     (fixedMyClasses.length > 0 ? fixedMyClasses : effectiveMyClasses)
@@ -3422,16 +3425,18 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     const initialAnswers = {};
     (workshop.questions || []).forEach(question => { initialAnswers[question.id] = ''; });
     setWorkshopAnswers(initialAnswers);
+    setWorkshopPaymentConfirmation(null);
     setWorkshopModal(workshop);
   };
 
   const closeWorkshopModal = () => {
     if (isSendingWorkshopRegistration) return;
+    setWorkshopPaymentConfirmation(null);
     setWorkshopModal(null);
     setWorkshopAnswers({});
   };
 
-  const sendWorkshopRegistration = async () => {
+  const sendWorkshopRegistration = async ({ paymentConfirmed = false } = {}) => {
     if (!workshopModal?.id || !profile?.id || isSendingWorkshopRegistration) return;
 
     const currentWorkshop = workshops.find(workshop => workshop.id === workshopModal.id) || workshopModal;
@@ -3440,6 +3445,15 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
       showToast('Completa las preguntas obligatorias antes de continuar.', 'error');
       return;
     }
+
+    if (currentWorkshop.priceType === 'paid' && !paymentConfirmed) {
+      const freeSeats = getWorkshopFreeSeats(currentWorkshop);
+      const isWaitlist = !currentWorkshop.unlimitedCapacity && freeSeats === 0 && currentWorkshop.waitlistEnabled;
+      setWorkshopPaymentConfirmation({ workshop: currentWorkshop, isWaitlist });
+      return;
+    }
+
+    setWorkshopPaymentConfirmation(null);
 
     const workshopRef = doc(db, 'artifacts', appId, 'workshops', currentWorkshop.id);
     const registrationId = buildWorkshopRegistrationId(currentWorkshop.id, profile.id);
@@ -3510,6 +3524,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
 
       setWorkshopModal(null);
       setWorkshopAnswers({});
+      setWorkshopPaymentConfirmation(null);
       if (registrationStatus === 'confirmed') showToast('¡Ya estás apuntado al taller!');
       if (registrationStatus === 'pending') showToast('Solicitud enviada. Queda pendiente de revisión.');
       if (registrationStatus === 'waitlist') showToast('Te has apuntado a la lista de espera.');
@@ -4008,6 +4023,9 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         bajaTotal: Boolean(isBajaTotalRequest),
         isTotalBaja: Boolean(isBajaTotalRequest),
         isPartialSeatGestion: Boolean(resolvedSourceClass && !isBajaTotalRequest),
+        changeKind: gestionModal.type === 'cambio_horario'
+          ? (gestionModal.changeKind || (isOnlyPrivateSeatStudent ? 'private_to_group' : 'schedule_change'))
+          : '',
         type: gestionModal.type,
         title: gestionUiCopyForPayload.title || gestionModal.title,
         details: gestionText,
@@ -4579,6 +4597,15 @@ END:VCALENDAR`;
     const bajaPlaceholder = 'Puedes indicarnos brevemente el motivo de la baja. Nos ayuda a mejorar.';
 
     if (type === 'cambio_horario') {
+      if (isOnlyPrivateSeatStudent) {
+        return {
+          title: 'Pasar a grupo',
+          description: 'Elige un grupo operativo de tu mismo instrumento. Tu plaza particular se mantiene hasta que Administración confirme el cambio.',
+          sourceLabel: 'Tu plaza particular',
+          searchLabel: 'Grupos operativos con plazas disponibles',
+          placeholder: commonPlaceholder
+        };
+      }
       return isMultiSeatStudent
         ? {
             title: 'Cambiar horario fijo',
@@ -4850,6 +4877,7 @@ END:VCALENDAR`;
         if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
+        if (gestionModal.type === 'cambio_horario' && gestionModal.changeKind === 'private_to_group' && maxCap <= 1) return false;
         const currentStudents = getCommittedSeatCountForClass(c, todayStr);
         if (currentStudents >= maxCap) return false;
         if (myClasses.some(ownClass => getClassDocumentId(ownClass) === getClassDocumentId(c))) return false;
@@ -5279,8 +5307,43 @@ END:VCALENDAR`;
             {!activeRegistration && registrationOpen && registration?.status !== 'rejected' && (workshop.questions || []).length > 0 && <div className="mt-7 border-t border-zinc-100 pt-6"><h3 className="text-xs font-black uppercase tracking-widest text-slate-800 mb-4">Antes de apuntarte</h3><div className="space-y-4">{workshop.questions.map(question => <div key={question.id}><label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1.5">{question.label}{question.required ? ' *' : ''}</label>{question.type === 'choice' ? <select value={workshopAnswers[question.id] || ''} onChange={e => setWorkshopAnswers({ ...workshopAnswers, [question.id]: e.target.value })} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-bold text-sm focus:border-violet-500"><option value="">Selecciona...</option>{(question.options || []).map(option => <option key={option} value={option}>{option}</option>)}</select> : <textarea value={workshopAnswers[question.id] || ''} onChange={e => setWorkshopAnswers({ ...workshopAnswers, [question.id]: e.target.value })} className="w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl outline-none font-medium text-sm min-h-[90px] resize-y focus:border-violet-500"/>}</div>)}</div></div>}
 
             <div className="mt-7 border-t border-zinc-100 pt-6">
-              {activeRegistration ? <div className="space-y-3"><div className={`p-4 rounded-2xl border ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}><p className="font-black uppercase tracking-widest text-xs">{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</p><p className="text-xs font-bold mt-1 opacity-80">{activeRegistration.status === 'confirmed' ? 'Tu plaza está reservada.' : activeRegistration.status === 'pending' ? 'Administración revisará tu solicitud.' : 'Te avisaremos si queda una plaza disponible.'}</p></div>{canCancel && <button onClick={() => cancelWorkshopRegistration(workshop)} disabled={isSendingWorkshopRegistration} className="w-full bg-zinc-100 text-zinc-600 hover:bg-red-50 hover:text-red-700 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-50">Cancelar inscripción</button>}</div> : registration?.status === 'rejected' ? <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`Solicitud taller: ${workshop.title}`)}`} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Contactar con Administración</a> : registrationOpen ? <><div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4"><div><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block">Inscripción abierta hasta</span><span className="text-sm font-black text-slate-800">{formatWorkshopDeadline(workshop.registrationDeadline)}</span></div><span className={`text-[10px] font-black uppercase tracking-widest ${isFull ? 'text-blue-700' : 'text-emerald-700'}`}>{workshop.unlimitedCapacity ? 'Plazas sin límite' : isFull && workshop.waitlistEnabled ? 'Lista de espera disponible' : `${freeSeats} ${freeSeats === 1 ? 'plaza libre' : 'plazas libres'}`}</span></div>{workshop.priceType === 'paid' && <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3 mb-4 text-xs font-bold text-zinc-600">{workshop.paymentMethod === 'next_debit' ? 'El importe se incluirá en la próxima domiciliación.' : workshop.paymentMethod === 'manual_admin' ? 'Administración gestionará el cobro después de la inscripción.' : 'El pago se realizará mediante el sistema externo indicado por la escuela.'}</div>}<button onClick={sendWorkshopRegistration} disabled={isSendingWorkshopRegistration || (isFull && !workshop.waitlistEnabled)} className="w-full bg-violet-600 hover:bg-violet-700 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSendingWorkshopRegistration ? 'Procesando...' : isFull && workshop.waitlistEnabled ? <><Clock className="w-4 h-4"/> Apuntarme a la lista de espera</> : workshop.registrationMode === 'manual_review' ? <><Send className="w-4 h-4"/> Enviar solicitud</> : <><CheckCircle className="w-4 h-4"/> Apuntarme al taller</>}</button></> : <div className="p-4 bg-zinc-100 border border-zinc-200 rounded-2xl text-center"><p className="font-black uppercase tracking-widest text-xs text-zinc-600">Inscripción cerrada</p>{workshop.registrationDeadline && <p className="text-[10px] font-bold text-zinc-400 mt-1">Finalizó el {formatWorkshopDeadline(workshop.registrationDeadline)}</p>}</div>}
+              {activeRegistration ? <div className="space-y-3"><div className={`p-4 rounded-2xl border ${WORKSHOP_REGISTRATION_STATUS_STYLE[activeRegistration.status]}`}><p className="font-black uppercase tracking-widest text-xs">{WORKSHOP_REGISTRATION_STATUS_LABELS[activeRegistration.status]}</p><p className="text-xs font-bold mt-1 opacity-80">{activeRegistration.status === 'confirmed' ? 'Tu plaza está reservada.' : activeRegistration.status === 'pending' ? 'Administración revisará tu solicitud.' : 'Te avisaremos si queda una plaza disponible.'}</p></div>{canCancel && <button onClick={() => cancelWorkshopRegistration(workshop)} disabled={isSendingWorkshopRegistration} className="w-full bg-zinc-100 text-zinc-600 hover:bg-red-50 hover:text-red-700 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-50">Cancelar inscripción</button>}</div> : registration?.status === 'rejected' ? <a href={`mailto:${ADMIN_GESTION_EMAIL}?subject=${encodeURIComponent(`Solicitud taller: ${workshop.title}`)}`} className="w-full bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest flex items-center justify-center gap-2"><Mail className="w-4 h-4"/> Contactar con Administración</a> : registrationOpen ? <><div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4"><div><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block">Inscripción abierta hasta</span><span className="text-sm font-black text-slate-800">{formatWorkshopDeadline(workshop.registrationDeadline)}</span></div><span className={`text-[10px] font-black uppercase tracking-widest ${isFull ? 'text-blue-700' : 'text-emerald-700'}`}>{workshop.unlimitedCapacity ? 'Plazas sin límite' : isFull && workshop.waitlistEnabled ? 'Lista de espera disponible' : `${freeSeats} ${freeSeats === 1 ? 'plaza libre' : 'plazas libres'}`}</span></div>{workshop.priceType === 'paid' && <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3 mb-4 text-xs font-bold text-zinc-600">{workshop.paymentMethod === 'next_debit' ? 'El importe se incluirá en la próxima domiciliación.' : workshop.paymentMethod === 'manual_admin' ? 'Administración gestionará el cobro después de la inscripción.' : 'El pago se realizará mediante el sistema externo indicado por la escuela.'}</div>}<button onClick={() => sendWorkshopRegistration()} disabled={isSendingWorkshopRegistration || (isFull && !workshop.waitlistEnabled)} className="w-full bg-violet-600 hover:bg-violet-700 text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{isSendingWorkshopRegistration ? 'Procesando...' : isFull && workshop.waitlistEnabled ? <><Clock className="w-4 h-4"/> Apuntarme a la lista de espera</> : workshop.registrationMode === 'manual_review' ? <><Send className="w-4 h-4"/> Enviar solicitud</> : <><CheckCircle className="w-4 h-4"/> Apuntarme al taller</>}</button></> : <div className="p-4 bg-zinc-100 border border-zinc-200 rounded-2xl text-center"><p className="font-black uppercase tracking-widest text-xs text-zinc-600">Inscripción cerrada</p>{workshop.registrationDeadline && <p className="text-[10px] font-bold text-zinc-400 mt-1">Finalizó el {formatWorkshopDeadline(workshop.registrationDeadline)}</p>}</div>}
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderWorkshopPaymentConfirmation = () => {
+    if (!workshopPaymentConfirmation?.workshop) return null;
+    const workshop = workshopPaymentConfirmation.workshop;
+    const paymentText = workshop.paymentMethod === 'next_debit'
+      ? 'El importe se incluirá en la próxima domiciliación.'
+      : workshop.paymentMethod === 'manual_admin'
+        ? 'Administración gestionará el cobro después de la inscripción.'
+        : 'El pago se realizará mediante el sistema externo indicado por la escuela.';
+
+    return (
+      <div className="fixed inset-0 bg-black/80 z-[150] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl">
+          <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mb-5">
+            <Ticket className="w-7 h-7" />
+          </div>
+          <h2 className="text-xl font-black uppercase tracking-tight text-slate-900">Confirmar inscripción de pago</h2>
+          {workshopPaymentConfirmation.isWaitlist ? (
+            <p className="text-sm font-medium text-zinc-600 leading-relaxed mt-3">
+              Entrar en la lista de espera no genera ningún cobro. Si posteriormente obtienes plaza, la inscripción estará sujeta al abono de <strong className="text-slate-900">{formatEuro(workshop.price)}</strong>. {paymentText}
+            </p>
+          ) : (
+            <p className="text-sm font-medium text-zinc-600 leading-relaxed mt-3">
+              Este taller tiene un precio de <strong className="text-slate-900">{formatEuro(workshop.price)}</strong>. Al confirmar, solicitas una plaza y aceptas el abono de la cuota correspondiente. {paymentText}
+            </p>
+          )}
+          <p className="mt-4 text-xs font-bold text-zinc-500">¿Quieres continuar?</p>
+          <div className="grid grid-cols-2 gap-3 mt-6">
+            <button type="button" onClick={() => setWorkshopPaymentConfirmation(null)} disabled={isSendingWorkshopRegistration} className="bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest disabled:opacity-50">Volver</button>
+            <button type="button" onClick={() => sendWorkshopRegistration({ paymentConfirmed: true })} disabled={isSendingWorkshopRegistration} className="bg-violet-600 hover:bg-violet-700 text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest shadow-md disabled:opacity-50">{isSendingWorkshopRegistration ? 'Procesando…' : workshopPaymentConfirmation.isWaitlist ? 'Entrar en espera' : 'Confirmar inscripción'}</button>
           </div>
         </div>
       </div>
@@ -5733,6 +5796,7 @@ END:VCALENDAR`;
       {renderMitoboxModal()}
       {renderExtraSignupModal()}
       {renderWorkshopModal()}
+      {renderWorkshopPaymentConfirmation()}
       {renderContract()}
       {renderTriviaModal()}
 
@@ -7097,15 +7161,17 @@ END:VCALENDAR`;
               {!isServiceOnlyStudent && <button 
                 disabled={isChangeHorarioLocked}
                 onClick={() => handleAdminGestionClick({
-                  type: 'cambio_horario', title: 'Cambiar horario fijo', icon: RefreshCcw, color: 'text-blue-500',
+                  type: 'cambio_horario',
+                  changeKind: isOnlyPrivateSeatStudent ? 'private_to_group' : 'schedule_change',
+                  title: isOnlyPrivateSeatStudent ? 'Pasar a grupo' : 'Cambiar horario fijo', icon: RefreshCcw, color: 'text-blue-500',
                   desc: getGestionUiCopy('cambio_horario').description,
                   placeholder: getGestionUiCopy('cambio_horario').placeholder
                 })}
                 className={`bg-white p-6 rounded-3xl border-2 text-left transition-all shadow-sm group ${isChangeHorarioLocked ? 'opacity-50 border-zinc-100 cursor-not-allowed' : 'border-zinc-100 hover:border-black'}`}
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isChangeHorarioLocked ? 'bg-zinc-100' : 'bg-blue-50 group-hover:scale-110'}`}><RefreshCcw className={`w-6 h-6 ${isChangeHorarioLocked ? 'text-zinc-400' : 'text-blue-500'}`}/></div>
-                <h3 className="font-black text-slate-800 uppercase tracking-tight">Cambiar Horario Fijo</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : 'Solicita otro día u hora'}</p>
+                <h3 className="font-black text-slate-800 uppercase tracking-tight">{isOnlyPrivateSeatStudent ? 'Pasar a grupo' : 'Cambiar Horario Fijo'}</h3>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isStudentFrozen ? 'No disponible en mantenimiento' : isOnlyPrivateSeatStudent ? 'Solicita una plaza grupal' : 'Solicita otro día u hora'}</p>
               </button>}
 
               <button 

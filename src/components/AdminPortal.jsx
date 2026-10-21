@@ -2338,6 +2338,23 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [resolvedGestionesHasMore, setResolvedGestionesHasMore] = useState(true);
   const [loadingMoreResolvedGestiones, setLoadingMoreResolvedGestiones] = useState(false);
   const [gestionDetailsModal, setGestionDetailsModal] = useState(null);
+  const [inboxSelectedId, setInboxSelectedId] = useState(null);
+  const [inboxPrivateDetail, setInboxPrivateDetail] = useState(null);
+  const inboxDetailRequestRef = useRef(0);
+  const selectInboxGestion = async gestion => {
+    const request = ++inboxDetailRequestRef.current;
+    setInboxSelectedId(gestion.id);
+    setInboxPrivateDetail({ id: gestion.id, loading: !!gestion.hasPrivateDetails });
+    if (!gestion.hasPrivateDetails) return;
+    try {
+      const snapshot = await getDoc(doc(db, 'artifacts', appId, 'gestionPrivateNotes', gestion.id));
+      if (request !== inboxDetailRequestRef.current) return;
+      setInboxPrivateDetail({ id: gestion.id, details: snapshot.exists() ? String(snapshot.data().details || '') : '' });
+    } catch {
+      if (request !== inboxDetailRequestRef.current) return;
+      setInboxPrivateDetail({ id: gestion.id, error: true });
+    }
+  };
   const [dangerViewMode, setDangerViewMode] = useState('actual');
   const [dangerSubView, setDangerSubView] = useState('ocupacion');
   const [locatorEmail, setLocatorEmail] = useState(null);
@@ -14249,6 +14266,140 @@ ${startDateWarning}
     setDeferredRetryVersion(version => version + 1);
   };
 
+  const renderInboxPendingDetail = g => {
+
+                        const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
+                        const studentAlias = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : '';
+                        const studentClasses = g.studentId ? getStudentAssignedClasses(g.studentId) : [];
+                        const visibleClasses = studentClasses.slice(0, 2);
+                        const hiddenClassCount = Math.max(studentClasses.length - visibleClasses.length, 0);
+                        const teacherNames = g.studentId ? getStudentTeachers(g.studentId) : [];
+                        const sourceClassLine = getGestionSourceClassLine(g);
+                        const targetClassLine = getGestionTargetClassLine(g);
+                        const bajaScopeLabel = getBajaScopeLabel(g);
+    return <article className="inbox-reading-pane" aria-label="Detalle del trámite seleccionado">
+      <header className="flex flex-wrap items-center justify-between gap-3 mb-4"><span className="text-sm text-zinc-500">Detalle del trámite</span><button type="button" onClick={() => { ++inboxDetailRequestRef.current; setInboxSelectedId(null); }} className="px-3 py-2 bg-zinc-100 rounded-lg text-sm">Cerrar detalle</button></header>
+      <div className="inbox-student-summary">
+                            <div className="font-black text-black">{g.studentName}</div>
+                            {studentAlias && studentAlias !== g.studentName && (
+                              <div className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mt-0.5 flex items-center gap-1">
+                                <User className="w-3 h-3"/> Alumno: {studentAlias}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-zinc-400">{g.studentEmail}</div>
+                            {teacherNames.length > 0 && (
+                              <div className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1">
+                                Prof: {teacherNames.join(', ')}
+                              </div>
+                            )}
+                            {visibleClasses.length > 0 && (
+                              <div className="mt-1.5 space-y-1">
+                                {visibleClasses.map(c => (
+                                  <div key={c.id} className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-snug flex items-start gap-1">
+                                    <BookOpen className="w-3 h-3 mt-0.5 shrink-0 text-zinc-400"/>
+                                    <span>{c.subject} · {getDayName(c.dayOfWeek)} · {c.time}h · {getClassCenterName(c)}{c.sala || c.roomId ? ` · ${getClassRoomName(c)}` : ''}</span>
+                                  </div>
+                                ))}
+                                {hiddenClassCount > 0 && (
+                                  <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">+{hiddenClassCount} clase(s) más</div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+      <p className="text-sm text-zinc-500 mt-3">Solicitado: {formatDateSpanish(g.date)}</p>
+      <section className="inbox-workflow-summary">
+                            <span className={`px-2 py-1 rounded border text-[10px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>
+                              {getGestionTypeLabel(g.type || 'tarea')}
+                            </span>
+                            <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isGestionReadyForExecution(g) ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                              {getGestionWorkflowLabel(g)}
+                            </div>
+                            {g.tadosiDoneAt && <div className="text-[9px] font-bold text-emerald-600 mt-1 uppercase">Tadosi: {new Date(g.tadosiDoneAt).toLocaleDateString('es-ES')}</div>}
+                            {isExtraServiceGestion(g) && (() => {
+                              const extraConfig = getExtraServiceConfigForGestion(g);
+                              return (
+                                <div className="mt-2 p-2 rounded-xl bg-slate-50 border border-slate-100 text-[10px] font-bold text-slate-700 leading-snug">
+                                  <span className="font-black uppercase tracking-widest block mb-0.5">Servicio extra</span>
+                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} · cuota {g.extraMonthlyFee || extraConfig?.monthlyFee || '—'}€/mes
+                                  <span className="block text-zinc-500 mt-0.5">Prorrata del mes corriente: a calcular al activar.</span>
+                                </div>
+                              );
+                            })()}
+                            {bajaScopeLabel && (
+                              <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isTotalBajaGestion(g) ? 'bg-red-100 text-red-700' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
+                                {bajaScopeLabel}
+                              </div>
+                            )}
+                            {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
+                            {g.type === 'mantenimiento' && (() => {
+                              const period = getMaintenancePeriodFromGestion(g);
+                              if (period.isLegacyMissingDuration) {
+                                return (
+                                  <div className="text-[10px] font-black text-blue-700 mt-1 uppercase leading-snug">
+                                    Periodo: pendiente de elegir al ejecutar · 1 mes / 2 meses
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div className="text-[10px] font-bold text-blue-700 mt-1 uppercase leading-snug">
+                                  Periodo: {formatDateSpanish(period.from)} - {formatDateSpanish(period.until)}
+                                  {period.months ? ` · ${period.months} mes${period.months > 1 ? 'es' : ''}` : ''}
+                                  {period.totalFee ? ` · ${period.totalFee}€` : ''}
+                                </div>
+                              );
+                            })()}
+                            {sourceClassLine && (
+                              <div className="mt-2 p-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-bold text-indigo-800 leading-snug">
+                                <span className="font-black uppercase tracking-widest block mb-0.5">Plaza origen</span>
+                                {sourceClassLine}
+                              </div>
+                            )}
+                            {targetClassLine && (g.type === 'cambio_horario' || g.type === 'ampliar_clases' || g.type === 'recuperacion') && (
+                              <div className="mt-2 p-2 rounded-xl bg-emerald-50 border border-emerald-100 text-[10px] font-bold text-emerald-800 leading-snug">
+                                <span className="font-black uppercase tracking-widest block mb-0.5">Clase destino</span>
+                                {targetClassLine}
+                              </div>
+                            )}
+                            {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
+                            {g.type === 'recuperacion' && (() => {
+                              const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };
+                              return (
+                                <div className={`text-[10px] font-black mt-1 uppercase ${ticketStats.free > 0 ? 'text-amber-700' : 'text-red-600'}`}>
+                                  Tickets: {ticketStats.free} libres / {ticketStats.active} activos · {ticketStats.committed} comprometidos
+                                </div>
+                              );
+                            })()}
+                          </section>
+      <section className="inbox-full-message"><h4>Solicitud completa</h4>
+{g.hasPrivateDetails && inboxPrivateDetail?.id === g.id && inboxPrivateDetail.loading ? <p role="status">Cargando detalles…</p> : g.hasPrivateDetails && (inboxPrivateDetail?.id !== g.id || inboxPrivateDetail.error) ? <div role="alert"><p>No se pudieron cargar los detalles.</p><button type="button" onClick={() => selectInboxGestion(g)} className="px-3 py-2 bg-zinc-100 rounded-lg">Reintentar</button></div> : <p className="whitespace-pre-wrap">{(g.hasPrivateDetails ? inboxPrivateDetail?.details : g.details) || 'Sin observaciones añadidas.'}</p>}
+{g.adminNotes || g.resolutionNotes || g.resolutionSummary ? <p className="mt-3 whitespace-pre-wrap">{g.adminNotes || g.resolutionNotes || g.resolutionSummary}</p> : null}
+</section><div className="inbox-detail-actions">
+                            <div className="flex flex-wrap gap-2">
+                              {gestionRequiresTadosi(g) && (
+                                <button
+                                  onClick={() => markGestionTadosiDone(g)}
+                                  disabled={isGestionTadosiDone(g)}
+                                  className={`p-2 rounded-lg transition-colors ${isGestionTadosiDone(g) ? 'bg-emerald-100 text-emerald-700 opacity-80 cursor-default' : 'bg-amber-100 hover:bg-amber-200 text-amber-700'}`}
+                                  title={isGestionTadosiDone(g) ? 'Tadosi ya marcado como hecho' : 'Marcar Tadosi hecho'}
+                                >
+                                  <DollarSign className="w-4 h-4"/> {isGestionTadosiDone(g) ? 'Tadosi hecho' : 'Marcar Tadosi'}
+                                </button>
+                              )}
+                              <button
+                                onClick={() => updateGestionStatus(g.id, 'completado', g)}
+                                disabled={!isGestionReadyForExecution(g)}
+                                className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                title={isGestionReadyForExecution(g) ? (getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora') : 'Primero marca Tadosi hecho'}
+                              >
+                                <Check className="w-4 h-4"/> {getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora'}
+                              </button>
+                              <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/> Rechazar</button>
+                            </div>
+                          </div>
+    </article>;
+  };
+
   if (loading) return <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center font-black uppercase tracking-widest">Iniciando Modo Admin...</div>;
 
   if (startupLoadErrorEntries.length > 0) return (
@@ -14424,6 +14575,28 @@ ${startDateWarning}
       </aside>
 
       <style>{`
+        .inbox-workspace { display: grid; grid-template-columns: minmax(280px, .8fr) minmax(0, 1.2fr); align-items: start; border: 1px solid #e4e4e7; border-radius: 16px; background: white; }
+        .inbox-request-list { min-width: 0; }
+        .inbox-list-heading { padding: 16px 20px; font-size: 12px; color: #71717a; border-bottom: 1px solid #e4e4e7; }
+        .inbox-request-row { display: block; width: 100%; text-align: left; padding: 16px 20px; border-bottom: 1px solid #f0f0f2; border-left: 3px solid transparent; }
+        .inbox-request-row:hover { background: #fafafa; }
+        .inbox-request-row[aria-pressed="true"] { background: #fff5f4; border-left-color: #dc2626; }
+        .inbox-detail-container { min-width: 0; border-left: 1px solid #e4e4e7; position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; }
+        .inbox-reading-pane { padding: 24px; overflow-wrap: anywhere; }
+        .inbox-detail-empty { padding: 48px 24px; }
+        .inbox-workflow-summary { margin: 20px 0; padding: 16px 0; border-block: 1px solid #e4e4e7; }
+        .inbox-full-message h4 { font-size: 12px; font-weight: 600; color: #71717a; margin-bottom: 8px; }
+        .inbox-full-message p { font-size: 14px; line-height: 1.6; }
+        .inbox-reading-pane [class*="text-[9px]"], .inbox-reading-pane [class*="text-[10px]"] { font-size: 12px; letter-spacing: normal; text-transform: none; }
+        .inbox-student-summary > div:first-child { font-size: 20px; }
+        .inbox-detail-actions { margin-top: 24px; }
+        .inbox-detail-actions button { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 10px 12px; }
+        .admin-inbox > div > header { align-items: flex-start; }
+        .admin-inbox > div > header > div:last-child { flex-wrap: wrap; }
+        @container (max-width: 900px) {
+          .inbox-workspace { grid-template-columns: 1fr; }
+          .inbox-detail-container { position: static; max-height: none; overflow: visible; border-left: 0; border-top: 1px solid #e4e4e7; }
+        }
         .admin-main { container-type: inline-size; overflow-wrap: break-word; }
         .admin-main .grid > *, .admin-main .flex > * { min-width: 0; }
         .admin-main .overflow-x-auto { max-width: 100%; }
@@ -15079,170 +15252,23 @@ ${startDateWarning}
                     <p className="text-xs text-zinc-400 font-medium mt-2">El resto de notificaciones pendientes sigue disponible en “Todas”.</p>
                   </div>
                 ) : (
-                  <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                    <div className="md:hidden divide-y divide-zinc-100">
+                  <div className="inbox-workspace">
+                    <section className="inbox-request-list" aria-label="Trámites pendientes">
+                      <div className="inbox-list-heading">{filteredPendingGestiones.length} trámite(s) · selecciona para ver el detalle</div>
                       {filteredPendingGestiones.map(g => (
-                        <div key={`mobile-${g.id}`} className="p-4 space-y-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0"><p className="font-black text-slate-900 leading-tight">{g.studentName || 'Sin alumno'}</p><p className="text-[10px] text-zinc-400 truncate">{g.studentEmail || ''}</p><p className="text-[10px] font-bold text-zinc-400 mt-1">{formatDateSpanish(g.date)}</p></div>
-                            <span className={`shrink-0 px-2 py-1 rounded border text-[9px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>{getGestionTypeLabel(g.type || 'tarea')}</span>
-                          </div>
-                          <button type="button" onClick={() => showGestionDetails(g)} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
-                          <div className="grid grid-cols-2 gap-2">
-                            {gestionRequiresTadosi(g) && <button onClick={() => markGestionTadosiDone(g)} disabled={isGestionTadosiDone(g)} className="px-3 py-2.5 bg-amber-100 text-amber-800 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:bg-emerald-100 disabled:text-emerald-700">{isGestionTadosiDone(g) ? 'Tadosi hecho' : 'Marcar Tadosi'}</button>}
-                            <button onClick={() => updateGestionStatus(g.id, 'completado', g)} disabled={!isGestionReadyForExecution(g)} className="px-3 py-2.5 bg-emerald-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-30">Completar</button>
-                            <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="px-3 py-2.5 bg-red-50 text-red-700 rounded-xl text-[9px] font-black uppercase tracking-widest">Rechazar</button>
-                          </div>
-                        </div>
+                        <button key={g.id} type="button" className="inbox-request-row" aria-pressed={inboxSelectedId === g.id} onClick={() => selectInboxGestion(g)}>
+                          <span className="flex flex-wrap justify-between gap-2"><strong>{g.studentName || 'Sin alumno'}</strong><span className="text-xs text-zinc-500">{formatDateSpanish(g.date)}</span></span>
+                          <span className="block mt-1 text-sm">{getGestionTypeLabel(g.type || 'tarea')}</span>
+                          <span className="block mt-1 text-xs text-zinc-500 break-words">{g.title || g.studentEmail || ''}</span>
+                          <span className={`inline-block mt-2 text-xs ${isGestionReadyForExecution(g) ? 'text-emerald-700' : 'text-amber-700'}`}>{getGestionWorkflowLabel(g)}</span>
+                        </button>
                       ))}
-                    </div>
-                    <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-left border-collapse min-w-[800px]">
-                    <thead>
-                      <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                        <th className="p-4 font-black">Fecha</th>
-                        <th className="p-4 font-black">Alumno</th>
-                        <th className="p-4 font-black">Tipo de Trámite</th>
-                        <th className="p-4 font-black">Detalles</th>
-                        <th className="p-4 font-black text-right">Acciones</th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-sm font-medium text-slate-700">
-                      {filteredPendingGestiones.map(g => {
-                        const studentInfo = g.studentId ? students.find(s => s.id === g.studentId) : null;
-                        const studentAlias = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : '';
-                        const studentClasses = g.studentId ? getStudentAssignedClasses(g.studentId) : [];
-                        const visibleClasses = studentClasses.slice(0, 2);
-                        const hiddenClassCount = Math.max(studentClasses.length - visibleClasses.length, 0);
-                        const teacherNames = g.studentId ? getStudentTeachers(g.studentId) : [];
-                        const sourceClassLine = getGestionSourceClassLine(g);
-                        const targetClassLine = getGestionTargetClassLine(g);
-                        const bajaScopeLabel = getBajaScopeLabel(g);
-                        return (
-                        <tr key={g.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors align-top">
-                          <td className="p-4 whitespace-nowrap text-zinc-500">{formatDateSpanish(g.date)}</td>
-                          <td className="p-4 min-w-[230px]">
-                            <div className="font-black text-black">{g.studentName}</div>
-                            {studentAlias && studentAlias !== g.studentName && (
-                              <div className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mt-0.5 flex items-center gap-1">
-                                <User className="w-3 h-3"/> Alumno: {studentAlias}
-                              </div>
-                            )}
-                            <div className="text-[10px] text-zinc-400">{g.studentEmail}</div>
-                            {teacherNames.length > 0 && (
-                              <div className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1">
-                                Prof: {teacherNames.join(', ')}
-                              </div>
-                            )}
-                            {visibleClasses.length > 0 && (
-                              <div className="mt-1.5 space-y-1">
-                                {visibleClasses.map(c => (
-                                  <div key={c.id} className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-snug flex items-start gap-1">
-                                    <BookOpen className="w-3 h-3 mt-0.5 shrink-0 text-zinc-400"/>
-                                    <span>{c.subject} · {getDayName(c.dayOfWeek)} · {c.time}h · {getClassCenterName(c)}{c.sala || c.roomId ? ` · ${getClassRoomName(c)}` : ''}</span>
-                                  </div>
-                                ))}
-                                {hiddenClassCount > 0 && (
-                                  <div className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">+{hiddenClassCount} clase(s) más</div>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td className="p-4">
-                            <span className={`px-2 py-1 rounded border text-[10px] font-black uppercase tracking-widest ${getGestionTypeBadgeClass(g)}`}>
-                              {getGestionTypeLabel(g.type || 'tarea')}
-                            </span>
-                            <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isGestionReadyForExecution(g) ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                              {getGestionWorkflowLabel(g)}
-                            </div>
-                            {g.tadosiDoneAt && <div className="text-[9px] font-bold text-emerald-600 mt-1 uppercase">Tadosi: {new Date(g.tadosiDoneAt).toLocaleDateString('es-ES')}</div>}
-                            {isExtraServiceGestion(g) && (() => {
-                              const extraConfig = getExtraServiceConfigForGestion(g);
-                              return (
-                                <div className="mt-2 p-2 rounded-xl bg-slate-50 border border-slate-100 text-[10px] font-bold text-slate-700 leading-snug">
-                                  <span className="font-black uppercase tracking-widest block mb-0.5">Servicio extra</span>
-                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} · cuota {g.extraMonthlyFee || extraConfig?.monthlyFee || '—'}€/mes
-                                  <span className="block text-zinc-500 mt-0.5">Prorrata del mes corriente: a calcular al activar.</span>
-                                </div>
-                              );
-                            })()}
-                            {bajaScopeLabel && (
-                              <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isTotalBajaGestion(g) ? 'bg-red-100 text-red-700' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
-                                {bajaScopeLabel}
-                              </div>
-                            )}
-                            {g.targetMonth && <div className="text-[10px] font-bold text-amber-600 mt-1 uppercase">Para: {g.targetMonth}</div>}
-                            {g.type === 'mantenimiento' && (() => {
-                              const period = getMaintenancePeriodFromGestion(g);
-                              if (period.isLegacyMissingDuration) {
-                                return (
-                                  <div className="text-[10px] font-black text-blue-700 mt-1 uppercase leading-snug">
-                                    Periodo: pendiente de elegir al ejecutar · 1 mes / 2 meses
-                                  </div>
-                                );
-                              }
-
-                              return (
-                                <div className="text-[10px] font-bold text-blue-700 mt-1 uppercase leading-snug">
-                                  Periodo: {formatDateSpanish(period.from)} - {formatDateSpanish(period.until)}
-                                  {period.months ? ` · ${period.months} mes${period.months > 1 ? 'es' : ''}` : ''}
-                                  {period.totalFee ? ` · ${period.totalFee}€` : ''}
-                                </div>
-                              );
-                            })()}
-                            {sourceClassLine && (
-                              <div className="mt-2 p-2 rounded-xl bg-indigo-50 border border-indigo-100 text-[10px] font-bold text-indigo-800 leading-snug">
-                                <span className="font-black uppercase tracking-widest block mb-0.5">Plaza origen</span>
-                                {sourceClassLine}
-                              </div>
-                            )}
-                            {targetClassLine && (g.type === 'cambio_horario' || g.type === 'ampliar_clases' || g.type === 'recuperacion') && (
-                              <div className="mt-2 p-2 rounded-xl bg-emerald-50 border border-emerald-100 text-[10px] font-bold text-emerald-800 leading-snug">
-                                <span className="font-black uppercase tracking-widest block mb-0.5">Clase destino</span>
-                                {targetClassLine}
-                              </div>
-                            )}
-                            {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
-                            {g.type === 'recuperacion' && (() => {
-                              const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };
-                              return (
-                                <div className={`text-[10px] font-black mt-1 uppercase ${ticketStats.free > 0 ? 'text-amber-700' : 'text-red-600'}`}>
-                                  Tickets: {ticketStats.free} libres / {ticketStats.active} activos · {ticketStats.committed} comprometidos
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td className="p-4 min-w-[240px]">
-                            <button type="button" onClick={() => showGestionDetails(g)} className="inline-flex items-center gap-2 px-4 py-2.5 bg-zinc-100 hover:bg-black text-zinc-700 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors"><FileText className="w-4 h-4"/> Abrir detalles</button>
-                          </td>
-                          <td className="p-4 text-right whitespace-nowrap">
-                            <div className="flex justify-end gap-2">
-                              {gestionRequiresTadosi(g) && (
-                                <button
-                                  onClick={() => markGestionTadosiDone(g)}
-                                  disabled={isGestionTadosiDone(g)}
-                                  className={`p-2 rounded-lg transition-colors ${isGestionTadosiDone(g) ? 'bg-emerald-100 text-emerald-700 opacity-80 cursor-default' : 'bg-amber-100 hover:bg-amber-200 text-amber-700'}`}
-                                  title={isGestionTadosiDone(g) ? 'Tadosi ya marcado como hecho' : 'Marcar Tadosi hecho'}
-                                >
-                                  <DollarSign className="w-4 h-4"/>
-                                </button>
-                              )}
-                              <button
-                                onClick={() => updateGestionStatus(g.id, 'completado', g)}
-                                disabled={!isGestionReadyForExecution(g)}
-                                className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                                title={isGestionReadyForExecution(g) ? (getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora') : 'Primero marca Tadosi hecho'}
-                              >
-                                <Check className="w-4 h-4"/>
-                              </button>
-                              <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/></button>
-                            </div>
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                    </section>
+                    <div className="inbox-detail-container">
+                      {(() => {
+                        const selected = filteredPendingGestiones.find(g => g.id === inboxSelectedId);
+                        return selected ? renderInboxPendingDetail(selected) : <div className="inbox-detail-empty"><FileText className="w-8 h-8 mb-3 text-zinc-400"/><h3 className="font-bold text-slate-700">Selecciona un trámite</h3><p className="text-sm text-zinc-500 mt-2">Aquí aparecerán la solicitud completa y sus acciones.</p></div>;
+                      })()}
                     </div>
                   </div>
                 )}

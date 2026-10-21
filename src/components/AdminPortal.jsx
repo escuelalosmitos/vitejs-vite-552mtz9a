@@ -12,6 +12,7 @@ import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
+import './AdminLayout.css';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
 const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
@@ -2030,6 +2031,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
     return matchesSearch && matchesStatus;
   }), [searchTerm, statusFilter, workshops]);
 
+  const [selectedWorkshopId, setSelectedWorkshopId] = useState(null);
+  const shownWorkshopId = filteredWorkshops.some(item => item.id === selectedWorkshopId) ? selectedWorkshopId : filteredWorkshops[0]?.id;
   const fieldClass = 'w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold text-sm outline-none focus:border-violet-500';
   const labelClass = 'text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-1.5 block';
 
@@ -2154,7 +2157,8 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
       <div className="space-y-4">
         {filteredWorkshops.length === 0 && <div className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-10 text-center"><PartyPopper className="w-9 h-9 text-zinc-300 mx-auto mb-3"/><p className="font-black uppercase tracking-widest text-xs text-zinc-400">No hay talleres en esta vista</p></div>}
-        {filteredWorkshops.map(workshop => {
+        <div className="admin-master-detail"><nav className="admin-record-list" aria-label="Talleres">{filteredWorkshops.map(workshop => <button type="button" key={workshop.id} className="admin-select-row" aria-pressed={shownWorkshopId === workshop.id} onClick={() => setSelectedWorkshopId(workshop.id)}><strong>{workshop.title}</strong><span>{getWorkshopStatusLabel(workshop.status)} · {workshop.sessions?.[0]?.date ? formatDateSpanish(workshop.sessions[0].date) : 'Sin fecha'}</span></button>)}</nav><div className="admin-record-detail">
+        {filteredWorkshops.filter(workshop => workshop.id === shownWorkshopId).map(workshop => {
           const summary = getRegistrationSummary(workshop.id);
           const workshopRegistrations = getWorkshopRegistrations(workshop.id);
           const firstSession = workshop.sessions?.[0];
@@ -2171,6 +2175,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
             {isExpanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{workshopRegistrations.length === 0 ? <p className="text-center text-xs font-bold text-zinc-400 py-4">Todavía no hay inscripciones.</p> : workshopRegistrations.map(registration => <div key={registration.id} className="bg-white border border-zinc-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm text-slate-800">{registration.studentName || students.find(student => student.id === registration.studentId)?.name || 'Alumno'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status] || registration.status} · {registration.createdAt ? formatDateSpanish(registration.createdAt) : 'Sin fecha'}</p></div><div className="flex gap-2">{registration.status !== 'confirmed' && <button onClick={() => updateRegistrationStatus(registration, 'confirmed')} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600 hover:text-white"><Check className="w-3 h-3 inline"/> Confirmar</button>}{!['rejected', 'cancelled'].includes(registration.status) && <button onClick={() => updateRegistrationStatus(registration, 'rejected')} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white"><X className="w-3 h-3 inline"/> Rechazar</button>}</div></div>)}</div>}
           </article>;
         })}
+        </div></div>
       </div>
     </div>
   );
@@ -2178,6 +2183,9 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
 export default function AdminPortal({ user, logout, db, storage, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
+  const [settingsCategory, setSettingsCategory] = useState('economia');
+  const [selectedAnnouncementId, setSelectedAnnouncementId] = useState(null);
+
   useEffect(() => {
     const root = document.getElementById('root');
     root?.classList.add('admin-full-width');
@@ -12662,7 +12670,7 @@ ${valueOrDash(comments.privateNote)}`,
     }[String(status || '').toLowerCase()] || { label: status || 'Sin estado', className: 'bg-zinc-100 text-zinc-600' });
 
     const openGestionDetails = gestion => {
-      setStudentDossierModal(null);
+      if (activeTab !== 'students') setStudentDossierModal(null);
       showGestionDetails(gestion);
     };
 
@@ -12698,9 +12706,9 @@ ${valueOrDash(comments.privateNote)}`,
     ];
 
     return (
-      <div className="fixed inset-0 bg-black/80 z-[125] flex items-start lg:items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto lg:overflow-hidden">
-        <div className="bg-zinc-50 rounded-3xl max-w-5xl w-full shadow-2xl relative my-3 sm:my-6 max-h-[calc(100vh-1.5rem)] overflow-y-auto lg:h-[min(820px,calc(100vh-3rem))] lg:max-h-none lg:overflow-hidden lg:flex lg:flex-col">
-          <button onClick={() => setStudentDossierModal(null)} className="absolute top-4 right-4 z-10 text-zinc-400 hover:text-black bg-white border border-zinc-200 p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
+      <div className={activeTab === 'students' ? 'admin-embedded-dossier' : "fixed inset-0 bg-black/80 z-[125] flex items-start lg:items-center justify-center p-3 sm:p-5 backdrop-blur-sm overflow-y-auto lg:overflow-hidden"}>
+        <div className={activeTab === 'students' ? 'admin-dossier-inner bg-zinc-50 relative rounded-2xl' : "bg-zinc-50 rounded-3xl max-w-5xl w-full shadow-2xl relative my-3 sm:my-6 max-h-[calc(100vh-1.5rem)] overflow-y-auto lg:h-[min(820px,calc(100vh-3rem))] lg:max-h-none lg:overflow-hidden lg:flex lg:flex-col"}>
+          <button aria-label="Volver al listado" onClick={() => setStudentDossierModal(null)} className="absolute top-4 right-4 z-10 text-zinc-400 hover:text-black bg-white border border-zinc-200 p-2 rounded-full shadow-sm"><X className="w-5 h-5"/></button>
 
           <div className="bg-black text-white rounded-t-3xl p-6 sm:p-8 pr-16 lg:shrink-0">
             <div className="flex items-start gap-4">
@@ -12760,7 +12768,7 @@ ${valueOrDash(comments.privateNote)}`,
                           {primaryClassMemberships.map(({ classData, studentEntry }) => {
                             const pendingStart = isPendingClassStartEntry(studentEntry) || hasFutureClassStartDate(studentEntry, student, todayStr);
                             return (
-                              <button key={classData.id} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-zinc-50 border border-zinc-100 hover:border-indigo-200 text-xs font-bold text-slate-700">
+                              <button key={classData.id} type="button" onClick={() => { if (activeTab !== 'students') setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-zinc-50 border border-zinc-100 hover:border-indigo-200 text-xs font-bold text-slate-700">
                                 <span className="block">{formatClassLine(classData)}</span>
                                 <span className={`mt-1 inline-flex px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest ${pendingStart ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-700'}`}>{pendingStart ? 'Inicio pendiente' : 'Clase principal'}</span>
                               </button>
@@ -12774,13 +12782,13 @@ ${valueOrDash(comments.privateNote)}`,
                           <p className="mb-2 text-[9px] font-black uppercase tracking-widest text-zinc-400">Asignaciones puntuales</p>
                           <div className="space-y-2">
                             {upcomingRecoveryMemberships.map(({ classData, studentEntry }) => (
-                              <button key={`recovery-${classData.id}`} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-amber-50 border border-amber-100 hover:border-amber-300 text-xs font-bold text-slate-700">
+                              <button key={`recovery-${classData.id}`} type="button" onClick={() => { if (activeTab !== 'students') setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-amber-50 border border-amber-100 hover:border-amber-300 text-xs font-bold text-slate-700">
                                 <span className="block">{formatClassLine(classData)}</span>
                                 <span className="mt-1 inline-flex px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[8px] font-black uppercase tracking-widest">Recuperación{studentEntry.recoveryDate ? ` · ${formatDateSpanish(studentEntry.recoveryDate)}` : ''}</span>
                               </button>
                             ))}
                             {temporaryClassMemberships.map(({ classData }) => (
-                              <button key={`temporary-${classData.id}`} type="button" onClick={() => { setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-violet-50 border border-violet-100 hover:border-violet-300 text-xs font-bold text-slate-700">
+                              <button key={`temporary-${classData.id}`} type="button" onClick={() => { if (activeTab !== 'students') setStudentDossierModal(null); setViewClassModal(classData); }} className="w-full text-left p-3 rounded-xl bg-violet-50 border border-violet-100 hover:border-violet-300 text-xs font-bold text-slate-700">
                                 <span className="block">{formatClassLine(classData)}</span>
                                 <span className="mt-1 inline-flex px-2 py-0.5 rounded bg-violet-100 text-violet-800 text-[8px] font-black uppercase tracking-widest">Asignación temporal</span>
                               </button>
@@ -14049,8 +14057,8 @@ ${startDateWarning}
       }
     };
     return (
-      <div className="fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto">
-        <div className="bg-white rounded-3xl max-w-xl w-full p-5 sm:p-8 shadow-2xl relative my-3 sm:my-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100vh-4rem)] overflow-y-auto overscroll-contain">
+      <div className={(activeTab === 'danger' || (activeTab === 'classes' && classesViewMode !== 'salas')) ? "admin-embedded-class" : "fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto"}>
+        <div className={(activeTab === 'danger' || (activeTab === 'classes' && classesViewMode !== 'salas')) ? "bg-white rounded-2xl p-5 relative admin-class-inner" : "bg-white rounded-3xl max-w-xl w-full p-5 sm:p-8 shadow-2xl relative my-3 sm:my-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100vh-4rem)] overflow-y-auto overscroll-contain"}>
           <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           
           <button onClick={() => handleDeleteClassGlobal(c)} className="absolute top-4 right-14 text-red-500 hover:text-white hover:bg-red-500 bg-red-50 p-2 rounded-full transition-colors" title="Borrar Clase DEFINITIVAMENTE"><Trash2 className="w-5 h-5"/></button>
@@ -14459,7 +14467,7 @@ ${startDateWarning}
       {notesModal && <StableModalRenderer key={`notes-${notesModal.id || 'open'}`} render={NotesModalOverlay} />}
       {changeClassModal && <StableModalRenderer key={`change-class-${changeClassModal.id || 'open'}`} render={ChangeClassModalOverlay} />}
       {editStudentModal && <StableModalRenderer key={`edit-student-${editStudentModal.id || 'open'}`} render={EditStudentModalOverlay} />} 
-      {studentDossierModal && <StableModalRenderer key={`student-dossier-${studentDossierModal.id || 'open'}`} render={StudentDossierModalOverlay} />}
+      {studentDossierModal && activeTab !== 'students' && <StableModalRenderer key={`student-dossier-${studentDossierModal.id || 'open'}`} render={StudentDossierModalOverlay} />}
       {serviceStudentModal && (
         <div className="fixed inset-0 bg-black/80 z-[120] flex items-start sm:items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl relative my-4">
@@ -14530,7 +14538,7 @@ ${startDateWarning}
         todayStr={todayStr}
       />
       {resurrectClassModal && <StableModalRenderer key={`resurrect-${resurrectClassModal.id || 'open'}`} render={ResurrectClassModalOverlay} />}
-      {viewClassModal && <StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay} />}
+      {viewClassModal && !(activeTab === 'danger' || (activeTab === 'classes' && classesViewMode !== 'salas')) && <StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay} />}
       {photosModalOpen && <StableModalRenderer key="photos" render={PhotosModalOverlay} />}
       {socialModalText && <StableModalRenderer key="social-text" render={SocialModalOverlay} />}
       
@@ -14612,7 +14620,7 @@ ${startDateWarning}
           .admin-inbox table { min-width: 680px; table-layout: auto; }
         }
       `}</style>
-      <main className={`admin-main flex-1 min-w-0 p-4 md:p-6 xl:p-8 w-full ${activeTab === 'gestiones' ? 'admin-inbox' : ''}`}>
+      <main data-admin-section={activeTab} className={`admin-main flex-1 min-w-0 p-4 md:p-6 xl:p-8 w-full ${activeTab === 'gestiones' ? 'admin-inbox' : ''}`}>
         
         {isLastDayOfMonth && (
           <div className="mb-6 bg-gradient-to-r from-amber-400 to-amber-500 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-4 animate-pulse">
@@ -15427,18 +15435,9 @@ ${startDateWarning}
               </div>
             </header>
 
-            <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse table-fixed">
-                  <thead>
-                    <tr className="bg-zinc-50 text-[10px] uppercase tracking-widest text-zinc-400 border-b border-zinc-200">
-                      <th className="p-4 font-black w-[55%]">Alumno</th>
-                      <th className="p-4 font-black text-center w-[20%]">Acciones</th>
-                      <th className="p-4 font-black text-right w-[25%]">Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-sm font-medium text-slate-700">
-                    {(() => {
+            <div className={`admin-crm-workspace ${studentDossierModal ? 'has-selection' : ''}`}>
+              <section className="admin-crm-list" aria-label="Alumnos">
+                {(() => {
                       const filtered = students.filter(s => {
                         const searchNeedle = searchStudent.trim().toLowerCase();
                         const classNamesForStudent = getStudentAssignedClasses(s.id)
@@ -15457,18 +15456,13 @@ ${startDateWarning}
                         const operationalStatus = getStudentOperationalStatus(s);
                         return matchSearch && operationalStatus === filterStatus;
                       });
-
-                      if (filtered.length === 0) {
-                        return <tr><td colSpan="3" className="p-12 text-center text-zinc-400 italic">No hay alumnos en esta lista.</td></tr>;
-                      }
-
-                      return filtered.map(student => {
-                        const assignedClasses = getStudentAssignedClasses(student.id);
-                        const operationalStatus = getStudentOperationalStatus(student);
-
-                        return (
-                        <tr key={student.id} className="border-b border-zinc-100 hover:bg-zinc-50 transition-colors">
-                          <td className="p-4 overflow-hidden">
+                  return <><p className="admin-list-count">{filtered.length} alumno(s)</p>{filtered.length === 0 && <p className="p-5 text-sm text-zinc-500">No hay alumnos en esta lista.</p>}{filtered.map(student => <button type="button" key={student.id} onClick={() => setStudentDossierModal(student)} aria-pressed={studentDossierModal?.id === student.id} className="admin-select-row"><strong>{student.useAlias && student.alias ? student.alias : student.name}</strong><span>{student.email || 'Sin correo'}</span><span>{getStudentOperationalStatus(student).replace(/_/g, ' ')} · {getStudentAssignedClasses(student.id).length} clase(s)</span></button>)}</>;
+                })()}
+              </section>
+              <section className="admin-crm-detail" aria-label="Ficha del alumno seleccionado">
+                {studentDossierModal ? <><button type="button" className="admin-back-list" onClick={() => setStudentDossierModal(null)}>← Volver al listado</button>
+                  <StableModalRenderer key={`student-dossier-${studentDossierModal.id}`} render={StudentDossierModalOverlay}/>
+                  {(() => { const student = students.find(item => item.id === studentDossierModal.id) || studentDossierModal; const assignedClasses = getStudentAssignedClasses(student.id); const operationalStatus = getStudentOperationalStatus(student); return <details className="admin-crm-tools"><summary>Datos rápidos, acceso y estado</summary><div className="admin-crm-tools-body">
                             <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
                             {/* 👇 FIX: Muestra el Alias debajo si existe */}
                             {student.useAlias && student.alias && (
@@ -15542,18 +15536,14 @@ ${startDateWarning}
                                 })}
                               </div>
                             )}
-                          </td>
-                          <td className="p-4 text-center">
+                          
                             <div className="flex flex-nowrap items-center justify-center gap-2">
-                              <button onClick={() => setStudentDossierModal(student)} className="px-3 py-2.5 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-600 hover:text-white transition-colors text-[9px] font-black uppercase tracking-widest inline-flex items-center gap-1.5" title="Ver ficha completa del alumno">
-                                <ClipboardList className="w-4 h-4"/> Ficha
-                              </button>
+                              
                               <button onClick={() => setEditStudentModal(student)} className="p-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
                                 <Pencil className="w-4 h-4"/>
                               </button>
                             </div>
-                          </td>
-                          <td className="p-4 text-right">
+                          
                             <select 
                               value={operationalStatus === 'mantenimiento' ? 'mantenimiento' : (student.globalStatus || 'activo')}
                               onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
@@ -15570,14 +15560,9 @@ ${startDateWarning}
                               <option value="impago">Impago</option>
                               <option value="baja">Programar baja</option>
                             </select>
-                          </td>
-                        </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
-              </div>
+                          </div></details>; })()}
+                </> : <div className="admin-empty-detail"><Users className="w-8 h-8 mb-3"/><h3>Selecciona un alumno</h3><p>Su ficha y acciones aparecerán aquí.</p></div>}
+              </section>
             </div>
           </div>
         )}
@@ -15740,7 +15725,7 @@ ${startDateWarning}
               </button>
             </div>
 
-            {classesViewMode === 'profesores' && (
+            <div className={viewClassModal && classesViewMode !== 'salas' ? 'admin-class-workspace has-selection' : 'admin-class-workspace'}><div className="admin-class-results">{classesViewMode === 'profesores' && (
               <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-widest text-violet-700 flex items-center gap-2"><Clock className="w-4 h-4"/> Horario operativo por fecha</p>
@@ -16130,7 +16115,7 @@ ${startDateWarning}
                 )}
               </div>
             )}
-          </div>
+          </div>{viewClassModal && classesViewMode !== 'salas' && <aside className="admin-class-panel" aria-label="Detalle de la clase"><StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay}/></aside>}</div></div>
         )}
 
         {/* --- 5. LOCALIZADOR DE CLASES --- */}
@@ -16211,7 +16196,7 @@ ${startDateWarning}
               </div>
             )}
 
-            {dangerSubView === 'contactar' ? (
+            <div className={viewClassModal ? 'admin-class-workspace has-selection' : 'admin-class-workspace'}><div className="admin-class-results">{dangerSubView === 'contactar' ? (
               dangerContactRows.length === 0 ? (
                 <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                   <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
@@ -16301,7 +16286,7 @@ ${startDateWarning}
                 ))}
               </div>
             )}
-          </div>
+          </div>{viewClassModal && <aside className="admin-class-panel" aria-label="Detalle de la clase"><StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay}/></aside>}</div></div>
         )}
 
         {/* --- 6. PROFESORES --- */}
@@ -16688,7 +16673,7 @@ ${startDateWarning}
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tablón</h2>
               <p className="text-zinc-500 font-medium text-sm">Publica avisos, encuestas o convocatorias para los alumnos.</p>
             </header>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-zinc-200 mb-8">
+            <details className="admin-publication-editor" open={editingAnnouncementId || editingTrayNotificationId ? true : undefined}><summary>{editingAnnouncementId || editingTrayNotificationId ? "Editar publicación" : "Crear publicación"}</summary><div className="bg-white p-6 rounded-2xl shadow-sm border border-zinc-200 mb-8">
               <div className="space-y-4">
                 <div>
                   <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-500 mb-2">Tipo de publicación</label>
@@ -16910,7 +16895,7 @@ ${startDateWarning}
                   )}
                 </div>
               </div>
-            </div>
+            </div></details>
             {trayNotifications.length > 0 && (
               <section className="space-y-3">
                 <div className="flex items-end justify-between gap-3">
@@ -16949,8 +16934,8 @@ ${startDateWarning}
                 })}
               </section>
             )}
-            <div className="space-y-3">
-              {announcements.slice(0, visibleAnnouncementsCount).map(ann => {
+            <div className="admin-master-detail"><nav className="admin-record-list" aria-label="Publicaciones">{announcements.slice(0, visibleAnnouncementsCount).map(ann => <button type="button" key={ann.id} className="admin-select-row" aria-pressed={ann.id === (announcements.some(item => item.id === selectedAnnouncementId) ? selectedAnnouncementId : announcements[0]?.id)} onClick={() => setSelectedAnnouncementId(ann.id)}><strong>{ann.title}</strong><span>{formatDateSpanish(ann.date)} · {ann.type === "poll" ? "Encuesta" : ann.type === "call" ? "Convocatoria" : "Aviso"}</span></button>)}</nav><div className="admin-record-detail"><div className="space-y-3">
+              {announcements.slice(0, visibleAnnouncementsCount).filter(ann => ann.id === (announcements.slice(0, visibleAnnouncementsCount).some(item => item.id === selectedAnnouncementId) ? selectedAnnouncementId : announcements[0]?.id)).map(ann => {
                 const isPoll = ann.type === 'poll';
                 const isCall = ann.type === 'call';
                 const participation = isPoll ? getPollParticipation(ann) : null;
@@ -16978,7 +16963,7 @@ ${startDateWarning}
                         <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
                           {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}{isPoll && ann.pollDeadline ? ` · Hasta ${new Date(ann.pollDeadline).toLocaleString('es-ES')}` : ''}{isCall && ann.callDeadline ? ` · Hasta ${new Date(ann.callDeadline).toLocaleString('es-ES')}` : ''}
                         </p>
-                        {ann.content && <p className="text-sm text-zinc-600 line-clamp-2">{ann.content}</p>}
+                        {ann.content && <p className="text-sm text-zinc-600 whitespace-pre-wrap">{ann.content}</p>}
                         <div className="flex flex-wrap items-center gap-3 mt-2">
                           <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-sky-700 bg-sky-50 px-2 py-1 rounded-lg">
                             <Users className="w-3 h-3"/> {ann.audienceLabel || getAnnouncementTargetLabel({ targetType: ann.audienceType || 'all', targetValue: ann.audienceValue || '' })}
@@ -17123,7 +17108,7 @@ ${startDateWarning}
                   Cargar más publicaciones ({Math.min(10, announcements.length - visibleAnnouncementsCount)} más)
                 </button>
               )}
-            </div>
+            </div></div></div>
           </div>
         )}
 
@@ -17228,14 +17213,10 @@ ${startDateWarning}
 
         {/* --- 10. CONFIGURACIÓN COMPLETA (TARIFA, FIJOS E INSTRUMENTOS) --- */}
         {activeTab === 'settings' && (
-          <div className="space-y-6 animate-in fade-in">
-             <header className="mb-6">
+          <div className="space-y-6 animate-in fade-in"><header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración Global</h2>
               <p className="text-zinc-500 font-medium text-sm">Ajustes estratégicos de la infraestructura escolar.</p>
-            </header>
-            
-            {/* PANELS DE FINANZAS Y GASTOS (GRID) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            </header><div className="admin-settings-workspace"><nav className="admin-settings-nav" aria-label="Categorías de configuración">{[{"id":"economia","label":"Economía"},{"id":"instrumentos","label":"Instrumentos"},{"id":"sedes","label":"Sedes y espacios"},{"id":"calendario","label":"Calendario"},{"id":"profesores","label":"Profesores"},{"id":"hora-muerta","label":"Hora muerta"},{"id":"normativa","label":"Normativa docente"},{"id":"contrato","label":"Contrato"},{"id":"importacion","label":"Importación"}].map(item => <button type="button" key={item.id} aria-pressed={settingsCategory === item.id} onClick={() => setSettingsCategory(item.id)}>{item.label}</button>)}</nav><div className="admin-settings-content"><section hidden={settingsCategory !== 'economia'} aria-label="Economía"><div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Coste Empresa */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Personal</h3>
@@ -17305,13 +17286,10 @@ ${startDateWarning}
                 </div>
               </div>
             </div>
-            
-            <button onClick={() => saveGlobalSettings(settings)} className="w-full bg-black hover:bg-zinc-800 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-md transition-colors flex items-center justify-center gap-2">
+<button onClick={() => saveGlobalSettings(settings)} className="w-full bg-black hover:bg-zinc-800 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-md transition-colors flex items-center justify-center gap-2">
               <Save className="w-4 h-4"/> Guardar Ajustes Financieros
-            </button>
-
-            {/* NUEVO: OFERTA DE INSTRUMENTOS DINÁMICA */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </button></section>
+<section hidden={settingsCategory !== 'instrumentos'} aria-label="Instrumentos"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Music className="w-5 h-5 text-black"/> Oferta de Instrumentos</h3>
               <div className="flex gap-2 mb-4">
                 <input id="adminInstInput" type="text" placeholder="Ej: Saxofón..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
@@ -17332,10 +17310,8 @@ ${startDateWarning}
                   </span>
                 ))}
               </div>
-            </div>
-
-            {/* SEDES Y ESPACIOS DINÁMICOS */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'sedes'} aria-label="Sedes y espacios"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
                 <div>
                   <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 flex items-center gap-2"><MapPin className="w-5 h-5 text-emerald-600"/> Sedes y espacios</h3>
@@ -17423,10 +17399,8 @@ ${startDateWarning}
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* CALENDARIO ESCOLAR */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'calendario'} aria-label="Calendario"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>
                 {pastSchoolDatesCount > 0 && <button type="button" onClick={() => setShowPastSchoolDates(value => !value)} className="self-start sm:self-auto px-3 py-2 bg-zinc-100 text-zinc-600 hover:bg-black hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors">{showPastSchoolDates ? 'Ocultar histórico' : `Ver histórico · ${pastSchoolDatesCount}`}</button>}
@@ -17475,9 +17449,8 @@ ${startDateWarning}
                   </div>
                 ))}
               </div>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'profesores'} aria-label="Profesores"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><User className="w-5 h-5 text-black"/> Plantilla de Profesores</h3>
               <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.35fr_auto] gap-2 mb-2">
                 <input id="adminTeacherInput" type="text" placeholder="Nombre: Èlia" className="p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
@@ -17557,10 +17530,8 @@ ${startDateWarning}
                 <p className="text-[11px] text-zinc-500 font-medium leading-relaxed">Estos colores se usan en Clases Globales, Vista Arquitecto y Cuadrante Completo.</p>
                 <button onClick={() => { const cleanedSettings = { ...settings, teachersList: configuredTeacherNames }; setSettings(cleanedSettings); saveGlobalSettings(cleanedSettings); }} className="bg-zinc-900 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-2"><Save className="w-4 h-4"/> Guardar colores</button>
               </div>
-            </div>
-
-            {/* PROTOCOLO DE HORA MUERTA */}
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'hora-muerta'} aria-label="Hora muerta"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Timer className="w-5 h-5 text-amber-600"/> Protocolo de Hora Muerta</h3>
               <p className="text-xs text-zinc-500 font-medium mb-4 leading-relaxed">
                 Define las tareas que aparecerán al profesor cuando todos los alumnos activos falten sin aviso suficiente y no sea la última clase del día. Añade cada tarea de forma individual.
@@ -17624,27 +17595,22 @@ ${startDateWarning}
                 </p>
                 <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-100 text-zinc-800 px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-200 transition-colors">Guardar Ajustes</button>
               </div>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'normativa'} aria-label="Normativa docente"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-indigo-600"/> Normativa para Profesores</h3>
               <textarea value={settings.teacherRules || ''} onChange={e => setSettings({...settings, teacherRules: e.target.value})} className="w-full p-5 bg-indigo-50/30 border border-indigo-100 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />
               <button onClick={() => saveGlobalSettings(settings)} className="mt-4 bg-indigo-600 text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Guardar Normativa</button>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'contrato'} aria-label="Contrato"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><FileText className="w-5 h-5 text-black"/> Contrato de Servicios (Alumnos)</h3>
               <textarea value={settings.contract || ''} onChange={e => setSettings({...settings, contract: e.target.value})} className="w-full p-5 bg-zinc-50 border border-zinc-200 rounded-2xl outline-none font-medium text-sm text-slate-700 min-h-[150px] resize-y" />
               <button onClick={() => saveGlobalSettings(settings)} className="mt-4 bg-black text-white px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Guardar Contrato</button>
-            </div>
-
-            <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
+            </div></section>
+<section hidden={settingsCategory !== 'importacion'} aria-label="Importación"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Users className="w-5 h-5 text-indigo-600"/> Importador Masivo (Excel)</h3>
               <textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Pega aquí las filas del Excel..." className="w-full p-4 bg-zinc-50 border border-zinc-200 rounded-2xl font-mono text-xs text-slate-700 min-h-[120px] mb-4"/>
               <button onClick={handleMassImport} disabled={isImporting || !importText} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-black uppercase text-xs tracking-widest disabled:opacity-50">{isImporting ? 'Importando...' : 'Importar Alumnos Ahora'}</button>
-            </div>
-
-          </div>
+            </div></section></div></div></div>
         )}
 
           </>

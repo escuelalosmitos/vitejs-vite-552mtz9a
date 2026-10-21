@@ -32,9 +32,6 @@
 .admin-dossier-inner .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
 .admin-dossier-inner .grid.grid-cols-2 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
 .admin-dossier-inner [class*="col-span"] { grid-column: auto; }
-.admin-crm-tools { margin: 16px; border: 1px solid #e4e4e7; border-radius: 10px; }
-.admin-crm-tools summary { padding: 14px; font-size: 14px; font-weight: 650; }
-.admin-crm-tools-body { padding: 16px; display: grid; gap: 10px; }
 .admin-master-detail { display: grid; grid-template-columns: minmax(230px, 320px) minmax(0, 1fr); gap: 20px; align-items: start; }
 .admin-record-detail { position: sticky; top: 16px; }
 .admin-class-workspace { display: block; }
@@ -86,3 +83,16 @@
   .admin-settings-nav { position: static; display: flex; flex-wrap: wrap; }
   .admin-settings-nav button { flex: 1 1 150px; }
 }
+
+/* Matching density for class grids, independent of the viewport breakpoints. */
+.admin-main[data-admin-section="classes"] .admin-global-class-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+}
+.admin-teacher-activity-grid {
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(300px, calc((100% - 32px) / 3))), 1fr));
+}
+.admin-teacher-activity-grid > article { padding: 16px; }
+.admin-teacher-activity-grid > article > .grid { gap: 8px; }
+.admin-teacher-activity-grid > article > .grid > div { padding: 10px; }
+.admin-bi-avoided .text-4xl { font-size: 30px; }

@@ -12719,7 +12719,7 @@ ${valueOrDash(comments.privateNote)}`,
                 <p className="text-[9px] font-black uppercase tracking-[0.2em] text-zinc-400">Ficha del alumno</p>
                 <h2 className="text-xl sm:text-2xl font-black tracking-tight truncate text-white">{student.useAlias && student.alias ? student.alias : student.name}</h2>
                 {student.useAlias && student.alias && <p className="text-xs font-bold text-zinc-400 mt-1">Titular: {student.name}</p>}
-                <p className="text-xs font-bold text-zinc-400 mt-1 truncate">{student.email || 'Sin correo de acceso'}</p>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1"><p className="text-xs font-bold text-zinc-400 break-all">{student.email || 'Sin correo de acceso'}</p><span className={`inline-flex items-center gap-1 text-xs font-bold ${student.claimed ? 'text-emerald-300' : 'text-amber-300'}`}>{student.claimed ? <CheckCircle className="w-3.5 h-3.5"/> : <Clock className="w-3.5 h-3.5"/>}{student.claimed ? 'Activado' : 'Sin activar'}</span></div>
                 {student.avatarPath && <button type="button" onClick={removeDossierAvatar} disabled={removingAvatar} className="mt-2 text-[9px] font-black uppercase tracking-widest text-rose-300 hover:text-white disabled:opacity-50">{removingAvatar ? 'Retirando…' : 'Retirar fotografía'}</button>}
                 {avatarError && <p className="mt-2 text-[9px] font-bold text-amber-300">{avatarError}</p>}
               </div>
@@ -12751,7 +12751,6 @@ ${valueOrDash(comments.privateNote)}`,
                     <h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-4">Estado y servicios</h3>
                     <div className="space-y-3 text-xs font-bold text-zinc-600">
                       <div className="flex justify-between gap-4"><span>Estado operativo</span><span className="uppercase text-slate-900">{String(operationalStatus || '').replace(/_/g, ' ')}</span></div>
-                      <div className="flex justify-between gap-4"><span>Portal</span><span className={student.claimed ? 'text-emerald-700' : 'text-amber-700'}>{student.claimed ? 'Activado' : 'Pendiente'}</span></div>
                       <div className="flex items-center justify-between gap-4"><span>Mitobox</span><button type="button" onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${student.hasMitobox ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-500'}`}>{student.hasMitobox ? 'Activo' : 'Desactivado'}</button></div>
                       <div className="flex items-center justify-between gap-4"><span>Mitoverso</span><button type="button" onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700' : 'bg-zinc-100 text-zinc-500'}`}>{student.hasMitoverso ? 'Activo' : 'Desactivado'}</button></div>
                       <div className="flex justify-between gap-4"><span>Gymusik</span><span className="uppercase text-emerald-700">{{ preenrolled: 'Preinscrito', active: 'Activo', paused: 'En pausa', cancelled: 'Baja' }[student.gymusikStatus] || (student.hasGymusik ? 'Activo' : 'No inscrito')}</span></div>
@@ -12799,6 +12798,27 @@ ${valueOrDash(comments.privateNote)}`,
                     </div>
                   </section>
                 </div>
+
+                <section className="admin-student-status rounded-2xl bg-white border border-zinc-200 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="text-xs font-black uppercase tracking-widest text-slate-900 mb-2">Estado del alumno</h3><select aria-label="Cambiar estado del alumno" 
+                              value={operationalStatus === 'mantenimiento' ? 'mantenimiento' : (student.globalStatus || 'activo')}
+                              onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
+                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[240px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
+                                operationalStatus === 'sin_plaza' ? 'bg-orange-50 border-orange-200 text-orange-700' :
+                                operationalStatus === 'mantenimiento' ? 'bg-blue-50 border-blue-200 text-blue-700' : 
+                                student.globalStatus === 'impago' ? 'bg-orange-50 border-orange-200 text-orange-700' :
+                                student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
+                                'bg-emerald-50 border-emerald-200 text-emerald-700'
+                              }`}
+                            >
+                              <option value="activo">Activo</option>
+                              <option value="mantenimiento">Mantenimiento temporal</option>
+                              <option value="impago">Impago</option>
+                              <option value="baja">Programar baja</option>
+                            </select></div><button onClick={() => setEditStudentModal(student)} type="button" className="inline-flex items-center gap-2 px-3 py-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
+                                <Pencil className="w-4 h-4"/> Editar datos
+                              </button></div>
+                </section>
 
                 <section className="rounded-2xl bg-white border border-zinc-200 p-5">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3"><div><h3 className="text-xs font-black uppercase tracking-widest text-slate-900">Anotaciones internas</h3><p className="text-[10px] font-bold text-zinc-500 mt-1">Información privada para coordinación y profesorado.</p></div><button type="button" onClick={saveInternalNotes} disabled={savingNotes} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-50">{savingNotes ? 'Guardando…' : 'Guardar anotaciones'}</button></div>
@@ -14759,9 +14779,9 @@ ${startDateWarning}
                   <PieChart className="absolute -bottom-6 -right-6 w-32 h-32 text-zinc-800 opacity-50 pointer-events-none" />
                 </div>
 
-                {biProjectionMode !== 'proyeccion' && <div className="md:col-span-2 lg:col-span-4 bg-amber-50 border border-amber-200 p-6 rounded-3xl shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  <div><div className="flex items-center gap-2 text-amber-700"><Timer className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste empresarial evitado</h3></div><p className="text-[11px] font-bold text-amber-800/80 mt-2">Horas finalmente no liquidables según los registros diarios. Se calcula con el coste empresa configurado, no con el salario/hora.</p></div>
-                  <div className="lg:text-right shrink-0"><p className="text-4xl font-black text-amber-900 tracking-tighter">+{Number(displayedAvoidedCompanyCost.amount || 0).toLocaleString('es-ES', { maximumFractionDigits: 2 })}€</p><p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{Number(displayedAvoidedCompanyCost.hours || 0).toFixed(1)} h · {displayedAvoidedCompanyCost.records || 0} registros · {Number(displayedAvoidedCompanyCost.companyHourlyCost || 0).toFixed(2)} €/h</p></div>
+                {biProjectionMode !== 'proyeccion' && <div className="admin-bi-avoided bg-amber-50 border border-amber-200 p-6 rounded-3xl shadow-sm flex flex-col gap-3">
+                  <div><div className="flex items-center gap-2 text-amber-700"><Timer className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste empresarial evitado</h3></div><p className="text-[11px] font-bold text-amber-800/80 mt-2">Horas no liquidables de los registros diarios, valoradas al coste empresa configurado.</p></div>
+                  <div><p className="text-4xl font-black text-amber-900 tracking-tighter">+{Number(displayedAvoidedCompanyCost.amount || 0).toLocaleString('es-ES', { maximumFractionDigits: 2 })}€</p><p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{Number(displayedAvoidedCompanyCost.hours || 0).toFixed(1)} h · {displayedAvoidedCompanyCost.records || 0} registros · {Number(displayedAvoidedCompanyCost.companyHourlyCost || 0).toFixed(2)} €/h</p></div>
                 </div>}
 
                 <div className="md:col-span-2 lg:col-span-4 bg-white border border-zinc-200 p-5 rounded-3xl shadow-sm grid admin-bi-counts gap-4">
@@ -15462,105 +15482,7 @@ ${startDateWarning}
               <section className="admin-crm-detail" aria-label="Ficha del alumno seleccionado">
                 {studentDossierModal ? <><button type="button" className="admin-back-list" onClick={() => setStudentDossierModal(null)}>← Volver al listado</button>
                   <StableModalRenderer key={`student-dossier-${studentDossierModal.id}`} render={StudentDossierModalOverlay}/>
-                  {(() => { const student = students.find(item => item.id === studentDossierModal.id) || studentDossierModal; const assignedClasses = getStudentAssignedClasses(student.id); const operationalStatus = getStudentOperationalStatus(student); return <details className="admin-crm-tools"><summary>Datos rápidos, acceso y estado</summary><div className="admin-crm-tools-body">
-                            <div className="font-black text-slate-900 truncate max-w-[150px] lg:max-w-[200px]" title={student.name}>{student.name}</div>
-                            {/* 👇 FIX: Muestra el Alias debajo si existe */}
-                            {student.useAlias && student.alias && (
-                              <div className="text-[10px] font-black uppercase tracking-widest text-indigo-600 mt-0.5 flex items-center gap-1">
-                                <User className="w-3 h-3"/> Alumno: {student.alias}
-                              </div>
-                            )}
-                            <div className="text-[10px] text-zinc-400 font-bold truncate max-w-[150px] lg:max-w-[200px] mt-0.5" title={student.email}>{student.email}</div>
-                            {student.classStartDate && student.classStartDate > todayStr && (
-                              <div className="text-[10px] font-black uppercase tracking-widest text-emerald-700 mt-1 flex items-center gap-1">
-                                <Calendar className="w-3 h-3"/> Inicio clases: {formatDateSpanish(student.classStartDate)}
-                              </div>
-                            )}
-                            
-                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                              {student.claimed ? (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded">
-                                  <CheckCircle className="w-3 h-3" /> Activada
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-600 bg-amber-50 px-2 py-0.5 rounded">
-                                  <Timer className="w-3 h-3" /> Pendiente
-                                </span>
-                              )}
-                            </div>
 
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {operationalStatus === 'sin_plaza' && (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-orange-700 bg-orange-50 border border-orange-100 px-2 py-0.5 rounded">
-                                  <AlertCircle className="w-3 h-3" /> Sin plaza
-                                </span>
-                              )}
-                              {operationalStatus === 'inicio_pendiente' && (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
-                                  <Timer className="w-3 h-3" /> Inicio pendiente
-                                </span>
-                              )}
-                              {operationalStatus === 'mantenimiento' && (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
-                                  <Snowflake className="w-3 h-3" /> Mantenimiento
-                                </span>
-                              )}
-                              {operationalStatus === 'impago' && (
-                                <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-orange-700 bg-orange-50 border border-orange-100 px-2 py-0.5 rounded">
-                                  <AlertCircle className="w-3 h-3" /> Impago
-                                </span>
-                              )}
-                              {getActiveStudentTemporaryRelocations(student.id).map(rel => (
-                                <span key={rel.id} className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest text-violet-700 bg-violet-50 border border-violet-100 px-2 py-0.5 rounded" title={`${rel.sourceClassLine || ''} → ${rel.targetClassLine || ''}`}>
-                                  <Clock className="w-3 h-3" /> Recolocado temporalmente
-                                </span>
-                              ))}
-                            </div>
-
-                            {assignedClasses.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1">
-                                {assignedClasses.map(c => {
-                                  const dayShort = getDayName(c.dayOfWeek).substring(0, 3);
-                                  const timeShort = c.time.split(':')[0] + 'h';
-                                  const studentInClass = (c.students || []).find(s => s.id === student.id);
-                                  const isMaintenanceNow = isStudentInMaintenance(student.id, todayStr);
-                                  const maintenancePeriod = getActiveStudentMaintenancePeriod(student.id, todayStr);
-                                  const classStartDate = getStudentClassStartDate(studentInClass, student);
-                                  const startsLater = classStartDate && classStartDate > todayStr;
-                                  const isPendingStart = isPendingClassStartEntry(studentInClass);
-                                  return (
-                                    <button type="button" key={c.id} onClick={() => setViewClassModal(c)} className={`inline-flex items-center gap-1 px-1.5 py-0.5 border rounded text-[8px] font-black uppercase tracking-widest whitespace-nowrap transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 ${isPendingStart ? 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100' : isMaintenanceNow ? 'bg-blue-50 border-blue-100 text-blue-600 hover:bg-blue-100' : startsLater ? 'bg-emerald-50 border-emerald-100 text-emerald-700 hover:bg-emerald-100' : 'bg-zinc-100 border-zinc-200 text-zinc-500 hover:bg-indigo-50 hover:text-indigo-700 hover:border-indigo-200'}`} title={`Abrir clase · Profesor: ${getOfficialTeacherName(c.teacher)}${isPendingStart ? ' · Inicio pendiente' : isMaintenanceNow ? ` · Mantenimiento ${formatMaintenancePeriodLine(maintenancePeriod)}` : ''}${startsLater ? ` · Inicio: ${formatDateSpanish(classStartDate)}` : ''}`}>
-                                      <BookOpen className="w-2.5 h-2.5 text-zinc-400" /> {c.subject} {dayShort}-{timeShort}{isPendingStart ? ' · Inicio pendiente' : isMaintenanceNow ? ' · Mantenimiento' : startsLater ? ` · Inicio ${formatDateSpanish(classStartDate)}` : ''}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          
-                            <div className="flex flex-nowrap items-center justify-center gap-2">
-                              
-                              <button onClick={() => setEditStudentModal(student)} className="p-2.5 bg-zinc-100 text-zinc-600 rounded-lg hover:bg-black hover:text-white transition-colors" title="Editar datos del alumno">
-                                <Pencil className="w-4 h-4"/>
-                              </button>
-                            </div>
-                          
-                            <select 
-                              value={operationalStatus === 'mantenimiento' ? 'mantenimiento' : (student.globalStatus || 'activo')}
-                              onChange={(e) => handleUpdateStudentStatus(student.id, student.name, e.target.value)}
-                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-2 w-full max-w-[120px] rounded-lg border-2 outline-none transition-all cursor-pointer ${
-                                operationalStatus === 'sin_plaza' ? 'bg-orange-50 border-orange-200 text-orange-700' :
-                                operationalStatus === 'mantenimiento' ? 'bg-blue-50 border-blue-200 text-blue-700' : 
-                                student.globalStatus === 'impago' ? 'bg-orange-50 border-orange-200 text-orange-700' :
-                                student.globalStatus === 'baja' ? 'bg-red-50 border-red-200 text-red-700' : 
-                                'bg-emerald-50 border-emerald-200 text-emerald-700'
-                              }`}
-                            >
-                              <option value="activo">Activo</option>
-                              <option value="mantenimiento">Mantenimiento temporal</option>
-                              <option value="impago">Impago</option>
-                              <option value="baja">Programar baja</option>
-                            </select>
-                          </div></details>; })()}
                 </> : <div className="admin-empty-detail"><Users className="w-8 h-8 mb-3"/><h3>Selecciona un alumno</h3><p>Su ficha y acciones aparecerán aquí.</p></div>}
               </section>
             </div>
@@ -15973,7 +15895,7 @@ ${startDateWarning}
                         </button>
                         
                         {isExpanded && (
-                          <div className="p-4 border-t grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="admin-global-class-grid p-4 border-t grid gap-4">
                             {classes.map(c => {
                               const classReferenceDate = isPunctualClass(c) && c.date ? c.date : todayStr;
                               const planningStudents = getClassStudentPlanningData(c, false, classReferenceDate)
@@ -16072,7 +15994,7 @@ ${startDateWarning}
                     <p className="text-zinc-500 text-sm">Todas las clases recurrentes tienen al menos un alumno activo.</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div className="admin-global-class-grid grid gap-4">
                     {hibernatedClasses.map(c => {
                       const planningStudents = getClassStudentPlanningData(c, false);
                       const totalEnLista = planningStudents.length;
@@ -16347,7 +16269,7 @@ ${startDateWarning}
                   </div>
                 </div>
                 <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Periodo: {formatDateSpanish(teacherStatsRange.from)} — {formatDateSpanish(teacherStatsRange.until)}</p>
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div className="admin-teacher-activity-grid grid gap-4">
                   {teacherActivityStats.map(stat => <article key={stat.name} className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-sm">
                     <div className="flex items-start justify-between gap-3"><h4 className="font-black uppercase text-slate-900">{stat.name}</h4><button type="button" onClick={() => resetTeacherDisciplinaryCycle(stat.name)} className="text-[9px] font-black uppercase tracking-widest text-zinc-400 hover:text-red-600">Reiniciar cómputo</button></div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">

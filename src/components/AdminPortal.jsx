@@ -14487,7 +14487,6 @@ ${startDateWarning}
       {notesModal && <StableModalRenderer key={`notes-${notesModal.id || 'open'}`} render={NotesModalOverlay} />}
       {changeClassModal && <StableModalRenderer key={`change-class-${changeClassModal.id || 'open'}`} render={ChangeClassModalOverlay} />}
       {editStudentModal && <StableModalRenderer key={`edit-student-${editStudentModal.id || 'open'}`} render={EditStudentModalOverlay} />} 
-      {studentDossierModal && activeTab !== 'students' && <StableModalRenderer key={`student-dossier-${studentDossierModal.id || 'open'}`} render={StudentDossierModalOverlay} />}
       {serviceStudentModal && (
         <div className="fixed inset-0 bg-black/80 z-[120] flex items-start sm:items-center justify-center p-4 overflow-y-auto backdrop-blur-sm">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl relative my-4">
@@ -16272,7 +16271,7 @@ ${startDateWarning}
                 <div className="admin-teacher-activity-grid grid gap-4">
                   {teacherActivityStats.map(stat => <article key={stat.name} className="bg-white border border-zinc-200 rounded-2xl p-5 shadow-sm">
                     <div className="flex items-start justify-between gap-3"><h4 className="font-black uppercase text-slate-900">{stat.name}</h4><button type="button" onClick={() => resetTeacherDisciplinaryCycle(stat.name)} className="text-[9px] font-black uppercase tracking-widest text-zinc-400 hover:text-red-600">Reiniciar cómputo</button></div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">
+                    <div className="admin-teacher-activity-metrics grid grid-cols-2 gap-3 mt-4">
                       <div className="bg-emerald-50 rounded-xl p-3"><span className="block text-xl font-black text-emerald-800">{stat.taughtCount}</span><span className="text-[9px] font-black uppercase text-emerald-600">Clases · {stat.taughtHours.toFixed(1)} h</span></div>
                       <div className="bg-amber-50 rounded-xl p-3"><span className="block text-xl font-black text-amber-800">{stat.renouncedPercent.toFixed(1)}%</span><span className="text-[9px] font-black uppercase text-amber-600">Renunciadas ({stat.renouncedCount})</span></div>
                       <div className="bg-red-50 rounded-xl p-3"><span className="block text-xl font-black text-red-800">{stat.emergencyCount}</span><span className="text-[9px] font-black uppercase text-red-600">Emergencia sin dar</span></div>
@@ -16347,7 +16346,7 @@ ${startDateWarning}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+                <div className="admin-teacher-evaluation-grid grid gap-4">
                   {teacherEvaluationStats.map(stat => {
                     const expanded = expandedEvaluationTeacher === stat.name;
                     const bestQuestion = TEACHER_EVALUATION_QUESTIONS
@@ -16367,7 +16366,7 @@ ${startDateWarning}
 
                     return (
                       <div key={stat.name} className="bg-white rounded-2xl shadow-sm border border-zinc-200 overflow-hidden">
-                        <div className="p-5 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                        <div className="admin-teacher-evaluation-header p-4 border-b border-zinc-100 flex flex-col gap-3">
                           <div>
                             <h3 className="font-black uppercase tracking-tight text-slate-900 text-lg flex items-center gap-2"><User className="w-5 h-5 text-black"/> {stat.name}</h3>
                             <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mt-1">{stat.activeClassCount} clase(s) · {stat.activeStudentCount} alumno(s) con plaza</p>
@@ -16390,7 +16389,7 @@ ${startDateWarning}
                             <p className="text-xs font-black uppercase tracking-widest">Sin evaluaciones todavía en este filtro.</p>
                           </div>
                         ) : (
-                          <div className="p-5 space-y-5">
+                          <div className="p-4 space-y-4">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3">
                                 <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700 mb-1">Punto fuerte</p>
@@ -16409,7 +16408,7 @@ ${startDateWarning}
                               </div>
                             )}
 
-                            <div className="space-y-2">
+                            <div className="admin-teacher-evaluation-bars space-y-2">
                               {TEACHER_EVALUATION_QUESTIONS.map(question => {
                                 const average = stat.questionAverages[question.key];
                                 const pct = Number.isFinite(average) ? Math.max(Math.min((average / 5) * 100, 100), 0) : 0;

@@ -2178,7 +2178,11 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
 export default function AdminPortal({ user, logout, db, storage, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
-  const [adminMenuCollapsed, setAdminMenuCollapsed] = useState(false);
+  useEffect(() => {
+    const root = document.getElementById('root');
+    root?.classList.add('admin-full-width');
+    return () => root?.classList.remove('admin-full-width');
+  }, []);
   const [servicesSubTab, setServicesSubTab] = useState('mitobox');
   const [loading, setLoading] = useState(true);
   const [startupLoadErrors, setStartupLoadErrors] = useState({});
@@ -14379,7 +14383,7 @@ ${startDateWarning}
       {photosModalOpen && <StableModalRenderer key="photos" render={PhotosModalOverlay} />}
       {socialModalText && <StableModalRenderer key="social-text" render={SocialModalOverlay} />}
       
-      <aside className={`admin-sidebar ${adminMenuCollapsed ? 'admin-sidebar-collapsed' : ''} w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto`}>
+      <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
           <div>
             <div className="flex items-center gap-3 text-white mb-1"><ShieldAlert className="w-6 h-6 text-red-500" /><h1 className="text-xl font-black uppercase tracking-tight">Modo Admin</h1></div>
@@ -14387,7 +14391,6 @@ ${startDateWarning}
           </div>
           <button onClick={switchToTeacher} className="md:hidden bg-zinc-800 text-white p-2 rounded-lg"><ArrowRightLeft className="w-5 h-5"/></button>
         </div>
-        <button type="button" onClick={() => setAdminMenuCollapsed(value => !value)} aria-expanded={!adminMenuCollapsed} aria-label={adminMenuCollapsed ? 'Ampliar menú' : 'Plegar menú'} title={adminMenuCollapsed ? 'Ampliar menú' : 'Plegar menú'} className="hidden md:flex items-center justify-center gap-2 m-2 p-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold"><ArrowRightLeft className="w-4 h-4 shrink-0"/><span className="admin-menu-label">Plegar menú</span></button>
         <nav className="flex-1 flex md:flex-col p-4 gap-1 no-scrollbar overflow-x-auto md:overflow-visible">
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalInboxNotifications },
@@ -14402,26 +14405,26 @@ ${startDateWarning}
             { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
             { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
-            <button title={tab.label} aria-label={tab.label} key={tab.id} onClick={() => handleAdminTabChange(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
+            <button key={tab.id} onClick={() => handleAdminTabChange(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
               <tab.icon className="w-4 h-4 shrink-0" />
-              <span className="admin-menu-label flex-1">{tab.label}</span>
+              <span className="flex-1">{tab.label}</span>
               {tab.notificationCount > 0 && <span className="min-w-5 h-5 px-1.5 bg-red-500 text-white border-2 border-zinc-950 rounded-full text-[9px] font-black flex items-center justify-center" title={`${tab.notificationCount} novedad(es)`}>{tab.notificationCount}</span>}
               {tab.count > 0 && <span className="bg-white text-red-600 px-2 py-0.5 rounded-full text-[10px] font-black">{tab.count}</span>}
             </button>
           ))}
         </nav>
         <div className="p-4 border-t border-zinc-900 hidden md:block space-y-2">
-          <button title="Vista Profesor" aria-label="Vista Profesor" onClick={switchToTeacher} className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
-            <ArrowRightLeft className="w-4 h-4"/> <span className="admin-menu-label">Vista Profesor</span>
+          <button onClick={switchToTeacher} className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
+            <ArrowRightLeft className="w-4 h-4"/> Vista Profesor
           </button>
-          <button title="Cerrar sesión" aria-label="Cerrar sesión" onClick={logout} className="w-full flex items-center justify-center gap-2 text-zinc-500 hover:text-red-400 p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
-            <LogOut className="w-4 h-4"/> <span className="admin-menu-label">Cerrar Sesión</span>
+          <button onClick={logout} className="w-full flex items-center justify-center gap-2 text-zinc-500 hover:text-red-400 p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
+            <LogOut className="w-4 h-4"/> Cerrar Sesión
           </button>
         </div>
       </aside>
 
       <style>{`
-        .admin-main { container-type: inline-size; overflow-wrap: anywhere; }
+        .admin-main { container-type: inline-size; overflow-wrap: break-word; }
         .admin-main .grid > *, .admin-main .flex > * { min-width: 0; }
         .admin-main .overflow-x-auto { max-width: 100%; }
         .admin-auto-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
@@ -14434,15 +14437,6 @@ ${startDateWarning}
         .admin-inbox td .flex { flex-wrap: wrap; }
         @container (max-width: 760px) {
           .admin-inbox table { min-width: 680px; table-layout: auto; }
-        }
-        @media (min-width: 768px) {
-          .admin-sidebar-collapsed { width: 88px; }
-          .admin-sidebar-collapsed > div:first-child { padding: 16px 8px; }
-          .admin-sidebar-collapsed h1, .admin-sidebar-collapsed > div:first-child p,
-          .admin-sidebar-collapsed .admin-menu-label { display: none; }
-          .admin-sidebar-collapsed nav { padding: 8px; }
-          .admin-sidebar-collapsed nav button { position: relative; justify-content: center; padding: 14px 8px; }
-          .admin-sidebar-collapsed nav button > span:not(.admin-menu-label) { position: absolute; top: 0; right: 0; font-size: 8px; }
         }
       `}</style>
       <main className={`admin-main flex-1 min-w-0 p-4 md:p-6 xl:p-8 w-full ${activeTab === 'gestiones' ? 'admin-inbox' : ''}`}>

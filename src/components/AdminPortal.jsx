@@ -7,7 +7,7 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, getDocFromServer, getDocsFromServer, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
 import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
@@ -2335,6 +2335,13 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [gestionDetailsModal, setGestionDetailsModal] = useState(null);
   const [dangerViewMode, setDangerViewMode] = useState('actual');
   const [dangerSubView, setDangerSubView] = useState('ocupacion');
+  const [locatorEmail, setLocatorEmail] = useState(null);
+  const [locatorSending, setLocatorSending] = useState(false);
+  const locatorSendingRef = useRef(false);
+  const [locatorContacts, setLocatorContacts] = useState({});
+  useEffect(() => onSnapshot(collection(db, 'artifacts', appId, 'locatorContacts'), snapshot => {
+    setLocatorContacts(Object.fromEntries(snapshot.docs.map(item => [item.id, item.data()])));
+  }, error => console.error('No se pudo cargar el historial del localizador', error)), [db, appId]);
   const [bulkExecutingGestiones, setBulkExecutingGestiones] = useState(false);
   const [bulkConsolidatingGestiones, setBulkConsolidatingGestiones] = useState(false);
   
@@ -11227,23 +11234,17 @@ Coordinación Los Mitos.`
     return String(a.time || '').localeCompare(String(b.time || ''));
   });
 
-  const dangerRows = useMemo(() => {
-    const rows = recurringClassesOnly
-      .map(clase => ({ classData: clase, ...clase, ...buildDangerClassAnalysis(clase, false) }))
-      .filter(row => row.include);
-    return sortDangerRows(rows);
-  }, [recurringClassesOnly, students, maintenancePeriods, todayStr]);
+  // El riesgo del localizador usa el BI; el análisis por aforo de otros informes se conserva.
+  const locatorFinancials = dangerViewMode === 'proyeccion' ? projectedBusinessIntelligence : currentBusinessIntelligence;
+  const dangerRowsForView = (dangerViewMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly)
+    .map(clase => {
+      const financial = locatorFinancials.clasesRentabilidad.find(item => item.id === clase.id);
+      return { classData: clase, ...clase, ...buildDangerClassAnalysis(clase, dangerViewMode === 'proyeccion'),
+        financial, statusKey: 'critico', statusLabel: 'En riesgo', priority: 2,
+        statusHelp: 'Los ingresos estimados no cubren el coste docente mensual.' };
+    }).filter(row => row.financial?.isClassOperative && row.financial.coste > row.financial.ingresos + 0.005);
 
-  const projectedDangerRows = useMemo(() => {
-    const rows = projectedPlanningClasses
-      .map(clase => ({ classData: clase, ...clase, ...buildDangerClassAnalysis(clase, true) }))
-      .filter(row => row.include);
-    return sortDangerRows(rows);
-  }, [projectedPlanningClasses, students, maintenancePeriods, todayStr]);
-
-  const dangerRowsForView = dangerViewMode === 'proyeccion' ? projectedDangerRows : dangerRows;
-
-  const locatorRowsForView = useMemo(() => {
+  const locatorRowsForView = (() => {
     const sourceClasses = dangerViewMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly;
     return sortDangerRows(sourceClasses.map(clase => {
       const analysis = buildDangerClassAnalysis(clase, dangerViewMode === 'proyeccion');
@@ -11256,10 +11257,10 @@ Coordinación Los Mitos.`
         pendingStudents,
         pendingCount: pendingStudents.length,
         isFormation: pendingStudents.length > 0 || clase.autoAdvanceStartDate === true,
-        isInactive: analysis.activeCount === 0 && analysis.maintenanceCount === 0 && analysis.futureStartCount === 0 && pendingStudents.length === 0
+        isInactive: clase.isWebVisible !== true && getCommercialCommittedSeatCount(clase) === 0 && !planningRows.some(student => student.status !== 'baja' && !student.isPastEnd)
       };
     }));
-  }, [dangerViewMode, projectedPlanningClasses, recurringClassesOnly, students, maintenancePeriods, todayStr]);
+  })();
 
   const locatorRowsByCategory = useMemo(() => ({
     web: locatorRowsForView.filter(row => row.isWebVisible === true),
@@ -11324,10 +11325,11 @@ Coordinación Los Mitos.`
       .flatMap(row => {
         const people = [
           ...(row.pendingStudents || []).map(student => ({ ...student, reason: 'En espera de apertura' })),
-          ...(row.activeCount === 1 && Number(row.cap || 0) > 1 ? row.activeStudents.map(student => ({ ...student, reason: 'Único alumno del grupo' })) : [])
+          ...(row.activeCount === 1 && Number(row.cap || 0) > 1 ? row.activeStudents.filter(student => !student.isRelocated).map(student => ({ ...student, reason: 'Único alumno del grupo' })) : [])
         ];
         return people.map(student => ({
           key: `${row.id}-${student.id}-${student.reason}`,
+          studentId: student.id,
           studentName: student.displayName,
           email: student.email || 'sin email',
           reason: student.reason,
@@ -11337,6 +11339,99 @@ Coordinación Los Mitos.`
       })
       .sort((a, b) => a.studentName.localeCompare(b.studentName, 'es'));
   }, [locatorRowsForView]);
+
+  const locatorContactId = item => encodeURIComponent(`${item.row.id}|${item.studentId}`);
+  const locatorClassLine = c => `${c.subject} · ${getDayName(c.dayOfWeek)} ${c.time}h · ${getClassCenterName(c)} · ${c.teacher || 'Sin profesor'} · ${c.duration || 60} min · ${c.cuotaBase || 0} €/mes`;
+  const locatorAlternativeEligible = (c, item) => {
+    const seats = getCommercialSeatDataForClass(c);
+    return c.id !== item.row.id && c.subject === item.row.subject && !isPunctualClass(c)
+      && Number(c.capacity) > 1 && c.autoAdvanceStartDate !== true
+      && seats.freeSpots > 0 && seats.pendingStartCount === 0
+      && seats.students.some(student => !student.isMaintenance && !student.isFutureStart && !student.isPendingStart)
+      && !seats.students.some(student => student.id === item.studentId);
+  };
+  const locatorAlternatives = item => recurringClassesOnly.filter(c => locatorAlternativeEligible(c, item))
+    .sort((a, b) => Number(isSameCenter(b.centerId || b.sede, item.row.centerId || item.row.sede)) - Number(isSameCenter(a.centerId || a.sede, item.row.centerId || item.row.sede))
+      || Number(a.dayOfWeek) - Number(b.dayOfWeek) || String(a.time).localeCompare(String(b.time)));
+  const locatorEmailText = (item, options) => {
+    const turns = options.length ? options.map(c => `• ${locatorClassLine(c)}`).join('\n') : '[Selecciona al menos un turno alternativo]';
+    const waiting = item.reason === 'En espera de apertura';
+    return {
+      subject: waiting ? `Opciones para comenzar tus clases de ${item.row.subject}` : 'Opciones para mantener tu clase en formato grupal',
+      body: waiting
+        ? `Hola, ${item.studentName}:\n\nEl turno de ${item.row.subject} que solicitaste, los ${getDayName(item.row.dayOfWeek)} a las ${item.row.time}, todavía no ha reunido las condiciones necesarias para comenzar.\n\nPuedes elegir entre estas dos opciones:\n\nSeguir esperando: mantendremos tu plaza en el turno solicitado y te avisaremos cuando el grupo pueda empezar.\n\nComenzar antes: puedes incorporarte, si lo deseas, a alguno de estos turnos que ya están funcionando y tienen plazas disponibles:\n\n${turns}\n\nSi prefieres uno de los turnos alternativos, respóndenos indicando cuál te interesa. Si ninguno te encaja, no tienes que hacer nada: continuarás en la lista de espera del turno que solicitaste inicialmente.\n\nUn saludo,\nEscuela Los Mitos`
+        : `Hola, ${item.studentName}:\n\nActualmente eres la única persona activa en tu grupo de ${item.row.subject} de los ${getDayName(item.row.dayOfWeek)} a las ${item.row.time}, en ${getClassCenterName(item.row)}.\n\nCuando se produce esta situación, intentamos encontrar una alternativa compatible antes de plantear cualquier cambio en el formato de la clase. En estos momentos tenemos plazas disponibles para incorporación inmediata en los siguientes turnos:\n\n${turns}\n\nSi alguno de ellos te encaja, respóndenos indicando cuál prefieres y comprobaremos contigo el cambio.\n\nNo modificaremos tu horario sin tu confirmación. Si la situación actual se mantiene y no encontramos una alternativa adecuada, nos pondremos en contacto contigo antes de valorar la adaptación de la clase a formato particular.\n\nUn saludo,\nEscuela Los Mitos`
+    };
+  };
+  const openLocatorEmail = item => setLocatorEmail({ item, selected: [], ...locatorEmailText(item, []), edited: false });
+  const toggleLocatorAlternative = c => {
+    if (locatorEmail.edited && !window.confirm('Cambiar los turnos regenerará el texto y sustituirá tus cambios. ¿Continuar?')) return;
+    const selected = locatorEmail.selected.includes(c.id) ? locatorEmail.selected.filter(id => id !== c.id) : [...locatorEmail.selected, c.id];
+    setLocatorEmail({ ...locatorEmail, selected, ...locatorEmailText(locatorEmail.item, locatorAlternatives(locatorEmail.item).filter(option => selected.includes(option.id))), edited: false });
+  };
+  const sendLocatorEmail = async () => {
+    if (!locatorEmail || locatorSendingRef.current || dangerViewMode !== 'actual') return;
+    const { item, selected, subject, body } = locatorEmail;
+    if (!selected.length || !subject.trim() || !body.trim()) return alert('Selecciona al menos un turno y completa asunto y mensaje.');
+    locatorSendingRef.current = true;
+    setLocatorSending(true);
+    let requested = false;
+    let eventRef;
+    try {
+      // Lecturas del servidor: si CRM/reservas cambiaron, no usar el estado capturado al pulsar.
+      const stable = value => JSON.stringify(value, (key, item) => item && typeof item === 'object' && !Array.isArray(item)
+        ? Object.fromEntries(Object.keys(item).sort().map(name => [name, item[name]])) : item);
+      for (const [name, localRows] of [['students', students], ['maintenancePeriods', maintenancePeriods], ['temporaryRelocations', temporaryRelocations]]) {
+        const snapshot = await getDocsFromServer(collection(db, 'artifacts', appId, name));
+        const freshRows = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        const ordered = rows => [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        if (stable(ordered(freshRows)) !== stable(ordered(localRows))) throw new Error('Han cambiado alumnos o reservas. Espera a que se actualice la pantalla y revisa el correo antes de enviar.');
+      }
+      const source = await getDocFromServer(doc(db, item.row.refPath));
+      const recipient = await getDocFromServer(doc(db, 'artifacts', appId, 'students', item.studentId));
+      if (!source.exists() || !recipient.exists() || normalizeEmail(recipient.data().email) !== normalizeEmail(item.email) || recipient.data().globalStatus === 'baja') throw new Error('La clase o el alumno han cambiado. Actualiza el localizador antes de enviar.');
+      const sourceData = { ...source.data(), id: source.id, refPath: source.ref.path };
+      if (locatorClassLine(sourceData) !== locatorClassLine(item.row)) throw new Error('El turno de origen ha cambiado. Vuelve a preparar el correo.');
+      const sourcePeople = getClassStudentPlanningData(sourceData, false);
+      const stillRelevant = item.reason === 'En espera de apertura'
+        ? sourcePeople.some(student => student.id === item.studentId && student.isPendingStart)
+        : Number(sourceData.capacity) > 1 && sourcePeople.filter(student => student.isActive).length === 1 && sourcePeople.some(student => student.id === item.studentId && student.isActive && !student.isRelocated);
+      if (!stillRelevant) throw new Error('El motivo de contacto ya no se cumple. Revisa el estado actual del alumno.');
+      const alternatives = locatorAlternatives(item);
+      const freshOptions = [];
+      for (const id of selected) {
+        const option = alternatives.find(c => c.id === id);
+        if (!option?.refPath) throw new Error('Un turno seleccionado ya no está disponible. Revisa las alternativas.');
+        const snapshot = await getDocFromServer(doc(db, option.refPath));
+        const fresh = snapshot.exists() ? { ...snapshot.data(), id: snapshot.id, refPath: snapshot.ref.path } : null;
+        if (!fresh || !locatorAlternativeEligible(fresh, item) || locatorClassLine(fresh) !== locatorClassLine(option)) throw new Error('Han cambiado las plazas o los datos de un turno. Revisa las alternativas antes de enviar.');
+        freshOptions.push(fresh);
+      }
+      eventRef = doc(collection(db, 'artifacts', appId, 'locatorContactEvents'));
+      const contact = { studentId: item.studentId, classId: item.row.id, to: normalizeEmail(item.email), reason: item.reason,
+        subject: subject.trim(), body: body.trim(), alternatives: freshOptions.map(c => ({ id: c.id, label: locatorClassLine(c) })),
+        date: new Date().toISOString(), admin: user?.email || user?.uid || 'admin', status: 'preparado', requestId: eventRef.id };
+      await setDoc(eventRef, contact);
+      const result = await sendNotificationEmail({ to: contact.to, subject: contact.subject, body: contact.body, type: 'contacto_localizador', requestId: eventRef.id });
+      if (!result) {
+        await updateDoc(eventRef, { status: 'error_solicitud' });
+        throw new Error('No se pudo solicitar el envío. Comprueba la conexión antes de volver a intentarlo.');
+      }
+      requested = true;
+      const batch = writeBatch(db);
+      batch.update(eventRef, { status: 'solicitado' });
+      batch.set(doc(db, 'artifacts', appId, 'locatorContacts', locatorContactId(item)), { ...contact, status: 'solicitado' });
+      await batch.commit();
+      setLocatorEmail(null);
+      alert('Envío solicitado a Gestiones. La conexión actual no permite confirmar la entrega; comprueba Enviados o los avisos de error antes de repetirlo.');
+    } catch (error) {
+      if (requested) setLocatorEmail(null);
+      alert(requested ? 'El envío se ha solicitado, pero no se pudo actualizar el historial. No lo repitas sin comprobar Enviados.' : error.message);
+    } finally {
+      locatorSendingRef.current = false;
+      setLocatorSending(false);
+    }
+  };
 
   const teachersPayroll = useMemo(() => {
     const targetMonth = selectedPayrollMonth;
@@ -14173,6 +14268,23 @@ ${startDateWarning}
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
+      {locatorEmail && <div className="fixed inset-0 bg-black/60 z-[200] flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Preparar email">
+        <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto p-5 space-y-4">
+          <div className="flex justify-between"><h2 className="font-black text-xl">Preparar email</h2><button disabled={locatorSending} onClick={() => setLocatorEmail(null)} aria-label="Cerrar"><X/></button></div>
+          <p className="text-sm">De: Escuela Los Mitos &lt;gestiones@escuelalosmitos.com&gt;<br/>Para: {locatorEmail.item.studentName} &lt;{locatorEmail.item.email}&gt;</p>
+          <fieldset disabled={locatorSending} className="space-y-3">
+            <legend className="font-bold">Turnos para incorporación inmediata</legend>
+            <p className="text-xs text-slate-500">Revisa nivel, edad y compatibilidad antes de ofrecerlos. Las plazas no quedan reservadas por enviar el correo.</p>
+            {locatorAlternatives(locatorEmail.item).length === 0 && <p className="text-amber-800">No hay turnos disponibles. No se puede enviar este modelo sin alternativas.</p>}
+            {locatorAlternatives(locatorEmail.item).map(c => <label key={c.id} className="flex gap-2 text-sm p-2 bg-slate-50 rounded"><input type="checkbox" checked={locatorEmail.selected.includes(c.id)} onChange={() => toggleLocatorAlternative(c)}/>{locatorClassLine(c)} · {getCommercialFreeSpots(c)} plaza(s)</label>)}
+            <label className="block font-bold text-sm">Asunto<input className="block w-full border rounded p-2 font-normal" value={locatorEmail.subject} onChange={e => setLocatorEmail({ ...locatorEmail, subject: e.target.value, edited: true })}/></label>
+            <label className="block font-bold text-sm">Mensaje · revisa el texto antes de enviar<textarea rows={15} className="block w-full border rounded p-2 font-normal" value={locatorEmail.body} onChange={e => setLocatorEmail({ ...locatorEmail, body: e.target.value, edited: true })}/></label>
+          </fieldset>
+          <details className="border rounded-lg p-3"><summary className="font-bold cursor-pointer">Vista previa del correo</summary><h3 className="font-bold mt-3">{locatorEmail.subject}</h3><div className="whitespace-pre-wrap text-sm mt-3">{locatorEmail.body}</div></details>
+          <p className="text-xs text-slate-500">El registro indicará «envío solicitado», sin confirmación de entrega.</p>
+          <button disabled={locatorSending || !locatorEmail.selected.length || dangerViewMode !== 'actual'} onClick={sendLocatorEmail} className="bg-black text-white px-4 py-2 rounded-lg font-bold disabled:opacity-40">{locatorSending ? 'Solicitando envío…' : 'Enviar a este alumno'}</button>
+        </div>
+      </div>}
       {editWebModal && <StableModalRenderer key={`edit-web-${editWebModal.id || editWebModal.refPath || 'open'}`} render={EditWebModalOverlay} />}
       {editClassModal && <StableModalRenderer key={`edit-class-${editClassModal.id || 'open'}`} render={EditClassModalOverlay} />}
       {createClassModal && <StableModalRenderer key="create-class" render={CreateClassModalOverlay} />}
@@ -16043,7 +16155,7 @@ ${startDateWarning}
 
             <div className="bg-slate-50 border border-slate-200 text-slate-700 rounded-2xl p-4 text-xs font-bold leading-relaxed">
               <strong className="uppercase tracking-widest text-[10px] text-slate-900 block mb-2">Qué reúne cada categoría</strong>
-              “Formación con espera” identifica turnos con alumnos cuyo inicio aún está pendiente. “Contactar” reúne esas personas y también al alumno que se ha quedado solo en un grupo. La vista de ocupación conserva los umbrales de riesgo anteriores; las clases 1/1 no se consideran grupos en riesgo.
+              “Formación con espera” identifica turnos con alumnos cuyo inicio aún está pendiente. “Contactar” reúne esas personas y también al alumno que se ha quedado solo en un grupo. “Ocupación / riesgo” muestra clases operativas cuyos ingresos estimados no cubren el coste docente. “Inactivas” muestra clases vacías, no ofertadas y sin plazas comprometidas. Los correos se preparan desde la vista Ahora.
             </div>
 
             {dangerViewMode === 'proyeccion' && (
@@ -16057,7 +16169,7 @@ ${startDateWarning}
                 <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                   <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
                   <h3 className="text-lg font-black text-slate-800 uppercase">Sin llamadas urgentes</h3>
-                  <p className="text-zinc-500 text-sm">No hay alumnos activos en clases críticas. Las clases en “Revisar” quedan omitidas aquí.</p>
+                  <p className="text-zinc-500 text-sm">No hay alumnos solos en grupos ni alumnos esperando apertura.</p>
                 </div>
               ) : (
                 <div className="bg-white rounded-3xl border border-zinc-200 shadow-sm overflow-hidden">
@@ -16071,6 +16183,7 @@ ${startDateWarning}
                         <div>
                           <p className="font-black text-slate-900 uppercase tracking-tight">{item.studentName}</p>
                           <p className="text-xs font-bold text-zinc-500">{item.email}</p>
+                          {locatorContacts[locatorContactId(item)] && <p className="text-xs text-slate-500">Último envío solicitado: {new Date(locatorContacts[locatorContactId(item)].date).toLocaleString('es-ES')}</p>}
                           <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{item.reason}</p>
                           <p className="text-[10px] font-black uppercase tracking-widest text-red-700 mt-1">{item.classLine}</p>
                         </div>
@@ -16079,9 +16192,9 @@ ${startDateWarning}
                             {item.row.activeCount}/{item.row.cap} activos
                           </span>
                           {item.email && item.email !== 'sin email' && (
-                            <a href={`mailto:${item.email}?subject=Reubicación%20de%20clase%20-%20Escuela%20Los%20Mitos`} className="bg-black text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-colors">
-                              Email
-                            </a>
+                            <button disabled={dangerViewMode !== 'actual'} onClick={() => openLocatorEmail(item)} className="bg-black text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-zinc-800 transition-colors">
+                              Preparar email
+                            </button>
                           )}
                         </div>
                       </div>
@@ -16108,81 +16221,30 @@ ${startDateWarning}
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
                       {rows.map(row => {
                         const c = row.classData || row;
-                        const isHibernated = row.statusKey === 'vacia';
-                        const onlyMaintenance = row.statusKey === 'solo_mantenimiento';
-                        const isCritical = row.statusKey === 'critico';
-                        const isReview = row.statusKey === 'revisar';
-                        const activeNames = row.activeStudents.map(student => student.displayName);
-                        const maintenanceNames = row.maintenanceStudents.map(student => student.displayName);
-
+                        const teacherTheme = getTeacherColorTheme(c.teacher, settings);
+                        const isHibernated = row.activeCount === 0;
                         return (
-                          <div key={`${dangerViewMode}-${row.id}`} className={`p-5 rounded-2xl border-2 shadow-sm flex flex-col relative group ${isHibernated ? 'bg-zinc-50 border-dashed border-zinc-300' : onlyMaintenance ? 'bg-blue-50 border-blue-200' : isCritical ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}>
-                            {dangerViewMode === 'actual' && (
-                              <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-100 text-red-600 hover:bg-red-600 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
-                                <Trash2 className="w-4 h-4"/>
-                              </button>
-                            )}
-
-                            <div className="flex justify-between items-start mb-3 pr-8">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest ${isHibernated ? 'bg-zinc-200 text-zinc-500' : onlyMaintenance ? 'bg-blue-200 text-blue-800' : isCritical ? 'bg-red-200 text-red-800' : 'bg-amber-200 text-amber-800'}`}>
-                                {row.statusLabel}
-                              </span>
-                              <span className="font-black text-lg">{row.activeCount} / {row.cap || '—'}</span>
+                          <div key={`${dangerViewMode}-${row.id}`} className={`p-4 rounded-xl border-l-8 border relative flex flex-col gap-2 ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
+                            <div className="font-black text-sm uppercase flex justify-between gap-2"><span>{getDayName(c.dayOfWeek)} · {c.time}</span><span>{row.activeCount}/{row.cap || '—'}</span></div>
+                            <h4 className="font-black uppercase text-sm">{c.subject}</h4>
+                            <p className="text-xs font-bold text-slate-600">{getClassCenterName(c)} · {getClassRoomName(c)} · {c.teacher}</p>
+                            <div className="flex flex-wrap gap-1 text-[10px] font-bold">
+                              {c.isWebVisible && <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded">Ofertada</span>}
+                              {row.isFormation && <span className="bg-violet-100 text-violet-800 px-2 py-1 rounded">En formación · {row.pendingCount} en espera</span>}
+                              {row.financial && <span className="bg-red-100 text-red-800 px-2 py-1 rounded">En riesgo</span>}
+                              {row.isInactive && <span className="bg-zinc-200 px-2 py-1 rounded">Vacía · No ofertada</span>}
+                              {row.maintenanceCount > 0 && <span className="bg-blue-100 px-2 py-1 rounded">{row.maintenanceCount} en mantenimiento</span>}
                             </div>
-
-                            <h4 className="font-black uppercase tracking-tight text-slate-900">{row.subject}</h4>
-                            <p className="text-xs font-bold text-slate-600 mb-2">{row.sede || 'Tarragona'} · {getDayName(row.dayOfWeek)} a las {row.time}h · {row.sala || 'Sala 1'}</p>
-                            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white/50 px-2 py-1 rounded inline-block w-max">Prof: {row.teacher}</div>
-                            <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                              Activos: {row.activeCount} · Mantenimiento: {row.maintenanceCount} · Cupo: {row.cap || 'sin aforo'}
-                            </div>
-                            <p className="mt-2 text-[10px] font-bold text-slate-500 leading-relaxed">{row.statusHelp}</p>
-
-                            {activeNames.length > 0 && (
-                              <div className="mt-3 bg-white/70 border border-white rounded-xl p-3">
-                                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Alumnos activos</p>
-                                <p className="text-xs font-bold text-slate-700 leading-relaxed">{activeNames.join(', ')}</p>
-                              </div>
-                            )}
-
-                            {maintenanceNames.length > 0 && (
-                              <div className="mt-3 bg-white/50 border border-white rounded-xl p-3">
-                                <p className="text-[9px] font-black uppercase tracking-widest text-zinc-400 mb-1">Mantenimiento</p>
-                                <p className="text-xs font-bold text-slate-600 leading-relaxed">{maintenanceNames.join(', ')}</p>
-                              </div>
-                            )}
-
-                            {isReview && (
-                              <div className="mt-3 bg-amber-100/70 border border-amber-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-amber-800">
-                                Revisar evolución, pero no entra en “A contactar”.
-                              </div>
-                            )}
-                            {onlyMaintenance && (
-                              <div className="mt-3 bg-blue-100/70 border border-blue-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-blue-800">
-                                Cerrar operativamente si no hay actividad presencial.
-                              </div>
-                            )}
-                            {isHibernated && (
-                              <div className="mt-3 bg-zinc-100 border border-zinc-200 rounded-xl p-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                                Candidata a hibernar / cerrar turno.
-                              </div>
-                            )}
-                            
-                            <div className="mt-auto pt-4 flex gap-2">
-                              {dangerViewMode === 'actual' && isHibernated ? (
-                                <button onClick={() => setResurrectClassModal(c)} className="flex-1 bg-zinc-800 text-white font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black transition-colors flex items-center justify-center gap-1">
-                                  <PlusCircle className="w-3 h-3"/> Reactivar
-                                </button>
-                              ) : (
-                                <button onClick={() => dangerViewMode === 'actual' ? setViewClassModal(c) : setPhotosModalOpen(true)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1">
-                                  <Users className="w-3 h-3"/> {dangerViewMode === 'actual' ? 'Alumnos' : 'Ver fotos'}
-                                </button>
-                              )}
-                              {dangerViewMode === 'actual' && (
-                                <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
-                                  <Globe className="w-3 h-3"/> Configurar / Web
-                                </button>
-                              )}
+                            {row.financial && <p className="text-xs font-bold text-red-800">Estimación mensual: ingresos {row.financial.ingresos.toFixed(2)} € · coste docente {row.financial.coste.toFixed(2)} € · déficit {(row.financial.coste - row.financial.ingresos).toFixed(2)} €</p>}
+                            {row.activeStudents.length > 0 && <p className="text-xs text-slate-600">{row.activeStudents.map(student => student.displayName).join(', ')}</p>}
+                            {row.pendingCount > 0 && <p className="text-xs text-violet-800">En espera: {row.pendingStudents.map(student => student.displayName).join(', ')}</p>}
+                            <div className="mt-auto pt-2 flex flex-wrap gap-2">
+                              {dangerViewMode === 'actual' ? <>
+                                <button onClick={() => setViewClassModal(c)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Alumnos</button>
+                                <button onClick={() => setEditWebModal(c)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Configurar / Web</button>
+                                {isHibernated && <button onClick={() => setResurrectClassModal(c)} className="px-2 py-1.5 bg-zinc-800 text-white rounded-lg text-xs font-bold">Reactivar</button>}
+                                <button onClick={() => handleDeleteClassGlobal(c)} className="px-2 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold">Borrar</button>
+                              </> : <button onClick={() => setPhotosModalOpen(true)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Ver fotos</button>}
                             </div>
                           </div>
                         );

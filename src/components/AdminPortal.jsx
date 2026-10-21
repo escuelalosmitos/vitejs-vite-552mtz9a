@@ -2178,6 +2178,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
 export default function AdminPortal({ user, logout, db, storage, appId, switchToTeacher }) {
   const [activeTab, setActiveTab] = useState('gestiones');
+  const [adminMenuCollapsed, setAdminMenuCollapsed] = useState(false);
   const [servicesSubTab, setServicesSubTab] = useState('mitobox');
   const [loading, setLoading] = useState(true);
   const [startupLoadErrors, setStartupLoadErrors] = useState({});
@@ -14378,7 +14379,7 @@ ${startDateWarning}
       {photosModalOpen && <StableModalRenderer key="photos" render={PhotosModalOverlay} />}
       {socialModalText && <StableModalRenderer key="social-text" render={SocialModalOverlay} />}
       
-      <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
+      <aside className={`admin-sidebar ${adminMenuCollapsed ? 'admin-sidebar-collapsed' : ''} w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto`}>
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
           <div>
             <div className="flex items-center gap-3 text-white mb-1"><ShieldAlert className="w-6 h-6 text-red-500" /><h1 className="text-xl font-black uppercase tracking-tight">Modo Admin</h1></div>
@@ -14386,6 +14387,7 @@ ${startDateWarning}
           </div>
           <button onClick={switchToTeacher} className="md:hidden bg-zinc-800 text-white p-2 rounded-lg"><ArrowRightLeft className="w-5 h-5"/></button>
         </div>
+        <button type="button" onClick={() => setAdminMenuCollapsed(value => !value)} aria-expanded={!adminMenuCollapsed} aria-label={adminMenuCollapsed ? 'Ampliar menú' : 'Plegar menú'} title={adminMenuCollapsed ? 'Ampliar menú' : 'Plegar menú'} className="hidden md:flex items-center justify-center gap-2 m-2 p-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold"><ArrowRightLeft className="w-4 h-4 shrink-0"/><span className="admin-menu-label">Plegar menú</span></button>
         <nav className="flex-1 flex md:flex-col p-4 gap-1 no-scrollbar overflow-x-auto md:overflow-visible">
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalInboxNotifications },
@@ -14400,25 +14402,50 @@ ${startDateWarning}
             { id: 'informes', icon: TrendingUp, label: 'Informes (BI)' }, 
             { id: 'settings', icon: Settings, label: 'Configuración' }
           ].map(tab => (
-            <button key={tab.id} onClick={() => handleAdminTabChange(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
+            <button title={tab.label} aria-label={tab.label} key={tab.id} onClick={() => handleAdminTabChange(tab.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all whitespace-nowrap md:whitespace-normal text-left ${activeTab === tab.id ? 'bg-red-600 text-white shadow-lg' : 'hover:bg-zinc-900 hover:text-white'}`}>
               <tab.icon className="w-4 h-4 shrink-0" />
-              <span className="flex-1">{tab.label}</span>
+              <span className="admin-menu-label flex-1">{tab.label}</span>
               {tab.notificationCount > 0 && <span className="min-w-5 h-5 px-1.5 bg-red-500 text-white border-2 border-zinc-950 rounded-full text-[9px] font-black flex items-center justify-center" title={`${tab.notificationCount} novedad(es)`}>{tab.notificationCount}</span>}
               {tab.count > 0 && <span className="bg-white text-red-600 px-2 py-0.5 rounded-full text-[10px] font-black">{tab.count}</span>}
             </button>
           ))}
         </nav>
         <div className="p-4 border-t border-zinc-900 hidden md:block space-y-2">
-          <button onClick={switchToTeacher} className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
-            <ArrowRightLeft className="w-4 h-4"/> Vista Profesor
+          <button title="Vista Profesor" aria-label="Vista Profesor" onClick={switchToTeacher} className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
+            <ArrowRightLeft className="w-4 h-4"/> <span className="admin-menu-label">Vista Profesor</span>
           </button>
-          <button onClick={logout} className="w-full flex items-center justify-center gap-2 text-zinc-500 hover:text-red-400 p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
-            <LogOut className="w-4 h-4"/> Cerrar Sesión
+          <button title="Cerrar sesión" aria-label="Cerrar sesión" onClick={logout} className="w-full flex items-center justify-center gap-2 text-zinc-500 hover:text-red-400 p-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-colors">
+            <LogOut className="w-4 h-4"/> <span className="admin-menu-label">Cerrar Sesión</span>
           </button>
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 p-4 md:p-8 max-w-7xl mx-auto w-full">
+      <style>{`
+        .admin-main { container-type: inline-size; overflow-wrap: anywhere; }
+        .admin-main .grid > *, .admin-main .flex > * { min-width: 0; }
+        .admin-main .overflow-x-auto { max-width: 100%; }
+        .admin-auto-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+        .admin-bi-summary { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+        .admin-bi-summary > [class*="col-span"] { grid-column: 1 / -1; }
+        .admin-bi-counts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
+        .admin-bi-counts > p { grid-column: 1 / -1; }
+        .admin-inbox table { min-width: 0; table-layout: fixed; }
+        .admin-inbox td, .admin-inbox th { min-width: 0; white-space: normal; padding: 12px; overflow-wrap: anywhere; }
+        .admin-inbox td .flex { flex-wrap: wrap; }
+        @container (max-width: 760px) {
+          .admin-inbox table { min-width: 680px; table-layout: auto; }
+        }
+        @media (min-width: 768px) {
+          .admin-sidebar-collapsed { width: 88px; }
+          .admin-sidebar-collapsed > div:first-child { padding: 16px 8px; }
+          .admin-sidebar-collapsed h1, .admin-sidebar-collapsed > div:first-child p,
+          .admin-sidebar-collapsed .admin-menu-label { display: none; }
+          .admin-sidebar-collapsed nav { padding: 8px; }
+          .admin-sidebar-collapsed nav button { position: relative; justify-content: center; padding: 14px 8px; }
+          .admin-sidebar-collapsed nav button > span:not(.admin-menu-label) { position: absolute; top: 0; right: 0; font-size: 8px; }
+        }
+      `}</style>
+      <main className={`admin-main flex-1 min-w-0 p-4 md:p-6 xl:p-8 w-full ${activeTab === 'gestiones' ? 'admin-inbox' : ''}`}>
         
         {isLastDayOfMonth && (
           <div className="mb-6 bg-gradient-to-r from-amber-400 to-amber-500 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-4 animate-pulse">
@@ -14528,7 +14555,7 @@ ${startDateWarning}
 
             {/* SUBVISTA 1: RESUMEN GLOBAL */}
             {informeSubTab === 'resumen' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in">
+              <div className="grid admin-bi-summary gap-4 animate-in fade-in">
                 <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-3xl shadow-sm">
                   <div className="flex items-center gap-2 text-emerald-600 mb-2"><TrendingUp className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Ingresos Brutos</h3></div>
                   <p className="text-4xl font-black text-emerald-900 tracking-tighter">{businessIntelligence.totalIngresos.toLocaleString('es-ES')}€</p>
@@ -14562,7 +14589,7 @@ ${startDateWarning}
                   <div className="lg:text-right shrink-0"><p className="text-4xl font-black text-amber-900 tracking-tighter">+{Number(displayedAvoidedCompanyCost.amount || 0).toLocaleString('es-ES', { maximumFractionDigits: 2 })}€</p><p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{Number(displayedAvoidedCompanyCost.hours || 0).toFixed(1)} h · {displayedAvoidedCompanyCost.records || 0} registros · {Number(displayedAvoidedCompanyCost.companyHourlyCost || 0).toFixed(2)} €/h</p></div>
                 </div>}
 
-                <div className="md:col-span-2 lg:col-span-4 bg-white border border-zinc-200 p-5 rounded-3xl shadow-sm grid grid-cols-2 lg:grid-cols-6 gap-4">
+                <div className="md:col-span-2 lg:col-span-4 bg-white border border-zinc-200 p-5 rounded-3xl shadow-sm grid admin-bi-counts gap-4">
                   <div><span className="block text-2xl font-black text-slate-900">{businessIntelligence.totalAlumnosActivosUnicos || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Alumnos únicos activos</span></div>
                   <div><span className="block text-2xl font-black text-slate-900">{businessIntelligence.totalMatriculasActivas || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Matrículas con cuota</span></div>
                   <div><span className="block text-2xl font-black text-slate-900">{businessIntelligence.totalPlazasComprometidas || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Plazas comprometidas</span></div>
@@ -14576,7 +14603,7 @@ ${startDateWarning}
 
             {/* SUBVISTA 2: RENTABILIDAD POR SEDE */}
             {informeSubTab === 'sedes' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in">
+              <div className="grid admin-auto-cards gap-6 animate-in fade-in">
                  {centerNamesForReporting.map(sede => {
                     const dataSede = businessIntelligence.porSede[sede] || { ingresos: 0, ingresosClases: 0, mantenimiento: 0, costesProf: 0, alumnosMantenimiento: 0, alumnosActivos: 0, alumnosUnicos: 0, alumnosInicioFuturo: 0, plazasComprometidas: 0, clasesOperativas: 0, clasesHibernadas: 0, horasSemanalesOperativas: 0 };
                     const gastoFijoSede = getCenterFixedCost(sede);
@@ -14585,17 +14612,17 @@ ${startDateWarning}
                        <div key={sede} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col">
                           <h3 className="font-black text-2xl uppercase text-slate-800 tracking-tight border-b pb-3 flex items-center gap-2"><MapPin className="text-blue-500"/> Sede {sede}</h3>
                           <div className="mt-4 space-y-3 flex-1 text-sm font-bold">
-                             <div className="flex justify-between text-slate-600"><span>Ingresos por clases:</span><span className="text-emerald-600">+{dataSede.ingresosClases}€</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Matrículas con cuota:</span><span>{dataSede.alumnosActivos || 0}</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Alumnos únicos activos:</span><span>{dataSede.alumnosUnicos || 0}</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Inicio futuro:</span><span>{dataSede.alumnosInicioFuturo || 0}</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Plazas comprometidas:</span><span>{dataSede.plazasComprometidas || 0}</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}€</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}€</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Clases operativas / hibernadas:</span><span>{dataSede.clasesOperativas || 0} / {dataSede.clasesHibernadas || 0}</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Horas prof. computables:</span><span>{(dataSede.horasSemanalesOperativas || 0).toFixed(1)} h/sem</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
-                             <div className="flex justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}€</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Ingresos por clases:</span><span className="text-emerald-600">+{dataSede.ingresosClases}€</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Matrículas con cuota:</span><span>{dataSede.alumnosActivos || 0}</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Alumnos únicos activos:</span><span>{dataSede.alumnosUnicos || 0}</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Inicio futuro:</span><span>{dataSede.alumnosInicioFuturo || 0}</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Plazas comprometidas:</span><span>{dataSede.plazasComprometidas || 0}</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Mantenimiento ({dataSede.alumnosMantenimiento || 0}):</span><span className="text-blue-600">+{dataSede.mantenimiento || 0}€</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Ingresos totales:</span><span className="text-emerald-700">+{dataSede.ingresos}€</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Clases operativas / hibernadas:</span><span>{dataSede.clasesOperativas || 0} / {dataSede.clasesHibernadas || 0}</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Horas prof. computables:</span><span>{(dataSede.horasSemanalesOperativas || 0).toFixed(1)} h/sem</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Coste Profesores:</span><span className="text-rose-500">-{dataSede.costesProf.toFixed(0)}€</span></div>
+                             <div className="flex flex-wrap gap-x-4 gap-y-1 justify-between text-slate-600"><span>Gastos Fijos Local:</span><span className="text-rose-500">-{gastoFijoSede}€</span></div>
                           </div>
                           <div className="mt-6 pt-4 border-t border-zinc-100 flex justify-between items-center bg-zinc-50 p-4 rounded-xl">
                              <span className="text-xs font-black uppercase text-zinc-400">Beneficio Neto Local:</span>
@@ -16218,7 +16245,7 @@ ${startDateWarning}
                       </h3>
                       <span className="text-[10px] font-black uppercase tracking-widest bg-zinc-100 text-zinc-500 px-3 py-1 rounded-lg">{rows.length} clase(s)</span>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                    <div className="grid admin-auto-cards gap-4">
                       {rows.map(row => {
                         const c = row.classData || row;
                         const teacherTheme = getTeacherColorTheme(c.teacher, settings);

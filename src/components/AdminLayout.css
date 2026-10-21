@@ -88,11 +88,28 @@
 .admin-main[data-admin-section="classes"] .admin-global-class-grid {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
 }
-.admin-teacher-activity-grid {
+/* Explicit column counts prevent rounding in auto-fit from dropping a teacher. */
+.admin-teacher-activity-grid,
+.admin-teacher-evaluation-grid {
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(300px, calc((100% - 32px) / 3))), 1fr));
+  align-items: start;
 }
 .admin-teacher-activity-grid > article { padding: 16px; }
-.admin-teacher-activity-grid > article > .grid { gap: 8px; }
-.admin-teacher-activity-grid > article > .grid > div { padding: 10px; }
+.admin-teacher-activity-grid .admin-teacher-activity-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.admin-teacher-activity-metrics > div { padding: 10px; }
+.admin-teacher-evaluation-header > .flex { flex-wrap: wrap; }
+.admin-teacher-evaluation-header h3 { overflow-wrap: anywhere; }
+.admin-teacher-evaluation-bars { width: 100%; min-width: 0; }
+@container (min-width: 620px) {
+  .admin-teacher-activity-grid,
+  .admin-teacher-evaluation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (min-width: 940px) {
+  .admin-teacher-activity-grid,
+  .admin-teacher-evaluation-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 .admin-bi-avoided .text-4xl { font-size: 30px; }

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { reconcileAttendedAbsence } from '../src/components/absenceAttendanceReconciliation.js';
 import {
   assertFails,
   assertSucceeds,
@@ -803,6 +804,53 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertSucceeds(updateDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`), {
         notes: 'Nota de la clase propia'
       }));
+    });
+
+    await t.test('asistencia: repara un aviso archivado y anula sólo un ticket propio no usado con prueba de asistencia', async () => {
+      const noticeId = 'aviso-asistencia';
+      const recordId = 'registro-asistencia';
+      const ticketId = 'ticket-asistencia';
+      const ticketPath = `${ROOT}/users/${TEACHER.uid}/tickets/${ticketId}`;
+      const noticeData = {
+        type: 'aviso_ausencia', studentId: STUDENT.id, studentEmail: STUDENT.email,
+        studentName: 'Alumna Uno', requestedClass: 'class-own', absenceDate: '2026-10-09',
+        teacherEmails: [TEACHER.email], status: 'archivado', ticketOutcome: 'awaiting_attendance'
+      };
+      const recordData = {
+        classId: 'class-own', date: '2026-10-09', subject: 'Guitarra', teacher: 'Norman',
+        students: [{ id: STUDENT.id, status: 'present' }]
+      };
+      await testEnv.withSecurityRulesDisabled(async context => {
+        const db = context.firestore();
+        await setDoc(doc(db, `${ROOT}/gestiones/${noticeId}`), noticeData);
+        await setDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/records/${recordId}`), recordData);
+        await setDoc(doc(db, ticketPath), {
+          studentId: STUDENT.id, studentEmail: STUDENT.email, subject: 'Guitarra',
+          originalDate: recordData.date, originalClassId: recordData.classId,
+          absenceGestionId: noticeId, teacherEmails: [TEACHER.email], isUsed: false
+        });
+      });
+      const db = authenticated(testEnv, TEACHER);
+      const invalidation = {
+        isUsed: true, voided: true, voidReason: 'attendance_confirmed',
+        voidedAt: '2026-10-22T12:00:00.000Z', voidedBy: TEACHER.email,
+        attendanceRecordId: recordId, attendanceCorrectedOn: '2026-10-09', attendanceClassId: 'class-own'
+      };
+      // El registro antiguo aún no contiene la prueba presentStudentIds.
+      await assertFails(updateDoc(doc(db, ticketPath), invalidation));
+      await assertFails(updateDoc(doc(authenticated(testEnv, STUDENT), ticketPath), invalidation));
+      await assertFails(updateDoc(doc(authenticated(testEnv, OTHER_TEACHER), ticketPath), invalidation));
+
+      await assertSucceeds(reconcileAttendedAbsence({
+        db, appId: APP_ID, user: TEACHER,
+        gestion: { ...noticeData, id: noticeId }, record: { ...recordData, id: recordId }
+      }));
+      const resolved = (await getDoc(doc(db, `${ROOT}/gestiones/${noticeId}`))).data();
+      assert.equal(resolved.status, 'archivado');
+      assert.equal(resolved.ticketOutcome, 'attended');
+      assert.equal((await getDoc(doc(db, ticketPath))).data().voided, true);
+      await assertFails(updateDoc(doc(db, ticketPath), { ...invalidation, studentId: OTHER_STUDENT.id }));
+      await assertFails(updateDoc(doc(db, ticketPath), { voided: false, isUsed: false }));
     });
 
     await t.test('profesor autorizado: comparte la bolsa de sustituciones sin poder alterar ofertas ajenas', async () => {

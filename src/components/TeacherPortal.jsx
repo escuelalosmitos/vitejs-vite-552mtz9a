@@ -10,6 +10,8 @@ import {
 import { collection, query, where, documentId, getDoc, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction, writeBatch } from 'firebase/firestore';
 import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
 import GymusikTeacher from './GymusikTeacher';
+import { retainGestionForAttendance, getMatchingAbsenceGestiones, getRelatedAbsenceTickets, getAbsenceAttendanceUpdate, findRecordedPresentAbsence } from './absenceAttendanceUtils.js';
+import { reconcileAttendedAbsence } from './absenceAttendanceReconciliation.js';
 
 const INSTRUMENTOS = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 const LEGACY_CENTER_NAMES = ["Tarragona", "Reus"];
@@ -734,6 +736,30 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const [tickets, setTickets] = useState([]); 
   const [substitutions, setSubstitutions] = useState([]); 
   const [gestiones, setGestiones] = useState([]); 
+  const absenceReconciliationInFlight = useRef(new Set());
+
+  useEffect(() => {
+    if (loadingData || !user?.uid) return;
+    const repairs = gestiones.map(gestion => ({
+      gestion, record: findRecordedPresentAbsence(gestion, uniqueRecords),
+      key: `${user.uid}|${gestion.id}`
+    })).filter(item => item.record && !absenceReconciliationInFlight.current.has(item.key));
+    // Reservar antes de arrancar: las notificaciones de Firestore pueden volver
+    // a renderizar el portal mientras se está corrigiendo otro aviso.
+    repairs.forEach(item => absenceReconciliationInFlight.current.add(item.key));
+    void (async () => {
+      for (const item of repairs) {
+        try {
+          await reconcileAttendedAbsence({ db, appId, user, gestion: item.gestion, record: item.record });
+        } catch (error) {
+          console.error('No se pudo sincronizar el aviso con su asistencia guardada:', error);
+        } finally {
+          absenceReconciliationInFlight.current.delete(item.key);
+        }
+      }
+    })();
+  }, [loadingData, user?.uid, user?.email, db, appId, gestiones, uniqueRecords]);
+
   const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [temporaryRelocations, setTemporaryRelocations] = useState([]);
   const [temporaryClassChanges, setTemporaryClassChanges] = useState([]);
@@ -1085,7 +1111,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     const unsubGestiones = onSnapshot(teacherGestionesRef, snapshot => {
       setGestiones(snapshot.docs
         .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
-        .filter(gestion => gestion.status === 'pendiente' || String(gestion.recoveryDate || '') >= today));
+        .filter(gestion => retainGestionForAttendance(gestion, today)));
       gestionesLoaded = true;
       checkLoading();
     }, error => {
@@ -3650,44 +3676,17 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const attendanceBatch = writeBatch(db);
 
       currentSession.students.forEach((s) => {
-        const absenceGestion = gestiones.find(gestion => (
-          gestion.type === 'aviso_ausencia'
-          && String(gestion.studentId || '') === String(s.id || '')
-          && (!gestion.requestedClass || String(gestion.requestedClass) === String(currentSession.classId || ''))
-          && (
-            String(gestion.absenceDate || '') === String(date || '')
-            || String(gestion.details || '').includes(formatDateSpanish(date))
-          )
-        )) || null;
+        const absenceGestiones = getMatchingAbsenceGestiones(gestiones, s.id, currentSession, date);
+        const absenceGestion = absenceGestiones[0] || null;
         const settleAbsenceGestion = payload => {
-          if (!absenceGestion) return;
-          attendanceBatch.set(doc(db, 'artifacts', appId, 'gestiones', absenceGestion.id), {
-            status: 'completado',
-            attendanceResolvedAt: attendanceSavedAt,
-            ...payload
-          }, { merge: true });
+          absenceGestiones.forEach(gestion => attendanceBatch.set(
+            doc(db, 'artifacts', appId, 'gestiones', gestion.id),
+            getAbsenceAttendanceUpdate(gestion, payload, attendanceSavedAt),
+            { merge: true }
+          ));
         };
 
-        const relatedAbsenceTickets = tickets.filter(ticket => {
-          if (String(ticket.studentId || '') !== String(s.id || '')) return false;
-          if (ticket.isGift === true || ticket.subjectScope === 'any') return false;
-
-          const exactGestionMatch = Boolean(
-            absenceGestion?.id
-            && ticket.absenceGestionId
-            && String(ticket.absenceGestionId) === String(absenceGestion.id)
-          );
-          if (exactGestionMatch) return true;
-
-          const legacyDateAndSubjectMatch = (
-            String(ticket.originalDate || '') === String(date || '')
-            && normalizeTicketSubject(ticket.subject).toLocaleLowerCase('es') === normalizeTicketSubject(currentSession.subject).toLocaleLowerCase('es')
-          );
-          if (!legacyDateAndSubjectMatch) return false;
-
-          return !ticket.originalClassId
-            || String(ticket.originalClassId) === String(currentSession.classId || '');
-        });
+        const relatedAbsenceTickets = getRelatedAbsenceTickets(tickets, absenceGestiones, s.id, currentSession, date);
         const existingAbsenceTicket = relatedAbsenceTickets.find(ticket => !ticket.voided) || null;
 
         // Si finalmente vino, el aviso se conserva como trazabilidad pero nunca
@@ -3707,6 +3706,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               voidReason: 'attendance_confirmed',
               voidedAt: attendanceSavedAt,
               voidedBy: String(user.email || '').trim().toLowerCase(),
+              attendanceRecordId: recordId,
               attendanceCorrectedOn: date,
               attendanceClassId: currentSession.classId || ''
             }, { merge: true });
@@ -3878,6 +3878,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         isDeadHourWorked: Boolean(!isRenounced && deadHourNote),
         savedAt: attendanceSavedAt,
         recordKeyVersion: 2,
+        presentStudentIds: currentSession.students.filter(s => s.status === 'present' && !s.isRecovery).map(s => String(s.id)),
         students: currentSession.students.map(s => ({ ...s }))
       };
 

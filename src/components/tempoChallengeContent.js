@@ -41,7 +41,8 @@ export const TEMPO_LESSONS = [
   }
 ];
 
-export const buildTempoQuestions = (difficulty = 'beginner', seed = '') => {
+// Se conserva el contenido inicial para interpretar respuestas ya guardadas.
+const buildLegacyTempoQuestions = (difficulty = 'beginner', seed = '') => {
   const advanced = difficulty === 'advanced';
   const shift = [...seed].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 4;
   const delta = advanced ? 10 : 30;
@@ -107,4 +108,96 @@ export const buildTempoQuestions = (difficulty = 'beginner', seed = '') => {
   result.push(question('final-concept', 3, 'Una melodía sube hacia notas más agudas, pero el pulso no cambia. ¿Ha aumentado necesariamente el tempo?', ['Sí, agudo significa rápido', 'No: altura y tempo son propiedades diferentes', 'Sí, si también suena más fuerte'], 1,
     'La altura, la intensidad y el tempo son propiedades diferentes. Podemos cambiar una sin cambiar las otras.', 'Recuerda los ejemplos en los que cambiaba sólo una propiedad.', [sound({ semitones: 0 }), sound({ semitones: 9 })]));
   return result;
+};
+
+export const TEMPO_CONTENT_VERSION = 2;
+
+// Motivos originales: una identidad melódica para cada una de las 36 actividades.
+// A y B comparten el motivo y su ritmo; sólo cambia la propiedad preguntada.
+export const TEMPO_MELODIES = [
+  [0, 2, 4, 7, 5, 4, 2, 0], [0, 4, 2, 5, 7, 4, 2, 0],
+  [7, 5, 4, 2, 0, 2, 4, 0], [0, 7, 4, 5, 2, 4, 2, 0],
+  [4, 2, 0, 5, 4, 7, 2, 0], [2, 5, 4, 7, 9, 7, 4, 2],
+  [0, 2, 5, 4, 7, 5, 2, 0], [7, 9, 7, 4, 5, 2, 4, 0],
+  [0, 4, 7, 5, 4, 2, 7, 0], [5, 4, 2, 0, 2, 5, 4, 0],
+  [0, 5, 2, 7, 4, 5, 2, 0], [4, 7, 9, 7, 5, 4, 2, 0],
+  [9, 7, 4, 5, 2, 4, 7, 0], [2, 4, 0, 7, 5, 4, 2, 0],
+  [0, 7, 9, 5, 7, 4, 2, 0], [5, 9, 7, 4, 2, 5, 4, 0],
+  [7, 4, 0, 2, 5, 4, 2, 0], [0, 2, 7, 9, 5, 7, 4, 0],
+  [4, 5, 7, 2, 4, 0, 2, 0], [9, 5, 7, 4, 2, 0, 4, 0],
+  [0, 4, 5, 9, 7, 5, 2, 0], [2, 7, 5, 4, 9, 7, 4, 2],
+  [7, 2, 4, 0, 5, 4, 2, 0], [5, 7, 4, 9, 7, 2, 4, 0],
+  [0, 5, 9, 7, 4, 5, 2, 0], [4, 9, 7, 5, 2, 4, 7, 0],
+  [9, 4, 5, 2, 7, 4, 2, 0], [2, 0, 4, 5, 9, 7, 4, 2],
+  [0, 9, 7, 4, 5, 2, 4, 0], [7, 0, 2, 5, 4, 7, 2, 0],
+  [4, 0, 5, 7, 9, 5, 2, 0], [5, 2, 7, 9, 4, 5, 2, 0],
+  [2, 9, 5, 7, 4, 2, 0, 2], [9, 2, 4, 7, 5, 4, 2, 0],
+  [7, 5, 0, 4, 2, 5, 4, 0], [0, 12, 9, 7, 5, 4, 2, 0]
+];
+const RHYTHMS = [
+  [1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 0.5, 0.5, 1, 1, 1, 2],
+  [0.5, 0.5, 1, 1, 1.5, 0.5, 1, 2], [1.5, 0.5, 1, 1, 0.5, 0.5, 1, 2],
+  [1, 0.5, 0.5, 2, 1, 0.5, 0.5, 2], [0.5, 1, 0.5, 1, 2, 1, 1, 1],
+  [1, 1, 1, 0.5, 0.5, 1, 1.5, 1.5]
+];
+
+export const buildTempoQuestions = (difficulty = 'beginner', seed = '', contentVersion = TEMPO_CONTENT_VERSION) => {
+  const legacy = buildLegacyTempoQuestions(difficulty, seed);
+  if (contentVersion === 1) return legacy.map(item => ({ ...item, difficulty, contentVersion: 1 }));
+  const advanced = difficulty === 'advanced';
+  const shift = [...seed].reduce((sum, character) => sum + character.charCodeAt(0), 0);
+  return legacy.map((original, index) => {
+    const item = { ...original, difficulty, contentVersion: TEMPO_CONTENT_VERSION, melodyId: `melody-${index + 1}` };
+    item.clips = original.clips.map(clip => ({ ...clip, melody: TEMPO_MELODIES[index], rhythm: RHYTHMS[index % RHYTHMS.length] }));
+    if (item.id.startsWith('tempo-')) {
+      const base = Math.min(...item.clips.map(clip => clip.bpm));
+      const ratio = advanced ? (item.chapter === 3 ? 0.04 : 0.08) + (index % 3) * 0.01 : 0.25 + (index % 3) * 0.05;
+      const delta = Math.max(3, Math.round(base * ratio));
+      item.clips = item.clips.map((clip, i) => ({ ...clip, bpm: i === original.correct ? base + delta : base }));
+      item.explanation = `La versión ${original.correct === 1 ? 'B' : 'A'} tiene los pulsos más próximos: ${base + delta} BPM frente a ${base} BPM. La melodía, el ritmo, la intensidad y la altura son iguales en ambas versiones.`;
+    }
+    if (item.id.startsWith('change-')) {
+      const faster = original.correct === 0;
+      const base = 76 + (index % 4) * 4;
+      const delta = advanced ? Math.round(base * 0.15) : Math.round(base * 0.5);
+      item.clips = item.clips.map(clip => ({ ...clip, bpm: faster ? base : base + delta, endBpm: faster ? base + delta : base }));
+    }
+    if (item.id.startsWith('count-') && advanced) {
+      const beats = item.id === 'count-0' ? 7 : 9;
+      item.options = ['Cinco', 'Siete', 'Nueve']; item.correct = beats === 7 ? 1 : 2;
+      item.clips = item.clips.map(clip => ({ ...clip, beats }));
+      item.explanation = `Escuchaste ${beats} golpes graves. Cuenta la referencia grave y no cada nota de la melodía.`;
+    }
+    const rotation = (shift + index) % item.options.length;
+    item.options = [...item.options.slice(rotation), ...item.options.slice(0, rotation)];
+    item.correct = (item.correct - rotation + item.options.length) % item.options.length;
+    return item;
+  });
+};
+
+// Una respuesta antigua conserva su pregunta y nivel originales. Sólo las
+// actividades pendientes usan el contenido nuevo y la dificultad seleccionada.
+export const upgradeTempoAttempt = attempt => !attempt || attempt.status === 'completed' ? attempt : ({
+  ...attempt, contentVersion: TEMPO_CONTENT_VERSION,
+  answers: (attempt.answers || []).map(answer => ({ ...answer,
+    difficulty: answer.difficulty || attempt.difficulty,
+    contentVersion: answer.contentVersion || attempt.contentVersion || 1
+  }))
+});
+
+export const buildTempoQuestionsForAttempt = (attempt, difficulty = 'beginner', dateStr = '') => {
+  const level = attempt?.difficulty || difficulty;
+  const seed = attempt?.vacationDate || dateStr;
+  const version = attempt ? attempt.contentVersion || 1 : TEMPO_CONTENT_VERSION;
+  const variants = new Map();
+  const questions = (selectedLevel, selectedVersion) => {
+    const key = `${selectedLevel}-${selectedVersion}`;
+    if (!variants.has(key)) variants.set(key, buildTempoQuestions(selectedLevel, seed, selectedVersion));
+    return variants.get(key);
+  };
+  return questions(level, version).map((item, index) => {
+    const answer = attempt?.answers?.[index];
+    if (!answer) return item;
+    return questions(answer.difficulty || level, answer.contentVersion || version).find(candidate => candidate.id === answer.questionId) || item;
+  });
 };

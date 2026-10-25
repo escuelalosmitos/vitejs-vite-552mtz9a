@@ -72,7 +72,7 @@ export const createVacationAttempt = ({ student, dateStr, classData, difficulty 
     studentId: student.id, studentEmail: String(student.email || '').trim().toLowerCase(),
     studentName: String(student.useAlias && student.alias ? student.alias : student.name || ''),
     vacationDate: dateStr, challengeId: VACATION_CHALLENGE_ID, challengeTitle: 'Detective del tempo',
-    difficulty, classId: classData.id || pathParts[5], classOwnerUid: pathParts[3], classDocumentId: pathParts[5],
+    difficulty, contentVersion: 2, classId: classData.id || pathParts[5], classOwnerUid: pathParts[3], classDocumentId: pathParts[5],
     subject: classData.subject || '', status: 'in_progress', cursor: 0, answers: [],
     revision: 0, elapsedSeconds: 0
   };
@@ -82,6 +82,8 @@ export const recordVacationAnswer = (previous, question, option, { hintUsed = fa
   const correct = option === question.correct;
   return {
     questionId: question.id, firstOption: previous?.firstOption ?? option, lastOption: option,
+    difficulty: previous?.difficulty || question.difficulty || 'beginner',
+    contentVersion: previous?.contentVersion || question.contentVersion || 1,
     tries: (previous?.tries || 0) + 1, firstCorrect: previous?.firstCorrect ?? correct,
     correct, hintUsed: Boolean(previous?.hintUsed || hintUsed),
     listenCount: Math.max(previous?.listenCount || 0, listenCount)

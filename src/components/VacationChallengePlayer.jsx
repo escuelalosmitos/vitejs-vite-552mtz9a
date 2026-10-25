@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Volume2, Play, Pause, ChevronRight, Lightbulb, CheckCircle, AlertCircle } from 'lucide-react';
-import { buildTempoQuestions, TEMPO_LESSONS } from './tempoChallengeContent.js';
+import { buildTempoQuestionsForAttempt, upgradeTempoAttempt, TEMPO_LESSONS } from './tempoChallengeContent.js';
 import { playTempoClip } from './tempoChallengeAudio.js';
 import { createVacationAttempt, isVacationChallengeOpen, recordVacationAnswer, summarizeVacationAnswers, readChallengeClock } from './vacationChallengeUtils.js';
 import { loadVacationAttempt, saveVacationAttempt } from './vacationChallengeStore.js';
@@ -25,7 +25,7 @@ export default function VacationChallengePlayer({ db, appId, user, student, date
   const elapsedSince = useRef(0);
   const operationLock = useRef(false);
   const [loadVersion, setLoadVersion] = useState(0);
-  const questions = useMemo(() => buildTempoQuestions(attempt?.difficulty || difficulty, dateStr), [attempt?.difficulty, difficulty, dateStr]);
+  const questions = useMemo(() => buildTempoQuestionsForAttempt(attempt, difficulty, dateStr), [attempt, difficulty, dateStr]);
   const cursor = attempt?.cursor || 0;
   const current = questions[cursor];
   const chapter = current?.chapter || 0;
@@ -48,7 +48,7 @@ export default function VacationChallengePlayer({ db, appId, user, student, date
     let active = true;
     loadVacationAttempt(db, appId, student.id, dateStr).then(data => {
       if (!active) return;
-      setAttempt(data); setDifficulty(data?.difficulty || 'beginner'); setShowLesson(true);
+      setAttempt(upgradeTempoAttempt(data)); setDifficulty(data?.difficulty || 'beginner'); setShowLesson(true);
       setSelected(data?.answers?.[data.cursor]?.lastOption ?? null);
       elapsedSince.current = readChallengeClock();
     }).catch(() => {
@@ -65,8 +65,9 @@ export default function VacationChallengePlayer({ db, appId, user, student, date
       const elapsed = Math.min(300, Math.max(0, Math.floor((readChallengeClock() - elapsedSince.current) / 1000)));
       const saved = await saveVacationAttempt({ db, appId, attempt: { ...next, elapsedSeconds: (attempt?.elapsedSeconds || 0) + elapsed }, expectedRevision: attempt?.revision ?? null, vacationDates });
       elapsedSince.current = readChallengeClock();
-      if (alive.current) setAttempt(saved);
-      return saved;
+      const prepared = upgradeTempoAttempt(saved);
+      if (alive.current) setAttempt(prepared);
+      return prepared;
     } catch (failure) {
       if (alive.current) setError(failure.message || 'No se ha podido guardar. Mantén esta ventana abierta y reintenta.');
       return null;
@@ -76,6 +77,16 @@ export default function VacationChallengePlayer({ db, appId, user, student, date
     try {
       await persist(createVacationAttempt({ student: { ...student, email: user.email }, dateStr, classData, difficulty }));
     } catch (failure) { setError(failure.message); }
+  };
+  const changeDifficulty = async value => {
+    if (busy || !open || !attempt || attempt.status === 'completed' || !['beginner', 'advanced'].includes(value) || value === attempt.difficulty) return;
+    stopAudio();
+    const saved = await persist({ ...attempt, difficulty: value });
+    if (!saved) return;
+    setDifficulty(value);
+    // Si ya se ha respondido, se conserva ese ejercicio, incluso al reintentarlo.
+    // Las actividades aún no respondidas se regeneran con el nivel elegido.
+    if (!currentAnswer) { setSelected(null); setHint(false); setHeard({}); setRetrying(false); }
   };
   const listen = async (clip, key) => {
     stopAudio(); setError(''); setPlaying(key);
@@ -129,7 +140,7 @@ export default function VacationChallengePlayer({ db, appId, user, student, date
       <div className="p-5 sm:p-7 overflow-y-auto space-y-5">
         {error && <div role="alert" className="rounded-xl bg-red-50 border border-red-200 p-4 text-sm text-red-800"><AlertCircle className="w-4 h-4 inline mr-2"/>{error}{!attempt && <button type="button" onClick={() => { setLoading(true); setError(''); setLoadVersion(value => value + 1); }} className="ml-3 font-bold underline">Reintentar</button>}<button type="button" onClick={onClose} className="ml-3 underline">Cerrar</button></div>}
         {loading ? <p className="py-10 text-center font-bold">Cargando tu progreso…</p> : !open ? <div className="p-5 bg-violet-50 rounded-2xl"><h3 className="font-black">El plazo de este reto ha terminado</h3><p className="mt-2 text-sm">Tus respuestas guardadas se conservan. Encontrarás tu próxima clase en la tarjeta habitual.</p><button onClick={onClose} className="mt-5 px-5 py-3 rounded-xl bg-black text-white font-bold">Volver a mis clases</button></div> : !attempt ? <>
-          <h3 className="text-xl font-black">¿Más rápido, más fuerte o más agudo?</h3><p className="text-sm leading-relaxed">Aprende a distinguir el tempo, el pulso, la intensidad y la altura mediante fragmentos musicales originales. Hay 36 actividades, explicaciones y un reto final. La duración orientativa es de unos 30 minutos, según las escuchas y tu ritmo.</p>
+          <h3 className="text-xl font-black">¿Más rápido, más fuerte o más agudo?</h3><p className="text-sm leading-relaxed">Aprende a distinguir el tempo, el pulso, la intensidad y la altura mediante 36 actividades con melodías diferentes, explicaciones y un reto final. La duración orientativa es de unos 30 minutos, según las escuchas y tu ritmo.</p>
           <p className="text-sm">Usa un volumen cómodo. No necesitas instrumento ni micrófono. Puedes parar y continuar dentro del plazo de tu tarjeta.</p>
           <fieldset><legend className="font-bold mb-3">Elige tu dificultad</legend><div className="grid sm:grid-cols-2 gap-3">{[['beginner', 'Iniciación', 'Diferencias claras y acompañamiento paso a paso.'], ['advanced', 'Más desafío', 'Diferencias de tempo más próximas y escucha más fina.']].map(([value, title, description]) => <label key={value} className={`p-4 border rounded-xl cursor-pointer ${difficulty === value ? 'border-violet-600 bg-violet-50' : 'bg-white border-zinc-200'}`}><input type="radio" name="tempo-difficulty" value={value} checked={difficulty === value} onChange={() => setDifficulty(value)}/><strong className="ml-2">{title}</strong><span className="block mt-2 text-sm text-zinc-600">{description}</span></label>)}</div></fieldset>
           <button type="button" onClick={begin} disabled={busy || Boolean(error)} className="w-full bg-black text-white rounded-xl py-4 font-black disabled:opacity-50">{busy ? 'Preparando…' : 'Empezar mi reto'}</button>
@@ -139,6 +150,15 @@ export default function VacationChallengePlayer({ db, appId, user, student, date
           <p className="text-sm text-zinc-600">Tu resultado está guardado. Lo importante es reconocer qué cambia en el sonido y poder explicar por qué. Es una actividad de aprendizaje, sin nota académica.</p><button onClick={onClose} className="w-full bg-black text-white rounded-xl py-4 font-bold">Volver a mis clases</button>
         </> : <>
           <div><div className="flex justify-between text-xs font-bold mb-2"><span>{TEMPO_LESSONS[chapter].title}</span><span>{cursor}/{questions.length}</span></div><progress className="w-full accent-violet-600" value={cursor} max={questions.length} aria-label="Actividades completadas"/></div>
+          <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+            <label className="flex flex-wrap items-center gap-3 text-sm font-bold">Dificultad
+              <select aria-label="Dificultad de las actividades pendientes" value={attempt.difficulty} onChange={event => changeDifficulty(event.target.value)} disabled={busy || !open} className="rounded-lg border border-violet-300 bg-white p-2 disabled:opacity-50">
+                <option value="beginner">Iniciación</option><option value="advanced">Más desafío</option>
+              </select>
+            </label>
+            <p className="text-xs text-violet-900 mt-2">Puedes cambiar el nivel sin perder tus respuestas. Se aplicará a las actividades que todavía no hayas respondido.</p>
+            {currentAnswer && current.difficulty !== attempt.difficulty && <p className="text-xs font-bold text-violet-900 mt-2">Esta actividad ya respondida conserva su nivel: {current.difficulty === 'advanced' ? 'Más desafío' : 'Iniciación'}. El nivel nuevo se usará al avanzar.</p>}
+          </div>
           <label className="flex items-center gap-3 text-xs font-bold"><Volume2 className="w-4 h-4"/> Volumen <input type="range" min="0.1" max="1" step="0.05" value={volume} onChange={event => { stopAudio(); setVolume(Number(event.target.value)); }} className="accent-violet-600"/></label>
           {showLesson ? <><h3 className="text-xl font-black">{TEMPO_LESSONS[chapter].title}</h3>{TEMPO_LESSONS[chapter].paragraphs.map(paragraph => <p key={paragraph} className="text-sm leading-relaxed">{paragraph}</p>)}<div className="grid sm:grid-cols-2 gap-3">{TEMPO_LESSONS[chapter].demo.map((clip, index) => audioButton(clip, `lesson-${chapter}-${index}`, TEMPO_LESSONS[chapter].demoLabels[index]))}</div><button type="button" onClick={() => { stopAudio(); setShowLesson(false); }} className="w-full bg-black text-white rounded-xl py-4 font-bold">Vamos a practicar <ChevronRight className="w-4 h-4 inline"/></button></> : <>
             <p className="text-xs text-violet-700 font-black uppercase">Actividad {cursor + 1} de {questions.length}</p><h3 className="text-xl font-black">{current.prompt}</h3>

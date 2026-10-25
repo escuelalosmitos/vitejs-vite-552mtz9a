@@ -1,4 +1,33 @@
 // Fragmentos originales sintetizados localmente; sin micrófono ni archivos externos.
+export const buildTempoAudioEvents = clip => {
+  const beats = clip.beats || 8;
+  const beatTimes = [0];
+  const events = [];
+  for (let beat = 0; beat < beats; beat++) {
+    const bpm = clip.bpm + ((clip.endBpm || clip.bpm) - clip.bpm) * beat / Math.max(1, beats - 1);
+    events.push({ frequency: 100, at: beatTimes[beat], duration: 0.09, gain: 0.20, type: 'sine' });
+    beatTimes.push(beatTimes[beat] + 60 / bpm);
+  }
+  const timeAt = beat => {
+    if (beat >= beats) return beatTimes[beats];
+    const index = Math.floor(beat);
+    return beatTimes[index] + (beat - index) * (beatTimes[index + 1] - beatTimes[index]);
+  };
+  const melody = clip.melody || [0, 4, 7, 4, 2, 5, 9, 7, 0, 2];
+  const rhythm = clip.rhythm || [1];
+  let position = 0;
+  let index = 0;
+  while (position < beats) {
+    const next = Math.min(beats, position + rhythm[index % rhythm.length] / (clip.density || 1));
+    const at = timeAt(position);
+    const note = melody[index % melody.length] + (clip.semitones || 0);
+    events.push({ frequency: 261.6256 * 2 ** (note / 12), at,
+      duration: Math.min(0.30, (timeAt(next) - at) * 0.65), gain: clip.gain || 0.24, type: 'triangle' });
+    position = next; index++;
+  }
+  return { events, duration: beatTimes[beats] };
+};
+
 export const playTempoClip = async (clip, { volume = 0.65, onEnd = () => {} } = {}) => {
   const Context = window.AudioContext || window.webkitAudioContext;
   if (!Context) throw new Error('Este navegador no permite reproducir el reto. Prueba con un navegador actualizado.');
@@ -8,8 +37,8 @@ export const playTempoClip = async (clip, { volume = 0.65, onEnd = () => {} } = 
   master.gain.value = Math.max(0, Math.min(1, volume));
   master.connect(context.destination);
   const sources = [];
-  const melody = [0, 4, 7, 4, 2, 5, 9, 7, 0, 2];
-  let cursor = context.currentTime + 0.10;
+  const start = context.currentTime + 0.10;
+  const { events, duration: clipDuration } = buildTempoAudioEvents(clip);
   const tone = (frequency, at, duration, gain, type) => {
     const oscillator = context.createOscillator();
     const envelope = context.createGain();
@@ -22,18 +51,7 @@ export const playTempoClip = async (clip, { volume = 0.65, onEnd = () => {} } = 
     oscillator.start(at); oscillator.stop(at + duration + 0.02);
     sources.push(oscillator);
   };
-  const beats = clip.beats || 8;
-  for (let beat = 0; beat < beats; beat++) {
-    const bpm = clip.bpm + ((clip.endBpm || clip.bpm) - clip.bpm) * beat / Math.max(1, beats - 1);
-    const interval = 60 / bpm;
-    // El pulso grave conserva altura e intensidad entre ejemplos.
-    tone(100, cursor, 0.09, 0.20, 'sine');
-    for (let part = 0; part < (clip.density || 1); part++) {
-      const note = melody[(beat * (clip.density || 1) + part) % melody.length] + (clip.semitones || 0);
-      tone(261.6256 * 2 ** (note / 12), cursor + part * interval / (clip.density || 1), Math.min(0.30, interval * 0.65 / (clip.density || 1)), clip.gain || 0.24, 'triangle');
-    }
-    cursor += interval;
-  }
+  events.forEach(event => tone(event.frequency, start + event.at, event.duration, event.gain, event.type));
   let finished = false;
   const finish = (completed = false) => {
     if (finished) return;
@@ -42,8 +60,14 @@ export const playTempoClip = async (clip, { volume = 0.65, onEnd = () => {} } = 
     void context.close();
     if (completed) onEnd();
   };
-  // El evento de audio respeta suspensiones del navegador. Un temporizador de
-  // pared podría dar por escuchado un fragmento mientras el audio está parado.
-  sources[sources.length - 1].onended = () => finish(true);
+  // Un marcador silencioso espera el fragmento entero, incluida la duración
+  // de su último pulso. No depende de cuál sea la última nota de la melodía.
+  // El reloj de audio respeta las suspensiones del navegador.
+  const endMarker = context.createOscillator();
+  const silence = context.createGain(); silence.gain.value = 0;
+  endMarker.connect(silence); silence.connect(master);
+  endMarker.onended = () => finish(true);
+  sources.push(endMarker);
+  endMarker.start(start); endMarker.stop(start + clipDuration);
   return () => finish(false);
 };

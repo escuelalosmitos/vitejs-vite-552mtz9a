@@ -12,6 +12,8 @@ import {
   toggleMitoboxSlotSelection
 } from './mitoboxUtils';
 import GymusikStudent from './GymusikStudent';
+import VacationClassCard from './VacationClassCard.jsx';
+import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from './vacationChallengeUtils.js';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -1209,10 +1211,11 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     };
   };
 
-  const getNextClassScheduleInfo = (clase = {}) => {
+  const getNextClassScheduleInfo = (clase = {}, options = {}) => {
     if (!clase) return null;
 
     if (isPunctualClass(clase) && (clase.date || clase.specificDate)) {
+      if (options.skipNonTeachingDays) return null;
       const dateStr = clase.date || clase.specificDate;
       const [year, month, day] = String(dateStr).split('-').map(Number);
       const [hours, minutes] = String(clase.time || '00:00').split(':').map(Number);
@@ -1221,12 +1224,17 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     }
 
     const now = new Date();
-    const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const schoolToday = options.forVacationCard ? getSchoolDate(now.getTime()) : '';
+    const schoolParts = options.forVacationCard ? getSchoolParts(now.getTime()) : null;
+    const startDate = schoolParts
+      ? new Date(schoolParts.year, schoolParts.month - 1, schoolParts.day)
+      : new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
     for (let offset = 0; offset <= 550; offset++) {
       const candidateDay = new Date(startDate);
       candidateDay.setDate(startDate.getDate() + offset);
       const dateStr = formatLocalDateString(candidateDay);
+      if (options.afterDate && dateStr <= options.afterDate) continue;
       const effectiveClass = getEffectiveClassForDate(clase, dateStr);
 
       // Al renunciar el profesor, Teacher marca la fecha como cancelada en la
@@ -1236,6 +1244,10 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
       if (!hasAssignedSubstitution && (clase.cancelledDates || []).includes(dateStr)) continue;
 
       if (Number(effectiveClass.dayOfWeek) !== candidateDay.getDay()) continue;
+      if (options.skipNonTeachingDays) {
+        const centerId = getClassCenter(effectiveClass)?.id || normalizeConfigId(effectiveClass.centerId || effectiveClass.sede || 'Tarragona', 'tarragona');
+        if (schoolCalendar.some(item => item.date === dateStr && (!item.centerId || item.centerId === centerId))) continue;
+      }
 
       const [hours, minutes] = String(effectiveClass.time || '00:00').split(':').map(Number);
       const date = new Date(
@@ -1247,24 +1259,27 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         0,
         0
       );
-      if (date < now) continue;
+      const instant = options.forVacationCard ? schoolDateTimeMillis(dateStr, effectiveClass.time || '00:00') : date.getTime();
+      const retainVacationToday = options.forVacationCard && dateStr === schoolToday && globalSettings.vacaciones.includes(dateStr);
+      if (instant < now.getTime() && !retainVacationToday) continue;
 
       return {
         date,
         dateStr,
-        diffHours: (date - now) / (1000 * 60 * 60),
+        diffHours: (instant - now.getTime()) / (1000 * 60 * 60),
         clase: effectiveClass,
         temporaryClassChange: effectiveClass.temporaryClassChange || null
       };
     }
 
+    if (options.skipNonTeachingDays) return null;
     const fallback = getNextClassInfo(clase.dayOfWeek, clase.time || '00:00');
     return { ...fallback, clase, temporaryClassChange: null };
   };
 
   const getClassReferenceDateForStudent = (clase = {}) => {
     if (isPunctualClass(clase)) return clase.date || todayStr;
-    return getNextClassScheduleInfo(clase)?.dateStr || todayStr;
+    return getNextClassScheduleInfo(clase, { forVacationCard: true })?.dateStr || todayStr;
   };
 
   const isStudentClassVisibleForNextSession = (clase = {}) => {
@@ -1806,8 +1821,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     setExpandedClassTasks(prev => ({ ...prev, [panelKey]: !prev[panelKey] }));
   };
 
-  const renderClassTasksResources = ({ clase = {}, resources = [], hasNotes = false, panelKey = '', expanded = false, variant = 'dark' }) => {
-    if (!hasNotes && resources.length === 0) return null;
+  const renderClassTasksResources = ({ clase = {}, resources = [], hasNotes = false, panelKey = '', expanded = false, variant = 'dark', showEmpty = false }) => {
+    if (!hasNotes && resources.length === 0 && !showEmpty) return null;
 
     const styles = {
       dark: {
@@ -1866,6 +1881,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         <button
           type="button"
           onClick={() => toggleClassTasksPanel(panelKey)}
+          aria-expanded={expanded}
           className={`w-full px-4 py-3 rounded-2xl border font-black uppercase tracking-widest text-[10px] transition-all flex items-center justify-between gap-3 ${styles.button || ''}`}
         >
           <span className="flex items-center gap-2">
@@ -1873,13 +1889,14 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
             {expanded ? 'Ocultar tareas y recursos' : 'Desplegar tareas y recursos'}
           </span>
           <span className={`flex items-center gap-2 ${styles.count || ''}`}>
-            {summaryParts.join(' · ')}
+            {summaryParts.join(' · ') || 'Sin tareas pendientes'}
             <ArrowRight className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} />
           </span>
         </button>
 
         {expanded && (
           <div className={`mt-3 p-5 rounded-2xl border animate-in fade-in slide-in-from-top-1 duration-200 ${styles.panel || ''}`}>
+            {!hasNotes && resources.length === 0 && <p className="text-sm">No tienes tareas ni recursos pendientes en esta clase.</p>}
             {hasNotes && (
               <div>
                 <h4 className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-widest mb-2 ${styles.title || ''}`}>
@@ -6187,7 +6204,7 @@ END:VCALENDAR`;
               </div>
             ) : (
               effectiveMyClasses.map((assignedClass, idx) => {
-                const scheduleInfo = getNextClassScheduleInfo(assignedClass) || {
+                const scheduleInfo = getNextClassScheduleInfo(assignedClass, { forVacationCard: true }) || {
                   ...getNextClassInfo(assignedClass.dayOfWeek, assignedClass.time),
                   clase: assignedClass,
                   temporaryClassChange: null
@@ -6248,6 +6265,19 @@ END:VCALENDAR`;
 
                 if (holidayMatch) {
                   const isFestivo = holidayMatch.type === 'festivo';
+                  if (!isFestivo) return (
+                    <VacationClassCard key={`${assignedClass.refPath || idx}-${classInfo.dateStr}`} db={db} appId={appId} user={user} student={profile} classData={clase} dateStr={classInfo.dateStr}
+                      nextTeachingClass={getNextClassScheduleInfo(assignedClass, { forVacationCard: true, skipNonTeachingDays: true, afterDate: classInfo.dateStr })}
+                      vacationDates={globalSettings.vacaciones} clock={pollClock}
+                      onCalendar={() => setActiveTab('calendar')} onContract={() => setShowContract(true)}
+                      tasks={renderClassTasksResources({ clase, resources: visibleClassResources, hasNotes: hasVisibleClassNotes, panelKey: tasksPanelKey, expanded: isTasksPanelExpanded, variant: 'holidayPurple', showEmpty: true })}>
+                      {announcedTemporaryClassChange && <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-900">
+                        <p className="font-black">{sessionTemporaryClassChange ? 'Horario temporal' : 'Cambio temporal programado'} · {getTemporaryClassChangePeriodLabel(announcedTemporaryClassChange)}</p>
+                        {upcomingTemporaryClassChange && <p className="mt-2">Nuevo horario: {getDayName(upcomingTemporaryClassChange.dayOfWeek)} {upcomingTemporaryClassChange.time || ''}h · {getClassCenterName(upcomingLocation)}{getClassRoomName(upcomingLocation) ? ` (${getClassRoomName(upcomingLocation)})` : ''}{upcomingTemporaryClassChange.teacher ? ` · Prof. ${upcomingTemporaryClassChange.teacher}` : ''}</p>}
+                        <p className="mt-2">Al finalizar volverás a {getDayName(officialSchedule.dayOfWeek)} {officialSchedule.time || ''}h · {getClassCenterName(officialLocation)}.</p>
+                      </div>}
+                    </VacationClassCard>
+                  );
                   return (
                     <div key={idx} className={`rounded-3xl p-6 shadow-md relative overflow-hidden mb-4 border-2 ${isFestivo ? 'bg-red-50 border-red-200' : 'bg-purple-50 border-purple-200'}`}>
                       <div className="flex items-center gap-3 mb-2">

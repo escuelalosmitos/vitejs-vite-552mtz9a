@@ -196,6 +196,15 @@ service cloud.firestore {
         && resource.data.email.lower() == authEmail();
     }
 
+    function validStudentAvatarPath(studentId, avatarPath) {
+      return avatarPath is string
+        && avatarPath.split('/').size() == 4
+        && avatarPath.split('/')[0] == 'studentAvatars'
+        && avatarPath.split('/')[1] == request.auth.uid
+        && avatarPath.split('/')[2] == studentId
+        && avatarPath.split('/')[3].matches('^profile(-[0-9]+)?[.]webp$');
+    }
+
     function studentOwnsResource(appId) {
       return hasStudentAccess(appId) && (
         (
@@ -304,8 +313,11 @@ service cloud.firestore {
           'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'lastSeenNotificationTray', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak',
           'avatarPath', 'avatarUpdatedAt'
         ])
-        && (!('avatarPath' in request.resource.data)
-          || request.resource.data.avatarPath == 'studentAvatars/' + request.auth.uid + '/' + studentId + '/profile.webp')
+        // La foto ya guardada no debe bloquear claimed/authUid al iniciar sesión.
+        // Validar su ruta únicamente cuando se añade o cambia la foto.
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['avatarPath'])
+          || !('avatarPath' in request.resource.data)
+          || validStudentAvatarPath(studentId, request.resource.data.avatarPath))
       );
     }
 
@@ -358,6 +370,62 @@ service cloud.firestore {
 
     match /artifacts/{appId}/roleData/{document=**} {
       allow read, write: if isAdmin();
+    }
+
+    function validVacationChallenge(appId, data) {
+      let settings = get(/databases/$(database)/documents/artifacts/$(appId)/roleData/studentSettings).data;
+      return data.vacationDate is string
+        && data.vacationDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.vacationDate in settings.vacaciones
+        && data.vacationDate in settings.vacationChallengeDeadlines
+        && request.time < settings.vacationChallengeDeadlines[data.vacationDate]
+        && data.challengeId == 'tempo-v1'
+        && data.challengeTitle == 'Detective del tempo'
+        && data.studentName is string && data.studentName.size() <= 160
+        && data.subject is string && data.subject.size() <= 100
+        && data.classId is string && data.classId.size() <= 256
+        && data.difficulty in ['beginner', 'advanced']
+        && data.classOwnerUid is string && data.classOwnerUid.matches('^[^/]+$')
+        && data.classDocumentId is string && data.classDocumentId.matches('^[^/]+$')
+        && data.studentId in get(/databases/$(database)/documents/artifacts/$(appId)/users/$(data.classOwnerUid)/recurringClasses/$(data.classDocumentId)).data.studentIds
+        && data.answers is list && data.answers.size() <= 36
+        && data.cursor is int && data.cursor >= 0 && data.cursor <= 36
+        && data.cursor <= data.answers.size()
+        && data.answered == data.answers.size()
+        && data.firstCorrect is int && data.firstCorrect >= 0 && data.firstCorrect <= data.answered
+        && data.finalCorrect is int && data.finalCorrect >= 0 && data.finalCorrect <= data.answered
+        && data.withHelp is int && data.withHelp >= 0 && data.withHelp <= data.answered
+        && data.elapsedSeconds is int && data.elapsedSeconds >= 0
+        && data.revision is int && data.revision >= 0
+        && data.startedAt is timestamp && data.updatedAt == request.time
+        && ((data.status == 'in_progress' && data.cursor < 36)
+          || (data.status == 'completed' && data.cursor == 36 && data.answers.size() == 36 && data.completedAt == request.time));
+    }
+
+    match /artifacts/{appId}/vacationChallengeAttempts/{attemptId} {
+      allow get: if isAdmin() || (hasStudentAccess(appId)
+        && attemptId.matches('^' + ownStudentId(appId) + '_[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+      allow list: if isAdmin() || (hasStudentAccess(appId) && resource.data.studentId == ownStudentId(appId));
+      allow create: if isAdmin() || (studentCreatesOwnResource(appId)
+        && attemptId == request.resource.data.studentId + '_' + request.resource.data.vacationDate
+        && request.resource.data.keys().hasOnly([
+          'studentId', 'studentEmail', 'studentName', 'vacationDate', 'challengeId', 'challengeTitle',
+          'difficulty', 'classId', 'classOwnerUid', 'classDocumentId', 'subject', 'status', 'cursor',
+          'answers', 'revision', 'elapsedSeconds', 'answered', 'firstCorrect', 'finalCorrect', 'withHelp', 'startedAt', 'updatedAt'
+        ])
+        && request.resource.data.status == 'in_progress'
+        && request.resource.data.cursor == 0 && request.resource.data.answers.size() == 0
+        && request.resource.data.revision == 0 && request.resource.data.startedAt == request.time
+        && validVacationChallenge(appId, request.resource.data));
+      allow update: if isAdmin() || (hasStudentAccess(appId)
+        && resource.data.studentId == ownStudentId(appId)
+        && resource.data.status == 'in_progress'
+        && request.resource.data.revision == resource.data.revision + 1
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'cursor', 'answers', 'revision', 'elapsedSeconds', 'answered', 'firstCorrect', 'finalCorrect', 'withHelp', 'updatedAt', 'completedAt'
+        ])
+        && validVacationChallenge(appId, request.resource.data));
+      allow delete: if isAdmin();
     }
 
     match /artifacts/{appId}/gestiones/{gestionId} {
@@ -771,6 +839,25 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'isUsed', 'usedAt', 'usedOn', 'usedInSubject', 'usedInClassId'
           ])
+        ) || (
+          // Anular un ticket propio no consumido exige una asistencia guardada
+          // del mismo alumno, fecha y clase (también en el mismo lote).
+          teacherOwnsNamespace(appId, userId)
+          && teacherInTeacherEmails(appId, resource.data)
+          && resource.data.get('isUsed', false) == false
+          && resource.data.get('voided', false) == false
+          && request.resource.data.isUsed == true
+          && request.resource.data.voided == true
+          && request.resource.data.voidReason == 'attendance_confirmed'
+          && request.resource.data.voidedBy == authEmail()
+          && request.resource.data.attendanceRecordId is string
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'isUsed', 'voided', 'voidReason', 'voidedAt', 'voidedBy',
+            'attendanceRecordId', 'attendanceCorrectedOn', 'attendanceClassId'
+          ])
+          && getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(request.resource.data.attendanceRecordId)).data.date == request.resource.data.attendanceCorrectedOn
+          && getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(request.resource.data.attendanceRecordId)).data.classId == request.resource.data.attendanceClassId
+          && resource.data.studentId in getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(request.resource.data.attendanceRecordId)).data.presentStudentIds
         ) || (
           studentOwnsResource(appId)
           && request.resource.data.studentId == resource.data.studentId

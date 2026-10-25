@@ -11,12 +11,15 @@ import {
   collection,
   collectionGroup,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
   query,
   runTransaction,
   setDoc,
+  serverTimestamp,
+  Timestamp,
   updateDoc,
   where
 } from 'firebase/firestore';
@@ -428,6 +431,80 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
   try {
     await testEnv.clearFirestore();
     await seed(testEnv);
+
+    await t.test('alumno con foto: iniciar sesión no depende de revalidar una ruta ya guardada', async () => {
+      const profilePath = `${ROOT}/students/${STUDENT.id}`;
+      await testEnv.withSecurityRulesDisabled(async context => {
+        await updateDoc(doc(context.firestore(), profilePath), {
+          avatarPath: `studentAvatars/${STUDENT.uid}/${STUDENT.id}/profile-1792670400000.webp`,
+          avatarUpdatedAt: '2026-10-22T12:00:00.000Z'
+        });
+      });
+      const db = authenticated(testEnv, STUDENT);
+      const profileRef = doc(db, profilePath);
+      await assertSucceeds(updateDoc(profileRef, { claimed: true, authUid: STUDENT.uid }));
+      await assertSucceeds(updateDoc(profileRef, {
+        avatarPath: `studentAvatars/${STUDENT.uid}/${STUDENT.id}/profile-1792670400001.webp`
+      }));
+      await assertFails(updateDoc(profileRef, {
+        avatarPath: `studentAvatars/${OTHER_STUDENT.uid}/${STUDENT.id}/profile-1792670400001.webp`
+      }));
+      await assertFails(updateDoc(profileRef, {
+        avatarPath: `studentAvatars/${STUDENT.uid}/${OTHER_STUDENT.id}/profile.webp`
+      }));
+      await assertFails(updateDoc(profileRef, {
+        avatarPath: `studentAvatars/${STUDENT.uid}/${STUDENT.id}/cualquier-archivo.webp`
+      }));
+      await assertSucceeds(updateDoc(profileRef, {
+        avatarPath: `studentAvatars/${STUDENT.uid}/${STUDENT.id}/profile.webp`
+      }));
+      await assertSucceeds(updateDoc(profileRef, { avatarPath: deleteField(), avatarUpdatedAt: deleteField() }));
+    });
+
+    await t.test('retos de vacaciones: intento privado, vinculado a clase, plazo del servidor y lectura sólo administrativa', async () => {
+      const db = authenticated(testEnv, STUDENT);
+      const date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+      const past = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+      const festive = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+      await testEnv.withSecurityRulesDisabled(async context => {
+        await setDoc(doc(context.firestore(), `${ROOT}/roleData/studentSettings`), {
+          vacaciones: [date, past], festivos: [festive], vacationChallengeDeadlines: {
+            [date]: Timestamp.fromMillis(Date.now() + 4 * 86400000),
+            [past]: Timestamp.fromMillis(Date.now() - 86400000)
+          }
+        }, { merge: true });
+      });
+      const makePayload = vacationDate => ({
+        studentId: STUDENT.id, studentEmail: STUDENT.email, studentName: 'Alumna Uno',
+        vacationDate, challengeId: 'tempo-v1', challengeTitle: 'Detective del tempo', difficulty: 'beginner',
+        classId: 'class-own', classOwnerUid: TEACHER.uid, classDocumentId: 'class-own', subject: 'Guitarra',
+        status: 'in_progress', cursor: 0, answers: [], revision: 0, elapsedSeconds: 0,
+        answered: 0, firstCorrect: 0, finalCorrect: 0, withHelp: 0,
+        startedAt: serverTimestamp(), updatedAt: serverTimestamp()
+      });
+      const attemptPath = `${ROOT}/vacationChallengeAttempts/${STUDENT.id}_${date}`;
+      const reference = doc(db, attemptPath);
+      await assertSucceeds(getDoc(reference));
+      await assertFails(setDoc(doc(db, `${ROOT}/vacationChallengeAttempts/${STUDENT.id}_${past}`), makePayload(past)));
+      await assertFails(setDoc(doc(db, `${ROOT}/vacationChallengeAttempts/${STUDENT.id}_${festive}`), makePayload(festive)));
+      await assertFails(setDoc(reference, { ...makePayload(date), classOwnerUid: OTHER_TEACHER.uid, classDocumentId: 'class-other' }));
+      await assertFails(setDoc(reference, { ...makePayload(date), adminSeenBy: { admin: true } }));
+      await assertSucceeds(setDoc(reference, makePayload(date)));
+      await assertSucceeds(getDocs(query(collection(db, `${ROOT}/vacationChallengeAttempts`), where('studentId', '==', STUDENT.id))));
+      await assertFails(getDocs(collection(db, `${ROOT}/vacationChallengeAttempts`)));
+      await assertFails(getDoc(doc(authenticated(testEnv, OTHER_STUDENT), attemptPath)));
+      await assertFails(getDoc(doc(authenticated(testEnv, TEACHER), attemptPath)));
+      await assertFails(updateDoc(reference, { adminSeenBy: { admin: true }, revision: 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { vacationDate: festive, revision: 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { firstCorrect: 100, revision: 1, updatedAt: serverTimestamp() }));
+      await assertSucceeds(updateDoc(reference, {
+        cursor: 36, answers: Array.from({ length: 36 }, (_, index) => ({ questionId: `q-${index}` })),
+        answered: 36, firstCorrect: 30, finalCorrect: 35, withHelp: 5,
+        revision: 1, elapsedSeconds: 900, status: 'completed', completedAt: serverTimestamp(), updatedAt: serverTimestamp()
+      }));
+      await assertFails(updateDoc(reference, { status: 'in_progress', cursor: 0, revision: 2, updatedAt: serverTimestamp() }));
+      await assertSucceeds(updateDoc(doc(authenticated(testEnv, ADMIN), attemptPath), { adminSeenBy: { [ADMIN.uid]: serverTimestamp() } }));
+    });
 
     await t.test('visitante: solo puede leer classAvailability', async () => {
       const db = testEnv.unauthenticatedContext().firestore();

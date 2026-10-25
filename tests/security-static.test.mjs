@@ -1,6 +1,7 @@
 import { access, readFile } from 'node:fs/promises';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 
 const read = path => readFile(path, 'utf8');
 
@@ -150,7 +151,7 @@ test('las nuevas reformas mantienen cada aviso en su sección y evitan lecturas 
   assert.match(publicForm, /Inicio previsto/);
   assert.match(publicForm, /data-opening-mode="private"/);
   assert.match(publicForm, /privateOpeningUrl/);
-  assert.match(publicForm, /120&nbsp;€\/mes/);
+  assert.match(publicForm, /120(?:&nbsp;|\s|\u00a0)€\/mes/);
 });
 
 test('la plantilla docente conserva nombre normalizado y correo corporativo explícito', async () => {
@@ -319,11 +320,44 @@ test('la bandeja pagina el histórico real y abre el detalle bajo demanda visual
   assert.match(admin, /startAfter\(resolvedGestionesCursorRef\.current\)/);
   assert.match(admin, /loadMoreResolvedGestiones/);
   assert.match(admin, /Abrir detalles/);
-  assert.match(admin, /setGestionDetailsModal\(g\)/);
+  assert.match(admin, /showGestionDetails\(g\)/);
+  assert.match(admin, /const showGestionDetails = async gestion/);
+  assert.match(admin, /setGestionDetailsModal\(gestion\)/);
   assert.doesNotMatch(admin, /onSnapshot\(collection\(db, 'artifacts', appId, 'gestiones'\)/);
   assert.ok(indexConfig.indexes.some(index => (
     index.collectionGroup === 'gestiones'
     && index.fields.some(field => field.fieldPath === 'status')
     && index.fields.some(field => field.fieldPath === 'date')
   )));
+});
+
+
+test('el detalle abre datos públicos y carga notas privadas solo bajo demanda', async () => {
+  const admin = await read('src/components/AdminPortal.jsx');
+  const start = admin.indexOf('  const showGestionDetails = async gestion => {');
+  const end = admin.indexOf('  const isExtraServiceGestion', start);
+  assert.ok(start >= 0 && end > start);
+  let opened;
+  let reads = 0;
+  let fail = false;
+  const ctx = {
+    db: {}, appId: 'test', console: { error() {} },
+    doc: (...parts) => parts,
+    getDoc: async () => { reads++; if (fail) throw new Error('offline'); return { exists: () => true, data: () => ({ details: 'Nota interna' }) }; },
+    setGestionDetailsModal: data => { opened = data; }
+  };
+  const show = vm.runInNewContext(admin.slice(start, end) + '\nshowGestionDetails;', ctx);
+  await show(null);
+  assert.equal(reads, 0);
+  const ordinary = { id: 'public', details: 'Solicitud' };
+  await show(ordinary);
+  assert.equal(opened, ordinary);
+  assert.equal(reads, 0);
+  await show({ id: 'private', hasPrivateDetails: true });
+  assert.equal(reads, 1);
+  assert.equal(opened.details, 'Nota interna');
+  fail = true;
+  await show({ id: 'private', hasPrivateDetails: true });
+  assert.equal(opened.privateDetailsLoadError, true);
+  assert.equal(opened.details, '');
 });

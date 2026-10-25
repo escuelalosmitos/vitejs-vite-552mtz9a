@@ -7,11 +7,13 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, getDocFromServer, getDocsFromServer, query, where, orderBy, limit, startAfter, runTransaction } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, getDocFromServer, getDocsFromServer, query, where, orderBy, limit, startAfter, runTransaction, Timestamp } from 'firebase/firestore';
 import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
+import VacationChallengeResults from './VacationChallengeResults.jsx';
+import { isCalendarDate, vacationDeadlineMillis, isUnreadVacationAttempt } from './vacationChallengeUtils.js';
 import './AdminLayout.css';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -2182,6 +2184,17 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 };
 
 export default function AdminPortal({ user, logout, db, storage, appId, switchToTeacher }) {
+  const [vacationChallengeCompletions, setVacationChallengeCompletions] = useState([]);
+  const [vacationChallengeReadError, setVacationChallengeReadError] = useState('');
+  useEffect(() => {
+    if (!user?.uid) return undefined;
+    return onSnapshot(query(collection(db, 'artifacts', appId, 'vacationChallengeAttempts'), where('status', '==', 'completed')), snapshot => {
+      setVacationChallengeCompletions(snapshot.docs.map(item => ({ ...item.data(), id: item.id })));
+      setVacationChallengeReadError('');
+    }, () => setVacationChallengeReadError('No se han podido consultar las novedades de retos musicales. Comprueba las reglas publicadas.'));
+  }, [user?.uid, db, appId]);
+  const unreadVacationStudentIds = useMemo(() => new Set(vacationChallengeCompletions
+    .filter(attempt => isUnreadVacationAttempt(attempt, user?.uid)).map(attempt => attempt.studentId)), [vacationChallengeCompletions, user?.uid]);
   const [activeTab, setActiveTab] = useState('gestiones');
   const [settingsCategory, setSettingsCategory] = useState('economia');
   const [selectedAnnouncementId, setSelectedAnnouncementId] = useState(null);
@@ -4083,6 +4096,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       contract: String(settings.contract || ''),
       festivos: Array.isArray(settings.festivos) ? settings.festivos : [],
       vacaciones: Array.isArray(settings.vacaciones) ? settings.vacaciones : [],
+      vacationChallengeDeadlines: Object.fromEntries([...new Set((Array.isArray(settings.vacaciones) ? settings.vacaciones : []).filter(isCalendarDate))]
+        .map(date => [date, Timestamp.fromMillis(vacationDeadlineMillis(date))])),
       festivosTarragona: Array.isArray(settings.festivosTarragona) ? settings.festivosTarragona : [],
       festivosReus: Array.isArray(settings.festivosReus) ? settings.festivosReus : [],
       instrumentos: Array.isArray(settings.instrumentos) ? settings.instrumentos : defaultInstrumentos,
@@ -12702,6 +12717,7 @@ ${valueOrDash(comments.privateNote)}`,
       { id: 'summary', label: 'Resumen', count: null },
       { id: 'recoveries', label: 'Recuperaciones', count: openRecoveries.length },
       { id: 'procedures', label: 'Trámites', count: openProcedures.length },
+      { id: 'music-challenges', label: 'Retos musicales', count: null, unread: unreadVacationStudentIds.has(student.id) },
       { id: 'history', label: 'Historial', count: resolvedHistory.length }
     ];
 
@@ -12730,7 +12746,7 @@ ${valueOrDash(comments.privateNote)}`,
             <div className="flex gap-2 min-w-max">
               {sectionOptions.map(option => (
                 <button key={option.id} type="button" onClick={() => setSection(option.id)} className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${section === option.id ? 'bg-black text-white' : 'text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}>
-                  {option.label}{option.count !== null ? ` · ${option.count}` : ''}
+                  {option.label}{option.count !== null ? ` · ${option.count}` : ''}{option.unread && <i aria-label="Resultados nuevos" className="inline-block w-2 h-2 bg-red-500 rounded-full ml-2 align-middle"/>}
                 </button>
               ))}
             </div>
@@ -12861,6 +12877,8 @@ ${valueOrDash(comments.privateNote)}`,
                 {['sin_plaza', 'impago', 'mantenimiento'].includes(operationalStatus) && <section className="rounded-2xl border border-red-200 bg-red-50 p-5"><h3 className="text-xs font-black uppercase tracking-widest text-red-900">Zona administrativa sensible</h3><p className="text-xs font-bold text-red-700 mt-2">La baja inmediata elimina sus plazas y cancela los servicios vinculados.</p><button type="button" onClick={() => { setStudentDossierModal(null); executeImmediateFinalBajaFromCrm(student.id, student.name); }} className="mt-4 px-4 py-3 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest"><UserMinus className="w-4 h-4 inline mr-1"/> Baja inmediata y definitiva</button></section>}
               </div>
             )}
+
+            {section === 'music-challenges' && <VacationChallengeResults db={db} appId={appId} studentId={student.id} adminUid={user.uid}/>}
 
             {section === 'history' && (
               <section>
@@ -14572,7 +14590,7 @@ ${startDateWarning}
         <nav className="flex-1 flex md:flex-col p-4 gap-1 no-scrollbar overflow-x-auto md:overflow-visible">
           {[
             { id: 'gestiones', icon: Inbox, label: 'Bandeja', count: totalInboxNotifications },
-            { id: 'students', icon: Users, label: 'Alumnos (CRM)' },
+            { id: 'students', icon: Users, label: 'Alumnos (CRM)', notificationCount: unreadVacationStudentIds.size },
             { id: 'mitobox', icon: DoorOpen, label: 'Servicios', notificationCount: unreadMitoboxReservations.length }, 
             { id: 'classes', icon: BookOpen, label: 'Clases Globales' },
             { id: 'danger', icon: Search, label: 'Localizador clases' },
@@ -15402,6 +15420,8 @@ ${startDateWarning}
               <div>
                 <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Directorio Alumnos</h2>
                 <p className="text-zinc-500 font-medium text-sm">Gestiona estados, notas y cambios manuales.</p>
+                {vacationChallengeReadError && <p className="text-xs text-red-700 mt-2" role="alert">{vacationChallengeReadError}</p>}
+                {unreadVacationStudentIds.size > 0 && <button type="button" onClick={() => setFilterStatus('retos_nuevos')} className="mt-3 mr-2 inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-red-200 bg-red-50 text-red-800 text-xs font-bold"><i className="w-2 h-2 bg-red-500 rounded-full"/> Ver alumnos con retos nuevos ({unreadVacationStudentIds.size})</button>}
                 <button
                   type="button"
                   onClick={copyActiveStudentEmails}
@@ -15416,6 +15436,7 @@ ${startDateWarning}
 
               <div className="flex flex-col sm:flex-row gap-3 items-center">
                 <select value={filterStatus} onChange={event => setFilterStatus(event.target.value)} className="md:hidden w-full p-3 bg-white border-2 border-zinc-200 rounded-xl font-black text-xs uppercase tracking-widest outline-none focus:border-black">
+                  <option value="retos_nuevos">Retos nuevos ({unreadVacationStudentIds.size})</option>
                   <option value="activo">Activos</option>
                   <option value="inicio_pendiente">Inicio pendiente</option>
                   <option value="sin_plaza">Sin plaza</option>
@@ -15468,6 +15489,7 @@ ${startDateWarning}
                         const matchSearch = !searchNeedle || searchableValues
                           .filter(Boolean)
                           .some(value => String(value).toLowerCase().includes(searchNeedle));
+                        if (filterStatus === 'retos_nuevos') return matchSearch && unreadVacationStudentIds.has(s.id);
                         if (filterStatus === 'sin_activar') {
                           return matchSearch && (s.claimed === false);
                         }
@@ -15475,7 +15497,7 @@ ${startDateWarning}
                         const operationalStatus = getStudentOperationalStatus(s);
                         return matchSearch && operationalStatus === filterStatus;
                       });
-                  return <><p className="admin-list-count">{filtered.length} alumno(s)</p>{filtered.length === 0 && <p className="p-5 text-sm text-zinc-500">No hay alumnos en esta lista.</p>}{filtered.map(student => <button type="button" key={student.id} onClick={() => setStudentDossierModal(student)} aria-pressed={studentDossierModal?.id === student.id} className="admin-select-row"><strong>{student.useAlias && student.alias ? student.alias : student.name}</strong><span>{student.email || 'Sin correo'}</span><span>{getStudentOperationalStatus(student).replace(/_/g, ' ')} · {getStudentAssignedClasses(student.id).length} clase(s)</span></button>)}</>;
+                  return <><p className="admin-list-count">{filtered.length} alumno(s)</p>{filtered.length === 0 && <p className="p-5 text-sm text-zinc-500">No hay alumnos en esta lista.</p>}{filtered.map(student => <button type="button" key={student.id} onClick={() => setStudentDossierModal(student)} aria-pressed={studentDossierModal?.id === student.id} className="admin-select-row"><strong>{student.useAlias && student.alias ? student.alias : student.name}{unreadVacationStudentIds.has(student.id) && <i aria-label="Resultados nuevos de retos musicales" title="Reto musical completado sin consultar" className="inline-block w-2 h-2 rounded-full bg-red-500 ml-2 align-middle"/>}</strong><span>{student.email || 'Sin correo'}</span><span>{getStudentOperationalStatus(student).replace(/_/g, ' ')} · {getStudentAssignedClasses(student.id).length} clase(s)</span></button>)}</>;
                 })()}
               </section>
               <section className="admin-crm-detail" aria-label="Ficha del alumno seleccionado">

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Sun, Calendar, ChevronDown, Music } from 'lucide-react';
-import VacationChallengePlayer from './VacationChallengePlayer.jsx';
+const VacationChallengeLauncher = lazy(() => import('./VacationChallengeLauncher.jsx')); 
 import { isVacationChallengeOpen } from './vacationChallengeUtils.js';
 
 const dateLabel = value => value ? new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Madrid' }).format(new Date(`${value}T12:00:00Z`)) : '';
@@ -25,12 +25,12 @@ export default function VacationClassCard({ db, appId, user, student, classData,
       {expanded && <div className="mt-3 p-5 rounded-2xl border border-purple-100 bg-white/70 space-y-3">
         <h3 className="text-lg font-black">¡Hacemos una pausa, pero la música sigue! 🎵</h3>
         <p className="text-sm leading-relaxed">Durante estas vacaciones queremos que puedas seguir aprendiendo y disfrutando de la música con nosotros. Por eso hemos preparado un reto para la fecha de tu clase.</p>
-        <h4 className="font-black">Detective del tempo</h4>
-        <p className="text-sm leading-relaxed">Escucha, elige tus respuestas y descubre algo nuevo con cada explicación. Es una actividad opcional y autoevaluativa de aproximadamente 30 minutos, sin necesidad de utilizar tu instrumento.</p>
+        <h4 className="font-black">Tu siguiente reto musical</h4>
+        <p className="text-sm leading-relaxed">Escucha, resuelve y crea: descubrirás distintos juegos según avances en tu recorrido personal. Es una actividad opcional y autoevaluativa de aproximadamente 30 minutos, sin necesidad de utilizar tu instrumento.</p>
         <p className="text-sm font-bold">Puedes pausarla y retomarla hasta el {dateStr.split('-').reverse().join('/')} a las 23:59, hora de la escuela.</p>
         <button type="button" disabled={!open} onClick={() => setPlaying(true)} className="w-full bg-black text-white rounded-xl py-3 font-black text-sm disabled:opacity-50">{open ? 'Entrar a mi reto musical' : 'El plazo ha terminado'}</button>
       </div>}
     </div>
-    {playing && open && <VacationChallengePlayer db={db} appId={appId} user={user} student={student} dateStr={dateStr} classData={classData} vacationDates={vacationDates} onClose={() => setPlaying(false)}/>}
+    {playing && open && <Suspense fallback={<p role="status">Cargando tu reto…</p>}><VacationChallengeLauncher db={db} appId={appId} user={user} student={student} dateStr={dateStr} classData={classData} vacationDates={vacationDates} onClose={() => setPlaying(false)}/></Suspense>}
   </div>;
 }

@@ -372,25 +372,87 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    function musicGameTotal(id) {
+      return id == 'tempo-v1' ? 36 : id in ['echo-v1', 'contour-v1', 'layers-v1'] ? 32 : id in ['rhythm-v1', 'form-v1'] ? 24 : 16;
+    }
+
+    function validMusicIdentity(data) {
+      let titles = {'tempo-v1': 'Detective del tempo', 'echo-v1': 'El eco perdido', 'rhythm-v1': 'Laboratorio de ritmos', 'contour-v1': 'El laberinto melódico', 'form-v1': 'El mapa de la canción', 'layers-v1': 'El mezclador secreto', 'composer-v1': 'Misión compositor'};
+      return ('contentVersion' in data && data.contentVersion == 3)
+        ? (data.challengeId in titles && data.challengeTitle == titles[data.challengeId]
+          && data.generatorVersion == 1 && data.totalActivities == musicGameTotal(data.challengeId)
+          && data.seed is string && data.seed.matches('^[0-9]{1,10}$')
+          && data.sequenceOrdinal is int && data.sequenceOrdinal >= 0 && data.sequenceOrdinal < 1000000)
+        : (data.challengeId == 'tempo-v1' && data.challengeTitle == 'Detective del tempo'
+          && (!('contentVersion' in data) || data.contentVersion in [1, 2]));
+    }
+
+    function musicOrder(appId) {
+      let settings = get(/databases/$(database)/documents/artifacts/$(appId)/roleData/studentSettings).data;
+      let fallback = ['tempo-v1', 'echo-v1', 'rhythm-v1', 'contour-v1', 'form-v1', 'layers-v1', 'composer-v1'];
+      let order = 'musicChallengeOrder' in settings ? settings.musicChallengeOrder : fallback;
+      return order is list && order.size() == 7 && order.toSet().size() == 7 && order.hasOnly(fallback) ? order : fallback;
+    }
+
+    function nextMusicId(appId, last) {
+      let order = musicOrder(appId);
+      let index = order[0] == last ? 0 : order[1] == last ? 1 : order[2] == last ? 2 : order[3] == last ? 3 : order[4] == last ? 4 : order[5] == last ? 5 : 6;
+      return order[(index + 1) % 7];
+    }
+
+    function musicStartPaired(appId, data, attemptId) {
+      let progress = getAfter(/databases/$(database)/documents/artifacts/$(appId)/studentMusicProgress/$(data.studentId)).data;
+      return progress.studentId == data.studentId && progress.lastAttemptId == attemptId
+        && progress.lastVacationDate == data.vacationDate && progress.lastChallengeId == data.challengeId
+        && progress.nextOrdinal == data.sequenceOrdinal + 1 && progress.updatedAt == request.time;
+    }
+
+    function validMusicProgress(appId, data, studentId) {
+      let attempt = getAfter(/databases/$(database)/documents/artifacts/$(appId)/vacationChallengeAttempts/$(data.lastAttemptId)).data;
+      return data.keys().hasOnly(['studentId', 'lastChallengeId', 'nextOrdinal', 'lastVacationDate', 'lastAttemptId', 'revision', 'updatedAt'])
+        && data.studentId == studentId && studentId == ownStudentId(appId)
+        && data.lastChallengeId in ['tempo-v1', 'echo-v1', 'rhythm-v1', 'contour-v1', 'form-v1', 'layers-v1', 'composer-v1']
+        && data.nextOrdinal is int && data.nextOrdinal > 0 && data.nextOrdinal <= 1000000
+        && data.revision is int && data.revision >= 0 && data.updatedAt == request.time
+        && data.lastAttemptId == studentId + '_' + data.lastVacationDate
+        && attempt.studentId == studentId && attempt.vacationDate == data.lastVacationDate
+        && attempt.contentVersion == 3 && attempt.sequenceOrdinal == data.nextOrdinal - 1
+        && attempt.challengeId == data.lastChallengeId && attempt.revision == 0
+        && attempt.startedAt == request.time && attempt.updatedAt == request.time;
+    }
+
+    match /artifacts/{appId}/studentMusicProgress/{studentId} {
+      allow get: if isAdmin() || (hasStudentAccess(appId) && studentId == ownStudentId(appId));
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (hasStudentAccess(appId) && request.resource.data.revision == 0
+        && validMusicProgress(appId, request.resource.data, studentId));
+      allow update: if isAdmin() || (hasStudentAccess(appId)
+        && resource.data.studentId == ownStudentId(appId)
+        && request.resource.data.revision == resource.data.revision + 1
+        && request.resource.data.nextOrdinal == resource.data.nextOrdinal + 1
+        && request.resource.data.lastChallengeId == nextMusicId(appId, resource.data.lastChallengeId)
+        && validMusicProgress(appId, request.resource.data, studentId));
+      allow delete: if isAdmin();
+    }
+
     function validVacationChallenge(appId, data) {
       let settings = get(/databases/$(database)/documents/artifacts/$(appId)/roleData/studentSettings).data;
+      let total = 'contentVersion' in data && data.contentVersion == 3 ? musicGameTotal(data.challengeId) : 36;
       return data.vacationDate is string
         && data.vacationDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && data.vacationDate in settings.vacaciones
         && data.vacationDate in settings.vacationChallengeDeadlines
         && request.time < settings.vacationChallengeDeadlines[data.vacationDate]
-        && data.challengeId == 'tempo-v1'
-        && data.challengeTitle == 'Detective del tempo'
+        && validMusicIdentity(data)
         && data.studentName is string && data.studentName.size() <= 160
         && data.subject is string && data.subject.size() <= 100
         && data.classId is string && data.classId.size() <= 256
         && data.difficulty in ['beginner', 'advanced']
-        && (!('contentVersion' in data) || data.contentVersion in [1, 2])
         && data.classOwnerUid is string && data.classOwnerUid.matches('^[^/]+$')
         && data.classDocumentId is string && data.classDocumentId.matches('^[^/]+$')
         && data.studentId in get(/databases/$(database)/documents/artifacts/$(appId)/users/$(data.classOwnerUid)/recurringClasses/$(data.classDocumentId)).data.studentIds
-        && data.answers is list && data.answers.size() <= 36
-        && data.cursor is int && data.cursor >= 0 && data.cursor <= 36
+        && data.answers is list && data.answers.size() <= total
+        && data.cursor is int && data.cursor >= 0 && data.cursor <= total
         && data.cursor <= data.answers.size()
         && data.answered == data.answers.size()
         && data.firstCorrect is int && data.firstCorrect >= 0 && data.firstCorrect <= data.answered
@@ -399,8 +461,8 @@ service cloud.firestore {
         && data.elapsedSeconds is int && data.elapsedSeconds >= 0
         && data.revision is int && data.revision >= 0
         && data.startedAt is timestamp && data.updatedAt == request.time
-        && ((data.status == 'in_progress' && data.cursor < 36)
-          || (data.status == 'completed' && data.cursor == 36 && data.answers.size() == 36 && data.completedAt == request.time));
+        && ((data.status == 'in_progress' && data.cursor < total)
+          || (data.status == 'completed' && data.cursor == total && data.answers.size() == total && data.completedAt == request.time));
     }
 
     match /artifacts/{appId}/vacationChallengeAttempts/{attemptId} {
@@ -411,13 +473,14 @@ service cloud.firestore {
         && attemptId == request.resource.data.studentId + '_' + request.resource.data.vacationDate
         && request.resource.data.keys().hasOnly([
           'studentId', 'studentEmail', 'studentName', 'vacationDate', 'challengeId', 'challengeTitle',
-          'difficulty', 'contentVersion', 'classId', 'classOwnerUid', 'classDocumentId', 'subject', 'status', 'cursor',
+          'difficulty', 'contentVersion', 'generatorVersion', 'totalActivities', 'seed', 'sequenceOrdinal', 'classId', 'classOwnerUid', 'classDocumentId', 'subject', 'status', 'cursor',
           'answers', 'revision', 'elapsedSeconds', 'answered', 'firstCorrect', 'finalCorrect', 'withHelp', 'startedAt', 'updatedAt'
         ])
         && request.resource.data.status == 'in_progress'
         && request.resource.data.cursor == 0 && request.resource.data.answers.size() == 0
         && request.resource.data.revision == 0 && request.resource.data.startedAt == request.time
-        && validVacationChallenge(appId, request.resource.data));
+        && validVacationChallenge(appId, request.resource.data)
+        && (!('contentVersion' in request.resource.data) || request.resource.data.contentVersion != 3 || musicStartPaired(appId, request.resource.data, attemptId)));
       allow update: if isAdmin() || (hasStudentAccess(appId)
         && resource.data.studentId == ownStudentId(appId)
         && resource.data.status == 'in_progress'

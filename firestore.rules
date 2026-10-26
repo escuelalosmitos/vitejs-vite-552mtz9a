@@ -250,8 +250,8 @@ service cloud.firestore {
 
     function studentCanReadAnnouncement(appId) {
       return hasStudentAccess(appId)
-        && resource.data.audienceType is string
-        && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'];
+        && (('audienceType' in resource.data && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'])
+          || ('recipientStudentIds' in resource.data && resource.data.recipientStudentIds is list && ownStudentId(appId) in resource.data.recipientStudentIds));
     }
 
     // Única lectura sin iniciar sesión.
@@ -385,6 +385,7 @@ service cloud.firestore {
         && data.subject is string && data.subject.size() <= 100
         && data.classId is string && data.classId.size() <= 256
         && data.difficulty in ['beginner', 'advanced']
+        && (!('contentVersion' in data) || data.contentVersion in [1, 2])
         && data.classOwnerUid is string && data.classOwnerUid.matches('^[^/]+$')
         && data.classDocumentId is string && data.classDocumentId.matches('^[^/]+$')
         && data.studentId in get(/databases/$(database)/documents/artifacts/$(appId)/users/$(data.classOwnerUid)/recurringClasses/$(data.classDocumentId)).data.studentIds
@@ -410,7 +411,7 @@ service cloud.firestore {
         && attemptId == request.resource.data.studentId + '_' + request.resource.data.vacationDate
         && request.resource.data.keys().hasOnly([
           'studentId', 'studentEmail', 'studentName', 'vacationDate', 'challengeId', 'challengeTitle',
-          'difficulty', 'classId', 'classOwnerUid', 'classDocumentId', 'subject', 'status', 'cursor',
+          'difficulty', 'contentVersion', 'classId', 'classOwnerUid', 'classDocumentId', 'subject', 'status', 'cursor',
           'answers', 'revision', 'elapsedSeconds', 'answered', 'firstCorrect', 'finalCorrect', 'withHelp', 'startedAt', 'updatedAt'
         ])
         && request.resource.data.status == 'in_progress'
@@ -421,8 +422,10 @@ service cloud.firestore {
         && resource.data.studentId == ownStudentId(appId)
         && resource.data.status == 'in_progress'
         && request.resource.data.revision == resource.data.revision + 1
+        && (!('contentVersion' in resource.data) || resource.data.contentVersion == 1
+          || request.resource.data.contentVersion == resource.data.contentVersion)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status', 'cursor', 'answers', 'revision', 'elapsedSeconds', 'answered', 'firstCorrect', 'finalCorrect', 'withHelp', 'updatedAt', 'completedAt'
+          'status', 'cursor', 'answers', 'revision', 'elapsedSeconds', 'answered', 'firstCorrect', 'finalCorrect', 'withHelp', 'updatedAt', 'completedAt', 'difficulty', 'contentVersion'
         ])
         && validVacationChallenge(appId, request.resource.data));
       allow delete: if isAdmin();

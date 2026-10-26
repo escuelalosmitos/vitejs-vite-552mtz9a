@@ -13,6 +13,8 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
+import { normalizeMusicOrder } from './musicChallengeCatalog.js';
+const VacationChallengesAdmin = React.lazy(() => import('./VacationChallengesAdmin.jsx')); 
 import AnnouncementAudienceFilters from './AnnouncementAudienceFilters.jsx';
 import { isCalendarDate, vacationDeadlineMillis, isUnreadVacationAttempt } from './vacationChallengeUtils.js';
 import { normalizeBoardFilters, boardAudienceOptions, boardAudienceSignature, validBoardAudience, matchesBoardClass, buildBoardAudienceFields, boardFiltersLabel, getUnseenBoardResponses, unreadBoardPublicationIds, matchesBoardView, isBoardPublicationArchived, boardPublicationState, boardArchiveFields, buildBoardInboxItem } from './announcementAudienceUtils.js';
@@ -4100,6 +4102,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       contract: String(settings.contract || ''),
       festivos: Array.isArray(settings.festivos) ? settings.festivos : [],
       vacaciones: Array.isArray(settings.vacaciones) ? settings.vacaciones : [],
+      musicChallengeOrder: normalizeMusicOrder(settings.musicChallengeOrder),
       vacationChallengeDeadlines: Object.fromEntries([...new Set((Array.isArray(settings.vacaciones) ? settings.vacaciones : []).filter(isCalendarDate))]
         .map(date => [date, Timestamp.fromMillis(vacationDeadlineMillis(date))])),
       festivosTarragona: Array.isArray(settings.festivosTarragona) ? settings.festivosTarragona : [],
@@ -17222,7 +17225,7 @@ ${startDateWarning}
           <div className="space-y-6 animate-in fade-in"><header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración Global</h2>
               <p className="text-zinc-500 font-medium text-sm">Ajustes estratégicos de la infraestructura escolar.</p>
-            </header><div className="admin-settings-workspace"><nav className="admin-settings-nav" aria-label="Categorías de configuración">{[{"id":"economia","label":"Economía"},{"id":"instrumentos","label":"Instrumentos"},{"id":"sedes","label":"Sedes y espacios"},{"id":"calendario","label":"Calendario"},{"id":"profesores","label":"Profesores"},{"id":"hora-muerta","label":"Hora muerta"},{"id":"normativa","label":"Normativa docente"},{"id":"contrato","label":"Contrato"},{"id":"importacion","label":"Importación"}].map(item => <button type="button" key={item.id} aria-pressed={settingsCategory === item.id} onClick={() => setSettingsCategory(item.id)}>{item.label}</button>)}</nav><div className="admin-settings-content"><section hidden={settingsCategory !== 'economia'} aria-label="Economía"><div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            </header><div className="admin-settings-workspace"><nav className="admin-settings-nav" aria-label="Categorías de configuración">{[{"id":"economia","label":"Economía"},{"id":"instrumentos","label":"Instrumentos"},{"id":"sedes","label":"Sedes y espacios"},{"id":"calendario","label":"Calendario"},{"id":"retos-musicales","label":"Retos musicales"},{"id":"profesores","label":"Profesores"},{"id":"hora-muerta","label":"Hora muerta"},{"id":"normativa","label":"Normativa docente"},{"id":"contrato","label":"Contrato"},{"id":"importacion","label":"Importación"}].map(item => <button type="button" key={item.id} aria-pressed={settingsCategory === item.id} onClick={() => setSettingsCategory(item.id)}>{item.label}</button>)}</nav><div className="admin-settings-content"><section hidden={settingsCategory !== 'economia'} aria-label="Economía"><div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Coste Empresa */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Personal</h3>
@@ -17406,6 +17409,7 @@ ${startDateWarning}
                 </div>
               )}
             </div></section>
+{settingsCategory === 'retos-musicales' && <React.Suspense fallback={<p className="p-6">Cargando retos musicales…</p>}><VacationChallengesAdmin db={db} appId={appId} settings={settings} onSaved={order => setSettings(previous => ({ ...previous, musicChallengeOrder: order }))}/></React.Suspense>}
 <section hidden={settingsCategory !== 'calendario'} aria-label="Calendario"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 flex items-center gap-2"><Calendar className="w-5 h-5 text-black"/> Calendario Escolar</h3>

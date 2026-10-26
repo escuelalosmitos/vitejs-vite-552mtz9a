@@ -1,3 +1,5 @@
+import { startMusicAttempt, saveMusicAttempt } from '../src/components/musicChallengeStore.js';
+import { MUSIC_GAMES } from '../src/components/musicChallengeCatalog.js';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -497,13 +499,58 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(updateDoc(reference, { adminSeenBy: { admin: true }, revision: 1, updatedAt: serverTimestamp() }));
       await assertFails(updateDoc(reference, { vacationDate: festive, revision: 1, updatedAt: serverTimestamp() }));
       await assertFails(updateDoc(reference, { firstCorrect: 100, revision: 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { difficulty: 'imposible', contentVersion: 2, revision: 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { contentVersion: 3, revision: 1, updatedAt: serverTimestamp() }));
+      await assertSucceeds(updateDoc(reference, { difficulty: 'advanced', contentVersion: 2, revision: 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { contentVersion: 1, revision: 2, updatedAt: serverTimestamp() }));
+      await assertSucceeds(updateDoc(reference, { difficulty: 'beginner', revision: 2, updatedAt: serverTimestamp() }));
       await assertSucceeds(updateDoc(reference, {
         cursor: 36, answers: Array.from({ length: 36 }, (_, index) => ({ questionId: `q-${index}` })),
         answered: 36, firstCorrect: 30, finalCorrect: 35, withHelp: 5,
-        revision: 1, elapsedSeconds: 900, status: 'completed', completedAt: serverTimestamp(), updatedAt: serverTimestamp()
+        revision: 3, elapsedSeconds: 900, status: 'completed', completedAt: serverTimestamp(), updatedAt: serverTimestamp()
       }));
-      await assertFails(updateDoc(reference, { status: 'in_progress', cursor: 0, revision: 2, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { status: 'in_progress', cursor: 0, revision: 4, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(reference, { difficulty: 'advanced', revision: 4, updatedAt: serverTimestamp() }));
       await assertSucceeds(updateDoc(doc(authenticated(testEnv, ADMIN), attemptPath), { adminSeenBy: { [ADMIN.uid]: serverTimestamp() } }));
+    });
+
+    await t.test('catálogo musical: siete formatos, secuencia atómica, privacidad e identidad inmutable', async () => {
+      const db = authenticated(testEnv, STUDENT);
+      const dates = Array.from({ length: 9 }, (_, index) => new Date(Date.now() + (30 + index) * 86400000).toISOString().slice(0, 10));
+      await testEnv.withSecurityRulesDisabled(async context => {
+        await setDoc(doc(context.firestore(), `${ROOT}/roleData/studentSettings`), {
+          vacaciones: dates, musicChallengeOrder: MUSIC_GAMES.map(game => game.id),
+          vacationChallengeDeadlines: Object.fromEntries(dates.map(date => [date, Timestamp.fromMillis(Date.now() + 50 * 86400000)]))
+        }, { merge: true });
+        await deleteDoc(doc(context.firestore(), `${ROOT}/studentMusicProgress/${STUDENT.id}`));
+      });
+      const options = { db, appId: APP_ID, student: { id: STUDENT.id, email: STUDENT.email, name: 'Alumna' },
+        classData: { id: 'class-own', refPath: `${ROOT}/users/${TEACHER.uid}/recurringClasses/class-own`, subject: 'Guitarra' }, difficulty: 'beginner' };
+      const attempts = [];
+      const pair = await Promise.all([startMusicAttempt({ ...options, dateStr: dates[0] }), startMusicAttempt({ ...options, dateStr: dates[0] })]);
+      assert.equal(pair[0].seed, pair[1].seed); attempts.push(pair[0]);
+      for (const dateStr of dates.slice(1, 8)) attempts.push(await startMusicAttempt({ ...options, dateStr }));
+      assert.deepEqual(attempts.map(attempt => attempt.challengeId), [...MUSIC_GAMES.map(game => game.id), 'tempo-v1']);
+      assert.notEqual(attempts[0].seed, attempts[7].seed);
+      const progressPath = `${ROOT}/studentMusicProgress/${STUDENT.id}`;
+      assert.equal((await getDoc(doc(db, progressPath))).data().nextOrdinal, 8);
+      await assertFails(updateDoc(doc(db, progressPath), { nextOrdinal: 100, revision: 8, updatedAt: serverTimestamp() }));
+      await assertFails(getDoc(doc(authenticated(testEnv, OTHER_STUDENT), progressPath)));
+      await assertFails(getDoc(doc(authenticated(testEnv, TEACHER), progressPath)));
+      await assertFails(getDocs(collection(db, `${ROOT}/studentMusicProgress`)));
+      for (const attempt of attempts.slice(0, 7)) {
+        const reference = doc(db, `${ROOT}/vacationChallengeAttempts/${attempt.id}`);
+        await assertFails(updateDoc(reference, { seed: '1234', revision: 1, updatedAt: serverTimestamp() }));
+        await assertFails(updateDoc(reference, { challengeId: 'composer-v1', revision: 1, updatedAt: serverTimestamp() }));
+        const answers = Array.from({ length: attempt.totalActivities }, (_, index) => ({ questionId: `q-${index}`, firstOption: 0, lastOption: 0, firstCorrect: true, correct: true }));
+        await assertSucceeds(saveMusicAttempt({ db, appId: APP_ID, attempt: { ...attempt, answers, cursor: attempt.totalActivities, status: 'completed' }, expectedRevision: 0, vacationDates: dates }));
+        await assertFails(updateDoc(reference, { difficulty: 'advanced', revision: 2, updatedAt: serverTimestamp() }));
+      }
+      const { id, ...forged } = attempts[7];
+      await assertFails(setDoc(doc(db, `${ROOT}/vacationChallengeAttempts/${STUDENT.id}_${dates[8]}`), {
+        ...forged, vacationDate: dates[8], startedAt: serverTimestamp(), updatedAt: serverTimestamp()
+      }));
+      assert.ok(id);
     });
 
     await t.test('visitante: solo puede leer classAvailability', async () => {
@@ -567,6 +614,26 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         where('audienceType', 'in', ['all', 'sede', 'instrumento', 'profesor'])
       )));
       await assertFails(getDocs(collection(db, `${ROOT}/announcements`)));
+    });
+
+    await t.test('tablón con filtros: cada alumno consulta sólo los nuevos segmentos que lo incluyen', async () => {
+      await testEnv.withSecurityRulesDisabled(async context => {
+        await setDoc(doc(context.firestore(), `${ROOT}/announcements/filtered-own`), {
+          title: 'Guitarra lunes', type: 'notice', audienceType: 'filtered', recipientStudentIds: [STUDENT.id]
+        });
+        await setDoc(doc(context.firestore(), `${ROOT}/announcements/filtered-other`), {
+          title: 'Otro grupo', type: 'notice', audienceType: 'filtered', recipientStudentIds: [OTHER_STUDENT.id]
+        });
+      });
+      const db = authenticated(testEnv, STUDENT);
+      await assertSucceeds(getDoc(doc(db, `${ROOT}/announcements/filtered-own`)));
+      await assertFails(getDoc(doc(db, `${ROOT}/announcements/filtered-other`)));
+      const own = await assertSucceeds(getDocs(query(collection(db, `${ROOT}/announcements`), where('recipientStudentIds', 'array-contains', STUDENT.id))));
+      assert.deepEqual(own.docs.map(item => item.id), ['filtered-own']);
+      await assertFails(getDocs(query(collection(db, `${ROOT}/announcements`), where('recipientStudentIds', 'array-contains', OTHER_STUDENT.id))));
+      await assertFails(getDocs(collection(db, `${ROOT}/announcements`)));
+      await assertFails(updateDoc(doc(db, `${ROOT}/announcements/filtered-own`), { recipientStudentIds: [STUDENT.id, OTHER_STUDENT.id] }));
+      await assertFails(getDoc(doc(authenticated(testEnv, OTHER_STUDENT), `${ROOT}/announcements/filtered-own`)));
     });
 
     await t.test('alumno: solo consulta sus clases, tickets y gestiones', async () => {

@@ -1758,6 +1758,7 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
 
 
   const teacherAnnouncementMatches = (ann = {}) => {
+    if (ann.archived || ann.pollStatus === 'archived' || ann.callStatus === 'archived') return false;
     const audienceType = ann.audienceType || 'all';
     const audienceValue = String(ann.audienceValue || '').trim();
 

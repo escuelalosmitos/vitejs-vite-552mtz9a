@@ -13,7 +13,9 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
+import AnnouncementAudienceFilters from './AnnouncementAudienceFilters.jsx';
 import { isCalendarDate, vacationDeadlineMillis, isUnreadVacationAttempt } from './vacationChallengeUtils.js';
+import { normalizeBoardFilters, boardAudienceOptions, boardAudienceSignature, validBoardAudience, matchesBoardClass, buildBoardAudienceFields, boardFiltersLabel, getUnseenBoardResponses, unreadBoardPublicationIds, matchesBoardView, isBoardPublicationArchived, boardPublicationState, boardArchiveFields, buildBoardInboxItem } from './announcementAudienceUtils.js';
 import './AdminLayout.css';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -2345,6 +2347,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [expandedCallResponsesId, setExpandedCallResponsesId] = useState(null);
   const [pollClock, setPollClock] = useState(Date.now());
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(10);
+  const [boardView, setBoardView] = useState('current');
+  const boardResponseReadLocks = useRef(new Set());
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
   const [editStudentModal, setEditStudentModal] = useState(null); 
@@ -5607,27 +5611,35 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     }
   };
 
-  const markAnnouncementResponsesSeen = async () => {
-    const unseenResponses = [
-      ...pollResponses.map(response => ({ ...response, collectionName: 'pollResponses' })),
-      ...callResponses.map(response => ({ ...response, collectionName: 'callResponses' }))
-    ].filter(response => !response.adminSeenAt);
+  const markAnnouncementResponsesSeen = async (announcementId) => {
+    if (!announcementId || boardResponseReadLocks.current.has(announcementId)) return;
+    const unseenResponses = getUnseenBoardResponses(announcementId, pollResponses, callResponses);
     if (unseenResponses.length === 0) return;
+    boardResponseReadLocks.current.add(announcementId);
     const seenAt = new Date().toISOString();
 
     try {
       for (let start = 0; start < unseenResponses.length; start += 450) {
-        const batch = writeBatch(db);
-        unseenResponses.slice(start, start + 450).forEach(response => {
-          batch.update(doc(db, 'artifacts', appId, response.collectionName, response.id), {
-            adminSeenAt: seenAt,
-            adminSeenBy: user?.email || user?.uid || 'admin'
+        const shown = unseenResponses.slice(start, start + 450);
+        await runTransaction(db, async transaction => {
+          const refs = shown.map(response => doc(db, 'artifacts', appId, response.collectionName, response.id));
+          const snapshots = await Promise.all(refs.map(reference => transaction.get(reference)));
+          snapshots.forEach((snapshot, index) => {
+            if (!snapshot.exists()) return;
+            const current = snapshot.data(), original = shown[index];
+            if ((current.updatedAt || current.createdAt || '') !== (original.updatedAt || original.createdAt || '')) return;
+            if (current.adminSeenAt) return;
+            transaction.update(refs[index], {
+              adminSeenAt: seenAt,
+              adminSeenBy: user?.email || user?.uid || 'admin'
+            });
           });
         });
-        await batch.commit();
       }
     } catch (error) {
       console.error('No se pudieron marcar las respuestas del tablón como vistas:', error);
+    } finally {
+      boardResponseReadLocks.current.delete(announcementId);
     }
   };
 
@@ -5655,7 +5667,6 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const handleAdminTabChange = (tabId) => {
     setActiveTab(tabId);
     if (tabId === 'workshops') markWorkshopRegistrationsSeen();
-    if (tabId === 'announcements') markAnnouncementResponsesSeen();
     if (tabId === 'mitobox') markMitoboxReservationsSeen();
   };
 
@@ -5932,15 +5943,7 @@ ${body}`,
   };
 
   const matchesAnnouncementTarget = (clase, emailOptions = announceEmailOptions) => {
-    const targetType = emailOptions.targetType || 'all';
-    const targetValue = String(emailOptions.targetValue || '').trim();
-    if (targetType === 'all') return true;
-    if (targetType === 'teachers') return false;
-    if (!targetValue) return false;
-    if (targetType === 'sede') return isSameCenter(clase.centerId || clase.sede || 'Tarragona', targetValue);
-    if (targetType === 'instrumento') return (clase.subject || '') === targetValue;
-    if (targetType === 'profesor') return isSameTeacher(clase.teacher, targetValue);
-    return false;
+    return matchesBoardClass(clase, emailOptions, { isSameCenter, isSameTeacher });
   };
 
   const getAnnouncementStudentTargets = (emailOptions = announceEmailOptions) => {
@@ -5960,13 +5963,14 @@ ${body}`,
     const byStudent = new Map();
 
     recurringClassesOnly
-      .filter(c => matchesAnnouncementTarget(c, emailOptions))
+      .filter(c => matchesAnnouncementTarget(targetType === 'filters' ? getEffectiveClassForDate(c, todayStr) : c, emailOptions))
       .forEach(c => {
         (c.students || [])
           .filter(isFixedClassStudent)
           .forEach(studentEntry => {
             const studentInfo = students.find(st => st.id === studentEntry.id) || null;
             if (studentInfo?.globalStatus === 'baja' || hasStudentClassEndedBeforeDate(studentEntry, studentInfo || {}, todayStr)) return;
+            if (targetType === 'filters' && !isStudentClassActiveOnDate(studentEntry, studentInfo || {}, todayStr)) return;
             const email = normalizeEmail(studentInfo?.email || studentEntry.email || studentEntry.studentEmail || '');
             const studentId = studentInfo?.id || studentEntry.id || '';
             if (!studentId) return;
@@ -6005,6 +6009,7 @@ ${body}`,
     if (targetType === 'sede') return targetValue ? `Sede: ${targetValue}` : 'Sede no seleccionada';
     if (targetType === 'instrumento') return targetValue ? `Instrumento: ${targetValue}` : 'Instrumento no seleccionado';
     if (targetType === 'profesor') return targetValue ? `Alumnos de profesor/a: ${targetValue}` : 'Profesor no seleccionado';
+    if (targetType === 'filters') return boardFiltersLabel(emailOptions);
     if (targetType === 'student') {
       const selectedStudent = students.find(student => String(student.id || '') === targetValue);
       return selectedStudent
@@ -6022,11 +6027,11 @@ ${body}`,
     const deadlineText = deadline
       ? `\nFECHA LÍMITE:\n${new Date(deadline).toLocaleString('es-ES')}`
       : '';
-    const typeLabel = isPoll ? 'Nueva encuesta' : (isCall ? 'Nueva convocatoria' : 'Nuevo aviso');
+    const typeLabel = isPoll ? 'Nueva encuesta' : (isCall ? 'Nueva convocatoria' : type === 'tray_notice' ? 'Nueva notificación' : 'Nuevo aviso');
     const contentLabel = isPoll ? 'INFORMACIÓN' : (isCall ? 'CONVOCATORIA' : 'AVISO');
     const portalAction = isPoll
       ? 'Puedes responder la encuesta'
-      : (isCall ? 'Puedes presentar o retirar tu candidatura' : 'También puedes consultar los avisos publicados');
+      : (isCall ? 'Puedes presentar o retirar tu candidatura' : type === 'tray_notice' ? 'Puedes consultar la notificación en tu bandeja de avisos' : 'También puedes consultar los avisos publicados');
     return `${typeLabel} en el Tablón de Escuela Los Mitos
 
 TÍTULO:
@@ -6043,10 +6048,12 @@ Este correo corresponde a una comunicación operativa del servicio educativo de 
 ${portalAction} accediendo a tu portal.`;
   };
 
-  const sendAnnouncementEmailToTargets = async ({ announcement, emailOptions = announceEmailOptions }) => {
+  const sendAnnouncementEmailToTargets = async ({ announcement, emailOptions = announceEmailOptions, targets: providedTargets }) => {
     if (!emailOptions.enabled) return { requested: false, count: 0 };
 
-    const targets = getAnnouncementEmailTargets(emailOptions);
+    const targets = providedTargets
+      ? [...new Map(providedTargets.filter(target => normalizeEmail(target.email)).map(target => [normalizeEmail(target.email), { ...target, email: normalizeEmail(target.email) }])).values()]
+      : getAnnouncementEmailTargets(emailOptions);
     if (targets.length === 0) {
       alert('No se ha enviado email porque el filtro elegido no tiene destinatarios con email válido.');
       return { requested: false, count: 0 };
@@ -8456,6 +8463,7 @@ Coordinación Los Mitos.`
   };
 
   const setPollStatus = async (poll, status) => {
+    if (status === 'archived') return setBoardPublicationArchived(poll, true);
     const labels = { open: 'reabrir', closed: 'cerrar', archived: 'archivar' };
     if (status === 'open' && poll.pollDeadline && new Date(poll.pollDeadline).getTime() <= Date.now()) {
       alert('Amplía primero la fecha límite editando la encuesta y después podrás reabrirla.');
@@ -8470,7 +8478,12 @@ Coordinación Los Mitos.`
 
   const getPollParticipation = (poll) => {
     const responses = getPollResponses(poll.id);
-    const audience = getAnnouncementStudentTargets({ targetType: poll.audienceType || 'all', targetValue: poll.audienceValue || '' });
+    const audience = poll.audienceType === 'filtered'
+      ? (poll.recipientStudentIds || []).map(studentId => {
+          const student = students.find(item => item.id === studentId);
+          return { studentId, name: student?.alias || student?.name || 'Alumno', email: normalizeEmail(student?.email || '') };
+        })
+      : getAnnouncementStudentTargets(boardAudienceOptions(poll));
     const respondedIds = new Set(responses.map(response => response.studentId).filter(Boolean));
     return {
       responses,
@@ -8598,8 +8611,9 @@ Coordinación Los Mitos.`
   }[status || 'pending'] || 'bg-zinc-100 text-zinc-600 border-zinc-200');
 
   const setCallStatus = async (call, status) => {
+    if (status === 'archived') return setBoardPublicationArchived(call, true);
     const labels = { open: 'reabrir', closed: 'cerrar', archived: 'archivar' };
-    if (status === 'open' && call.callDeadline && new Date(call.callDeadline).getTime() <= Date.now()) {
+    if (status === 'open' && call.callDeadline && new Date(call.callDeadline).getTime() <= new Date().getTime()) {
       alert('Amplía primero la fecha límite editando la convocatoria y después podrás reabrirla.');
       return;
     }
@@ -8674,11 +8688,8 @@ Coordinación Los Mitos.`
     const cleanUrl = normalizeAnnouncementUrl(newAnnounce.url);
     if (cleanUrl === null) return alert('La URL debe empezar por https:// o http://');
 
-    const audienceOptions = {
-      targetType: announceEmailOptions.targetType || 'all',
-      targetValue: announceEmailOptions.targetValue || ''
-    };
-    if (!['all'].includes(audienceOptions.targetType) && !String(audienceOptions.targetValue || '').trim()) {
+    const audienceOptions = boardAudienceOptions(announceEmailOptions);
+    if (!validBoardAudience(audienceOptions) || audienceOptions.targetType === 'teachers') {
       return alert('Selecciona el segmento o el alumno destinatario.');
     }
 
@@ -8700,12 +8711,12 @@ Coordinación Los Mitos.`
       url: cleanUrl || '',
       publishAt,
       expiresAt,
-      audienceType: audienceOptions.targetType,
-      audienceValue: audienceOptions.targetValue || '',
+      ...buildBoardAudienceFields(audienceOptions, recipients),
       audienceLabel: getAnnouncementTargetLabel(audienceOptions),
       recipientStudentIds,
       recipientEmails,
       recipientCount: recipientStudentIds.length,
+      archived: Boolean(editingTrayNotificationId && trayNotifications.find(item => item.id === editingTrayNotificationId)?.archived),
       updatedAt: now,
       updatedBy: user?.email || user?.uid || 'admin'
     };
@@ -8713,22 +8724,14 @@ Coordinación Los Mitos.`
     // Cada bandeja privada solo necesita el contenido visible. Las listas de
     // destinatarios se conservan exclusivamente en el documento maestro para
     // evitar repetirlas en cada copia y superar el límite de tamaño del lote.
-    const buildInboxItem = (notificationId, metadata = {}) => ({
-      notificationId,
-      type: payload.type,
-      title: payload.title,
-      content: payload.content,
-      url: payload.url,
-      publishAt: payload.publishAt,
-      expiresAt: payload.expiresAt,
-      audienceLabel: payload.audienceLabel,
-      updatedAt: payload.updatedAt,
-      updatedBy: payload.updatedBy,
+    const buildInboxItem = (notificationId, metadata = {}) => buildBoardInboxItem(notificationId, {
+      ...payload,
       createdAt: metadata.createdAt || now,
       createdBy: metadata.createdBy || user?.email || user?.uid || 'admin'
     });
 
     try {
+      let savedNotificationId = editingTrayNotificationId;
       if (editingTrayNotificationId) {
         const notificationRef = doc(db, 'artifacts', appId, 'trayNotifications', editingTrayNotificationId);
         const previousNotification = trayNotifications.find(notification => notification.id === editingTrayNotificationId) || {};
@@ -8752,9 +8755,9 @@ Coordinación Los Mitos.`
         })));
 
         await batch.commit();
-        alert('Notificación breve actualizada.');
       } else {
         const notificationRef = doc(collection(db, 'artifacts', appId, 'trayNotifications'));
+        savedNotificationId = notificationRef.id;
         const notificationData = {
           ...payload,
           createdAt: now,
@@ -8767,8 +8770,13 @@ Coordinación Los Mitos.`
           'artifacts', appId, 'studentNotificationInbox', email, 'items', notificationRef.id
         ), buildInboxItem(notificationRef.id, notificationData)));
         await batch.commit();
-        alert(publishAt > getLocalDateTimeInputValue() ? 'Notificación breve programada.' : 'Notificación breve publicada.');
       }
+      const emailRequest = await sendAnnouncementEmailToTargets({ announcement: payload, emailOptions: { ...audienceOptions, enabled: announceEmailOptions.enabled } });
+      if (emailRequest.requested) await updateDoc(doc(db, 'artifacts', appId, 'trayNotifications', savedNotificationId), {
+        emailNotificationSentAt: new Date().toISOString(), emailNotificationRecipientCount: emailRequest.count
+      });
+      const savedLabel = editingTrayNotificationId ? 'Notificación breve actualizada' : publishAt > getLocalDateTimeInputValue() ? 'Notificación breve programada' : 'Notificación breve publicada';
+      alert(`${savedLabel}${emailRequest.requested ? ` y email solicitado a ${emailRequest.count} destinatarios` : ''}.`);
       setEditingTrayNotificationId(null);
       setEditingAnnouncementId(null);
       setNewAnnounce(createEmptyAnnouncementDraft());
@@ -8795,17 +8803,16 @@ Coordinación Los Mitos.`
     const activePinnedCount = announcements.filter(item => (
       item.id !== editingAnnouncementId
       && item.pinned === true
+      && !isBoardPublicationArchived(item)
+      && boardPublicationState(item, pollClock) !== 'closed'
       && (!item.pinnedUntil || new Date(item.pinnedUntil).getTime() > Date.now())
     )).length;
     if (pinned && activePinnedCount >= 3) {
       return alert('Ya hay tres publicaciones fijadas. Desfija una o espera a que venza antes de fijar otra.');
     }
 
-    const audienceOptions = {
-      targetType: announceEmailOptions.targetType || 'all',
-      targetValue: announceEmailOptions.targetValue || ''
-    };
-    if (!['all', 'teachers'].includes(audienceOptions.targetType) && !String(audienceOptions.targetValue || '').trim()) {
+    const audienceOptions = boardAudienceOptions(announceEmailOptions);
+    if (!validBoardAudience(audienceOptions)) {
       return alert('Selecciona el segmento de destinatarios de la publicación.');
     }
     if ((isPoll || isCall) && audienceOptions.targetType === 'teachers') {
@@ -8843,12 +8850,12 @@ Coordinación Los Mitos.`
       if ((existingAnnouncement.pollPrivacy || 'identified') !== (newAnnounce.pollPrivacy || 'identified')) {
         return alert('La encuesta ya tiene respuestas. No se puede cambiar la identificación de las respuestas.');
       }
-      if ((existingAnnouncement.audienceType || 'all') !== audienceOptions.targetType || String(existingAnnouncement.audienceValue || '') !== String(audienceOptions.targetValue || '')) {
+      if (boardAudienceSignature(existingAnnouncement) !== boardAudienceSignature(audienceOptions)) {
         return alert('La encuesta ya tiene respuestas. No se pueden cambiar sus destinatarios.');
       }
     }
     if (isCall && existingCallResponses.length > 0 && existingAnnouncement) {
-      if ((existingAnnouncement.audienceType || 'all') !== audienceOptions.targetType || String(existingAnnouncement.audienceValue || '') !== String(audienceOptions.targetValue || '')) {
+      if (boardAudienceSignature(existingAnnouncement) !== boardAudienceSignature(audienceOptions)) {
         return alert('La convocatoria ya tiene candidaturas. No se pueden cambiar sus destinatarios.');
       }
       const confirmedCount = existingCallResponses.filter(response => (response.status || 'pending') === 'confirmed').length;
@@ -8857,6 +8864,11 @@ Coordinación Los Mitos.`
       }
     }
     const audienceLabel = getAnnouncementTargetLabel(audienceOptions);
+    const publicationTargets = getAnnouncementStudentTargets(audienceOptions);
+    const lockedRecipients = existingAnnouncement?.audienceType === 'filtered' && (existingResponses.length > 0 || existingCallResponses.length > 0);
+    const audienceFields = buildBoardAudienceFields(audienceOptions, lockedRecipients
+      ? (existingAnnouncement.recipientStudentIds || []).map(studentId => ({ studentId })) : publicationTargets);
+    if (audienceOptions.targetType === 'filters' && !audienceFields.recipientStudentIds.length) return alert('No hay alumnos con clases activas que cumplan estos filtros.');
 
     const payload = {
       type: isPoll ? 'poll' : (isCall ? 'call' : 'notice'),
@@ -8865,8 +8877,7 @@ Coordinación Los Mitos.`
       url: cleanUrl || '',
       pinned,
       pinnedUntil,
-      audienceType: audienceOptions.targetType,
-      audienceValue: audienceOptions.targetType === 'teachers' ? '' : (audienceOptions.targetValue || ''),
+      ...audienceFields,
       audienceLabel,
       ...(isPoll ? {
         pollAnswerType: newAnnounce.pollAnswerType || 'single',
@@ -8903,7 +8914,8 @@ Coordinación Los Mitos.`
     const emailRequest = announceEmailOptions.enabled
       ? await sendAnnouncementEmailToTargets({
           announcement: payload,
-          emailOptions: { ...audienceOptions, enabled: true }
+          emailOptions: { ...audienceOptions, enabled: true },
+          targets: lockedRecipients ? getPollParticipation(existingAnnouncement).audience : undefined
         })
       : { requested: false, count: 0, targetLabel: '' };
 
@@ -8958,8 +8970,7 @@ Coordinación Los Mitos.`
     });
     setAnnounceEmailOptions({
       enabled: false,
-      targetType: ann.audienceType || ann.emailNotificationTargetType || 'all',
-      targetValue: ann.audienceValue || ann.emailNotificationTargetValue || ''
+      ...boardAudienceOptions(ann)
     });
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
   };
@@ -8978,8 +8989,7 @@ Coordinación Los Mitos.`
     });
     setAnnounceEmailOptions({
       enabled: false,
-      targetType: notification.audienceType || 'all',
-      targetValue: notification.audienceValue || ''
+      ...boardAudienceOptions(notification)
     });
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 0);
   };
@@ -9008,6 +9018,31 @@ Coordinación Los Mitos.`
     }
   };
 
+  const setBoardPublicationArchived = async (publication, archived) => {
+    if (!publication?.id) return;
+    if (archived && !window.confirm('¿Archivar esta publicación? Se retirará del alumnado y quedará conservada en Historial.')) return;
+    const fields = boardArchiveFields(publication, archived);
+    try {
+      if (publication.type === 'tray_notice') {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'artifacts', appId, 'trayNotifications', publication.id), fields);
+        const record = { ...publication, ...fields, updatedBy: user?.email || user?.uid || 'admin' };
+        [...new Set((publication.recipientEmails || []).map(normalizeEmail).filter(Boolean))].forEach(email => {
+          batch.set(doc(db, 'artifacts', appId, 'studentNotificationInbox', email, 'items', publication.id), buildBoardInboxItem(publication.id, record));
+        });
+        await batch.commit();
+      } else {
+        await updateDoc(doc(db, 'artifacts', appId, 'announcements', publication.id), fields);
+      }
+      if (archived) {
+        if (editingAnnouncementId === publication.id || editingTrayNotificationId === publication.id) cancelEditAnnouncement();
+        setSelectedAnnouncementId(null);
+      }
+    } catch (error) {
+      alert(`No se ha podido ${archived ? 'archivar' : 'restaurar'} la publicación: ${error.message}`);
+    }
+  };
+
 
   const deletePayrollAdjustment = async (adjustment) => {
     if (!window.confirm(`¿Borrar este ajuste de ${adjustment.hours > 0 ? '+' : ''}${adjustment.hours}h para ${adjustment.teacher}?`)) return;
@@ -9025,13 +9060,13 @@ Coordinación Los Mitos.`
     if (!id) return;
     if (item?.type === 'poll' && getPollResponses(id).length > 0) {
       if (window.confirm('Esta encuesta ya tiene respuestas y no se puede borrar. ¿Quieres archivarla?')) {
-        await updateDoc(doc(db, 'artifacts', appId, 'announcements', id), { pollStatus: 'archived', updatedAt: new Date().toISOString() });
+        await updateDoc(doc(db, 'artifacts', appId, 'announcements', id), boardArchiveFields(item, true));
       }
       return;
     }
     if (item?.type === 'call' && getCallResponses(id).length > 0) {
       if (window.confirm('Esta convocatoria ya tiene candidaturas y no se puede borrar. ¿Quieres archivarla?')) {
-        await updateDoc(doc(db, 'artifacts', appId, 'announcements', id), { callStatus: 'archived', updatedAt: new Date().toISOString() });
+        await updateDoc(doc(db, 'artifacts', appId, 'announcements', id), boardArchiveFields(item, true));
       }
       return;
     }
@@ -10686,6 +10721,11 @@ Coordinación Los Mitos.`
   const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length + scheduledGestionesProgramadas.length;
   const unreadWorkshopRegistrations = workshopRegistrations.filter(registration => !registration.adminSeenAt);
   const unreadAnnouncementResponses = [...pollResponses, ...callResponses].filter(response => !response.adminSeenAt);
+  const unreadBoardIds = unreadBoardPublicationIds(pollResponses, callResponses);
+  const boardAnnouncements = announcements.filter(item => matchesBoardView(item, boardView, unreadBoardIds, pollClock));
+  const boardTrayNotifications = trayNotifications.filter(item => matchesBoardView(item, boardView, unreadBoardIds, pollClock));
+  const visibleBoardAnnouncements = boardAnnouncements.slice(0, visibleAnnouncementsCount);
+  const selectedBoardAnnouncementId = visibleBoardAnnouncements.some(item => item.id === selectedAnnouncementId) ? selectedAnnouncementId : visibleBoardAnnouncements[0]?.id;
   const unreadMitoboxReservations = mitoboxReservations.filter(reservation => (
     !reservation.adminSeenAt
     && isActiveMitoboxReservation(reservation)
@@ -16614,7 +16654,7 @@ ${startDateWarning}
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Tablón</h2>
-              <p className="text-zinc-500 font-medium text-sm">Publica avisos, encuestas o convocatorias para los alumnos.</p>
+              <p className="text-zinc-500 font-medium text-sm">Publica avisos, encuestas, convocatorias y notificaciones breves.</p>
             </header>
             <details className="admin-publication-editor" open={editingAnnouncementId || editingTrayNotificationId ? true : undefined}><summary>{editingAnnouncementId || editingTrayNotificationId ? "Editar publicación" : "Crear publicación"}</summary><div className="bg-white p-6 rounded-2xl shadow-sm border border-zinc-200 mb-8">
               <div className="space-y-4">
@@ -16795,9 +16835,10 @@ ${startDateWarning}
                       <option value="sede">Solo una sede</option>
                       <option value="instrumento">Solo un instrumento</option>
                       <option value="profesor">Solo alumnos de un profesor</option>
+                      <option value="filters">Combinar filtros y días de la semana</option>
                       {newAnnounce.type === 'tray_notice' && <option value="student">Una persona concreta</option>}
                     </select>
-                    {!['all', 'teachers'].includes(announceEmailOptions.targetType) && (
+                    {!['all', 'teachers', 'filters'].includes(announceEmailOptions.targetType) && (
                       <select
                         value={announceEmailOptions.targetValue}
                         onChange={e => setAnnounceEmailOptions({ ...announceEmailOptions, targetValue: e.target.value })}
@@ -16810,11 +16851,15 @@ ${startDateWarning}
                         ))}
                       </select>
                     )}
+                    {announceEmailOptions.targetType === 'filters' && <AnnouncementAudienceFilters filters={announceEmailOptions.filters}
+                      onChange={filters => setAnnounceEmailOptions({ ...announceEmailOptions, filters: normalizeBoardFilters(filters) })}
+                      centers={getAnnouncementTargetOptions('sede')} instruments={getAnnouncementTargetOptions('instrumento')} teachers={getAnnouncementTargetOptions('profesor')}
+                      disabled={hasProtectedAnnouncementResponses(editingAnnouncementId)}/>}
                     <div className="md:col-span-2 text-[11px] font-bold text-sky-800 bg-white/70 rounded-xl px-3 py-2">
                       {newAnnounce.type === 'tray_notice' ? 'Destinatarios de bandeja' : 'Destinatarios estimados con email'}: {newAnnounce.type === 'tray_notice' ? getAnnouncementStudentTargets(announceEmailOptions).length : getAnnouncementEmailTargets(announceEmailOptions).length} · {getAnnouncementTargetLabel(announceEmailOptions)}
                     </div>
                   </div>
-                  {newAnnounce.type !== 'tray_notice' && <label className="flex items-start gap-3 cursor-pointer select-none pt-2 border-t border-sky-100">
+                  <label className="flex items-start gap-3 cursor-pointer select-none pt-2 border-t border-sky-100">
                     <input
                       type="checkbox"
                       checked={announceEmailOptions.enabled}
@@ -16825,7 +16870,8 @@ ${startDateWarning}
                       <span className="block text-xs font-black uppercase tracking-widest text-sky-900">Enviar también por email a esos destinatarios</span>
                       <span className="block text-xs text-sky-700 font-semibold mt-1">Úsalo cuando la publicación requiera atención especial. No se envía nada si dejas esta casilla desmarcada.</span>
                     </span>
-                  </label>}
+                  </label>
+                  {newAnnounce.type === 'tray_notice' && announceEmailOptions.enabled && <p className="text-xs font-bold text-sky-800">El correo se solicita al guardar. Si programas la notificación para más adelante, el email se envía ahora; la programación sólo afecta a la bandeja.</p>}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button onClick={postAnnouncement} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-zinc-800 shadow-md">
@@ -16839,25 +16885,34 @@ ${startDateWarning}
                 </div>
               </div>
             </div></details>
-            {trayNotifications.length > 0 && (
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Vista del tablón">
+              {[['current', 'Vigentes'], ['history', 'Historial'], ['unread', `Con novedades (${unreadBoardIds.size})`]].map(([id, label]) => <button type="button" key={id} aria-pressed={boardView === id}
+                onClick={() => { setBoardView(id); setSelectedAnnouncementId(null); setVisibleAnnouncementsCount(10); }}
+                className={`px-4 py-2 rounded-xl text-xs font-black border ${boardView === id ? 'bg-black text-white border-black' : 'bg-white text-zinc-600 border-zinc-200'}`}>
+                {label}{id === 'unread' && unreadBoardIds.size > 0 && <i className="inline-block ml-2 w-2 h-2 rounded-full bg-red-500"/>}
+              </button>)}
+            </div>
+            <p className="text-xs text-zinc-500">Historial conserva las publicaciones archivadas, las notificaciones retiradas por fecha y las encuestas o convocatorias cerradas. Las participaciones se mantienen. Restaurar no modifica sus fechas límite.</p>
+            {!boardAnnouncements.length && !boardTrayNotifications.length && <p className="p-6 bg-white border rounded-2xl text-sm text-zinc-500">No hay publicaciones en esta vista.</p>}
+            {boardTrayNotifications.length > 0 && (
               <section className="space-y-3">
                 <div className="flex items-end justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-black uppercase tracking-widest text-emerald-900">Notificaciones de bandeja</h3>
                     <p className="text-xs font-semibold text-zinc-500 mt-1">Avisos breves que no aparecen en el Tablón ni en Extras.</p>
                   </div>
-                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{trayNotifications.length} total</span>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{boardTrayNotifications.length} en esta vista</span>
                 </div>
-                {trayNotifications.map(notification => {
-                  const nowLocal = getLocalDateTimeInputValue(new Date(pollClock));
-                  const isScheduled = Boolean(notification.publishAt && notification.publishAt > nowLocal);
-                  const isExpired = Boolean(notification.expiresAt && notification.expiresAt <= nowLocal);
+                {boardTrayNotifications.map(notification => {
+                  const publicationState = boardPublicationState(notification, pollClock);
+                  const isScheduled = publicationState === 'scheduled';
+                  const isExpired = publicationState === 'expired';
                   return (
                     <article key={notification.id} className={`bg-white rounded-2xl border shadow-sm p-5 flex flex-col md:flex-row md:items-start justify-between gap-4 ${editingTrayNotificationId === notification.id ? 'border-emerald-400 ring-2 ring-emerald-100' : 'border-emerald-100'}`}>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 mb-2">
                           <span className="inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest bg-emerald-100 text-emerald-800">Solo bandeja</span>
-                          <span className={`inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isExpired ? 'bg-zinc-100 text-zinc-500' : isScheduled ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>{isExpired ? 'Retirada' : isScheduled ? 'Programada' : 'Visible'}</span>
+                          <span className={`inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isExpired || notification.archived ? 'bg-zinc-100 text-zinc-500' : isScheduled ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>{notification.archived ? 'Archivada' : isExpired ? 'Retirada' : isScheduled ? 'Programada' : 'Visible'}</span>
                         </div>
                         <h4 className="font-black text-slate-900">{notification.title}</h4>
                         <p className="text-sm text-zinc-600 whitespace-pre-wrap mt-1">{notification.content}</p>
@@ -16869,6 +16924,7 @@ ${startDateWarning}
                         </div>
                       </div>
                       <div className="flex gap-2 shrink-0">
+                        <button type="button" onClick={() => setBoardPublicationArchived(notification, !notification.archived)} className="px-3 py-2 rounded-lg bg-zinc-100 text-zinc-700 text-xs font-bold">{notification.archived ? 'Restaurar' : 'Archivar'}</button>
                         <button type="button" onClick={() => startEditTrayNotification(notification)} className="p-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg transition-colors" title="Editar notificación"><Pencil className="w-4 h-4"/></button>
                         <button type="button" onClick={() => deleteTrayNotification(notification)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors" title="Borrar notificación"><Trash2 className="w-4 h-4"/></button>
                       </div>
@@ -16877,8 +16933,13 @@ ${startDateWarning}
                 })}
               </section>
             )}
-            <div className="admin-master-detail"><nav className="admin-record-list" aria-label="Publicaciones">{announcements.slice(0, visibleAnnouncementsCount).map(ann => <button type="button" key={ann.id} className="admin-select-row" aria-pressed={ann.id === (announcements.some(item => item.id === selectedAnnouncementId) ? selectedAnnouncementId : announcements[0]?.id)} onClick={() => setSelectedAnnouncementId(ann.id)}><strong>{ann.title}</strong><span>{formatDateSpanish(ann.date)} · {ann.type === "poll" ? "Encuesta" : ann.type === "call" ? "Convocatoria" : "Aviso"}</span></button>)}</nav><div className="admin-record-detail"><div className="space-y-3">
-              {announcements.slice(0, visibleAnnouncementsCount).filter(ann => ann.id === (announcements.slice(0, visibleAnnouncementsCount).some(item => item.id === selectedAnnouncementId) ? selectedAnnouncementId : announcements[0]?.id)).map(ann => {
+            {boardAnnouncements.length > 0 && <div className="admin-master-detail"><nav className="admin-record-list" aria-label="Publicaciones">
+              {visibleBoardAnnouncements.map(ann => <button type="button" key={ann.id} className="admin-select-row" aria-pressed={ann.id === selectedBoardAnnouncementId} onClick={() => setSelectedAnnouncementId(ann.id)}>
+                <strong>{ann.title}{unreadBoardIds.has(ann.id) && <i aria-label="Participaciones nuevas" title="Participaciones nuevas sin consultar" className="inline-block ml-2 w-2 h-2 bg-red-500 rounded-full"/>}</strong>
+                <span>{formatDateSpanish(ann.date)} · {ann.type === 'poll' ? 'Encuesta' : ann.type === 'call' ? 'Convocatoria' : 'Aviso'}{unreadBoardIds.has(ann.id) ? ' · Novedades' : ''}</span>
+              </button>)}
+            </nav><div className="admin-record-detail"><div className="space-y-3">
+              {visibleBoardAnnouncements.filter(ann => ann.id === selectedBoardAnnouncementId).map(ann => {
                 const isPoll = ann.type === 'poll';
                 const isCall = ann.type === 'call';
                 const participation = isPoll ? getPollParticipation(ann) : null;
@@ -16902,7 +16963,7 @@ ${startDateWarning}
                           {isPoll && <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isPollClosed(ann) ? 'bg-zinc-100 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{getPollStatusLabel(ann)}</span>}
                           {isCall && <span className={`inline-flex items-center px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isCallClosed(ann) ? 'bg-zinc-100 text-zinc-600' : 'bg-emerald-100 text-emerald-700'}`}>{getCallStatusLabel(ann)}</span>}
                         </div>
-                        <h4 className="font-black text-slate-800 text-md leading-tight">{ann.title}</h4>
+                        <h4 className="font-black text-slate-800 text-md leading-tight">{ann.title}{unreadBoardIds.has(ann.id) && <i aria-label="Participaciones nuevas" className="inline-block ml-2 w-2 h-2 rounded-full bg-red-500"/>}</h4>
                         <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
                           {formatDateSpanish(ann.date)} {ann.updatedAt ? '· Editado' : ''}{isPoll && ann.pollDeadline ? ` · Hasta ${new Date(ann.pollDeadline).toLocaleString('es-ES')}` : ''}{isCall && ann.callDeadline ? ` · Hasta ${new Date(ann.callDeadline).toLocaleString('es-ES')}` : ''}
                         </p>
@@ -16926,8 +16987,10 @@ ${startDateWarning}
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        {isPoll && <button onClick={() => setExpandedPollResultsId(isExpanded ? null : ann.id)} className="px-3 py-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">{isExpanded ? 'Ocultar' : 'Resultados'}</button>}
-                        {isCall && <button onClick={() => setExpandedCallResponsesId(isExpanded ? null : ann.id)} className="px-3 py-2 bg-amber-50 text-amber-800 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">{isExpanded ? 'Ocultar' : 'Candidaturas'}</button>}
+                        {isPoll && <button onClick={() => { setExpandedPollResultsId(isExpanded ? null : ann.id); markAnnouncementResponsesSeen(ann.id); }} className="px-3 py-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">{isExpanded ? 'Ocultar' : 'Resultados'}</button>}
+                        {isCall && <button onClick={() => { setExpandedCallResponsesId(isExpanded ? null : ann.id); markAnnouncementResponsesSeen(ann.id); }} className="px-3 py-2 bg-amber-50 text-amber-800 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">{isExpanded ? 'Ocultar' : 'Candidaturas'}</button>}
+                        {isBoardPublicationArchived(ann) && <button type="button" onClick={() => setBoardPublicationArchived(ann, false)} className="px-3 py-2 bg-emerald-50 text-emerald-800 rounded-lg text-[9px] font-black uppercase">Restaurar</button>}
+                        {!isPoll && !isCall && !isBoardPublicationArchived(ann) && <button type="button" onClick={() => setBoardPublicationArchived(ann, true)} className="px-3 py-2 bg-zinc-100 text-zinc-700 rounded-lg text-[9px] font-black uppercase">Archivar</button>}
                         {isPoll && ann.pollStatus !== 'archived' && (isPollClosed(ann)
                           ? <button onClick={() => setPollStatus(ann, 'open')} className="px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Reabrir</button>
                           : <button onClick={() => setPollStatus(ann, 'closed')} className="px-3 py-2 bg-amber-50 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Cerrar</button>)}
@@ -17046,12 +17109,12 @@ ${startDateWarning}
                   </div>
                 );
               })}
-              {visibleAnnouncementsCount < announcements.length && (
+              {visibleAnnouncementsCount < boardAnnouncements.length && (
                 <button onClick={() => setVisibleAnnouncementsCount(c => c + 10)} className="w-full py-3 rounded-xl border-2 border-dashed border-zinc-300 text-zinc-500 hover:text-slate-900 hover:border-slate-900 font-black uppercase tracking-widest text-xs transition-colors">
-                  Cargar más publicaciones ({Math.min(10, announcements.length - visibleAnnouncementsCount)} más)
+                  Cargar más publicaciones ({Math.min(10, boardAnnouncements.length - visibleAnnouncementsCount)} más)
                 </button>
               )}
-            </div></div></div>
+            </div></div></div>}
           </div>
         )}
 

@@ -14,6 +14,7 @@ import {
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from './vacationChallengeUtils.js';
+import { isBoardPublicationArchived, matchesBoardClass } from './announcementAudienceUtils.js';
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
@@ -720,6 +721,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [calendarMonth, setCalendarMonth] = useState(() => formatLocalDateString(new Date()).slice(0, 7));
   const [selectedCalendarDay, setSelectedCalendarDay] = useState('');
   const [announcements, setAnnouncements] = useState([]); 
+  const [filteredAnnouncements, setFilteredAnnouncements] = useState([]);
   const [trayNotifications, setTrayNotifications] = useState([]);
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(5); 
   const [expandedAnnouncementId, setExpandedAnnouncementId] = useState(null);
@@ -2348,8 +2350,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     const audienceType = ann.audienceType || 'all';
     const audienceValue = String(ann.audienceValue || '').trim();
 
-    if (ann.type === 'poll' && ann.pollStatus === 'archived') return false;
-    if (ann.type === 'call' && ann.callStatus === 'archived') return false;
+    if (isBoardPublicationArchived(ann)) return false;
+    if (audienceType === 'filtered') return (ann.recipientStudentIds || []).includes(profile?.id);
 
     // Los avisos dirigidos a profesores se leen solo desde TeacherPortal.
     // StudentPortal debe ignorarlos aunque estén en la misma colección announcements.
@@ -2365,7 +2367,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     return false;
   };
 
-  const visibleAnnouncements = announcements.filter(announcementMatchesStudent);
+  const visibleAnnouncements = [...announcements, ...filteredAnnouncements].filter(announcementMatchesStudent)
+    .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
   // 👇 LÓGICA DE LA BOLITA ROJA (NOTIFICACIONES TABLÓN)
   const latestAnnounceId = visibleAnnouncements.length > 0 ? Math.max(...visibleAnnouncements.map(a => Number(a.id))).toString() : null;
@@ -2426,7 +2429,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     const nowLocal = getLocalDateTimeString(new Date(pollClock));
     const directNotificationItems = trayNotifications
       .filter(notification => (
-        (!notification.publishAt || notification.publishAt <= nowLocal)
+        !notification.archived && (!notification.publishAt || notification.publishAt <= nowLocal)
         && (!notification.expiresAt || notification.expiresAt > nowLocal)
       ))
       .map(notification => {
@@ -2550,6 +2553,17 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
       unsubSettings();
     };
   }, [user.email, settingsRetryNonce]);
+
+  useEffect(() => {
+    if (!profile?.id) return undefined;
+    const targetedQuery = query(collection(db, 'artifacts', appId, 'announcements'), where('recipientStudentIds', 'array-contains', profile.id));
+    return onSnapshot(targetedQuery, snapshot => {
+      setFilteredAnnouncements(snapshot.docs.map(item => ({ id: item.id, ...item.data() })).filter(item => item.audienceType === 'filtered'));
+    }, error => {
+      setFilteredAnnouncements([]);
+      console.error('No se han podido cargar las publicaciones dirigidas a este alumno:', error);
+    });
+  }, [profile?.id, db, appId, settingsRetryNonce]);
 
   // Las notificaciones privadas no dependen de que el catálogo de clases haya
   // terminado de cargar. Esto permite recibirlas también a alumnos sin clase
@@ -3292,6 +3306,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     const audienceType = call.audienceType || 'all';
     const audienceValue = String(call.audienceValue || '').trim();
     const matchingClasses = fixedMyClasses.filter(classData => {
+      if (audienceType === 'filtered') return matchesBoardClass(classData, call, { isSameCenter });
       if (audienceType === 'sede') return isSameCenter(classData.centerId || classData.sede || 'Tarragona', audienceValue);
       if (audienceType === 'instrumento') return (classData.subject || '') === audienceValue;
       if (audienceType === 'profesor') return (classData.teacher || '') === audienceValue;

@@ -12,6 +12,7 @@ import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
+import PublicEnrollmentView from './PublicEnrollmentView.jsx';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
 import { normalizeMusicOrder } from './musicChallengeCatalog.js';
 const VacationChallengesAdmin = React.lazy(() => import('./VacationChallengesAdmin.jsx')); 
@@ -16128,7 +16129,8 @@ ${startDateWarning}
                   <button
                     key={view.id}
                     onClick={() => setDangerViewMode(view.id)}
-                    className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerViewMode === view.id ? 'bg-black text-white shadow-md' : 'text-zinc-500 hover:text-black hover:bg-zinc-50'}`}
+                    disabled={dangerSubView === 'public' && view.id === 'proyeccion'}
+                    className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerViewMode === view.id ? 'bg-black text-white shadow-md' : 'text-zinc-500 hover:text-black hover:bg-zinc-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
                   >
                     {view.label}
                   </button>
@@ -16140,6 +16142,7 @@ ${startDateWarning}
               <div className="flex flex-wrap gap-2">
                 {[
                   { id: 'web', label: `Ofertadas en web (${locatorRowsByCategory.web.length})` },
+                  { id: 'public', label: 'Disponibles en formulario' },
                   { id: 'formation', label: `En formación (${locatorRowsByCategory.formation.length})` },
                   { id: 'demand', label: `Formación con espera (${locatorRowsByCategory.demand.length})` },
                   { id: 'contactar', label: `Contactar (${dangerContactRows.length})` },
@@ -16148,7 +16151,7 @@ ${startDateWarning}
                 ].map(view => (
                   <button
                     key={view.id}
-                    onClick={() => setDangerSubView(view.id)}
+                    onClick={() => { setDangerSubView(view.id); if (view.id === 'public') setDangerViewMode('actual'); }}
                     className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${dangerSubView === view.id ? 'bg-indigo-600 text-white shadow-md' : 'bg-zinc-50 text-zinc-500 hover:bg-zinc-100 hover:text-black'}`}
                   >
                     {view.label}
@@ -16173,7 +16176,7 @@ ${startDateWarning}
 
             <div className="bg-slate-50 border border-slate-200 text-slate-700 rounded-2xl p-4 text-xs font-bold leading-relaxed">
               <strong className="uppercase tracking-widest text-[10px] text-slate-900 block mb-2">Qué reúne cada categoría</strong>
-              “Formación con espera” identifica turnos con alumnos cuyo inicio aún está pendiente. “Contactar” reúne esas personas y también al alumno que se ha quedado solo en un grupo. “Ocupación / riesgo” muestra clases operativas cuyos ingresos estimados no cubren el coste docente. “Inactivas” muestra clases vacías, no ofertadas y sin plazas comprometidas. Los correos se preparan desde la vista Ahora.
+              “Disponibles en formulario” muestra el listado público de inscripción con sus plazas libres. “Formación con espera” identifica turnos con alumnos cuyo inicio aún está pendiente. “Contactar” reúne esas personas y también al alumno que se ha quedado solo en un grupo. “Ocupación / riesgo” muestra clases operativas cuyos ingresos estimados no cubren el coste docente. “Inactivas” muestra clases vacías, no ofertadas y sin plazas comprometidas. Los correos se preparan desde la vista Ahora.
             </div>
 
             {dangerViewMode === 'proyeccion' && (
@@ -16182,7 +16185,7 @@ ${startDateWarning}
               </div>
             )}
 
-            <div className={viewClassModal ? 'admin-class-workspace has-selection' : 'admin-class-workspace'}><div className="admin-class-results">{dangerSubView === 'contactar' ? (
+            <div className={viewClassModal ? 'admin-class-workspace has-selection' : 'admin-class-workspace'}><div className="admin-class-results">{dangerSubView === 'public' ? <PublicEnrollmentView db={db} internalClassesBySelection={new Map(recurringClassesOnly.map(clase => [buildPublicClassSelectionId(clase.refPath || clase.id), clase]))} onStudents={setViewClassModal} onConfigure={setEditWebModal}/> : dangerSubView === 'contactar' ? (
               dangerContactRows.length === 0 ? (
                 <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                   <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />

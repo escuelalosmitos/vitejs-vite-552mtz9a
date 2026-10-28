@@ -13,6 +13,7 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
+import { formatLocatorTurn, locatorClassSignature, locatorStudentPlanningData, buildLocatorEmailPayload } from './locatorEmailUtils.js';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
 import { normalizeMusicOrder } from './musicChallengeCatalog.js';
 const VacationChallengesAdmin = React.lazy(() => import('./VacationChallengesAdmin.jsx')); 
@@ -11430,7 +11431,7 @@ Coordinación Los Mitos.`
   }, [locatorRowsForView]);
 
   const locatorContactId = item => encodeURIComponent(`${item.row.id}|${item.studentId}`);
-  const locatorClassLine = c => `${c.subject} · ${getDayName(c.dayOfWeek)} ${c.time}h · ${getClassCenterName(c)} · ${c.teacher || 'Sin profesor'} · ${c.duration || 60} min · ${c.cuotaBase || 0} €/mes`;
+  const locatorClassLine = c => formatLocatorTurn(c, getDayName, getClassCenterName);
   const locatorAlternativeEligible = (c, item) => {
     const seats = getCommercialSeatDataForClass(c);
     return c.id !== item.row.id && c.subject === item.row.subject && !isPunctualClass(c)
@@ -11474,13 +11475,14 @@ Coordinación Los Mitos.`
         const snapshot = await getDocsFromServer(collection(db, 'artifacts', appId, name));
         const freshRows = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
         const ordered = rows => [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
-        if (stable(ordered(freshRows)) !== stable(ordered(localRows))) throw new Error('Han cambiado alumnos o reservas. Espera a que se actualice la pantalla y revisa el correo antes de enviar.');
+        const comparable = rows => name === 'students' ? rows.map(locatorStudentPlanningData) : rows;
+        if (stable(ordered(comparable(freshRows))) !== stable(ordered(comparable(localRows)))) throw new Error('Han cambiado alumnos o reservas. Espera a que se actualice la pantalla y revisa el correo antes de enviar.');
       }
       const source = await getDocFromServer(doc(db, item.row.refPath));
       const recipient = await getDocFromServer(doc(db, 'artifacts', appId, 'students', item.studentId));
       if (!source.exists() || !recipient.exists() || normalizeEmail(recipient.data().email) !== normalizeEmail(item.email) || recipient.data().globalStatus === 'baja') throw new Error('La clase o el alumno han cambiado. Actualiza el localizador antes de enviar.');
       const sourceData = { ...source.data(), id: source.id, refPath: source.ref.path };
-      if (locatorClassLine(sourceData) !== locatorClassLine(item.row)) throw new Error('El turno de origen ha cambiado. Vuelve a preparar el correo.');
+      if (locatorClassSignature(sourceData, getClassCenterName, getOfficialTeacherName) !== locatorClassSignature(item.row, getClassCenterName, getOfficialTeacherName)) throw new Error('El turno de origen ha cambiado. Vuelve a preparar el correo.');
       const sourcePeople = getClassStudentPlanningData(sourceData, false);
       const stillRelevant = item.reason === 'En espera de apertura'
         ? sourcePeople.some(student => student.id === item.studentId && student.isPendingStart)
@@ -11493,7 +11495,7 @@ Coordinación Los Mitos.`
         if (!option?.refPath) throw new Error('Un turno seleccionado ya no está disponible. Revisa las alternativas.');
         const snapshot = await getDocFromServer(doc(db, option.refPath));
         const fresh = snapshot.exists() ? { ...snapshot.data(), id: snapshot.id, refPath: snapshot.ref.path } : null;
-        if (!fresh || !locatorAlternativeEligible(fresh, item) || locatorClassLine(fresh) !== locatorClassLine(option)) throw new Error('Han cambiado las plazas o los datos de un turno. Revisa las alternativas antes de enviar.');
+        if (!fresh || !locatorAlternativeEligible(fresh, item) || locatorClassSignature(fresh, getClassCenterName, getOfficialTeacherName) !== locatorClassSignature(option, getClassCenterName, getOfficialTeacherName)) throw new Error('Han cambiado las plazas o los datos de un turno. Revisa las alternativas antes de enviar.');
         freshOptions.push(fresh);
       }
       eventRef = doc(collection(db, 'artifacts', appId, 'locatorContactEvents'));
@@ -11501,7 +11503,7 @@ Coordinación Los Mitos.`
         subject: subject.trim(), body: body.trim(), alternatives: freshOptions.map(c => ({ id: c.id, label: locatorClassLine(c) })),
         date: new Date().toISOString(), admin: user?.email || user?.uid || 'admin', status: 'preparado', requestId: eventRef.id };
       await setDoc(eventRef, contact);
-      const result = await sendNotificationEmail({ to: contact.to, subject: contact.subject, body: contact.body, type: 'contacto_localizador', requestId: eventRef.id });
+      const result = await sendNotificationEmail(buildLocatorEmailPayload(contact));
       if (!result) {
         await updateDoc(eventRef, { status: 'error_solicitud' });
         throw new Error('No se pudo solicitar el envío. Comprueba la conexión antes de volver a intentarlo.');
@@ -14522,7 +14524,7 @@ ${startDateWarning}
             <legend className="font-bold">Turnos para incorporación inmediata</legend>
             <p className="text-xs text-slate-500">Revisa nivel, edad y compatibilidad antes de ofrecerlos. Las plazas no quedan reservadas por enviar el correo.</p>
             {locatorAlternatives(locatorEmail.item).length === 0 && <p className="text-amber-800">No hay turnos disponibles. No se puede enviar este modelo sin alternativas.</p>}
-            {locatorAlternatives(locatorEmail.item).map(c => <label key={c.id} className="flex gap-2 text-sm p-2 bg-slate-50 rounded"><input type="checkbox" checked={locatorEmail.selected.includes(c.id)} onChange={() => toggleLocatorAlternative(c)}/>{locatorClassLine(c)} · {getCommercialFreeSpots(c)} plaza(s)</label>)}
+            {locatorAlternatives(locatorEmail.item).map(c => <label key={c.id} className="flex gap-2 text-sm p-2 bg-slate-50 rounded"><input type="checkbox" checked={locatorEmail.selected.includes(c.id)} onChange={() => toggleLocatorAlternative(c)}/>{locatorClassLine(c)}</label>)}
             <label className="block font-bold text-sm">Asunto<input className="block w-full border rounded p-2 font-normal" value={locatorEmail.subject} onChange={e => setLocatorEmail({ ...locatorEmail, subject: e.target.value, edited: true })}/></label>
             <label className="block font-bold text-sm">Mensaje · revisa el texto antes de enviar<textarea rows={15} className="block w-full border rounded p-2 font-normal" value={locatorEmail.body} onChange={e => setLocatorEmail({ ...locatorEmail, body: e.target.value, edited: true })}/></label>
           </fieldset>

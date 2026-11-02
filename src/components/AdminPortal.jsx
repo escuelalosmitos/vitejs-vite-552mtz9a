@@ -2352,6 +2352,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [pollClock, setPollClock] = useState(Date.now());
   const [visibleAnnouncementsCount, setVisibleAnnouncementsCount] = useState(10);
   const [boardView, setBoardView] = useState('current');
+  const [boardTypeFilter, setBoardTypeFilter] = useState('all');
   const boardResponseReadLocks = useRef(new Set());
   const [expandedTeacher, setExpandedTeacher] = useState(null); 
   const [notesModal, setNotesModal] = useState(null); 
@@ -4973,6 +4974,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const records = uniqueAttendanceRecords.filter(record => (
       String(record.date || '').startsWith(month)
       && (record.isRenounced === true || record.isNonComputable === true)
+      && !isSameTeacher(record.teacher, 'Paco')
     ));
     const hours = records.reduce((sum, record) => sum + ((Number(String(record.duration || 60).replace(',', '.')) || 60) / 60), 0);
     const byReason = records.reduce((acc, record) => {
@@ -10727,8 +10729,14 @@ Coordinación Los Mitos.`
   const unreadWorkshopRegistrations = workshopRegistrations.filter(registration => !registration.adminSeenAt);
   const unreadAnnouncementResponses = [...pollResponses, ...callResponses].filter(response => !response.adminSeenAt);
   const unreadBoardIds = unreadBoardPublicationIds(pollResponses, callResponses);
-  const boardAnnouncements = announcements.filter(item => matchesBoardView(item, boardView, unreadBoardIds, pollClock));
-  const boardTrayNotifications = trayNotifications.filter(item => matchesBoardView(item, boardView, unreadBoardIds, pollClock));
+  const boardAnnouncements = announcements.filter(item => (
+    matchesBoardView(item, boardView, unreadBoardIds, pollClock)
+    && (boardTypeFilter === 'all' || (item.type || 'notice') === boardTypeFilter)
+  ));
+  const boardTrayNotifications = trayNotifications.filter(item => (
+    matchesBoardView(item, boardView, unreadBoardIds, pollClock)
+    && (boardTypeFilter === 'all' || boardTypeFilter === 'tray_notice')
+  ));
   const visibleBoardAnnouncements = boardAnnouncements.slice(0, visibleAnnouncementsCount);
   const selectedBoardAnnouncementId = visibleBoardAnnouncements.some(item => item.id === selectedAnnouncementId) ? selectedAnnouncementId : visibleBoardAnnouncements[0]?.id;
   const unreadMitoboxReservations = mitoboxReservations.filter(reservation => (
@@ -14843,7 +14851,7 @@ ${startDateWarning}
                 </div>
 
                 {biProjectionMode !== 'proyeccion' && <div className="admin-bi-avoided bg-amber-50 border border-amber-200 p-6 rounded-3xl shadow-sm flex flex-col gap-3">
-                  <div><div className="flex items-center gap-2 text-amber-700"><Timer className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste empresarial evitado</h3></div><p className="text-[11px] font-bold text-amber-800/80 mt-2">Horas no liquidables de los registros diarios, valoradas al coste empresa configurado.</p></div>
+                  <div><div className="flex items-center gap-2 text-amber-700"><Timer className="w-5 h-5"/><h3 className="text-xs font-black uppercase tracking-widest">Coste empresarial evitado</h3></div><p className="text-[11px] font-bold text-amber-800/80 mt-2">{biProjectionMode === 'historico' ? 'Importe guardado al registrar el mes.' : 'Horas no liquidables de los registros diarios, excluido Paco (socio), valoradas al coste empresa configurado.'}</p></div>
                   <div><p className="text-4xl font-black text-amber-900 tracking-tighter">+{Number(displayedAvoidedCompanyCost.amount || 0).toLocaleString('es-ES', { maximumFractionDigits: 2 })}€</p><p className="text-[10px] font-black uppercase tracking-widest text-amber-700 mt-1">{Number(displayedAvoidedCompanyCost.hours || 0).toFixed(1)} h · {displayedAvoidedCompanyCost.records || 0} registros · {Number(displayedAvoidedCompanyCost.companyHourlyCost || 0).toFixed(2)} €/h</p></div>
                 </div>}
 
@@ -16900,8 +16908,16 @@ ${startDateWarning}
                 {label}{id === 'unread' && unreadBoardIds.size > 0 && <i className="inline-block ml-2 w-2 h-2 rounded-full bg-red-500"/>}
               </button>)}
             </div>
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Tipo de publicación">
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 mr-1">Tipo</span>
+              {[['all', 'Todos'], ['notice', 'Avisos'], ['poll', 'Encuestas'], ['call', 'Convocatorias'], ['tray_notice', 'Notificaciones breves']].map(([id, label]) => <button type="button" key={id} aria-pressed={boardTypeFilter === id}
+                onClick={() => { setBoardTypeFilter(id); setSelectedAnnouncementId(null); setVisibleAnnouncementsCount(10); }}
+                className={`px-4 py-2 rounded-xl text-xs font-bold border ${boardTypeFilter === id ? 'bg-zinc-800 text-white border-zinc-800' : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400'}`}>
+                {label}
+              </button>)}
+            </div>
             <p className="text-xs text-zinc-500">Historial conserva las publicaciones archivadas, las notificaciones retiradas por fecha y las encuestas o convocatorias cerradas. Las participaciones se mantienen. Restaurar no modifica sus fechas límite.</p>
-            {!boardAnnouncements.length && !boardTrayNotifications.length && <p className="p-6 bg-white border rounded-2xl text-sm text-zinc-500">No hay publicaciones en esta vista.</p>}
+            {!boardAnnouncements.length && !boardTrayNotifications.length && <p className="p-6 bg-white border rounded-2xl text-sm text-zinc-500">{boardTypeFilter === 'all' ? 'No hay publicaciones en esta vista.' : 'No hay publicaciones de este tipo en esta vista.'}</p>}
             {boardTrayNotifications.length > 0 && (
               <section className="space-y-3">
                 <div className="flex items-end justify-between gap-3">

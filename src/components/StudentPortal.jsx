@@ -13,6 +13,7 @@ import {
 } from './mitoboxUtils';
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
+import { getExpansionStartDate, isFutureExpansionClass, isClassExpansionAvailable } from './classExpansionUtils.js';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from './vacationChallengeUtils.js';
 import { isBoardPublicationArchived, matchesBoardClass } from './announcementAudienceUtils.js';
 
@@ -103,26 +104,21 @@ const normalizeTeacherKey = (name = '') => String(name || '')
   .toLocaleLowerCase('es-ES')
   .replace(/[^a-z0-9]+/g, '-');
 
-const getTeacherOperationalEmail = (name = '') => {
-  const localPart = String(name || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLocaleLowerCase('es-ES')
-    .replace(/[^a-z0-9]+/g, '.')
-    .replace(/^\.+|\.+$/g, '');
-  return localPart ? `${localPart}@escuelalosmitos.com` : '';
+const getTeacherOperationalEmail = (name = '', configuredEmails = {}) => {
+  const key = normalizeTeacherKey(name);
+  if (!key) return '';
+  const matches = Object.entries(configuredEmails || {})
+    .filter(([teacherName]) => normalizeTeacherKey(teacherName) === key)
+    .map(([, email]) => String(email || '').trim().toLowerCase());
+  const uniqueEmails = [...new Set(matches)];
+  const email = uniqueEmails.length === 1 ? uniqueEmails[0] : '';
+  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@escuelalosmitos\.com$/.test(email) ? email : '';
 };
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
-
-const getDayOfYear = () => {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), 0, 0);
-  const diff = now - start;
-  const oneDay = 1000 * 60 * 60 * 24;
-  return Math.floor(diff / oneDay);
-};
+import { getDailyTrivia, createDailyTriviaSession, getTriviaSecondsLeft } from './dailyTriviaUtils.js';
+import { saveDailyTriviaAnswer } from './dailyTriviaStore.js';
+import useDailyTriviaDate from './useDailyTriviaDate.js';
 
 const getDayName = (dayIndex) => {
   const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -789,7 +785,16 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [triviaModal, setTriviaModal] = useState(false);
   const [triviaTime, setTriviaTime] = useState(10);
   const [triviaSelected, setTriviaSelected] = useState(null);
-  const [triviaResult, setTriviaResult] = useState(null); 
+  const [triviaResult, setTriviaResult] = useState(null);
+  const triviaDate = useDailyTriviaDate();
+  const [triviaSession, setTriviaSession] = useState(null);
+  const triviaSessionRef = useRef(null);
+  const triviaAnswerLock = useRef(false);
+  const triviaAnswerHandlerRef = useRef(null);
+  const triviaPendingAnswer = useRef(null);
+  const triviaCloseTimer = useRef(null);
+  const [triviaSaving, setTriviaSaving] = useState(false);
+  const [triviaError, setTriviaError] = useState(''); 
 
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [reviewModalView, setReviewModalView] = useState('choice');
@@ -3092,18 +3097,6 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     };
   }, [settingsLoaded, isStudentClassIndexReady, classCatalogRetryNonce, db, appId]);
 
-  useEffect(() => {
-    let timer;
-    if (triviaModal && triviaTime > 0 && !triviaResult) {
-      timer = setInterval(() => {
-        setTriviaTime(prev => prev - 1);
-      }, 1000);
-    } else if (triviaTime === 0 && !triviaResult) {
-      handleTriviaAnswer(-1);
-    }
-    return () => clearInterval(timer);
-  }, [triviaModal, triviaTime, triviaResult]);
-
   const showToast = (msg, type = 'success') => {
     setNotification({ text: msg, type });
     setTimeout(() => setNotification(null), 4000);
@@ -3852,6 +3845,7 @@ EMAIL: ${payload.studentEmail || ''}
 ALCANCE_BAJA: ${payload.type === 'baja' ? (payload.bajaScope === 'total' ? 'baja total de todas las clases' : 'baja de plaza concreta') : ''}
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_SOLICITADA: ${classLine}
+FECHA_INICIO_SOLICITADA: ${payload.requestedClassStartDate ? formatDateSpanish(payload.requestedClassStartDate) : ''}
 FECHA_RECUPERACION: ${requestedDate}
 MES_OBJETIVO: ${payload.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
@@ -3894,6 +3888,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     
     const isLate = absenceModal.diffHours < 16;
     const status = (!isLate && wantsTicket) ? 'notified' : 'notified_no_ticket';
+    const teacherEmail = getTeacherOperationalEmail(absenceModal.clase.teacher, globalSettings.teacherEmails);
     
     try {
       const classRef = doc(db, absenceModal.clase.refPath);
@@ -3931,13 +3926,13 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedClass: absenceModal.clase.id,
         requestedTeacher: absenceModal.clase.teacher || '',
         teacherKeys: [normalizeTeacherKey(absenceModal.clase.teacher)],
-        teacherEmails: [getTeacherOperationalEmail(absenceModal.clase.teacher)],
+        teacherEmails: teacherEmail ? [teacherEmail] : [],
         status: 'pendiente',
         date: new Date().toISOString()
       });
 
+      let teacherEmailRequested = false;
       try {
-        const emailProfe = `${absenceModal.clase.teacher.toLowerCase().replace(' ', '.')}@escuelalosmitos.com`; 
         
         let subjectEmail = `⚠️ Aviso de falta: ${profile.name} (${absenceModal.clase.subject})`;
         let bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nEl alumno ${profile.name} ha avisado que NO asistirá a tu clase de ${absenceModal.clase.subject} el próximo ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h.\n\n${isLate ? '⚠️ IMPORTANTE: El aviso se ha realizado FUERA DE PLAZO (con menos de 16h de antelación).' : '✅ El aviso se ha realizado dentro de plazo.'}\n\nEl sistema ya ha actualizado tu lista de asistencia para que no le esperes.\n\nUn saludo,\nCoordinación Los Mitos.`;
@@ -3950,14 +3945,23 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
           bodyEmail = `Hola ${absenceModal.clase.teacher},\n\nTe informamos que TODOS los alumnos de tu clase de ${absenceModal.clase.subject} del ${formatDateSpanish(absenceModal.dateStr)} a las ${absenceModal.clase.time}h han avisado de su ausencia.\n\nComo el último aviso se ha producido con MENOS DE 2 HORAS de antelación, mantienes tu derecho a cobrar la hora.\n\nAl abrir la App para pasar lista, se activará el Protocolo de Hora Muerta para que selecciones una tarea y puedas registrarla en tu nómina.\n\nUn saludo,\nCoordinación Los Mitos.`;
         }
         
-        await fetch(APPS_SCRIPT_URL, {
-          method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ type: 'notificacion_profesor', teacherEmail: emailProfe, subject: subjectEmail, body: bodyEmail })
-        });
-      } catch(e) {}
+        if (teacherEmail) {
+          await fetch(APPS_SCRIPT_URL, {
+            method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ type: 'notificacion_profesor', teacherEmail, subject: subjectEmail, body: bodyEmail })
+          });
+          teacherEmailRequested = true;
+        } else {
+          console.warn('Ausencia registrada sin correo corporativo configurado para el profesor.');
+        }
+      } catch (error) {
+        console.warn('Ausencia registrada; no se pudo solicitar el correo al profesor:', error);
+      }
 
       setAbsenceModal(null);
-      showToast('Aviso enviado correctamente al profesor.');
+      showToast(teacherEmailRequested
+        ? 'Ausencia registrada y envío de correo solicitado al profesor.'
+        : 'Ausencia registrada. No se pudo solicitar el correo al profesor; administración puede consultar el aviso.');
 
     } catch (error) {
       showToast('Error al enviar el aviso.', 'error');
@@ -4032,6 +4036,24 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       showToast('La fecha elegida queda fuera de la validez del ticket.', 'error');
       return;
     }
+
+    let expansionStartDate = '';
+    if (isAmpliarClases) {
+      const currentClass = allClasses.find(clase => selectedNewClass?.refPath
+        ? clase.refPath === selectedNewClass.refPath
+        : clase.id === selectedNewClass?.id);
+      const committedCount = currentClass ? getCommittedSeatCountForClass(currentClass, todayStr) : 0;
+      if (!currentClass || !isClassExpansionAvailable(currentClass, { today: todayStr, activeCount: Number(currentClass.activeStudentCount || 0), committedCount })) {
+        showToast('Esta clase ya no está disponible para ampliar. Elige otro turno.', 'error');
+        return;
+      }
+      expansionStartDate = getExpansionStartDate(currentClass, todayStr);
+      if (expansionStartDate !== getExpansionStartDate(selectedNewClass, todayStr)) {
+        setSelectedNewClass(currentClass);
+        showToast('Ha cambiado la fecha de inicio. Revisa el turno antes de enviar la solicitud.', 'error');
+        return;
+      }
+    }
     
     setIsSendingGestion(true);
     try {
@@ -4062,6 +4084,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         title: gestionUiCopyForPayload.title || gestionModal.title,
         details: gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
+        ...(isAmpliarClases ? {
+          requestedClassRefPath: selectedNewClass.refPath || '',
+          requestedClassStartDate: expansionStartDate
+        } : {}),
         requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
         requestedTeacher: selectedNewClass?.teacher || '',
         teacherKeys: uniqueStrings([
@@ -4069,8 +4095,8 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
           normalizeTeacherKey(selectedNewClass?.teacher)
         ]),
         teacherEmails: uniqueStrings([
-          getTeacherOperationalEmail(resolvedSourceClass?.teacher),
-          getTeacherOperationalEmail(selectedNewClass?.teacher)
+          getTeacherOperationalEmail(resolvedSourceClass?.teacher, globalSettings.teacherEmails),
+          getTeacherOperationalEmail(selectedNewClass?.teacher, globalSettings.teacherEmails)
         ]),
         requestedSede: selectedNewClass ? getClassCenterName(selectedNewClass) : '',
         requestedSala: selectedNewClass ? getClassRoomName(selectedNewClass) : '',
@@ -4087,7 +4113,9 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         maintenanceUntil: isMaintenanceRequest ? selectedMaintenanceOption.until : null,
         maintenancePeriodLine: isMaintenanceRequest ? formatMaintenancePeriodLine(selectedMaintenanceOption) : '',
         maintenanceMonthLabel: isMaintenanceRequest ? selectedMaintenanceOption.monthLabel : '',
-        targetMonth: (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
+        targetMonth: isAmpliarClases && expansionStartDate
+          ? new Date(`${expansionStartDate}T12:00:00Z`).toLocaleString('es-ES', { month: 'long', timeZone: 'UTC' })
+          : (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
         isLateRequest: !isExemptFromLateRule && timeRules.isLate,
         status: 'pendiente',
         date: new Date().toISOString()
@@ -4096,9 +4124,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       const gestionBatch = writeBatch(db);
       gestionBatch.set(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
       if (isTicketRedemption && selectedRecoveryTicket?.refPath && selectedNewClass?.teacher) {
+        const recoveryTeacherEmail = getTeacherOperationalEmail(selectedNewClass.teacher, globalSettings.teacherEmails);
         gestionBatch.update(doc(db, selectedRecoveryTicket.refPath), {
           recoveryTeacherKeys: arrayUnion(normalizeTeacherKey(selectedNewClass.teacher)),
-          recoveryTeacherEmails: arrayUnion(getTeacherOperationalEmail(selectedNewClass.teacher)),
+          ...(recoveryTeacherEmail ? { recoveryTeacherEmails: arrayUnion(recoveryTeacherEmail) } : {}),
           recoveryGestionIds: arrayUnion(gestionId),
           recoveryAuthorizedAt: new Date().toISOString()
         });
@@ -4414,88 +4443,66 @@ END:VCALENDAR`;
     }
   };
 
-  const dailyQuestionIndex = (getDayOfYear() * 137) % TRIVIA_QUESTIONS.length;
-  const currentQuestion = TRIVIA_QUESTIONS[dailyQuestionIndex];
-  const hasPlayedToday = profile?.triviaLastPlayed === todayStr;
-
+  const dailyTrivia = getDailyTrivia(TRIVIA_QUESTIONS, triviaDate);
+  const currentQuestion = triviaModal && triviaSession ? triviaSession.question : dailyTrivia.question;
+  const hasPlayedToday = profile?.triviaLastPlayed === triviaDate;
   const diffMap = {
     'facil': { label: 'Fácil', points: 3, color: 'text-emerald-700', bg: 'bg-emerald-100', border: 'border-emerald-500' },
     'medio': { label: 'Medio', points: 6, color: 'text-amber-700', bg: 'bg-amber-100', border: 'border-amber-500' },
     'dificil': { label: 'Difícil', points: 9, color: 'text-rose-700', bg: 'bg-rose-100', border: 'border-rose-500' }
   };
-  
   const currentDifficulty = diffMap[currentQuestion.difficulty || 'facil'];
-
- const getYesterdayStr = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
-  const yesterdayStr = getYesterdayStr();
-
   const startTrivia = () => {
-    setTriviaSelected(null);
-    setTriviaResult(null);
-    setTriviaTime(10);
-    setTriviaModal(true);
+    if (triviaAnswerLock.current) return;
+    const session = createDailyTriviaSession(TRIVIA_QUESTIONS);
+    if (profile?.triviaLastPlayed >= session.date) return showToast('Ya has jugado el reto de hoy.', 'info');
+    clearTimeout(triviaCloseTimer.current);
+    triviaSessionRef.current = session; triviaPendingAnswer.current = null;
+    setTriviaSession(session); setTriviaSelected(null); setTriviaResult(null); setTriviaError(''); setTriviaTime(10); setTriviaModal(true);
   };
-
-  const handleTriviaAnswer = async (index) => {
-    if (triviaResult) return;
-    setTriviaSelected(index);
-    
-    let isCorrect = index === currentQuestion.correct;
-    let newResultStatus = isCorrect ? 'win' : (index === -1 ? 'timeout' : 'lose');
-    
-    let pointsEarned = 0;
-    let speedBonus = 0;
-    let streakBonus = 0;
-    let newStreak = profile.triviaStreak || 0;
-
-    if (isCorrect) {
-      pointsEarned += currentDifficulty.points;
-      
-      if (triviaTime >= 7) {
-        speedBonus = 2;
-        pointsEarned += speedBonus;
-      }
-      
-      if (profile.triviaLastPlayed === yesterdayStr) {
-        newStreak += 1;
-      } else {
-        newStreak = 1;
-      }
-
-      if (newStreak > 0 && newStreak % 3 === 0) {
-         streakBonus = 5;
-         pointsEarned += streakBonus;
-      }
-    } else {
-       newStreak = 0; 
+  const handleTriviaAnswer = async index => {
+    const session = triviaSessionRef.current;
+    if (!triviaModal || !session || triviaResult || triviaAnswerLock.current) return;
+    if (session.date !== getSchoolDate()) { setTriviaModal(false); return showToast('Este reto ha terminado. Abre el reto del nuevo día.', 'info'); }
+    if (!Number.isInteger(index) || index < -1 || index >= session.question.options.length) return;
+    if (!triviaPendingAnswer.current) {
+      const secondsLeft = getTriviaSecondsLeft(session);
+      triviaPendingAnswer.current = { index: secondsLeft > 0 ? index : -1, secondsLeft };
     }
-
-    setTriviaResult({
-       status: newResultStatus,
-       points: pointsEarned,
-       speed: speedBonus,
-       streak: streakBonus,
-       newStreakCount: newStreak
-    });
-
-    let newTotalPoints = (profile.triviaPoints || 0) + pointsEarned;
-
+    const selection = triviaPendingAnswer.current;
+    triviaAnswerLock.current = true; setTriviaSaving(true); setTriviaError(''); setTriviaSelected(selection.index);
     try {
-      await updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
-        triviaLastPlayed: todayStr,
-        triviaPoints: newTotalPoints,
-        triviaStreak: newStreak
-      });
-    } catch (e) {}
-
-    setTimeout(() => {
-      setTriviaModal(false);
-    }, 3500); 
+      const result = await saveDailyTriviaAnswer({ db, appId, studentId: profile.id, session, selection });
+      if (triviaSessionRef.current !== session) return;
+      setTriviaResult(result);
+      triviaCloseTimer.current = setTimeout(() => { if (triviaSessionRef.current === session) setTriviaModal(false); }, 3500);
+    } catch (error) {
+      if (/Ya has jugado|ha terminado/.test(error.message)) { setTriviaModal(false); showToast(error.message, 'info'); }
+      else setTriviaError('No se ha podido guardar tu respuesta. Puedes reintentar sin cambiarla ni perder el tiempo de respuesta registrado.');
+    } finally { triviaAnswerLock.current = false; setTriviaSaving(false); }
   };
+
+  useEffect(() => { triviaAnswerHandlerRef.current = handleTriviaAnswer; });
+  useEffect(() => {
+    if (!triviaModal || !triviaSession || triviaResult || triviaSaving || triviaError) return undefined;
+    const tick = () => setTriviaTime(getTriviaSecondsLeft(triviaSession));
+    tick();
+    const timer = setInterval(tick, 200);
+    return () => clearInterval(timer);
+  }, [triviaModal, triviaSession, triviaResult, triviaSaving, triviaError]);
+  useEffect(() => {
+    if (triviaModal && triviaTime === 0 && !triviaResult && !triviaSaving && !triviaError) triviaAnswerHandlerRef.current?.(-1);
+  }, [triviaModal, triviaTime, triviaResult, triviaSaving, triviaError]);
+  useEffect(() => {
+    if (triviaSession && triviaSession.date !== triviaDate && triviaModal) {
+      const timer = setTimeout(() => {
+        setTriviaModal(false); setTriviaError('');
+        showToast('Ha cambiado el día. Ya tienes disponible el nuevo reto.', 'info');
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [triviaDate, triviaSession, triviaModal]);
+  useEffect(() => () => clearTimeout(triviaCloseTimer.current), []);
 
   const getAbsenceGestionDate = (gestion = {}) => {
     if (gestion.absenceDate) return gestion.absenceDate;
@@ -4906,7 +4913,9 @@ END:VCALENDAR`;
               if (!isStudentEntryActiveOnDate(s, {}, todayStr)) return false;
               return !isStudentInMaintenanceForDate(getStudentEntryId(s), todayStr);
             }).length;
-        if (activeStudents === 0) return false;
+        if (isAmpliarClases) {
+          if (!isClassExpansionAvailable(c, { today: todayStr, activeCount: activeStudents, committedCount: getCommittedSeatCountForClass(c, todayStr) })) return false;
+        } else if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
         if (gestionModal.type === 'cambio_horario' && gestionModal.changeKind === 'private_to_group' && maxCap <= 1) return false;
@@ -4964,7 +4973,7 @@ END:VCALENDAR`;
             <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
               <p className="text-xs font-bold text-emerald-800 flex items-start gap-2 leading-relaxed">
                 <CheckCircle className="w-4 h-4 shrink-0 mt-0.5"/> 
-                ¡Genial! Tu nueva plaza quedará reservada directamente para {timeRules.next} sin restricciones de fecha límite.
+                Puedes solicitar otra clase sin fecha límite mensual. Administración confirmará la plaza y la fecha de incorporación.
               </p>
             </div>
           )}
@@ -5179,6 +5188,7 @@ END:VCALENDAR`;
                           <span>Prof: {c.teacher}</span>
                           <span>Quedan {Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas</span>
                         </div>
+                        {isAmpliarClases && isFutureExpansionClass(c, todayStr) && <p className="text-xs font-bold text-blue-800 bg-blue-50 rounded-lg p-2 mt-2">Inicio: {formatDateSpanish(getExpansionStartDate(c, todayStr))}. Puedes solicitar tu incorporación desde esa fecha.</p>}
                       </div>
                     ))}
                   </div>
@@ -5187,6 +5197,7 @@ END:VCALENDAR`;
                 )
               )}
 
+              {isAmpliarClases && selectedNewClass && <p className="text-xs font-bold text-blue-800 bg-blue-50 border border-blue-100 rounded-xl p-3 mt-3">Incorporación solicitada: {formatDateSpanish(getExpansionStartDate(selectedNewClass, todayStr))}. La plaza y la fecha quedarán pendientes de aprobación.</p>}
               {isTicketRedemption && selectedNewClass && (
                 <div className="mt-6 pt-4 border-t border-zinc-100 animate-in fade-in zoom-in-95">
                   <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">3. Elige el día exacto de recuperación</p>
@@ -5590,7 +5601,10 @@ END:VCALENDAR`;
             {triviaTime}
           </div>
 
+          <p className="text-xs text-zinc-500 mb-3">Reto del {triviaSession?.date.split('-').reverse().join('/')} · Hora de Madrid</p>
           <h2 className="text-xl font-black text-center text-slate-800 mb-8 leading-tight">{currentQuestion.q}</h2>
+          {triviaSaving && <p role="status" className="text-sm text-zinc-600 mb-3">Guardando respuesta…</p>}
+          {triviaError && <div role="alert" className="p-3 rounded-xl bg-red-50 text-red-800 text-sm mb-4">{triviaError}<button type="button" onClick={() => handleTriviaAnswer(triviaSelected)} className="block mt-2 font-bold underline">Reintentar guardado</button><button type="button" onClick={() => setTriviaModal(false)} className="mt-2 underline">Cerrar</button></div>}
 
           <div className="w-full space-y-3">
             {currentQuestion.options.map((opt, idx) => {
@@ -5604,7 +5618,7 @@ END:VCALENDAR`;
               return (
                 <button 
                   key={idx} 
-                  disabled={!!triviaResult}
+                  disabled={!!triviaResult || triviaSaving || Boolean(triviaError)}
                   onClick={() => handleTriviaAnswer(idx)}
                   className={`w-full p-4 rounded-xl font-black uppercase text-xs tracking-widest transition-all ${btnClass}`}
                 >

@@ -13,6 +13,7 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
+import { getExpansionStartDate, getExpansionDateError, isClassExpansionAvailable } from './classExpansionUtils.js';
 import { formatLocatorTurn, locatorClassSignature, locatorStudentPlanningData, buildLocatorEmailPayload } from './locatorEmailUtils.js';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
 import { normalizeMusicOrder } from './musicChallengeCatalog.js';
@@ -4059,6 +4060,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         freeSpots: seatData.freeSpots,
         cancelledDates: Array.isArray(clase.cancelledDates) ? clase.cancelledDates : [],
         isWebVisible: clase.isWebVisible === true,
+        startDate: normalizeGestionDateString(clase.startDate || ''),
+        autoAdvanceStartDate: clase.autoAdvanceStartDate === true,
         recoveryEnabled: isClassRecoveryEnabled(clase)
       };
     }).filter(clase => clase.id && clase.subject && clase.time);
@@ -4103,6 +4106,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const studentSettingsPublication = useMemo(() => {
     const data = {
       contract: String(settings.contract || ''),
+      teacherEmails: Object.fromEntries(Object.entries(settings.teacherEmails || {})
+        .map(([name, email]) => [cleanTeacherDisplayName(name), String(email || '').trim().toLowerCase()])
+        .filter(([name, email]) => name && /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@escuelalosmitos\.com$/.test(email))),
       festivos: Array.isArray(settings.festivos) ? settings.festivos : [],
       vacaciones: Array.isArray(settings.vacaciones) ? settings.vacaciones : [],
       musicChallengeOrder: normalizeMusicOrder(settings.musicChallengeOrder),
@@ -4300,7 +4306,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const getProjectionEffectiveDate = gestion => {
       const explicit = normalizeGestionDateString(
         gestion.effectiveStartDate || gestion.scheduledStartDate || gestion.newClassStartDate ||
-        gestion.classStartDate || gestion.scheduledEffectiveDate || ''
+        gestion.classStartDate || gestion.scheduledEffectiveDate ||
+        (gestion.type === 'ampliar_clases' ? gestion.requestedClassStartDate : '') || ''
       );
       return explicit || getMonthStartFromGestionTarget(gestion);
     };
@@ -6209,6 +6216,9 @@ ALCANCE_BAJA: ${bajaScopeLine}
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_DESTINO: ${targetClassLine}
 CLASE: ${classLine}
+FECHA_INICIO_SOLICITADA: ${gestion.requestedClassStartDate ? formatDateSpanish(gestion.requestedClassStartDate) : ''}
+FECHA_INICIO_CONFIRMADA: ${gestion.type === 'ampliar_clases' && gestion.scheduledClassStartDate ? formatDateSpanish(gestion.scheduledClassStartDate) : ''}
+COBRO_AMPLIACION: ${gestion.type === 'ampliar_clases' ? `Revisar la cuota en Tadosi desde la incorporación: ${gestion.scheduledClassStartDate || gestion.requestedClassStartDate || 'pendiente de confirmar'}.` : ''}
 MES_OBJETIVO: ${gestion.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
 CUOTA_MANTENIMIENTO: ${maintenanceFeeLine}
@@ -6621,7 +6631,9 @@ Esto NO activa todavía el servicio. Solo indica que la parte de Tadosi/domicili
 
 Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecutarlo al cierre.`;
 
-    if (!window.confirm(confirmText)) return;
+    const expansionDateNote = gestion.type === 'ampliar_clases' && gestion.requestedClassStartDate
+      ? `\n\nIncorporación solicitada: ${formatDateSpanish(gestion.requestedClassStartDate)}. Ajusta la cuota desde esa fecha y revísala si cambias la incorporación al aprobar.` : '';
+    if (!window.confirm(confirmText + expansionDateNote)) return;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
       tadosiDone: true,
@@ -7055,7 +7067,82 @@ Coordinación Los Mitos.`
         await finalizeGestionStatus(gestionId, 'completado', gestionData, `Cancelados ${periodsToCancel.length} periodo(s) de mantenimiento`);
         return notify(`✅ Mantenimiento finalizado anticipadamente. Periodos cancelados: ${periodsToCancel.length}. Profesores y alumno avisados.`);
       }
-      else if (type === 'cambio_horario' || type === 'recuperacion' || type === 'ampliar_clases') {
+      else if (type === 'ampliar_clases') {
+        if (!studentInfo?.id) return fail('No se ha encontrado la ficha del alumno.');
+        if (silent) return fail('Ejecuta esta ampliación individualmente para confirmar su fecha de incorporación.');
+        const targetClass = gestionData.requestedClassRefPath
+          ? recurringClassesOnly.find(clase => clase.refPath === gestionData.requestedClassRefPath)
+          : recurringClassesOnly.find(clase => clase.id === requestedClass);
+        if (!targetClass?.refPath) return fail('La clase solicitada ya no está disponible.');
+        const initialSnap = await getDoc(doc(db, targetClass.refPath));
+        if (!initialSnap.exists()) return fail('La clase solicitada ya no existe.');
+        const initialClass = { ...targetClass, ...initialSnap.data() };
+        const earliestDate = getExpansionStartDate(initialClass, todayStr);
+        const requestedStart = gestionData.requestedClassStartDate;
+        const suggestedDate = requestedStart && !getExpansionDateError(initialClass, requestedStart, todayStr) ? requestedStart : earliestDate;
+        const answer = window.prompt(`Confirma la fecha de incorporación de ${displayName} a ${formatClassLine(initialClass)} (AAAA-MM-DD).\n\nLa cuota en Tadosi debe ajustarse desde la fecha confirmada.`, suggestedDate);
+        if (answer === null) return { ok: false, cancelled: true, message: 'Fecha de incorporación no confirmada.' };
+        const startDate = String(answer || '').trim();
+        const dateError = getExpansionDateError(initialClass, startDate, todayStr);
+        if (dateError) return fail(dateError);
+        if (isStudentInMaintenance(studentId, startDate)) return fail('El alumno está en mantenimiento en la fecha elegida.');
+
+        const gestionRef = doc(db, 'artifacts', appId, 'gestiones', gestionId);
+        const studentRef = doc(db, 'artifacts', appId, 'students', studentId);
+        const classRef = doc(db, targetClass.refPath);
+        const execution = await runTransaction(db, async transaction => {
+          const classSnap = await transaction.get(classRef);
+          const gestionSnap = await transaction.get(gestionRef);
+          const studentSnap = await transaction.get(studentRef);
+          if (!classSnap.exists() || !gestionSnap.exists() || !studentSnap.exists()) throw new Error('Faltan datos para ejecutar la ampliación.');
+          const currentGestion = gestionSnap.data();
+          if (currentGestion.status === 'completado') return { alreadyCompleted: true };
+          if (currentGestion.status !== 'pendiente' || currentGestion.type !== 'ampliar_clases'
+            || currentGestion.studentId !== studentId || currentGestion.requestedClass !== requestedClass
+            || (currentGestion.requestedClassRefPath && currentGestion.requestedClassRefPath !== targetClass.refPath)) throw new Error('La solicitud ha cambiado. Vuelve a abrirla.');
+          if (!isGestionReadyForExecution(currentGestion)) throw new Error('Primero debe estar preparada la cuota en Tadosi.');
+          const currentStudent = studentSnap.data();
+          if (currentStudent.globalStatus === 'baja') throw new Error('El alumno está de baja.');
+          const currentClass = { ...targetClass, ...classSnap.data() };
+          const currentDateError = getExpansionDateError(currentClass, startDate, todayStr);
+          if (currentDateError) throw new Error(currentDateError);
+          const seats = getCommercialSeatDataForClass(currentClass);
+          const activeCount = seats.students.filter(entry => !entry.isDropped && !entry.isPastEnd && !entry.isPendingStart && !entry.isFutureStart && !entry.isMaintenance).length;
+          if (!isClassExpansionAvailable({ ...currentClass, capacity: seats.cap }, { today: todayStr, activeCount, committedCount: seats.committedCount })) throw new Error('La clase ya no admite esta ampliación: revisa apertura, oferta y plazas.');
+          if (seats.students.some(entry => entry.id === studentId)) throw new Error('El alumno ya tiene una plaza en esta clase.');
+          const entry = {
+            id: studentId, name: currentStudent.useAlias && currentStudent.alias ? currentStudent.alias : (currentStudent.name || displayName),
+            email: currentStudent.email || studentEmail, classStartDate: startDate, scheduledStartDate: startDate,
+            sourceGestionId: gestionId, isPaused: false, status: 'present', isRecovery: false, pendingStart: false, enrollmentStatus: 'active'
+          };
+          const updatedStudents = [...(currentClass.students || []).filter(item => item.id !== studentId), entry];
+          const update = {
+            status: 'completado', scheduledClassStartDate: startDate, effectiveStartDate: startDate,
+            scheduledEffectiveDate: startDate, executionMode: 'dated_enrollment',
+            targetMonth: new Date(`${startDate}T12:00:00Z`).toLocaleString('es-ES', { month: 'long', timeZone: 'UTC' }),
+            requestedClassLine: formatClassLine(currentClass), requestedTeacher: currentClass.teacher || '',
+            executedAt: new Date().toISOString(), executedBy: user?.email || 'admin'
+          };
+          transaction.update(classRef, withClassStudentIndex(updatedStudents));
+          transaction.update(gestionRef, update);
+          return { currentClass, update, studentEmail: currentStudent.email || studentEmail };
+        });
+        if (execution.alreadyCompleted) return notify('Esta ampliación ya estaba ejecutada; no se ha duplicado la plaza.');
+        const classLine = formatClassLine(execution.currentClass);
+        await finalizeGestionStatus(gestionId, 'completado', { ...gestionData, ...execution.update }, `Plaza reservada. Incorporación: ${formatDateSpanish(startDate)}. Revisar cuota en Tadosi desde esta fecha.`, execution.update);
+        await sendTeacherNotification({
+          teacherName: execution.currentClass.teacher,
+          subject: `Nuevo alumno fijo: ${displayName} (${execution.currentClass.subject})`,
+          body: `Hola ${execution.currentClass.teacher},\n\nSe ha reservado una plaza para ${displayName} en:\n\n· ${classLine}\n\nFecha de incorporación: ${formatDateSpanish(startDate)}.\n${startDate > todayStr ? 'No debe aparecer como alumno activo en la asistencia hasta esa fecha.' : 'El alumno aparece activo desde hoy en la asistencia.'}\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+        await sendStudentNotification({
+          studentEmail: execution.studentEmail,
+          subject: 'Confirmación de ampliación de clases - Escuela Los Mitos',
+          body: `Hola ${studentName},\n\nTu ampliación de clases ha sido aprobada.\n\nNueva clase reservada:\n· ${classLine}\nProfesor/a: ${execution.currentClass.teacher}\n\nFecha de incorporación: ${formatDateSpanish(startDate)}. Debes acudir a partir de ese día.\n\nUn saludo,\nCoordinación Los Mitos.`
+        });
+        return notify(`Ampliación aprobada. Incorporación: ${formatDateSpanish(startDate)}. Revisa que la cuota en Tadosi corresponda a esa fecha.`);
+      }
+      else if (type === 'cambio_horario' || type === 'recuperacion') {
         const maintenanceCheckDate = type === 'recuperacion' ? (recoveryDate || todayStr) : todayStr;
         if (type !== 'cambio_horario' && isStudentInMaintenance(studentId, maintenanceCheckDate)) {
           const activeMaintenance = getActiveStudentMaintenancePeriod(studentId, maintenanceCheckDate);
@@ -7281,20 +7368,6 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
         logMessage += `✅ Trámite archivado con éxito.\n`;
-
-        if (type === 'ampliar_clases' && !isPunctualClass(targetClass)) {
-          await sendTeacherNotification({
-            teacherName: targetClass.teacher,
-            subject: `Nuevo alumno fijo: ${displayName} (${targetClass.subject})`,
-            body: `Hola ${targetClass.teacher},\n\nDesde coordinación hemos añadido a ${displayName} como alumno fijo en tu clase:\n\n· ${formatClassLine(targetClass)}\n\nEl alumno ya aparece activo en tu lista de asistencia de la App.\n\nUn saludo,\nCoordinación Los Mitos.`
-          });
-
-          await sendStudentNotification({
-            studentEmail,
-            subject: `Confirmación de ampliación de clases - Escuela Los Mitos`,
-            body: `Hola ${studentName},\n\nTe confirmamos que tu ampliación de clases ha sido aprobada y tramitada correctamente.\n\nNueva clase añadida a tu horario:\n· ${formatClassLine(targetClass)}\nProfesor/a: ${targetClass.teacher}\n\nUn saludo,\nCoordinación Los Mitos.`
-          });
-        }
 
         if (type === 'recuperacion') {
           await sendTeacherNotification({
@@ -9820,7 +9893,7 @@ Coordinación Los Mitos.`
   const ensureTriviaPrizes = periods => {
     const missing = periods.filter(period => !getTriviaPrize(period));
     if (missing.length === 0) return true;
-    const labels = { mensual: 'mensual', trimestral: 'trimestral', anual: 'anual' };
+    const labels = { mensual: 'mensual', trimestral: 'cuatrimestral', anual: 'anual' };
     alert(`Antes de cerrar el reto, define y guarda el premio ${missing.map(period => labels[period]).join(', ')} en esta misma pestaña.`);
     return false;
   };
@@ -9852,7 +9925,7 @@ Coordinación Los Mitos.`
 
     const winners = monthlyPodium[0].students;
     const maxScore = monthlyPodium[0].score;
-    if (!window.confirm(`¿Confirmas el cierre del MES?\n\nSe publicarán el ganador, el premio mensual y el podio. Los puntos pasarán al acumulado del trimestre y del año.\n\nGanador(es): ${winners.length} · ${maxScore} puntos.`)) return;
+    if (!window.confirm(`¿Confirmas el cierre del MES?\n\nSe publicarán el ganador, el premio mensual y el podio. Los puntos pasarán al acumulado del cuatrimestre y del año.\n\nGanador(es): ${winners.length} · ${maxScore} puntos.`)) return;
 
     setLoading(true);
     try {
@@ -9863,7 +9936,7 @@ Coordinación Los Mitos.`
         triviaPoints: 0
       })));
 
-      const content = `${buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual'))}\n\nLos puntos mensuales pasan ahora a los rankings trimestral y anual.`;
+      const content = `${buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual'))}\n\nLos puntos mensuales pasan ahora a los rankings cuatrimestral y anual.`;
       await publishTriviaClosure('🏆 Ganador y podio del mes', content, 'mensual');
       alert('Mes cerrado. Se ha publicado el premio y el podio con nombres abreviados.');
     } catch (e) {
@@ -9876,11 +9949,11 @@ Coordinación Los Mitos.`
   const handleCerrarRetoTrimestral = async () => {
     const monthlyPodium = buildTriviaPodium(students, student => student.triviaPoints);
     const quarterlyPodium = buildTriviaPodium(students, student => Number(student.triviaPointsQuarterly || 0) + Number(student.triviaPoints || 0));
-    if (monthlyPodium.length === 0) return alert('No hay puntos del mes actual. En el cierre trimestral se publican conjuntamente el resultado mensual y el trimestral.');
-    if (quarterlyPodium.length === 0) return alert('Nadie ha acumulado puntos en el trimestre.');
+    if (monthlyPodium.length === 0) return alert('No hay puntos del mes actual. En el cierre cuatrimestral se publican conjuntamente el resultado mensual y el cuatrimestral.');
+    if (quarterlyPodium.length === 0) return alert('Nadie ha acumulado puntos en el cuatrimestre.');
     if (!ensureTriviaPrizes(['mensual', 'trimestral'])) return;
 
-    if (!window.confirm(`¿Confirmas el cierre del TRIMESTRE?\n\nSe publicarán conjuntamente:\n· Ganador, premio y podio mensual.\n· Ganador, premio y podio trimestral.\n\nEl mes y el trimestre quedarán a cero; el ranking anual conservará sus puntos.`)) return;
+    if (!window.confirm(`¿Confirmas el cierre del CUATRIMESTRE?\n\nSe publicarán conjuntamente:\n· Ganador, premio y podio mensual.\n· Ganador, premio y podio cuatrimestral.\n\nEl mes y el cuatrimestre quedarán a cero; el ranking anual conservará sus puntos.`)) return;
 
     setLoading(true);
     try {
@@ -9893,13 +9966,13 @@ Coordinación Los Mitos.`
 
       const content = [
         buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual')),
-        buildTriviaResultSection('Resultado trimestral', quarterlyPodium, getTriviaPrize('trimestral')),
+        buildTriviaResultSection('Resultado cuatrimestral', quarterlyPodium, getTriviaPrize('trimestral')),
         'El ranking anual continúa en marcha.'
       ].join('\n\n────────────────\n\n');
-      await publishTriviaClosure('👑 Ganadores mensual y trimestral', content, 'trimestral');
-      alert('Trimestre cerrado. Se han publicado los dos premios y ambos podios.');
+      await publishTriviaClosure('👑 Ganadores mensual y cuatrimestral', content, 'trimestral');
+      alert('Cuatrimestre cerrado. Se han publicado los dos premios y ambos podios.');
     } catch (e) {
-      alert('Error al cerrar el trimestre: ' + e.message);
+      alert('Error al cerrar el cuatrimestre: ' + e.message);
     } finally {
       setLoading(false);
     }
@@ -9909,11 +9982,11 @@ Coordinación Los Mitos.`
     const monthlyPodium = buildTriviaPodium(students, student => student.triviaPoints);
     const quarterlyPodium = buildTriviaPodium(students, student => Number(student.triviaPointsQuarterly || 0) + Number(student.triviaPoints || 0));
     const annualPodium = buildTriviaPodium(students, student => Number(student.triviaPointsAnnual || 0) + Number(student.triviaPoints || 0));
-    if (monthlyPodium.length === 0) return alert('No hay puntos del mes actual. En el cierre anual se publican conjuntamente los resultados mensual, trimestral y anual.');
-    if (quarterlyPodium.length === 0 || annualPodium.length === 0) return alert('No hay puntos suficientes para cerrar conjuntamente el trimestre y el año.');
+    if (monthlyPodium.length === 0) return alert('No hay puntos del mes actual. En el cierre anual se publican conjuntamente los resultados mensual, cuatrimestral y anual.');
+    if (quarterlyPodium.length === 0 || annualPodium.length === 0) return alert('No hay puntos suficientes para cerrar conjuntamente el cuatrimestre y el año.');
     if (!ensureTriviaPrizes(['mensual', 'trimestral', 'anual'])) return;
 
-    if (!window.confirm(`⚠️ CIERRE ANUAL\n\nSe publicarán conjuntamente los ganadores, premios y podios mensual, trimestral y anual. Después se pondrán a cero todos los contadores del Trivial, incluidas rachas y victorias.\n\n¿Confirmas el cierre de temporada?`)) return;
+    if (!window.confirm(`⚠️ CIERRE ANUAL\n\nSe publicarán conjuntamente los ganadores, premios y podios mensual, cuatrimestral y anual. Después se pondrán a cero todos los contadores del Trivial, incluidas rachas y victorias.\n\n¿Confirmas el cierre de temporada?`)) return;
 
     setLoading(true);
     try {
@@ -9934,7 +10007,7 @@ Coordinación Los Mitos.`
 
       const content = [
         buildTriviaResultSection('Resultado mensual', monthlyPodium, getTriviaPrize('mensual')),
-        buildTriviaResultSection('Resultado trimestral', quarterlyPodium, getTriviaPrize('trimestral')),
+        buildTriviaResultSection('Resultado cuatrimestral', quarterlyPodium, getTriviaPrize('trimestral')),
         buildTriviaResultSection('Resultado anual', annualPodium, getTriviaPrize('anual')),
         '¡Enhorabuena a todos los participantes! Comienza una nueva temporada del Trivial.'
       ].join('\n\n────────────────\n\n');
@@ -11165,7 +11238,8 @@ Coordinación Los Mitos.`
         id: studentInfo.id,
         name: getDisplayNameForProjection(studentInfo, gestion),
         email: getEmailForProjection(studentInfo, gestion),
-        classStartDate: gestion.scheduledClassStartDate || gestion.effectiveStartDate || studentInfo?.classStartDate || '',
+        classStartDate: gestion.scheduledClassStartDate || gestion.effectiveStartDate ||
+          (gestion.type === 'ampliar_clases' ? gestion.requestedClassStartDate : '') || studentInfo?.classStartDate || '',
         isPaused: false,
         status: 'present',
         isRecovery: false,
@@ -14462,6 +14536,7 @@ ${startDateWarning}
                               </div>
                             )}
                             {g.recoveryDate && <div className="text-[10px] font-bold text-emerald-600 mt-1 uppercase">Día Exacto: {formatDateSpanish(g.recoveryDate)}</div>}
+                            {g.type === 'ampliar_clases' && (g.scheduledClassStartDate || g.requestedClassStartDate) && <div className="text-xs font-bold text-blue-800 mt-2">{g.scheduledClassStartDate ? 'Incorporación confirmada' : 'Incorporación solicitada'}: {formatDateSpanish(g.scheduledClassStartDate || g.requestedClassStartDate)}</div>}
                             {g.type === 'recuperacion' && (() => {
                               const ticketStats = ticketStatsByStudent[g.studentId] || { active: 0, committed: 0, free: 0, pending: 0, scheduled: 0 };
                               return (
@@ -17169,7 +17244,7 @@ ${startDateWarning}
                   <Timer className="w-3 h-3"/> Cerrar Mes
                 </button>
                 <button onClick={handleCerrarRetoTrimestral} className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
-                  <Award className="w-3 h-3"/> Cerrar Trimestre
+                  <Award className="w-3 h-3"/> Cerrar Cuatrimestre
                 </button>
                 <button onClick={handleCerrarRetoAnual} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] flex items-center justify-center gap-2 shadow-md transition-colors">
                   <Star className="w-3 h-3"/> Cerrar Año
@@ -17194,9 +17269,9 @@ ${startDateWarning}
                 </div>
               </div>
 
-              {/* RANKING TRIMESTRAL */}
+              {/* RANKING CUATRIMESTRAL */}
               <div className="bg-white rounded-2xl shadow-sm border border-amber-200 flex flex-col h-96">
-                <div className="bg-amber-50 p-4 border-b border-amber-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-amber-900 flex items-center gap-2"><Award className="w-4 h-4"/> Trimestral</h3></div>
+                <div className="bg-amber-50 p-4 border-b border-amber-100 flex items-center justify-between"><h3 className="font-black uppercase tracking-tight text-amber-900 flex items-center gap-2"><Award className="w-4 h-4"/> Cuatrimestre</h3></div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-2 no-scrollbar bg-amber-50/20">
                   {rankQuarterly.map((s, i) => (
                     <div key={s.id} className="flex items-center justify-between p-2 bg-white border border-amber-100 rounded-lg shadow-sm">
@@ -17233,7 +17308,7 @@ ${startDateWarning}
               <p className="text-xs font-bold text-zinc-400 mb-4">Estos premios se harán públicos automáticamente en el Tablón cuando cierres el periodo correspondiente.</p>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                 <textarea value={settings.prizes?.mensual || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, mensual: e.target.value}})} placeholder="Premio mensual..." className="w-full p-3 bg-emerald-50 border border-emerald-200 rounded-xl focus:border-emerald-500 outline-none text-xs font-medium resize-y" />
-                <textarea value={settings.prizes?.trimestral || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, trimestral: e.target.value}})} placeholder="Premio Trimestral..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none text-xs font-medium resize-y" />
+                <textarea value={settings.prizes?.trimestral || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, trimestral: e.target.value}})} placeholder="Premio Cuatrimestral..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none text-xs font-medium resize-y" />
                 <textarea value={settings.prizes?.anual || ''} onChange={e => setSettings({...settings, prizes: {...settings.prizes, anual: e.target.value}})} placeholder="Gran Premio Anual..." className="w-full p-3 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-black outline-none text-xs font-medium resize-y" />
               </div>
               <button onClick={() => saveGlobalSettings(settings)} className="bg-zinc-900 hover:bg-black text-white px-4 py-2 rounded-lg font-black uppercase tracking-widest text-[10px] transition-colors">Guardar premios</button>

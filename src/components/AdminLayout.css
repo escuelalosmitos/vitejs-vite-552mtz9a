@@ -1,4 +1,4 @@
-/* Presentation only. Bandeja deliberately keeps its approved layout. */
+/* Presentation only. Bandeja keeps its approved desktop layout. */
 .admin-main:not([data-admin-section="gestiones"]) > div > header { gap: 20px; align-items: flex-start; flex-wrap: wrap; }
 .admin-main:not([data-admin-section="gestiones"]) > div > header > div { min-width: 0; }
 .admin-main:not([data-admin-section="gestiones"]) > div > header > div:last-child { flex-wrap: wrap; }
@@ -75,7 +75,7 @@
 }
 @container (max-width: 900px) {
   .admin-crm-workspace,.admin-master-detail { grid-template-columns: 1fr; }
-  .admin-crm-workspace.has-selection > .admin-crm-list { display: none; }
+  .admin-crm-workspace.has-selection > .admin-crm-list { display: block; }
   .admin-crm-workspace:not(.has-selection) > .admin-crm-detail { display: none; }
   .admin-crm-detail,.admin-record-detail { position: static; max-height: none; overflow: visible; }
   .admin-back-list { display: block; }
@@ -113,3 +113,39 @@
   .admin-teacher-evaluation-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 .admin-bi-avoided .text-4xl { font-size: 30px; }
+
+/* Compact details live outside the admin container so its containment cannot
+   anchor a fixed window below the selected row. Desktop panels stay in place. */
+.admin-responsive-backdrop {
+  position: fixed; inset: 0; z-index: 70; padding: 12px;
+  display: flex; align-items: center; justify-content: center;
+  background: #000a; backdrop-filter: blur(3px);
+  color: #1e293b; font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.admin-responsive-dialog {
+  width: 100%; max-width: 900px; max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px); display: flex; flex-direction: column;
+  min-height: 0; background: white; border-radius: 16px; overflow: hidden;
+  box-shadow: 0 20px 60px #0006; text-align: left;
+}
+.admin-responsive-dialog-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-shrink: 0; padding: 12px 16px; border-bottom: 1px solid #e4e4e7; background: white;
+}
+.admin-responsive-dialog-header h2 { margin: 0; color: #18181b; font-size: 15px; font-weight: 700; line-height: 1.35; }
+.admin-responsive-dialog-header button {
+  flex-shrink: 0; padding: 10px 14px; min-height: 44px;
+  border-radius: 10px; background: #f4f4f5; color: #18181b; font-size: 14px; font-weight: 650;
+}
+.admin-responsive-dialog .admin-responsive-dialog-content {
+  position: static; min-height: 0; max-height: none; overflow-y: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  border: 0; border-radius: 0; padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.admin-responsive-dialog-content .admin-back-list,
+.admin-responsive-dialog-content .inbox-reading-pane > header,
+.admin-responsive-dialog-content .admin-dossier-inner > button[aria-label="Volver al listado"],
+.admin-responsive-dialog-content .admin-class-inner > button[aria-label="Cerrar detalle de clase"] { display: none; }
+.admin-responsive-dialog-content.admin-record-detail { padding: 12px; }
+.admin-responsive-dialog-content .grid > *, .admin-responsive-dialog-content .flex > * { min-width: 0; }
+.admin-responsive-dialog-content .overflow-x-auto { max-width: 100%; }

@@ -13,6 +13,7 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
+import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
 import { getExpansionStartDate, getExpansionDateError, buildPublicClassSelectionId, getPublishedExpansionClass, isPublicExpansionSeat } from './classExpansionUtils.js';
 import { formatLocatorTurn, locatorClassSignature, locatorStudentPlanningData, buildLocatorEmailPayload } from './locatorEmailUtils.js';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
@@ -2149,7 +2150,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
 
       <div className="space-y-4">
         {filteredWorkshops.length === 0 && <div className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-10 text-center"><PartyPopper className="w-9 h-9 text-zinc-300 mx-auto mb-3"/><p className="font-black uppercase tracking-widest text-xs text-zinc-400">No hay talleres en esta vista</p></div>}
-        <div className="admin-master-detail"><nav className="admin-record-list" aria-label="Talleres">{filteredWorkshops.map(workshop => <button type="button" key={workshop.id} className="admin-select-row" aria-pressed={shownWorkshopId === workshop.id} onClick={() => setSelectedWorkshopId(workshop.id)}><strong>{workshop.title}</strong><span>{getWorkshopStatusLabel(workshop.status)} · {workshop.sessions?.[0]?.date ? formatDateSpanish(workshop.sessions[0].date) : 'Sin fecha'}</span></button>)}</nav><div className="admin-record-detail">
+        <div className="admin-master-detail"><nav className="admin-record-list" aria-label="Talleres">{filteredWorkshops.map(workshop => <button type="button" key={workshop.id} className="admin-select-row" aria-pressed={shownWorkshopId === workshop.id} onClick={() => setSelectedWorkshopId(workshop.id)}><strong>{workshop.title}</strong><span>{getWorkshopStatusLabel(workshop.status)} · {workshop.sessions?.[0]?.date ? formatDateSpanish(workshop.sessions[0].date) : 'Sin fecha'}</span></button>)}</nav><ResponsiveAdminDetail section="workshops" desktopClassName="admin-record-detail" open={filteredWorkshops.some(workshop => workshop.id === selectedWorkshopId)} onClose={() => setSelectedWorkshopId(null)} title="Detalle del taller">
         {filteredWorkshops.filter(workshop => workshop.id === shownWorkshopId).map(workshop => {
           const summary = getRegistrationSummary(workshop.id);
           const workshopRegistrations = getWorkshopRegistrations(workshop.id);
@@ -2159,7 +2160,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
             <div className="p-5">
               <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
                 <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2 mb-2"><span className={`px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_STATUS_STYLE[workshop.status || 'draft']}`}>{getWorkshopStatusLabel(workshop.status)}</span>{workshop.featured && <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline"/> Destacado</span>}</div><h3 className="font-black text-lg text-slate-900 leading-tight">{workshop.title}</h3><p className="text-sm text-zinc-500 mt-1">{workshop.shortDescription}</p><div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 text-[10px] font-black uppercase tracking-wider text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5 text-violet-600"/>{firstSession ? `${formatDateSpanish(firstSession.date)} · ${firstSession.startTime}` : 'Sin sesión'}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-violet-600"/>{workshop.locationType === 'both' ? 'Ambas sedes' : workshop.locationType === 'online' ? 'Online' : workshop.locationType === 'other' ? workshop.externalLocation : `${workshop.locationType}${workshop.room ? ` · ${workshop.room}` : ''}`}</span><span className="flex items-center gap-1"><Target className="w-3.5 h-3.5 text-violet-600"/>{getAudienceLabel(workshop)}</span><span className="flex items-center gap-1"><DollarSign className="w-3.5 h-3.5 text-violet-600"/>{workshop.priceType === 'free' ? 'Gratuito' : `${Number(workshop.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`}</span></div></div>
-                <div className="flex flex-wrap lg:justify-end gap-2 shrink-0"><select value={workshop.status || 'draft'} onChange={e => changeWorkshopStatus(workshop, e.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-[9px] font-black uppercase tracking-widest">{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><button onClick={() => editWorkshop(workshop)} className="p-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg" title="Editar"><Pencil className="w-4 h-4"/></button><button onClick={() => deleteWorkshop(workshop)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg" title="Eliminar"><Trash2 className="w-4 h-4"/></button></div>
+                <div className="flex flex-wrap lg:justify-end gap-2 shrink-0"><select value={workshop.status || 'draft'} onChange={e => changeWorkshopStatus(workshop, e.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-[9px] font-black uppercase tracking-widest">{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><button data-admin-detail-dismiss onClick={() => editWorkshop(workshop)} className="p-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg" title="Editar"><Pencil className="w-4 h-4"/></button><button onClick={() => deleteWorkshop(workshop)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg" title="Eliminar"><Trash2 className="w-4 h-4"/></button></div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-5"><div className="bg-emerald-50 p-3 rounded-xl"><span className="block text-xl font-black text-emerald-700">{summary.confirmed}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Confirmadas</span></div><div className="bg-amber-50 p-3 rounded-xl"><span className="block text-xl font-black text-amber-700">{summary.pending}</span><span className="text-[9px] font-black uppercase tracking-widest text-amber-600">Pendientes</span></div><div className="bg-blue-50 p-3 rounded-xl"><span className="block text-xl font-black text-blue-700">{summary.waitlist}</span><span className="text-[9px] font-black uppercase tracking-widest text-blue-600">En espera</span></div><div className="bg-zinc-50 p-3 rounded-xl"><span className="block text-xl font-black text-slate-800">{workshop.unlimitedCapacity ? '∞' : Math.max(0, Number(workshop.capacity || 0) - summary.confirmed)}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Plazas libres</span></div></div>
               <button onClick={() => setExpandedWorkshopId(isExpanded ? null : workshop.id)} className="w-full mt-4 py-2.5 border-t border-zinc-100 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-violet-700 flex items-center justify-center gap-2">Inscripciones ({workshopRegistrations.length}) {isExpanded ? <ChevronUp className="w-4 h-4"/> : <ChevronDown className="w-4 h-4"/>}</button>
@@ -2167,7 +2168,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
             {isExpanded && <div className="bg-zinc-50 border-t border-zinc-200 p-4 space-y-2">{workshopRegistrations.length === 0 ? <p className="text-center text-xs font-bold text-zinc-400 py-4">Todavía no hay inscripciones.</p> : workshopRegistrations.map(registration => <div key={registration.id} className="bg-white border border-zinc-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"><div><p className="font-black text-sm text-slate-800">{registration.studentName || students.find(student => student.id === registration.studentId)?.name || 'Alumno'}</p><p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">{WORKSHOP_REGISTRATION_STATUS_LABELS[registration.status] || registration.status} · {registration.createdAt ? formatDateSpanish(registration.createdAt) : 'Sin fecha'}</p></div><div className="flex gap-2">{registration.status !== 'confirmed' && <button onClick={() => updateRegistrationStatus(registration, 'confirmed')} className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-emerald-600 hover:text-white"><Check className="w-3 h-3 inline"/> Confirmar</button>}{!['rejected', 'cancelled'].includes(registration.status) && <button onClick={() => updateRegistrationStatus(registration, 'rejected')} className="px-3 py-2 bg-red-50 text-red-600 rounded-lg text-[9px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-white"><X className="w-3 h-3 inline"/> Rechazar</button>}</div></div>)}</div>}
           </article>;
         })}
-        </div></div>
+        </ResponsiveAdminDetail></div>
       </div>
     </div>
   );
@@ -14227,7 +14228,7 @@ ${startDateWarning}
     return (
       <div className={(activeTab === 'danger' || (activeTab === 'classes' && classesViewMode !== 'salas')) ? "admin-embedded-class" : "fixed inset-0 bg-black/80 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in overflow-y-auto"}>
         <div className={(activeTab === 'danger' || (activeTab === 'classes' && classesViewMode !== 'salas')) ? "bg-white rounded-2xl p-5 relative admin-class-inner" : "bg-white rounded-3xl max-w-xl w-full p-5 sm:p-8 shadow-2xl relative my-3 sm:my-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100vh-4rem)] overflow-y-auto overscroll-contain"}>
-          <button onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+          <button aria-label="Cerrar detalle de clase" onClick={() => setViewClassModal(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           
           <button onClick={() => handleDeleteClassGlobal(c)} className="absolute top-4 right-14 text-red-500 hover:text-white hover:bg-red-500 bg-red-50 p-2 rounded-full transition-colors" title="Borrar Clase DEFINITIVAMENTE"><Trash2 className="w-5 h-5"/></button>
 
@@ -15440,12 +15441,12 @@ ${startDateWarning}
                         </button>
                       ))}
                     </section>
-                    <div className="inbox-detail-container">
+                    <ResponsiveAdminDetail section="gestiones" desktopClassName="inbox-detail-container" open={filteredPendingGestiones.some(g => g.id === inboxSelectedId)} onClose={() => { ++inboxDetailRequestRef.current; setInboxSelectedId(null); }} title="Detalle del trámite">
                       {(() => {
                         const selected = filteredPendingGestiones.find(g => g.id === inboxSelectedId);
                         return selected ? renderInboxPendingDetail(selected) : <div className="inbox-detail-empty"><FileText className="w-8 h-8 mb-3 text-zinc-400"/><h3 className="font-bold text-slate-700">Selecciona un trámite</h3><p className="text-sm text-zinc-500 mt-2">Aquí aparecerán la solicitud completa y sus acciones.</p></div>;
                       })()}
-                    </div>
+                    </ResponsiveAdminDetail>
                   </div>
                 )}
               </div>
@@ -15631,12 +15632,12 @@ ${startDateWarning}
                   return <><p className="admin-list-count">{filtered.length} alumno(s)</p>{filtered.length === 0 && <p className="p-5 text-sm text-zinc-500">No hay alumnos en esta lista.</p>}{filtered.map(student => <button type="button" key={student.id} onClick={() => setStudentDossierModal(student)} aria-pressed={studentDossierModal?.id === student.id} className="admin-select-row"><strong>{student.useAlias && student.alias ? student.alias : student.name}{unreadVacationStudentIds.has(student.id) && <i aria-label="Resultados nuevos de retos musicales" title="Reto musical completado sin consultar" className="inline-block w-2 h-2 rounded-full bg-red-500 ml-2 align-middle"/>}</strong><span>{student.email || 'Sin correo'}</span><span>{getStudentOperationalStatus(student).replace(/_/g, ' ')} · {getStudentAssignedClasses(student.id).length} clase(s)</span></button>)}</>;
                 })()}
               </section>
-              <section className="admin-crm-detail" aria-label="Ficha del alumno seleccionado">
+              <ResponsiveAdminDetail section="students" desktopClassName="admin-crm-detail" open={Boolean(studentDossierModal)} onClose={() => setStudentDossierModal(null)} title="Ficha del alumno">
                 {studentDossierModal ? <><button type="button" className="admin-back-list" onClick={() => setStudentDossierModal(null)}>← Volver al listado</button>
                   <StableModalRenderer key={`student-dossier-${studentDossierModal.id}`} render={StudentDossierModalOverlay}/>
 
                 </> : <div className="admin-empty-detail"><Users className="w-8 h-8 mb-3"/><h3>Selecciona un alumno</h3><p>Su ficha y acciones aparecerán aquí.</p></div>}
-              </section>
+              </ResponsiveAdminDetail>
             </div>
           </div>
         )}
@@ -16189,7 +16190,7 @@ ${startDateWarning}
                 )}
               </div>
             )}
-          </div>{viewClassModal && classesViewMode !== 'salas' && <aside className="admin-class-panel" aria-label="Detalle de la clase"><StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay}/></aside>}</div></div>
+          </div>{viewClassModal && classesViewMode !== 'salas' && <ResponsiveAdminDetail section={activeTab} desktopClassName="admin-class-panel" breakpoint={1100} open={Boolean(viewClassModal)} onClose={() => setViewClassModal(null)} title="Detalle de la clase"><StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay}/></ResponsiveAdminDetail>}</div></div>
         )}
 
         {/* --- 5. LOCALIZADOR DE CLASES --- */}
@@ -16362,7 +16363,7 @@ ${startDateWarning}
                 ))}
               </div>
             )}
-          </div>{viewClassModal && <aside className="admin-class-panel" aria-label="Detalle de la clase"><StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay}/></aside>}</div></div>
+          </div>{viewClassModal && <ResponsiveAdminDetail section={activeTab} desktopClassName="admin-class-panel" breakpoint={1100} open={Boolean(viewClassModal)} onClose={() => setViewClassModal(null)} title="Detalle de la clase"><StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay}/></ResponsiveAdminDetail>}</div></div>
         )}
 
         {/* --- 6. PROFESORES --- */}
@@ -17044,7 +17045,7 @@ ${startDateWarning}
                 <strong>{ann.title}{unreadBoardIds.has(ann.id) && <i aria-label="Participaciones nuevas" title="Participaciones nuevas sin consultar" className="inline-block ml-2 w-2 h-2 bg-red-500 rounded-full"/>}</strong>
                 <span>{formatDateSpanish(ann.date)} · {ann.type === 'poll' ? 'Encuesta' : ann.type === 'call' ? 'Convocatoria' : 'Aviso'}{unreadBoardIds.has(ann.id) ? ' · Novedades' : ''}</span>
               </button>)}
-            </nav><div className="admin-record-detail"><div className="space-y-3">
+            </nav><ResponsiveAdminDetail section="announcements" desktopClassName="admin-record-detail" open={visibleBoardAnnouncements.some(ann => ann.id === selectedAnnouncementId)} onClose={() => setSelectedAnnouncementId(null)} title="Detalle de la publicación"><div className="space-y-3">
               {visibleBoardAnnouncements.filter(ann => ann.id === selectedBoardAnnouncementId).map(ann => {
                 const isPoll = ann.type === 'poll';
                 const isCall = ann.type === 'call';
@@ -17105,7 +17106,7 @@ ${startDateWarning}
                           ? <button onClick={() => setCallStatus(ann, 'open')} className="px-3 py-2 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Reabrir</button>
                           : <button onClick={() => setCallStatus(ann, 'closed')} className="px-3 py-2 bg-amber-50 text-amber-700 hover:bg-amber-600 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Cerrar</button>)}
                         {isCall && ann.callStatus !== 'archived' && <button onClick={() => setCallStatus(ann, 'archived')} className="px-3 py-2 bg-zinc-100 text-zinc-600 hover:bg-zinc-700 hover:text-white rounded-lg text-[9px] font-black uppercase tracking-widest">Archivar</button>}
-                        <button onClick={() => startEditAnnouncement(ann)} className="p-2 bg-sky-50 text-sky-700 hover:bg-sky-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Editar encuesta' : isCall ? 'Editar convocatoria' : 'Editar aviso'}>
+                        <button data-admin-detail-dismiss onClick={() => startEditAnnouncement(ann)} className="p-2 bg-sky-50 text-sky-700 hover:bg-sky-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Editar encuesta' : isCall ? 'Editar convocatoria' : 'Editar aviso'}>
                           <Pencil className="w-4 h-4"/>
                         </button>
                         <button onClick={() => deleteAnnouncement(ann)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg transition-colors" title={isPoll ? 'Borrar o archivar encuesta' : isCall ? 'Borrar o archivar convocatoria' : 'Borrar aviso'}>
@@ -17220,7 +17221,7 @@ ${startDateWarning}
                   Cargar más publicaciones ({Math.min(10, boardAnnouncements.length - visibleAnnouncementsCount)} más)
                 </button>
               )}
-            </div></div></div>}
+            </div></ResponsiveAdminDetail></div>}
           </div>
         )}
 

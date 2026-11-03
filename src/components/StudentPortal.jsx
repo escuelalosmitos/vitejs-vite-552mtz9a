@@ -4958,7 +4958,7 @@ END:VCALENDAR`;
         
         return true;
       });
-      if (gestionModal.type === 'cambio_horario') availableClasses.sort(compareClassWeekdayAndTime);
+      if (gestionModal.type === 'cambio_horario' || isTicketRedemption) availableClasses.sort(compareClassWeekdayAndTime);
     }
 
     const isMaintenanceChoiceInvalid = isMaintenanceRequest && ![1, 2].includes(Number(maintenanceMonths));

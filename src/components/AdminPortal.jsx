@@ -13,7 +13,7 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
-import { getExpansionStartDate, getExpansionDateError, isClassExpansionAvailable } from './classExpansionUtils.js';
+import { getExpansionStartDate, getExpansionDateError, buildPublicClassSelectionId, getPublishedExpansionClass, isPublicExpansionSeat } from './classExpansionUtils.js';
 import { formatLocatorTurn, locatorClassSignature, locatorStudentPlanningData, buildLocatorEmailPayload } from './locatorEmailUtils.js';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
 import { normalizeMusicOrder } from './musicChallengeCatalog.js';
@@ -51,24 +51,6 @@ const buildPublicAvailabilitySignature = (classes = []) => {
     hash = Math.imul(hash, 16777619);
   }
   return `v${PUBLIC_AVAILABILITY_SCHEMA_VERSION}-${(hash >>> 0).toString(16)}-${serialized.length}`;
-};
-
-// Identificador público opaco y estable para distinguir turnos que comparten
-// sede, instrumento y horario sin exponer su ruta interna de Firestore.
-const buildPublicClassSelectionId = (value = '') => {
-  const source = String(value || '').trim();
-  if (!source) return '';
-
-  let hashA = 2166136261;
-  let hashB = 5381;
-  for (let index = 0; index < source.length; index += 1) {
-    const code = source.charCodeAt(index);
-    hashA ^= code;
-    hashA = Math.imul(hashA, 16777619);
-    hashB = Math.imul(hashB, 33) ^ code;
-  }
-
-  return `class-${(hashA >>> 0).toString(36)}-${(hashB >>> 0).toString(36)}`;
 };
 
 const createPollOption = (label = '') => ({
@@ -3925,39 +3907,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   // correos, profesores, notas internas, rutas de Firestore ni IDs de gestiones.
   const publicAvailabilityPublication = useMemo(() => {
     const studentById = new Map(students.map(student => [String(student.id || ''), student]));
-    const cancelledStatuses = new Set(['baja', 'cancelled', 'canceled', 'deleted', 'eliminado']);
-    const nonFixedTypes = new Set(['recovery', 'temporary', 'punctual', 'temporary_relocation']);
-
-    const isPublicCommittedSeat = (studentEntry = {}, availabilityDate = '') => {
-      const type = String(studentEntry.type || '').trim().toLowerCase();
-      const status = String(studentEntry.status || '').trim().toLowerCase();
-      if (
-        studentEntry.isRecovery === true ||
-        studentEntry.isTemporary === true ||
-        studentEntry.isPunctual === true ||
-        studentEntry.isTemporaryRelocation === true ||
-        Boolean(studentEntry.temporaryRelocationId) ||
-        nonFixedTypes.has(type) ||
-        status === 'recovery' ||
-        cancelledStatuses.has(status)
-      ) return false;
-
-      const studentInfo = studentById.get(String(studentEntry.id || studentEntry.studentId || '')) || {};
-      if (String(studentInfo.globalStatus || '').trim().toLowerCase() === 'baja') return false;
-
-      const scheduledEndDate = normalizeGestionDateString(
-        studentEntry.classEndDate ||
-        studentEntry.scheduledEndDate ||
-        studentEntry.endDate ||
-        studentInfo.classEndDate ||
-        studentInfo.scheduledEndDate ||
-        studentInfo.endDate ||
-        ''
-      );
-
-      // La fecha final es inclusiva: una baja el 31/08 libera plaza desde el 01/09.
-      return !(scheduledEndDate && availabilityDate && scheduledEndDate < availabilityDate);
-    };
+    const isPublicCommittedSeat = (entry = {}, availabilityDate = '') => isPublicExpansionSeat(
+      entry, studentById.get(String(entry.id || entry.studentId || '')) || {}, availabilityDate
+    );
 
     const classes = recurringClassesOnly
       .filter(clase => clase?.isWebVisible === true && !isPunctualClass(clase))
@@ -4347,6 +4299,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       ))
       .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
       .forEach(gestion => {
+        if (gestion.type === 'ampliar_clases' && gestion.requestedStartPending === true) return;
         const studentInfo = getProjectedStudent(gestion);
         if (!studentInfo) {
           skippedPending.push({ id: gestion.id, type: gestion.type, reason: 'sin alumno asociado' });
@@ -6218,7 +6171,7 @@ CLASE_DESTINO: ${targetClassLine}
 CLASE: ${classLine}
 FECHA_INICIO_SOLICITADA: ${gestion.requestedClassStartDate ? formatDateSpanish(gestion.requestedClassStartDate) : ''}
 FECHA_INICIO_CONFIRMADA: ${gestion.type === 'ampliar_clases' && gestion.scheduledClassStartDate ? formatDateSpanish(gestion.scheduledClassStartDate) : ''}
-COBRO_AMPLIACION: ${gestion.type === 'ampliar_clases' ? `Revisar la cuota en Tadosi desde la incorporación: ${gestion.scheduledClassStartDate || gestion.requestedClassStartDate || 'pendiente de confirmar'}.` : ''}
+COBRO_AMPLIACION: ${gestion.type === 'ampliar_clases' ? gestion.requestedStartPending && !gestion.scheduledClassStartDate ? 'Grupo en formación: no activar cuota hasta confirmar el inicio.' : `Revisar la cuota en Tadosi desde la incorporación: ${gestion.scheduledClassStartDate || gestion.requestedClassStartDate || 'pendiente de confirmar'}.` : ''}
 MES_OBJETIVO: ${gestion.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
 CUOTA_MANTENIMIENTO: ${maintenanceFeeLine}
@@ -6599,7 +6552,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     }
   };
 
-  const gestionRequiresTadosi = (gestion = {}) => !gestion?.skipTadosi && TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
+  const gestionRequiresTadosi = (gestion = {}) => {
+    const target = gestion.type === 'ampliar_clases' && gestion.requestedStartPending === true
+      ? recurringClassesOnly.find(clase => gestion.requestedClassRefPath ? clase.refPath === gestion.requestedClassRefPath : clase.id === gestion.requestedClass) : null;
+    return !gestion?.skipTadosi && target?.autoAdvanceStartDate !== true && TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
+  };
   const isGestionTadosiDone = (gestion = {}) => Boolean(gestion?.tadosiDone || gestion?.tadosiDoneAt || gestion?.workflowStatus === 'tadosi_hecho' || gestion?.workflowStatus === 'listo_ejecucion');
   const isGestionReadyForExecution = (gestion = {}) => !gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion);
 
@@ -7077,15 +7034,23 @@ Coordinación Los Mitos.`
         const initialSnap = await getDoc(doc(db, targetClass.refPath));
         if (!initialSnap.exists()) return fail('La clase solicitada ya no existe.');
         const initialClass = { ...targetClass, ...initialSnap.data() };
+        const availabilityRef = doc(db, 'publicData', 'classAvailability');
+        const availabilitySnap = await getDoc(availabilityRef);
+        const published = availabilitySnap.exists() ? getPublishedExpansionClass(availabilitySnap.data(), initialClass, todayStr) : null;
+        if (!published) return fail('El turno ya no tiene plazas en el formulario web. Actualiza la solicitud.');
+        const pendingOpening = initialClass.autoAdvanceStartDate === true;
+        if (pendingOpening !== published.autoAdvanceStartDate) return fail('La apertura está actualizándose. Reintenta cuando se publique la oferta actual.');
         const earliestDate = getExpansionStartDate(initialClass, todayStr);
         const requestedStart = gestionData.requestedClassStartDate;
         const suggestedDate = requestedStart && !getExpansionDateError(initialClass, requestedStart, todayStr) ? requestedStart : earliestDate;
-        const answer = window.prompt(`Confirma la fecha de incorporación de ${displayName} a ${formatClassLine(initialClass)} (AAAA-MM-DD).\n\nLa cuota en Tadosi debe ajustarse desde la fecha confirmada.`, suggestedDate);
+        const answer = pendingOpening
+          ? window.confirm(`¿Reservar una plaza para ${displayName} en este grupo en formación?\n\nEl inicio queda pendiente. No activar cuota ni asistencia hasta confirmar la incorporación.`) ? '' : null
+          : window.prompt(`Confirma la fecha de incorporación de ${displayName} a ${formatClassLine(initialClass)} (AAAA-MM-DD).\n\nLa cuota en Tadosi debe ajustarse desde la fecha confirmada.`, suggestedDate);
         if (answer === null) return { ok: false, cancelled: true, message: 'Fecha de incorporación no confirmada.' };
         const startDate = String(answer || '').trim();
-        const dateError = getExpansionDateError(initialClass, startDate, todayStr);
+        const dateError = pendingOpening ? '' : getExpansionDateError(initialClass, startDate, todayStr);
         if (dateError) return fail(dateError);
-        if (isStudentInMaintenance(studentId, startDate)) return fail('El alumno está en mantenimiento en la fecha elegida.');
+        if (isStudentInMaintenance(studentId, startDate || todayStr)) return fail('El alumno está en mantenimiento en la fecha elegida.');
 
         const gestionRef = doc(db, 'artifacts', appId, 'gestiones', gestionId);
         const studentRef = doc(db, 'artifacts', appId, 'students', studentId);
@@ -7094,53 +7059,62 @@ Coordinación Los Mitos.`
           const classSnap = await transaction.get(classRef);
           const gestionSnap = await transaction.get(gestionRef);
           const studentSnap = await transaction.get(studentRef);
-          if (!classSnap.exists() || !gestionSnap.exists() || !studentSnap.exists()) throw new Error('Faltan datos para ejecutar la ampliación.');
+          const publicationSnap = await transaction.get(availabilityRef);
+          if (!classSnap.exists() || !gestionSnap.exists() || !studentSnap.exists() || !publicationSnap.exists()) throw new Error('Faltan datos para ejecutar la ampliación.');
           const currentGestion = gestionSnap.data();
           if (currentGestion.status === 'completado') return { alreadyCompleted: true };
           if (currentGestion.status !== 'pendiente' || currentGestion.type !== 'ampliar_clases'
             || currentGestion.studentId !== studentId || currentGestion.requestedClass !== requestedClass
             || (currentGestion.requestedClassRefPath && currentGestion.requestedClassRefPath !== targetClass.refPath)) throw new Error('La solicitud ha cambiado. Vuelve a abrirla.');
-          if (!isGestionReadyForExecution(currentGestion)) throw new Error('Primero debe estar preparada la cuota en Tadosi.');
+          if (!pendingOpening && !isGestionReadyForExecution(currentGestion)) throw new Error('Primero debe estar preparada la cuota en Tadosi.');
           const currentStudent = studentSnap.data();
           if (currentStudent.globalStatus === 'baja') throw new Error('El alumno está de baja.');
           const currentClass = { ...targetClass, ...classSnap.data() };
-          const currentDateError = getExpansionDateError(currentClass, startDate, todayStr);
+          const currentPublication = getPublishedExpansionClass(publicationSnap.data(), currentClass, todayStr);
+          if (!currentPublication || !currentClass.isWebVisible || currentClass.isRecurring === false || currentClass.date) throw new Error('El turno ya no está ofertado con plazas en la web.');
+          if ((currentClass.autoAdvanceStartDate === true) !== pendingOpening || currentPublication.autoAdvanceStartDate !== pendingOpening) throw new Error('Ha cambiado el estado de apertura. Vuelve a revisar la solicitud.');
+          if (currentGestion.requestedPublicSelectionId && currentGestion.requestedPublicSelectionId !== currentPublication.selectionId) throw new Error('La publicación solicitada no coincide con la clase.');
+          const currentDateError = pendingOpening ? '' : getExpansionDateError(currentClass, startDate, todayStr);
           if (currentDateError) throw new Error(currentDateError);
-          const seats = getCommercialSeatDataForClass(currentClass);
-          const activeCount = seats.students.filter(entry => !entry.isDropped && !entry.isPastEnd && !entry.isPendingStart && !entry.isFutureStart && !entry.isMaintenance).length;
-          if (!isClassExpansionAvailable({ ...currentClass, capacity: seats.cap }, { today: todayStr, activeCount, committedCount: seats.committedCount })) throw new Error('La clase ya no admite esta ampliación: revisa apertura, oferta y plazas.');
-          if (seats.students.some(entry => entry.id === studentId)) throw new Error('El alumno ya tiene una plaza en esta clase.');
+          const availabilityDate = currentPublication.inicio && currentPublication.inicio > todayStr ? currentPublication.inicio : todayStr;
+          const committed = (currentClass.students || []).filter(entry => isPublicExpansionSeat(entry,
+            entry.id === studentId ? currentStudent : students.find(student => String(student.id) === String(entry.id || entry.studentId)) || {}, availabilityDate));
+          if (committed.length >= (parseInt(currentClass.capacity, 10) || 0)) throw new Error('La última plaza ya está ocupada.');
+          if (committed.some(entry => entry.id === studentId)) throw new Error('El alumno ya tiene una plaza en esta clase.');
           const entry = {
             id: studentId, name: currentStudent.useAlias && currentStudent.alias ? currentStudent.alias : (currentStudent.name || displayName),
             email: currentStudent.email || studentEmail, classStartDate: startDate, scheduledStartDate: startDate,
-            sourceGestionId: gestionId, isPaused: false, status: 'present', isRecovery: false, pendingStart: false, enrollmentStatus: 'active'
+            sourceGestionId: gestionId, isPaused: false, status: pendingOpening ? 'pending_start' : 'present', isRecovery: false,
+            pendingStart: pendingOpening, enrollmentStatus: pendingOpening ? 'pending_start' : 'active', expansionAwaitingStart: pendingOpening
           };
           const updatedStudents = [...(currentClass.students || []).filter(item => item.id !== studentId), entry];
           const update = {
             status: 'completado', scheduledClassStartDate: startDate, effectiveStartDate: startDate,
             scheduledEffectiveDate: startDate, executionMode: 'dated_enrollment',
-            targetMonth: new Date(`${startDate}T12:00:00Z`).toLocaleString('es-ES', { month: 'long', timeZone: 'UTC' }),
+            requestedStartPending: pendingOpening,
+            targetMonth: pendingOpening ? 'por confirmar' : new Date(`${startDate}T12:00:00Z`).toLocaleString('es-ES', { month: 'long', timeZone: 'UTC' }),
             requestedClassLine: formatClassLine(currentClass), requestedTeacher: currentClass.teacher || '',
             executedAt: new Date().toISOString(), executedBy: user?.email || 'admin'
           };
-          transaction.update(classRef, withClassStudentIndex(updatedStudents));
+          transaction.update(classRef, { ...withClassStudentIndex(updatedStudents), ...getFormationActivationPatch(currentClass, updatedStudents) });
+          if (pendingOpening) transaction.update(studentRef, { pendingStartClassIds: uniqueStrings([...(currentStudent.pendingStartClassIds || []), currentClass.id]) });
           transaction.update(gestionRef, update);
           return { currentClass, update, studentEmail: currentStudent.email || studentEmail };
         });
         if (execution.alreadyCompleted) return notify('Esta ampliación ya estaba ejecutada; no se ha duplicado la plaza.');
         const classLine = formatClassLine(execution.currentClass);
-        await finalizeGestionStatus(gestionId, 'completado', { ...gestionData, ...execution.update }, `Plaza reservada. Incorporación: ${formatDateSpanish(startDate)}. Revisar cuota en Tadosi desde esta fecha.`, execution.update);
+        await finalizeGestionStatus(gestionId, 'completado', { ...gestionData, ...execution.update }, pendingOpening ? 'Plaza reservada en formación. Inicio y nueva cuota pendientes de confirmar.' : `Plaza reservada. Incorporación: ${formatDateSpanish(startDate)}. Revisar cuota en Tadosi desde esta fecha.`, execution.update);
         await sendTeacherNotification({
           teacherName: execution.currentClass.teacher,
           subject: `Nuevo alumno fijo: ${displayName} (${execution.currentClass.subject})`,
-          body: `Hola ${execution.currentClass.teacher},\n\nSe ha reservado una plaza para ${displayName} en:\n\n· ${classLine}\n\nFecha de incorporación: ${formatDateSpanish(startDate)}.\n${startDate > todayStr ? 'No debe aparecer como alumno activo en la asistencia hasta esa fecha.' : 'El alumno aparece activo desde hoy en la asistencia.'}\n\nUn saludo,\nCoordinación Los Mitos.`
+          body: `Hola ${execution.currentClass.teacher},\n\nSe ha reservado una plaza para ${displayName} en:\n\n· ${classLine}\n\n${pendingOpening ? 'Grupo en formación: incorporación pendiente de confirmar. El alumno no debe estar activo en asistencia.' : `Fecha de incorporación: ${formatDateSpanish(startDate)}.\n${startDate > todayStr ? 'No debe aparecer como alumno activo en la asistencia hasta esa fecha.' : 'El alumno aparece activo desde hoy en la asistencia.'}`}\n\nUn saludo,\nCoordinación Los Mitos.`
         });
         await sendStudentNotification({
           studentEmail: execution.studentEmail,
           subject: 'Confirmación de ampliación de clases - Escuela Los Mitos',
-          body: `Hola ${studentName},\n\nTu ampliación de clases ha sido aprobada.\n\nNueva clase reservada:\n· ${classLine}\nProfesor/a: ${execution.currentClass.teacher}\n\nFecha de incorporación: ${formatDateSpanish(startDate)}. Debes acudir a partir de ese día.\n\nUn saludo,\nCoordinación Los Mitos.`
+          body: `Hola ${studentName},\n\nTu ampliación de clases ha sido aprobada.\n\nNueva clase reservada:\n· ${classLine}\nProfesor/a: ${execution.currentClass.teacher}\n\n${pendingOpening ? 'El grupo está en formación. Te confirmaremos la fecha de inicio; todavía no debes acudir ni se activará la nueva cuota.' : `Fecha de incorporación: ${formatDateSpanish(startDate)}. Debes acudir a partir de ese día.`}\n\nUn saludo,\nCoordinación Los Mitos.`
         });
-        return notify(`Ampliación aprobada. Incorporación: ${formatDateSpanish(startDate)}. Revisa que la cuota en Tadosi corresponda a esa fecha.`);
+        return notify(pendingOpening ? 'Plaza reservada en formación. Confirma el inicio desde la clase cuando se abra el grupo.' : `Ampliación aprobada. Incorporación: ${formatDateSpanish(startDate)}. Revisa que la cuota en Tadosi corresponda a esa fecha.`);
       }
       else if (type === 'cambio_horario' || type === 'recuperacion') {
         const maintenanceCheckDate = type === 'recuperacion' ? (recoveryDate || todayStr) : todayStr;
@@ -11256,6 +11230,7 @@ Coordinación Los Mitos.`
       .filter(gestion => PROJECTABLE_GESTION_TYPES.has(gestion.type))
       .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
       .forEach(gestion => {
+        if (gestion.type === 'ampliar_clases' && gestion.requestedStartPending === true) return;
         if (!gestion.studentId) return;
         const studentInfo = studentDataById.get(gestion.studentId) || {
           id: gestion.studentId,
@@ -14143,7 +14118,9 @@ ${startDateWarning}
     const confirmPendingStudentStart = async (planningStudent) => {
       const classEntry = (c.students || []).find(entry => entry.id === planningStudent.id && isPendingClassStartEntry(entry));
       if (!classEntry) return;
-      const proposedDate = getNextClassDateForDay(c.dayOfWeek, todayStr);
+      const expansionStart = Boolean(classEntry.expansionAwaitingStart && classEntry.sourceGestionId);
+      if (expansionStart && c.autoAdvanceStartDate === true) return alert('El grupo sigue en formación. Confirma su apertura antes de incorporar al alumno.');
+      const proposedDate = expansionStart ? getExpansionStartDate(c, todayStr) : getNextClassDateForDay(c.dayOfWeek, todayStr);
       const answer = window.prompt(
         `Indica la fecha de inicio de ${planningStudent.displayName} (AAAA-MM-DD).`,
         proposedDate
@@ -14151,6 +14128,7 @@ ${startDateWarning}
       if (answer === null) return;
       const selectedDate = normalizeStudentClassStartDate(answer);
       if (!selectedDate) return alert('Debes indicar una fecha de inicio.');
+      if (expansionStart && getExpansionDateError(c, selectedDate, todayStr)) return alert(getExpansionDateError(c, selectedDate, todayStr));
       const dateWarning = getClassStartDateWarning(selectedDate, c.dayOfWeek, todayStr);
       if (dateWarning && !window.confirm(`⚠️ Revisa la fecha de inicio:\n\n${dateWarning}\n\n¿Quieres continuar igualmente?`)) return;
 
@@ -14160,6 +14138,7 @@ ${startDateWarning}
           ? {
             ...entry,
             classStartDate: selectedDate,
+            ...(expansionStart ? { scheduledStartDate: selectedDate, expansionAwaitingStart: false } : {}),
             pendingStart: false,
             enrollmentStatus: 'active',
             status: 'present',
@@ -14173,17 +14152,37 @@ ${startDateWarning}
 
       try {
         setSaving(true);
-        await updateDoc(doc(db, c.refPath), {
+        const startBatch = writeBatch(db);
+        startBatch.update(doc(db, c.refPath), {
           ...withClassStudentIndex(updatedStudents),
           ...getFormationActivationPatch(c, updatedStudents)
         });
-        await updateDoc(doc(db, 'artifacts', appId, 'students', planningStudent.id), {
+        startBatch.update(doc(db, 'artifacts', appId, 'students', planningStudent.id), {
           pendingStartOnly: false,
           pendingStartClassIds: remainingPendingClassIds,
           ...(studentInfo.classStartDate ? {} : { classStartDate: selectedDate }),
           pendingStartActivatedAt: now,
           updatedAt: now
         });
+        if (expansionStart) {
+          const sourceRef = doc(db, 'artifacts', appId, 'gestiones', classEntry.sourceGestionId);
+          const sourceSnapshot = await getDoc(sourceRef);
+          if (sourceSnapshot.exists()) startBatch.update(sourceRef, {
+            requestedStartPending: false, scheduledClassStartDate: selectedDate,
+            effectiveStartDate: selectedDate, scheduledEffectiveDate: selectedDate,
+            targetMonth: new Date(`${selectedDate}T12:00:00Z`).toLocaleString('es-ES', { month: 'long', timeZone: 'UTC' })
+          });
+          startBatch.set(doc(db, 'artifacts', appId, 'gestiones', `cuota-ampliacion-${classEntry.sourceGestionId}`), {
+            type: 'ajuste_cuota_apertura_grupo', status: 'pendiente', studentId: planningStudent.id,
+            studentName: studentInfo.name || planningStudent.displayName, studentEmail: studentInfo.email || classEntry.email || '',
+            title: 'Activar cuota de ampliación al confirmar el inicio',
+            details: `Ampliación confirmada en ${formatClassLine(c)} desde ${formatDateSpanish(selectedDate)}. Ajustar la cuota en Tadosi desde esa incorporación.`,
+            requestedClass: c.id, requestedClassRefPath: c.refPath, requestedTeacher: c.teacher || '',
+            scheduledClassStartDate: selectedDate, effectiveStartDate: selectedDate,
+            sourceGestionId: classEntry.sourceGestionId, date: now
+          });
+        }
+        await startBatch.commit();
 
         await sendTeacherNotification({
           teacherName: c.teacher,
@@ -14199,15 +14198,15 @@ ${startDateWarning}
         const studentEmail = studentInfo.email || classEntry.email || '';
         const studentEmailSent = await sendStudentNotification({
           studentEmail,
-          subject: 'Plaza confirmada en Escuela Los Mitos',
-          body: buildInitialClassAssignmentEmailBody({
+          subject: expansionStart ? 'Inicio confirmado de tu ampliación - Escuela Los Mitos' : 'Plaza confirmada en Escuela Los Mitos',
+          body: expansionStart ? `Hola ${studentInfo.name || planningStudent.displayName},\n\nYa hemos confirmado el inicio de tu nueva clase:\n· ${formatClassLine(c)}\n\nFecha de incorporación: ${formatDateSpanish(selectedDate)}. Debes acudir a partir de ese día.\n\nUn saludo,\nCoordinación Escuela Los Mitos` : buildInitialClassAssignmentEmailBody({
             studentName: studentInfo.name || planningStudent.displayName,
             studentEmail,
             classData: c,
             classStartDate: selectedDate
           })
         });
-        if (studentEmailSent) {
+        if (studentEmailSent && !expansionStart) {
           await updateDoc(doc(db, 'artifacts', appId, 'students', planningStudent.id), {
             firstClassEmailSentAt: now,
             firstClassEmailClassId: c.id || null,

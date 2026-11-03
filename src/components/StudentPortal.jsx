@@ -13,7 +13,7 @@ import {
 } from './mitoboxUtils';
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
-import { getExpansionStartDate, isFutureExpansionClass, isClassExpansionAvailable } from './classExpansionUtils.js';
+import { getExpansionStartDate, getPublicExpansionClasses, compareClassWeekdayAndTime } from './classExpansionUtils.js';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from './vacationChallengeUtils.js';
 import { isBoardPublicationArchived, matchesBoardClass } from './announcementAudienceUtils.js';
 
@@ -709,6 +709,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [classCatalogLoading, setClassCatalogLoading] = useState(false);
   const [classCatalogError, setClassCatalogError] = useState('');
   const [classCatalogRetryNonce, setClassCatalogRetryNonce] = useState(0);
+  const [publicExpansion, setPublicExpansion] = useState({ phase: 'loading', payload: null, cached: false });
+  const [publicExpansionRetry, setPublicExpansionRetry] = useState(0);
   const [schoolCalendar, setSchoolCalendar] = useState([]); 
   const [globalSettings, setGlobalSettings] = useState({ festivos: [], vacaciones: [], festivosTarragona: [], festivosReus: [], centers: [] });
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -891,6 +893,18 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const needsFullClassCatalog = Boolean(
     mitoboxModal || ['cambio_horario', 'ampliar_clases', 'recuperacion'].includes(gestionModal?.type)
   );
+  const needsPublicExpansion = gestionModal?.type === 'ampliar_clases';
+  useEffect(() => {
+    if (!needsPublicExpansion) return undefined;
+    setPublicExpansion({ phase: 'loading', payload: null, cached: false });
+    let cancelled = false;
+    const unsubscribe = onSnapshot(doc(db, 'publicData', 'classAvailability'), snapshot => {
+      if (!cancelled) setPublicExpansion({ phase: snapshot.exists() ? 'ready' : 'missing', payload: snapshot.exists() ? snapshot.data() : null, cached: Boolean(snapshot.metadata?.fromCache) });
+    }, () => {
+      if (!cancelled) setPublicExpansion({ phase: 'error', payload: null, cached: false });
+    });
+    return () => { cancelled = true; unsubscribe(); };
+  }, [needsPublicExpansion, publicExpansionRetry, db]);
   const activeCenters = useMemo(() => {
     const active = centers.filter(center => center.status === 'active');
     return active.length > 0 ? active : centers.slice(0, 1);
@@ -1655,6 +1669,9 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   ));
   const isOnlyPrivateSeatStudent = fixedSeatClasses.length === 1
     && Math.max(1, Number(fixedSeatClasses[0]?.capacity) || 1) === 1;
+  const expansionOwnedClasses = myClasses.filter(clase => (clase.students || []).some(entry =>
+    isStudentEntryFor(entry, profile?.id) && isFixedClassStudent(entry) && isStudentEntryCommittedOnDate(entry, profile || {}, todayStr)
+  ));
 
   const studentCenters = [...new Map(
     (fixedMyClasses.length > 0 ? fixedMyClasses : effectiveMyClasses)
@@ -3846,6 +3863,7 @@ ALCANCE_BAJA: ${payload.type === 'baja' ? (payload.bajaScope === 'total' ? 'baja
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_SOLICITADA: ${classLine}
 FECHA_INICIO_SOLICITADA: ${payload.requestedClassStartDate ? formatDateSpanish(payload.requestedClassStartDate) : ''}
+INICIO_PENDIENTE_DE_APERTURA: ${payload.requestedStartPending ? 'Sí. No activar cuota ni asistencia hasta confirmar el inicio.' : ''}
 FECHA_RECUPERACION: ${requestedDate}
 MES_OBJETIVO: ${payload.targetMonth || ''}
 PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
@@ -4038,17 +4056,22 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     }
 
     let expansionStartDate = '';
+    let expansionTarget = null;
     if (isAmpliarClases) {
-      const currentClass = allClasses.find(clase => selectedNewClass?.refPath
-        ? clase.refPath === selectedNewClass.refPath
-        : clase.id === selectedNewClass?.id);
-      const committedCount = currentClass ? getCommittedSeatCountForClass(currentClass, todayStr) : 0;
-      if (!currentClass || !isClassExpansionAvailable(currentClass, { today: todayStr, activeCount: Number(currentClass.activeStudentCount || 0), committedCount })) {
+      if (publicExpansion.phase !== 'ready') {
+        showToast('Espera a que se consulte la oferta del formulario web.', 'error');
+        return;
+      }
+      const currentClass = getPublicExpansionClasses(publicExpansion.payload, allClasses, expansionOwnedClasses, todayStr)
+        .find(clase => clase.publicSelectionId === selectedNewClass?.publicSelectionId);
+      if (!currentClass?.publicMappingReady) {
         showToast('Esta clase ya no está disponible para ampliar. Elige otro turno.', 'error');
         return;
       }
-      expansionStartDate = getExpansionStartDate(currentClass, todayStr);
-      if (expansionStartDate !== getExpansionStartDate(selectedNewClass, todayStr)) {
+      expansionTarget = currentClass;
+      expansionStartDate = currentClass.autoAdvanceStartDate ? '' : getExpansionStartDate(currentClass, todayStr);
+      if (currentClass.autoAdvanceStartDate !== selectedNewClass.autoAdvanceStartDate
+        || (!currentClass.autoAdvanceStartDate && expansionStartDate !== getExpansionStartDate(selectedNewClass, todayStr))) {
         setSelectedNewClass(currentClass);
         showToast('Ha cambiado la fecha de inicio. Revisa el turno antes de enviar la solicitud.', 'error');
         return;
@@ -4086,7 +4109,9 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
         ...(isAmpliarClases ? {
           requestedClassRefPath: selectedNewClass.refPath || '',
-          requestedClassStartDate: expansionStartDate
+          requestedPublicSelectionId: expansionTarget.publicSelectionId,
+          requestedClassStartDate: expansionStartDate,
+          requestedStartPending: expansionTarget.autoAdvanceStartDate === true
         } : {}),
         requestedClassLine: selectedNewClass ? formatClassLineForAdminCopy(selectedNewClass) : '',
         requestedTeacher: selectedNewClass?.teacher || '',
@@ -4115,7 +4140,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         maintenanceMonthLabel: isMaintenanceRequest ? selectedMaintenanceOption.monthLabel : '',
         targetMonth: isAmpliarClases && expansionStartDate
           ? new Date(`${expansionStartDate}T12:00:00Z`).toLocaleString('es-ES', { month: 'long', timeZone: 'UTC' })
-          : (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
+          : isAmpliarClases ? 'por confirmar' : (!isExemptFromLateRule && timeRules.isLate) ? timeRules.nextNext : timeRules.next,
         isLateRequest: !isExemptFromLateRule && timeRules.isLate,
         status: 'pendiente',
         date: new Date().toISOString()
@@ -4903,7 +4928,9 @@ END:VCALENDAR`;
 
     let availableClasses = [];
     if (isClassSearch && targetInstrument && (gestionModal.type !== 'cambio_horario' || resolvedSourceClass)) {
-      availableClasses = allClasses.filter(c => {
+      if (isAmpliarClases) {
+        availableClasses = getPublicExpansionClasses(publicExpansion.payload, allClasses, expansionOwnedClasses, todayStr, targetInstrument);
+      } else availableClasses = allClasses.filter(c => {
         if (c.subject !== targetInstrument) return false;
         if (isTicketRedemption && c.recoveryEnabled === false) return false;
         
@@ -4913,9 +4940,7 @@ END:VCALENDAR`;
               if (!isStudentEntryActiveOnDate(s, {}, todayStr)) return false;
               return !isStudentInMaintenanceForDate(getStudentEntryId(s), todayStr);
             }).length;
-        if (isAmpliarClases) {
-          if (!isClassExpansionAvailable(c, { today: todayStr, activeCount: activeStudents, committedCount: getCommittedSeatCountForClass(c, todayStr) })) return false;
-        } else if (activeStudents === 0) return false;
+        if (activeStudents === 0) return false;
 
         const maxCap = parseInt(c.capacity || 4);
         if (gestionModal.type === 'cambio_horario' && gestionModal.changeKind === 'private_to_group' && maxCap <= 1) return false;
@@ -4929,15 +4954,19 @@ END:VCALENDAR`;
         
         return true;
       });
+      if (gestionModal.type === 'cambio_horario') availableClasses.sort(compareClassWeekdayAndTime);
     }
 
     const isMaintenanceChoiceInvalid = isMaintenanceRequest && ![1, 2].includes(Number(maintenanceMonths));
+    const choicesError = classCatalogError || (isAmpliarClases && publicExpansion.phase === 'error' ? 'No se ha podido consultar la oferta de plazas.' : isAmpliarClases && publicExpansion.phase === 'missing' ? 'Todavía no hay una oferta de plazas publicada.' : '');
+    const choicesLoading = classCatalogLoading || !classCatalogLoaded || (isAmpliarClases && publicExpansion.phase === 'loading');
 
     const isSendDisabled = isSendingGestion || 
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
       (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) ||
       (isClassSearch && (!classCatalogLoaded || classCatalogLoading)) ||
       (isClassSearch && Boolean(classCatalogError)) ||
+      (isAmpliarClases && (publicExpansion.phase !== 'ready' || !selectedNewClass?.publicMappingReady)) ||
       (isTicketRedemption && (!selectedRecoveryTicket || !resolvedRecoverySubject)) ||
       (isClassSearch && !selectedNewClass) || 
       (isTicketRedemption && !selectedRecoveryDate) ||
@@ -5157,14 +5186,14 @@ END:VCALENDAR`;
                 </select>
               )}
 
-              {classCatalogError ? (
+              {choicesError ? (
                 <div className="bg-red-50 p-4 rounded-xl text-center border-2 border-dashed border-red-200">
-                  <p className="text-xs font-bold text-red-700 leading-relaxed">{classCatalogError}</p>
-                  <button type="button" onClick={() => setClassCatalogRetryNonce(value => value + 1)} className="mt-3 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px]">
+                  <p className="text-xs font-bold text-red-700 leading-relaxed">{choicesError}</p>
+                  <button type="button" onClick={() => { setClassCatalogRetryNonce(value => value + 1); if (isAmpliarClases) setPublicExpansionRetry(value => value + 1); }} className="mt-3 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl font-black uppercase tracking-widest text-[10px]">
                     <RefreshCcw className="w-3.5 h-3.5" /> Reintentar consulta
                   </button>
                 </div>
-              ) : classCatalogLoading || !classCatalogLoaded ? (
+              ) : choicesLoading ? (
                 <div className="bg-blue-50 p-4 rounded-xl text-center border-2 border-dashed border-blue-100">
                   <p className="text-xs font-bold text-blue-700 uppercase tracking-wider">Consultando plazas disponibles...</p>
                 </div>
@@ -5176,7 +5205,7 @@ END:VCALENDAR`;
                 availableClasses.length > 0 ? (
                   <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
                     {availableClasses.map(c => (
-                      <div key={c.id} onClick={() => {setSelectedNewClass(c); setSelectedRecoveryDate('');}} className={`p-3 rounded-xl border-2 cursor-pointer transition-all ${selectedNewClass?.id === c.id ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
+                      <div key={c.publicSelectionId || c.refPath || c.id} aria-disabled={isAmpliarClases && !c.publicMappingReady} onClick={() => { if (!isAmpliarClases || c.publicMappingReady) { setSelectedNewClass(c); setSelectedRecoveryDate(''); } }} className={`p-3 rounded-xl border-2 transition-all ${isAmpliarClases && !c.publicMappingReady ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} ${(isAmpliarClases ? selectedNewClass?.publicSelectionId === c.publicSelectionId : selectedNewClass?.refPath === c.refPath && selectedNewClass?.id === c.id) ? 'border-black bg-zinc-50' : 'border-zinc-100 hover:border-zinc-300'}`}>
                         <div className="flex justify-between items-center mb-1">
                           <span className="font-black text-sm uppercase">{getDayName(c.dayOfWeek)}</span>
                           <span className="text-xs font-bold bg-black text-white px-2 py-0.5 rounded">{c.time}h</span>
@@ -5186,9 +5215,11 @@ END:VCALENDAR`;
                             <MapPin className="w-3 h-3" /> {getClassCenterName(c)}
                           </span>
                           <span>Prof: {c.teacher}</span>
-                          <span>Quedan {Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas</span>
+                          <span>Quedan {isAmpliarClases ? c.publicFreeSpots : Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas</span>
                         </div>
-                        {isAmpliarClases && isFutureExpansionClass(c, todayStr) && <p className="text-xs font-bold text-blue-800 bg-blue-50 rounded-lg p-2 mt-2">Inicio: {formatDateSpanish(getExpansionStartDate(c, todayStr))}. Puedes solicitar tu incorporación desde esa fecha.</p>}
+                        {isAmpliarClases && c.price && <p className="text-xs font-bold mt-2">Cuota: {c.price}</p>}
+                        {isAmpliarClases && <p className="text-xs font-bold text-blue-800 bg-blue-50 rounded-lg p-2 mt-2">{c.autoAdvanceStartDate ? `Grupo en formación. ${c.startDate ? `Inicio previsto: ${formatDateSpanish(c.startDate)}. ` : ''}La fecha definitiva está pendiente de confirmar.` : c.startDate && c.startDate > todayStr ? `Inicio: ${formatDateSpanish(getExpansionStartDate(c, todayStr))}.` : 'Inicio inmediato, sujeto a aprobación de la ampliación.'}</p>}
+                        {isAmpliarClases && !c.publicMappingReady && <p className="text-xs text-amber-800 mt-2">Turno en actualización. Reintenta en unos instantes.</p>}
                       </div>
                     ))}
                   </div>
@@ -5197,7 +5228,7 @@ END:VCALENDAR`;
                 )
               )}
 
-              {isAmpliarClases && selectedNewClass && <p className="text-xs font-bold text-blue-800 bg-blue-50 border border-blue-100 rounded-xl p-3 mt-3">Incorporación solicitada: {formatDateSpanish(getExpansionStartDate(selectedNewClass, todayStr))}. La plaza y la fecha quedarán pendientes de aprobación.</p>}
+              {isAmpliarClases && selectedNewClass && <p className="text-xs font-bold text-blue-800 bg-blue-50 border border-blue-100 rounded-xl p-3 mt-3">{selectedNewClass.autoAdvanceStartDate ? 'Solicitarás una plaza en el grupo en formación. No debes acudir ni se activará la nueva cuota hasta confirmar el inicio.' : `Incorporación solicitada: ${formatDateSpanish(getExpansionStartDate(selectedNewClass, todayStr))}. La plaza y la fecha quedarán pendientes de aprobación.`}</p>}
               {isTicketRedemption && selectedNewClass && (
                 <div className="mt-6 pt-4 border-t border-zinc-100 animate-in fade-in zoom-in-95">
                   <p className="text-xs font-black uppercase tracking-widest text-zinc-400 mb-3">3. Elige el día exacto de recuperación</p>

@@ -75,7 +75,8 @@ const createEmptyAnnouncementDraft = () => ({
   pollResultsVisibility: 'never',
   callDeadline: '',
   callCapacity: '',
-  callResponsePrompt: ''
+  callResponsePrompt: '',
+  callConfirmationMessage: ''
 });
 
 const CALL_RESPONSE_STATUS_OPTIONS = [
@@ -8946,6 +8947,7 @@ Coordinación Los Mitos.`
         callDeadline: newAnnounce.callDeadline,
         callCapacity: cleanCallCapacity,
         callResponsePrompt: String(newAnnounce.callResponsePrompt || '').trim(),
+        callConfirmationMessage: String(newAnnounce.callConfirmationMessage || '').trim(),
         callStatus: existingAnnouncement?.callStatus || 'open'
       } : {})
     };
@@ -9020,7 +9022,8 @@ Coordinación Los Mitos.`
       pollResultsVisibility: ann.pollResultsVisibility || 'never',
       callDeadline: ann.callDeadline || '',
       callCapacity: ann.callCapacity ?? '',
-      callResponsePrompt: ann.callResponsePrompt || ''
+      callResponsePrompt: ann.callResponsePrompt || '',
+      callConfirmationMessage: ann.callConfirmationMessage || ''
     });
     setAnnounceEmailOptions({
       enabled: false,
@@ -16899,6 +16902,11 @@ ${startDateWarning}
                     <div>
                       <label className="block text-[10px] font-black uppercase tracking-widest text-amber-900 mb-2">Información que debe indicar el alumno</label>
                       <textarea value={newAnnounce.callResponsePrompt} onChange={e => setNewAnnounce(prev => ({ ...prev, callResponsePrompt: e.target.value }))} placeholder="Opcional. Por ejemplo: indica tu disponibilidad para los ensayos." className="w-full p-3 bg-white border border-amber-200 rounded-xl outline-none min-h-[80px] resize-y font-medium text-sm" />
+                    </div>
+                    <div>
+                      <label htmlFor="call-confirmation-message" className="block text-[10px] font-black uppercase tracking-widest text-amber-900 mb-2">Mensaje después de participar</label>
+                      <textarea id="call-confirmation-message" value={newAnnounce.callConfirmationMessage || ''} maxLength={240} onChange={e => setNewAnnounce(prev => ({ ...prev, callConfirmationMessage: e.target.value }))} placeholder="Gracias por responder. Hemos recibido tu candidatura." className="w-full p-3 bg-white border border-amber-200 rounded-xl outline-none min-h-[80px] resize-y font-medium text-sm" />
+                      <p className="mt-2 text-[10px] font-bold text-amber-800">Opcional · Máximo 240 caracteres. El alumno verá este mensaje al guardar su respuesta y volverá al tablón. Si lo dejas vacío, aparecerá el agradecimiento general.</p>
                     </div>
                     <p className="text-[10px] font-bold text-amber-800">Apuntarse será una candidatura: Administración decidirá después si queda confirmada, en reserva o no seleccionada.</p>
                     {editingAnnouncementId && getCallResponses(editingAnnouncementId).length > 0 && <p className="text-[10px] font-bold text-amber-800">Esta convocatoria ya tiene candidaturas: el tipo y los destinatarios están bloqueados.</p>}

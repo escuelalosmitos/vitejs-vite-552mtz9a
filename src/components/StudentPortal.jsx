@@ -3114,9 +3114,9 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     };
   }, [settingsLoaded, isStudentClassIndexReady, classCatalogRetryNonce, db, appId]);
 
-  const showToast = (msg, type = 'success') => {
+  const showToast = (msg, type = 'success', duration = 4000) => {
     setNotification({ text: msg, type });
-    setTimeout(() => setNotification(null), 4000);
+    setTimeout(() => setNotification(null), duration);
   };
 
   const getMyPollResponse = (pollId) => myPollResponses.find(response => response.pollId === pollId) || null;
@@ -3343,7 +3343,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
 
     setSavingCallId(call.id);
     try {
-      await runTransaction(db, async transaction => {
+      const confirmationMessage = await runTransaction(db, async transaction => {
         const callSnapshot = await transaction.get(callRef);
         const responseSnapshot = await transaction.get(responseRef);
         if (!callSnapshot.exists()) throw new Error('CALL_NOT_FOUND');
@@ -3395,6 +3395,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
             adminNotificationEmailFailedAt: ''
           } : {})
         }, { merge: true });
+        return String(currentCall.callConfirmationMessage || '').trim();
       });
 
       setCallDrafts(previous => {
@@ -3402,7 +3403,10 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         delete next[call.id];
         return next;
       });
-      showToast(responseBeforeSaving?.status === 'pending' ? 'Candidatura actualizada.' : 'Candidatura enviada. Administración la revisará.');
+      setExpandedAnnouncementId(current => current === call.id ? null : current);
+      showToast(confirmationMessage || (responseBeforeSaving?.status === 'pending'
+        ? 'Gracias por responder. Tu candidatura se ha actualizado.'
+        : 'Gracias por responder. Administración revisará tu candidatura.'), 'success', confirmationMessage ? 8000 : 4000);
     } catch (error) {
       console.error('Error al guardar la candidatura', error);
       const message = error?.message === 'CALL_CLOSED'
@@ -6043,7 +6047,7 @@ END:VCALENDAR`;
         <div className="fixed top-24 left-1/2 transform -translate-x-1/2 z-[60] animate-in slide-in-from-top-4 duration-300 w-max max-w-[90%]">
           <div className={`px-6 py-3 rounded-full shadow-2xl text-white font-bold text-sm uppercase tracking-widest flex items-center gap-3 ${notification.type === 'error' ? 'bg-red-600' : 'bg-black'}`}>
             {notification.type === 'error' ? <X className="w-5 h-5" /> : <Check className="w-5 h-5" />}
-            {notification.text}
+            <span className="min-w-0 whitespace-pre-wrap break-words">{notification.text}</span>
           </div>
         </div>
       )}

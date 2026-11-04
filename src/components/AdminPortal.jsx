@@ -11,6 +11,7 @@ import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot,
 import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
+import { MITOLOCKER_MODES, hasIndependentServices, getMitolockerMode, mitolockerPatch, cancelledServiceKeys, serviceCancellationPatch, fixedServiceSummary, mitolockerMetrics } from './fixedServicesUtils.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
 import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
@@ -25,7 +26,7 @@ import { normalizeBoardFilters, boardAudienceOptions, boardAudienceSignature, va
 import './AdminLayout.css';
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
-const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox", "alta_mitolocker", "baja_servicios"]);
 const ANNOUNCEMENT_EMAIL_TO = "gestiones@escuelalosmitos.com";
 const ANNOUNCEMENT_EMAIL_BATCH_SIZE = 50;
 const BI_WEEKS_PER_MONTH = 4.333;
@@ -483,11 +484,11 @@ const buildLegacyCenterSettings = (centers = [], currentSettings = {}) => {
 
 const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
 
-const PROJECTABLE_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
-const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox", "ajuste_cuota_apertura_grupo"]);
+const PROJECTABLE_GESTION_TYPES = new Set(["baja_servicios", "baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
+const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox", "alta_mitolocker", "baja_servicios", "ajuste_cuota_apertura_grupo"]);
 const HISTORIAL_TRAMITES_BLOCK_SIZE = 30;
 
-const EXTRA_SERVICE_GESTION_TYPES = new Set(["alta_mitoverso", "alta_mitobox"]);
+const EXTRA_SERVICE_GESTION_TYPES = new Set(["alta_mitoverso", "alta_mitobox", "alta_mitolocker"]);
 const EXTRA_SERVICE_CONFIG_BY_TYPE = {
   alta_mitoverso: {
     key: 'mitoverso',
@@ -509,7 +510,13 @@ const EXTRA_SERVICE_CONFIG_BY_TYPE = {
   }
 };
 
-const getExtraServiceConfigByType = (type = '') => EXTRA_SERVICE_CONFIG_BY_TYPE[type] || null;
+const getExtraServiceConfigByType = (type = '', gestion = {}) => {
+  if (type === 'alta_mitolocker') {
+    const mode = getMitolockerMode(gestion.mitolockerMode);
+    return mode ? { ...MITOLOCKER_MODES[mode], key: 'mitolocker', mode, studentFlag: 'hasMitolocker', activationTarget: 'Depósito de instrumento en la escuela', badgeClass: 'bg-amber-100 text-amber-800 border-amber-200', readyActionLabel: 'Activar Mitolocker' } : null;
+  }
+  return EXTRA_SERVICE_CONFIG_BY_TYPE[type] || null;
+};
 const isExtraServiceGestionType = (type = '') => EXTRA_SERVICE_GESTION_TYPES.has(type);
 
 const WORKSHOP_STATUS_OPTIONS = [
@@ -4222,13 +4229,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     let confirmedScheduledGestiones = 0;
 
     gestiones.forEach(gestion => {
-      if (gestion.status !== 'completado' || gestion.type !== 'baja' || !isProjectedTotalBaja(gestion)) return;
+      if (gestion.status !== 'completado' || gestion.consolidatedAt || !['baja', 'baja_servicios'].includes(gestion.type)) return;
       const effectiveDate = getConfirmedEffectiveDate(gestion);
       if (!effectiveDate || effectiveDate > nextMonthStartStr) return;
       const studentInfo = confirmedStudentById.get(gestion.studentId);
       if (!studentInfo) return;
-      studentInfo.hasMitoverso = false;
-      studentInfo.hasMitobox = false;
+      Object.assign(studentInfo, serviceCancellationPatch(gestion, studentInfo));
       confirmedScheduledGestiones += 1;
     });
 
@@ -4309,12 +4315,17 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         }
 
         if (isExtraServiceGestionType(gestion.type)) {
-          const config = getExtraServiceConfigByType(gestion.type);
+          const config = getExtraServiceConfigByType(gestion.type, gestion);
           if (!config) {
             skippedPending.push({ id: gestion.id, type: gestion.type, reason: 'servicio no identificado' });
             return;
           }
+          if (config.mode && getFixedStudentClasses(studentInfo.id, potentialClasses, nextMonthStartStr).length === 0) {
+            skippedPending.push({ id: gestion.id, type: gestion.type, reason: 'Mitolocker requiere plaza de clases' });
+            return;
+          }
           studentInfo[config.studentFlag] = true;
+          if (config.mode) studentInfo.mitolockerMode = config.mode;
           appliedPending.push({ id: gestion.id, type: gestion.type, studentId: studentInfo.id });
           return;
         }
@@ -4359,7 +4370,13 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         const effectiveDate = getProjectionEffectiveDate(gestion);
         if (!shouldAffectNextMonth(effectiveDate)) return;
 
+        if (gestion.type === 'baja_servicios') {
+          Object.assign(studentInfo, serviceCancellationPatch(gestion, studentInfo));
+          appliedPending.push({ id: gestion.id, type: gestion.type, studentId: studentInfo.id });
+          return;
+        }
         if (gestion.type === 'baja') {
+          Object.assign(studentInfo, serviceCancellationPatch(gestion, studentInfo));
           const sourceClass = classById.get(String(gestion.sourceClassId || ''));
           const totalBaja = isProjectedTotalBaja(gestion) || (!gestion.sourceClassId && !gestion.sourceClassLine);
           let changed = false;
@@ -4367,8 +4384,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
             potentialClasses.forEach(clase => {
               if (setStudentEntryEnd(clase, studentInfo.id, effectiveDate)) changed = true;
             });
-            studentInfo.hasMitoverso = false;
-            studentInfo.hasMitobox = false;
+            // Service scope was applied explicitly above.
           } else if (sourceClass) {
             changed = setStudentEntryEnd(sourceClass, studentInfo.id, effectiveDate);
           } else {
@@ -4816,27 +4832,25 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       porSede[sedeKey].alumnosMantenimiento += 1;
     });
 
-    const scheduledTotalBajaStudentIds = new Set(gestiones
-      .filter(gestion => {
-        if (gestion.status !== 'completado' || gestion.type !== 'baja') return false;
-        const scope = String(gestion.bajaScopeResolved || gestion.bajaScope || gestion.scope || gestion.bajaType || gestion.scheduledAction || '').trim().toLowerCase();
-        const isTotal = gestion.bajaTotal === true || gestion.isTotalBaja === true || gestion.totalBaja === true || ['total', 'baja_total', 'todas'].includes(scope);
-        if (!isTotal) return false;
-        const effectiveDate = normalizeGestionDateString(
-          gestion.scheduledEffectiveDate || gestion.bajaEffectiveDate || gestion.scheduledClassStartDate || gestion.effectiveStartDate || ''
-        );
-        return Boolean(effectiveDate && effectiveDate <= referenceDate);
-      })
-      .map(gestion => gestion.studentId)
-      .filter(Boolean));
-    const extraEligibleStudents = studentsSnapshot.filter(student => (
-      String(student.globalStatus || 'activo').toLowerCase() !== 'baja' && !scheduledTotalBajaStudentIds.has(student.id)
-    ));
+    const extraEligibleStudents = studentsSnapshot
+      .filter(student => String(student.globalStatus || 'activo').toLowerCase() !== 'baja')
+      .map(student => {
+        const effective = { ...student };
+        gestiones.filter(gestion => gestion.studentId === student.id && gestion.status === 'completado'
+          && ['baja', 'baja_servicios'].includes(gestion.type)).forEach(gestion => {
+          const date = normalizeGestionDateString(gestion.scheduledEffectiveDate || gestion.bajaEffectiveDate || '');
+          // Consolidated records are historical; the current profile already reflects them.
+          if (!gestion.consolidatedAt && date && date <= referenceDate) Object.assign(effective, serviceCancellationPatch(gestion, effective));
+        });
+        return effective;
+      });
     const alumnosMitoverso = extraEligibleStudents.filter(student => student.hasMitoverso === true).length;
     const alumnosMitobox = extraEligibleStudents.filter(student => student.hasMitobox === true).length;
     const ingresosMitoverso = alumnosMitoverso * EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso.monthlyFee;
     const ingresosMitobox = alumnosMitobox * EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox.monthlyFee;
-    const ingresosExtras = ingresosMitoverso + ingresosMitobox;
+    const lockerEntitledIds = new Set(extraEligibleStudents.filter(student => classesSnapshot.some(clase => !isPunctualClass(clase) && (clase.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, referenceDate)))).map(student => student.id));
+    const lockerMetrics = mitolockerMetrics(extraEligibleStudents, lockerEntitledIds);
+    const ingresosExtras = ingresosMitoverso + ingresosMitobox + lockerMetrics.ingresosMitolocker;
 
     if (ingresosMantenimiento > 0) {
       const maintenanceTeacherStats = getTeacherBucket('Mantenimiento (sin atribuir)');
@@ -4866,6 +4880,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       ingresosExtras,
       ingresosMitoverso,
       ingresosMitobox,
+      ...lockerMetrics,
       alumnosMitoverso,
       alumnosMitobox,
       extrasSinAtribuirASede: ingresosExtras,
@@ -4906,7 +4921,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     periodStart: currentMonthStartStr,
     periodEnd: currentMonthEndStr,
     mode: 'actual'
-  }), [recurringClassesOnly, students, maintenancePeriods, temporaryRelocations, temporaryClassChanges, settings, todayStr, currentMonthStartStr, currentMonthEndStr, officialTeacherNameMap]);
+  }), [recurringClassesOnly, students, maintenancePeriods, temporaryRelocations, temporaryClassChanges, settings, gestiones, todayStr, currentMonthStartStr, currentMonthEndStr, officialTeacherNameMap]);
 
   const confirmedNextMonthBusinessIntelligence = useMemo(() => buildBusinessIntelligence({
     classesSnapshot: biProjectionInputs.confirmed.classes,
@@ -6057,6 +6072,8 @@ ${portalAction} accediendo a tu portal.`;
   const getGestionTypeLabel = (type = 'tarea_manual') => ({
     alta_mitoverso: 'Alta Mitoverso',
     alta_mitobox: 'Alta Mitobox',
+    alta_mitolocker: 'Alta Mitolocker',
+    baja_servicios: 'Baja de servicios',
     aviso_ausencia: 'Aviso de ausencia',
     falta_reiterada: '12 clases sin asistir ni avisar',
     ajuste_cuota_apertura_grupo: 'Ajustar cuota al formarse el grupo',
@@ -6087,7 +6104,7 @@ ${portalAction} accediendo a tu portal.`;
 
   const isExtraServiceGestion = (gestion = {}) => isExtraServiceGestionType(gestion?.type || '');
 
-  const getExtraServiceConfigForGestion = (gestion = {}) => getExtraServiceConfigByType(gestion?.type || '') || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
+  const getExtraServiceConfigForGestion = (gestion = {}) => getExtraServiceConfigByType(gestion?.type || '', gestion) || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
 
   const getGestionTypeBadgeClass = (gestion = {}) => {
     const extraConfig = getExtraServiceConfigForGestion(gestion);
@@ -6115,8 +6132,9 @@ ${portalAction} accediendo a tu portal.`;
   };
 
   const getBajaScopeLabel = (gestion = {}) => {
+    if (gestion.type === 'baja_servicios') return `Solo servicios: ${gestion.cancelledServicesLabel || (gestion.cancelledServiceKeys || []).join(', ')}`;
     if ((gestion.type || '') !== 'baja') return '';
-    return isTotalBajaGestion(gestion) ? 'Baja total · todas las clases' : 'Baja parcial · plaza concreta';
+    return `${isTotalBajaGestion(gestion) ? 'Todas las clases' : 'Plaza concreta'}${gestion.serviceSelectionVersion === 1 ? ` · Servicios: ${gestion.cancelledServicesLabel || 'ninguno'}` : ''}`;
   };
 
   const getGestionClassLine = (gestion = {}) => {
@@ -6151,14 +6169,14 @@ ${portalAction} accediendo a tu portal.`;
     const maintenancePeriodForEmail = gestion.type === 'mantenimiento' ? getMaintenancePeriodFromGestion(gestion) : null;
     const maintenancePeriodLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenancePeriodLine(maintenancePeriodForEmail) : '';
     const maintenanceFeeLine = maintenancePeriodForEmail && !maintenancePeriodForEmail.isLegacyMissingDuration ? formatMaintenanceFeeLine(maintenancePeriodForEmail) : '';
-    const bajaScopeLine = gestion.type === 'baja' ? getBajaScopeLabel(gestion) : '';
+    const bajaScopeLine = ['baja', 'baja_servicios'].includes(gestion.type) ? getBajaScopeLabel(gestion) : '';
     const solicitud = gestion.date ? new Date(gestion.date).toLocaleString('es-ES') : '';
     const ejecucion = phase === 'ejecutada' ? new Date().toLocaleString('es-ES') : '';
     const scheduledClassEndLine = gestion.scheduledClassEndDate || gestion.bajaClassEndDate || gestion.effectiveEndDate || '';
     const scheduledEffectiveLine = gestion.scheduledEffectiveDate || gestion.bajaEffectiveDate || gestion.effectiveStartDate || '';
     const extraServiceLine = gestion.extraServiceName || gestion.serviceName || getExtraServiceConfigForGestion(gestion)?.name || '';
-    const extraMonthlyFeeLine = gestion.extraMonthlyFee ? `${gestion.extraMonthlyFee} €` : (getExtraServiceConfigForGestion(gestion)?.monthlyFee ? `${getExtraServiceConfigForGestion(gestion).monthlyFee} €` : '');
-    const extraProratedFeeLine = gestion.extraProratedFee ? `${gestion.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
+    const extraMonthlyFeeLine = Number.isFinite(gestion.extraMonthlyFee) ? `${gestion.extraMonthlyFee} €` : (getExtraServiceConfigForGestion(gestion)?.monthlyFee ? `${getExtraServiceConfigForGestion(gestion).monthlyFee} €` : '');
+    const extraProratedFeeLine = getExtraServiceConfigForGestion(gestion)?.monthlyFee === 0 ? 'No procede: modalidad gratuita' : gestion.extraProratedFee ? `${gestion.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
     const extraActivationLine = getExtraServiceConfigForGestion(gestion)?.activationTarget || '';
 
     const body = `TIPO_GESTION: ${typeLabel}
@@ -6168,6 +6186,7 @@ ALUMNO: ${gestion.studentName || ''}
 ${aliasLine}EMAIL: ${gestion.studentEmail || studentInfo?.email || ''}
 PROFESOR: ${gestion.requestedTeacher || ''}
 ALCANCE_BAJA: ${bajaScopeLine}
+SERVICIOS_A_CANCELAR: ${gestion.cancelledServicesLabel || ''}
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_DESTINO: ${targetClassLine}
 CLASE: ${classLine}
@@ -6557,6 +6576,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
   const gestionRequiresTadosi = (gestion = {}) => {
     const target = gestion.type === 'ampliar_clases' && gestion.requestedStartPending === true
       ? recurringClassesOnly.find(clase => gestion.requestedClassRefPath ? clase.refPath === gestion.requestedClassRefPath : clase.id === gestion.requestedClass) : null;
+    if (gestion.type === 'alta_mitolocker') return gestion.mitolockerMode !== 'compartido';
+    if (gestion.type === 'baja_servicios') {
+      const student = students.find(item => item.id === gestion.studentId) || {};
+      return cancelledServiceKeys(gestion, student).some(key => key !== 'mitolocker' || student.mitolockerMode !== 'compartido');
+    }
     return !gestion?.skipTadosi && target?.autoAdvanceStartDate !== true && TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
   };
   const isGestionTadosiDone = (gestion = {}) => Boolean(gestion?.tadosiDone || gestion?.tadosiDoneAt || gestion?.workflowStatus === 'tadosi_hecho' || gestion?.workflowStatus === 'listo_ejecucion');
@@ -6648,10 +6672,17 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
           return fail(`⚠️ No se puede activar ${extraConfig.name}: no se ha encontrado la ficha del alumno.`);
         }
 
+        if (extraConfig.key === 'mitolocker' && getFixedStudentClasses(studentId).length === 0) {
+          return fail('Mitolocker requiere una plaza de clases. No se puede activar sin ella.');
+        }
+        if (extraConfig.key === 'mitolocker' && studentInfo.hasMitolocker && studentInfo.mitolockerMode !== extraConfig.mode) {
+          return fail('El alumno ya tiene otra modalidad de Mitolocker. Revisa su ficha antes de activar esta solicitud.');
+        }
         const alreadyActive = Boolean(studentInfo?.[extraConfig.studentFlag]);
         const nowIso = new Date().toISOString();
         const updatePayload = {
           [extraConfig.studentFlag]: true,
+          ...(extraConfig.key === 'mitolocker' ? mitolockerPatch(extraConfig.mode) : {}),
           [`${extraConfig.key}ActivatedAt`]: studentInfo?.[`${extraConfig.key}ActivatedAt`] || nowIso,
           [`${extraConfig.key}ActivatedBy`]: user?.email || 'admin',
           [`${extraConfig.key}SourceGestionId`]: gestionId
@@ -6666,9 +6697,9 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
 
 Te confirmamos que ya hemos activado tu alta en ${extraConfig.name}.
 
-La domiciliación correspondiente queda preparada por coordinación.
+${extraConfig.monthlyFee > 0 ? `La cuota es de ${extraConfig.monthlyFee} €/mes. La domiciliación queda preparada por coordinación.` : 'Modalidad gratuita, sin domiciliación.'}
 
-${extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Área del Alumno, pestaña Extras, usando el botón de Classroom.' : 'Ya puedes reservar sala desde el Área del Alumno, pestaña Extras.'}
+${extraConfig.key === 'mitolocker' ? `${extraConfig.description} Coordina con la escuela la entrega y recogida de tu instrumento.` : extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Área del Alumno, pestaña Extras, usando el botón de Classroom.' : 'Ya puedes reservar sala desde el Área del Alumno, pestaña Extras.'}
 
 Un saludo,
 Coordinación Los Mitos.`
@@ -6689,6 +6720,18 @@ Coordinación Los Mitos.`
         );
 
         return notify(`✅ ${extraConfig.name} activado para ${displayName}. El trámite queda cerrado y el alumno ya verá el servicio como activo en Extras.`);
+      }
+      else if (type === 'baja_servicios') {
+        if (!studentInfo?.id || cancelledServiceKeys(gestionData, studentInfo).length === 0) return fail('No hay servicios válidos seleccionados para cancelar.');
+        const endDate = promptScheduledClassEndDate(gestionData, 'la baja de servicios', silent);
+        if (!endDate) return { ok: false, cancelled: true, message: 'Fecha efectiva no seleccionada.' };
+        const effectiveDate = getScheduledClassStartAfterEndDate(endDate);
+        const summary = fixedServiceSummary(gestionData, studentInfo);
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Baja de servicios programada: ${summary}. Conserva sus clases y servicios no seleccionados.`, buildScheduledExecutionUpdate(endDate, {
+          scheduledAction: 'baja_servicios', bajaEffectiveDate: effectiveDate, bajaClassEndDate: endDate
+        }));
+        await sendStudentNotification({ studentEmail, subject: 'Baja de servicios programada - Escuela Los Mitos', body: `Hola ${studentName},\n\nHemos programado la baja de: ${summary}.\nÚltimo día de servicio: ${formatDateSpanish(endDate)}. Baja efectiva: ${formatDateSpanish(effectiveDate)}.\nConservas tus clases y los servicios que no has solicitado cancelar.\n\nUn saludo,\nCoordinación Los Mitos.` });
+        return notify(`Baja de ${summary} programada desde ${formatDateSpanish(effectiveDate)}.`);
       }
       else if (type === 'baja') {
         const sourceClass = getGestionSourceClass(gestionData);
@@ -6721,6 +6764,14 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         const remainingFixedClasses = canExecutePartialBaja && sourceClass
           ? fixedClassesBefore.filter(c => c.id !== sourceClass.id)
           : [];
+
+        const seatsAtEffectiveDate = getFixedStudentClasses(studentId, recurringClassesOnly, scheduledEffectiveDate);
+        const keepsTeachingSeat = canExecutePartialBaja && sourceClass && seatsAtEffectiveDate.some(clase => clase.id !== sourceClass.id);
+        const resolvedKeys = cancelledServiceKeys(gestionData, studentInfo, !keepsTeachingSeat);
+        const resolvedServiceScope = { serviceSelectionVersion: 1, cancelledServiceKeys: resolvedKeys };
+        gestionData = { ...gestionData, ...resolvedServiceScope };
+        gestionData.cancelledServicesLabel = fixedServiceSummary(gestionData, studentInfo);
+        Object.assign(scheduledExecutionUpdate, resolvedServiceScope, { cancelledServicesLabel: gestionData.cancelledServicesLabel });
 
         if (canExecutePartialBaja && sourceClass && remainingFixedClasses.length > 0) {
           const updatedList = (sourceClass.students || []).map(s =>
@@ -6798,6 +6849,7 @@ Coordinación Los Mitos.`
           globalStatus: studentInfo?.globalStatus === 'baja' ? 'baja' : 'activo',
           scheduledBaja: true,
           scheduledBajaScope: 'total',
+          scheduledBajaKeepsServices: hasIndependentServices({ ...studentInfo, ...serviceCancellationPatch(gestionData, studentInfo) }),
           scheduledBajaClassEndDate: scheduledEndDate,
           scheduledBajaEffectiveDate: scheduledEffectiveDate,
           scheduledBajaSourceGestionId: gestionId,
@@ -6829,7 +6881,8 @@ Coordinación Los Mitos.`
 Te confirmamos que tu solicitud de baja ha sido programada correctamente.
 
 Último día con plaza activa: ${formatDateSpanish(scheduledEndDate)}.
-A partir de ${formatDateSpanish(scheduledEffectiveDate)} tu baja será efectiva y dejarás de aparecer como alumno/a activo/a en la plataforma.
+A partir de ${formatDateSpanish(scheduledEffectiveDate)} dejarás de asistir a estas clases. ${hasIndependentServices({ ...studentInfo, ...serviceCancellationPatch(gestionData, studentInfo) }) ? 'Mantendrás el acceso al portal por tus servicios conservados.' : 'Si no conservas ninguna clase ni servicio, se desactivará tu acceso al portal.'}
+Servicios a cancelar: ${fixedServiceSummary(gestionData, studentInfo) || 'ninguno'}.
 
 ${isTotalBaja
   ? `Has solicitado la baja total, así que se programan todas tus clases${sourceClassLine ? ` aunque la plaza de referencia fuera:\n· ${sourceClassLine}` : ''}.\n`
@@ -6848,7 +6901,7 @@ Coordinación Los Mitos.`
             ? `Baja total programada al ser última plaza fija. Último día: ${formatDateSpanish(scheduledEndDate)}. Plaza solicitada: ${sourceClassLine}`
             : `Baja programada desde bandeja Admin. Último día: ${formatDateSpanish(scheduledEndDate)}`,
           scheduledExecutionUpdate);
-        return notify(`✅ Baja programada. ${displayName} conserva sus clases hasta ${formatDateSpanish(scheduledEndDate)} y dejará de aparecer desde ${formatDateSpanish(scheduledEffectiveDate)}. Tickets y trivial quedan marcados para baja total cuando sea efectiva.`);
+        return notify(`✅ Baja programada. ${displayName} conserva sus clases hasta ${formatDateSpanish(scheduledEndDate)} y dejará de aparecer desde ${formatDateSpanish(scheduledEffectiveDate)}. ${hasIndependentServices({ ...studentInfo, ...serviceCancellationPatch(gestionData, studentInfo) }) ? 'Conservará el acceso por sus servicios activos.' : 'El acceso se desactivará si no conserva clases ni servicios.'}`);
       }
       else if (type === 'mantenimiento') {
         let maintenancePeriod = getMaintenancePeriodFromGestion(gestionData);
@@ -7435,7 +7488,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
   };
 
   const shouldConsolidateScheduledGestion = (gestion = {}) => {
-    if (!['baja', 'cambio_horario'].includes(gestion.type)) return false;
+    if (!['baja', 'baja_servicios', 'cambio_horario'].includes(gestion.type)) return false;
     if (gestion.status !== 'completado') return false;
     if (gestion.workflowStatus === 'consolidado' || gestion.consolidatedAt) return false;
     if (gestion.executionMode && !String(gestion.executionMode).includes('scheduled')) return false;
@@ -7702,6 +7755,8 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         hasMitoverso: false,
         hasMitobox: false,
         hasGymusik: false,
+        hasMitolocker: false,
+        mitolockerMode: '',
         scheduledBaja: false,
         immediateBajaAt: now,
         immediateBajaBy: user?.email || 'admin',
@@ -7747,11 +7802,53 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
   };
 
+  const cancelStudentMitoboxFromDate = async (studentId, effectiveDate) => {
+    const snapshot = await getDocs(query(collection(db, 'artifacts', appId, 'mitoboxReservations'), where('studentId', '==', studentId)));
+    for (const item of snapshot.docs) {
+      const reservation = item.data();
+      if (!isActiveMitoboxReservation(reservation) || reservation.reservationDate < effectiveDate) continue;
+      const reservationRef = doc(db, 'artifacts', appId, 'mitoboxReservations', item.id);
+      const slotRef = reservation.slotId ? doc(db, 'artifacts', appId, 'mitoboxSlots', reservation.slotId) : null;
+      await runTransaction(db, async transaction => {
+        const current = await transaction.get(reservationRef);
+        const slot = slotRef ? await transaction.get(slotRef) : null;
+        if (!current.exists() || !isActiveMitoboxReservation(current.data())) return;
+        const now = new Date().toISOString();
+        transaction.update(reservationRef, { status: 'cancelled', cancelledAt: now, cancelledBy: 'baja_servicio', updatedAt: now });
+        if (slot?.exists()) transaction.update(slotRef, { reservedCount: Math.max(0, Number(slot.data().reservedCount || 0) - 1), updatedAt: now, lastMutationId: item.id });
+      });
+    }
+  };
+
+  const consolidateScheduledServiceBajaGestion = async (gestion = {}) => {
+    const studentRef = doc(db, 'artifacts', appId, 'students', gestion.studentId);
+    const snapshot = await getDocFromServer(studentRef);
+    if (!snapshot.exists()) return { ok: false, message: 'No se encuentra la ficha del alumno.' };
+    const student = snapshot.data();
+    const keepsClasses = hasRemainingCommittedFixedSeat(gestion.studentId, student);
+    const keys = cancelledServiceKeys(gestion, student, !keepsClasses);
+    const patch = serviceCancellationPatch(gestion, student, !keepsClasses);
+    const keepsServices = hasIndependentServices({ ...student, ...patch });
+    if (keys.includes('gymusik')) await cancelStudentGymusikForFinalBaja(gestion.studentId);
+    if (keys.includes('mitobox')) await cancelStudentMitoboxFromDate(gestion.studentId, getScheduledGestionEffectiveDate(gestion) || todayStr);
+    const finalBaja = !keepsClasses && !keepsServices;
+    if (finalBaja) {
+      await cancelStudentStatesForFinalBaja(gestion.studentId, gestion.id || '', getScheduledGestionEffectiveDate(gestion) || todayStr);
+      await resetStudentTrivia(gestion.studentId);
+      await voidStudentTickets(gestion.studentId, 'baja_ultimo_servicio');
+    }
+    await updateDoc(studentRef, { ...patch, ...(finalBaja ? { globalStatus: 'baja', classes: [] } : {}) });
+    const summary = `Servicios cancelados: ${fixedServiceSummary({ ...gestion, serviceSelectionVersion: 1, cancelledServiceKeys: keys }, student) || 'ninguno'}. ${finalBaja ? 'Sin clases ni servicios: acceso desactivado.' : 'Conserva clases, servicios no seleccionados y acceso al portal.'}`;
+    await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), buildConsolidatedGestionUpdate(gestion, summary, { consolidatedCancelledServiceKeys: keys, consolidatedAction: 'baja_servicios' }));
+    return { ok: true, message: summary, finalizedGlobalBaja: finalBaja };
+  };
+
   const consolidateScheduledBajaGestion = async (gestion = {}) => {
     const studentId = gestion.studentId;
     if (!studentId) return { ok: false, message: 'Gestión de baja sin alumno asociado.' };
 
-    const studentInfo = students.find(s => s.id === studentId) || {};
+    const studentSnapshot = await getDocFromServer(doc(db, 'artifacts', appId, 'students', studentId));
+    const studentInfo = studentSnapshot.exists() ? studentSnapshot.data() : {};
     const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
     const isTotalBaja = isTotalBajaGestion(gestion);
     const sourceClass = getGestionSourceClass(gestion);
@@ -7791,7 +7888,13 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
 
     const hasRemainingSeat = hasRemainingCommittedFixedSeat(studentId, studentInfo, localClassUpdates);
-    const shouldFinalizeGlobalBaja = isTotalBaja || !hasRemainingSeat;
+    const cancelledKeys = cancelledServiceKeys(gestion, studentInfo, !hasRemainingSeat);
+    const cancellationPatch = serviceCancellationPatch(gestion, studentInfo, !hasRemainingSeat);
+    const keepsServices = hasIndependentServices({ ...studentInfo, ...cancellationPatch });
+    const shouldFinalizeGlobalBaja = !hasRemainingSeat && !keepsServices;
+    if (cancelledKeys.includes('gymusik')) await cancelStudentGymusikForFinalBaja(studentId);
+    if (cancelledKeys.includes('mitobox')) await cancelStudentMitoboxFromDate(studentId, effectiveDate || todayStr);
+    if (Object.keys(cancellationPatch).length) await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), cancellationPatch);
     let ticketsVoided = 0;
     let gymusikReservationsCancelled = 0;
     let cancelledStates = { maintenancePeriods: 0, temporaryRelocations: 0, gestiones: 0 };
@@ -7807,6 +7910,8 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         hasMitoverso: false,
         hasMitobox: false,
         hasGymusik: false,
+        hasMitolocker: false,
+        mitolockerMode: '',
         extrasDisabledByBajaAt: new Date().toISOString(),
         extrasDisabledByBajaBy: user?.email || 'admin',
         scheduledBaja: false,
@@ -7833,7 +7938,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
     const summary = shouldFinalizeGlobalBaja
       ? `Baja definitiva consolidada para ${displayName}. Clases eliminadas: ${removedClassLines.length}. Tickets anulados: ${ticketsVoided}. Extras desactivados. Mantenimientos cancelados: ${cancelledStates.maintenancePeriods}. Recolocaciones canceladas: ${cancelledStates.temporaryRelocations}. Otras gestiones canceladas: ${cancelledStates.gestiones}. Reservas Gymusik canceladas: ${gymusikReservationsCancelled}.`
-      : `Baja parcial consolidada para ${displayName}. Plaza eliminada: ${removedClassLines.length}. Conserva otras plazas activas.`;
+      : `Baja consolidada para ${displayName}. Plazas eliminadas: ${removedClassLines.length}. Servicios cancelados: ${fixedServiceSummary({ ...gestion, serviceSelectionVersion: 1, cancelledServiceKeys: cancelledKeys }, studentInfo) || 'ninguno'}. Conserva ${hasRemainingSeat ? 'otras clases y sus servicios no cancelados' : 'sus servicios no cancelados y el acceso al portal'}.`;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), buildConsolidatedGestionUpdate(gestion, summary, {
       consolidatedAction: shouldFinalizeGlobalBaja ? 'baja_total_definitiva' : 'baja_parcial_definitiva',
@@ -7845,7 +7950,9 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
       consolidatedOtherGestionesCancelled: cancelledStates.gestiones,
       consolidatedGymusikReservationsCancelled: gymusikReservationsCancelled,
       consolidatedExtrasDisabled: shouldFinalizeGlobalBaja,
-      consolidatedKeepsActiveSeats: !shouldFinalizeGlobalBaja
+      consolidatedKeepsActiveSeats: hasRemainingSeat,
+      consolidatedKeepsServices: keepsServices,
+      consolidatedCancelledServiceKeys: cancelledKeys
     }));
 
     return { ok: true, message: summary, finalizedGlobalBaja: shouldFinalizeGlobalBaja };
@@ -7937,18 +8044,18 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
   };
 
   const consolidateExpiredScheduledGestiones = async () => {
-    const expiredGestiones = scheduledGestionesVencidas.filter(gestion => ['baja', 'cambio_horario'].includes(gestion.type));
+    const expiredGestiones = scheduledGestionesVencidas.filter(gestion => ['baja', 'baja_servicios', 'cambio_horario'].includes(gestion.type));
 
     if (expiredGestiones.length === 0) {
       alert('No hay bajas ni cambios de horario programados vencidos para consolidar.');
       return;
     }
 
-    const bajaCount = expiredGestiones.filter(gestion => gestion.type === 'baja').length;
+    const bajaCount = expiredGestiones.filter(gestion => ['baja', 'baja_servicios'].includes(gestion.type)).length;
     const changeCount = expiredGestiones.filter(gestion => gestion.type === 'cambio_horario').length;
     const previewLimit = 25;
     const previewLines = expiredGestiones.slice(0, previewLimit).map((gestion, index) => {
-      const typeLabel = gestion.type === 'baja' ? getBajaScopeLabel(gestion) || 'Baja' : 'Cambio de horario';
+      const typeLabel = ['baja', 'baja_servicios'].includes(gestion.type) ? getBajaScopeLabel(gestion) || 'Baja' : 'Cambio de horario';
       const endDate = getScheduledGestionEndDate(gestion);
       const effectiveDate = getScheduledGestionEffectiveDate(gestion);
       const sourceLine = getGestionSourceClassLine(gestion);
@@ -7961,7 +8068,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const hiddenPreviewCount = Math.max(expiredGestiones.length - previewLimit, 0);
     const previewText = `${previewLines.join('\n\n')}${hiddenPreviewCount > 0 ? `\n\n...y ${hiddenPreviewCount} gestión(es) más.` : ''}`;
 
-    if (!window.confirm(`Vas a consolidar estas gestiones programadas vencidas:\n\n${previewText}\n\nResumen:\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. En bajas totales también marca baja definitiva, anula tickets pendientes y pone el trivial a cero.\n\nNo procesa mantenimientos.\n\n¿Confirmas la consolidación?`)) return;
+    if (!window.confirm(`Vas a consolidar estas gestiones programadas vencidas:\n\n${previewText}\n\nResumen:\nBajas: ${bajaCount}\nCambios de horario: ${changeCount}\n\nEsto elimina definitivamente las plazas antiguas ya vencidas. Solo si no quedan clases ni servicios activos se desactiva la cuenta, se anulan tickets y se reinicia el trivial. Los servicios no seleccionados se conservan.\n\nNo procesa mantenimientos.\n\n¿Confirmas la consolidación?`)) return;
 
     setBulkConsolidatingGestiones(true);
     const results = [];
@@ -7974,7 +8081,9 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           continue;
         }
         try {
-          const result = gestion.type === 'baja'
+          const result = gestion.type === 'baja_servicios'
+            ? await consolidateScheduledServiceBajaGestion(gestion)
+            : gestion.type === 'baja'
             ? await consolidateScheduledBajaGestion(gestion)
             : await consolidateScheduledChangeGestion(gestion);
           if (result?.finalizedGlobalBaja) studentsWithFinalBaja.add(gestion.studentId);
@@ -8000,6 +8109,15 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     if(window.confirm(`¿Cambiar este ajuste a ${isStatusField ? newStatus.toUpperCase() : (newStatus ? 'ON' : 'OFF')}?`)) {
       await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), { [field]: newStatus });
     }
+  };
+
+  const changeStudentMitolocker = async (studentId, mode) => {
+    const config = MITOLOCKER_MODES[mode];
+    if (mode && getFixedStudentClasses(studentId).length === 0) return alert('Mitolocker requiere una plaza de clases.');
+    if (!window.confirm(`¿Cambiar Mitolocker a ${config ? `${config.name} (${config.monthlyFee} €/mes)` : 'desactivado'}? Revisa la cuota en Tadosi si corresponde.`)) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), mitolockerPatch(mode));
+    } catch (error) { alert(`No se ha podido actualizar Mitolocker: ${error.message}`); }
   };
 
   const createServiceOnlyStudent = async () => {
@@ -9147,7 +9265,7 @@ Coordinación Los Mitos.`
       `Ingresos por clases activas: ${money(businessIntelligence.totalIngresosClases)} (${businessIntelligence.totalMatriculasActivas || 0} matrículas/cuotas activas)`,
       `Alumnos únicos con al menos una matrícula activa: ${businessIntelligence.totalAlumnosActivosUnicos || 0}`,
       `Ingresos por mantenimiento: ${money(businessIntelligence.ingresosMantenimiento)} (${businessIntelligence.alumnosMantenimiento} alumno/s × ${MAINTENANCE_MONTHLY_FEE} €)`,
-      `Ingresos recurrentes de Extras: ${money(businessIntelligence.ingresosExtras)} (Mitoverso: ${money(businessIntelligence.ingresosMitoverso)} · ${businessIntelligence.alumnosMitoverso || 0} altas; Mitobox: ${money(businessIntelligence.ingresosMitobox)} · ${businessIntelligence.alumnosMitobox || 0} altas)`,
+      `Ingresos recurrentes de Extras: ${money(businessIntelligence.ingresosExtras)} (Mitoverso: ${money(businessIntelligence.ingresosMitoverso)} · ${businessIntelligence.alumnosMitoverso || 0} altas; Mitobox: ${money(businessIntelligence.ingresosMitobox)} · ${businessIntelligence.alumnosMitobox || 0} altas; Mitolocker compartido: ${businessIntelligence.alumnosMitolockerCompartido || 0} · gratis; exclusivo: ${businessIntelligence.alumnosMitolockerExclusivo || 0} · ${money(businessIntelligence.ingresosMitolocker)})`,
       `Inicios futuros sin ingreso todavía: ${businessIntelligence.totalMatriculasInicioFuturo || 0} matrícula/s`,
       `Plazas fijas comprometidas: ${businessIntelligence.totalPlazasComprometidas || 0}`,
       `Impagos incluidos como plaza activa/riesgo: ${businessIntelligence.totalImpagos || 0}`,
@@ -10667,6 +10785,8 @@ Coordinación Los Mitos.`
             hasMitobox: false,
             hasMitoverso: false,
             hasGymusik: false,
+            hasMitolocker: false,
+            mitolockerMode: '',
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Importado masivamente de Tadosi',
@@ -10727,7 +10847,7 @@ Coordinación Los Mitos.`
   const resolvedGestiones = gestiones.filter(g => g.status !== 'pendiente');
   const scheduledGestionesVencidas = gestiones.filter(shouldConsolidateScheduledGestion);
   const isScheduledGestionPendingConsolidation = (gestion = {}) => {
-    if (!['baja', 'cambio_horario'].includes(gestion.type)) return false;
+    if (!['baja', 'baja_servicios', 'cambio_horario'].includes(gestion.type)) return false;
     if (gestion.status !== 'completado') return false;
     if (gestion.workflowStatus === 'consolidado' || gestion.consolidatedAt) return false;
 
@@ -10802,7 +10922,7 @@ Coordinación Los Mitos.`
     { id: 'tadosi_pendiente', label: 'Pend. Tadosi', matcher: (g) => gestionRequiresTadosi(g) && !isGestionTadosiDone(g) },
     { id: 'tadosi_hecho', label: 'Tadosi hecho', matcher: (g) => gestionRequiresTadosi(g) && isGestionTadosiDone(g) },
     { id: 'mantenimiento', label: 'Mantenimiento', matcher: (g) => ['mantenimiento', 'reactivar_plaza'].includes(g.type) },
-    { id: 'extras', label: 'Extras', matcher: (g) => isExtraServiceGestion(g) },
+    { id: 'extras', label: 'Extras', matcher: (g) => isExtraServiceGestion(g) || g.type === 'baja_servicios' },
     { id: 'ausencias', label: 'Ausencias', matcher: (g) => isAbsenceGestion(g) },
     { id: 'bajas', label: 'Bajas', matcher: (g) => (g.type || '').includes('baja') },
     { id: 'manuales', label: 'Manuales', matcher: (g) => g.source === 'manual_admin' || (g.type || '').includes('manual') || g.type === 'tarea_manual' || g.type === 'incidencia_manual' },
@@ -12876,6 +12996,7 @@ ${valueOrDash(comments.privateNote)}`,
                       <div className="flex justify-between gap-4"><span>Estado operativo</span><span className="uppercase text-slate-900">{String(operationalStatus || '').replace(/_/g, ' ')}</span></div>
                       <div className="flex items-center justify-between gap-4"><span>Mitobox</span><button type="button" onClick={() => toggleStudentToggle(student.id, 'hasMitobox', student.hasMitobox)} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${student.hasMitobox ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-500'}`}>{student.hasMitobox ? 'Activo' : 'Desactivado'}</button></div>
                       <div className="flex items-center justify-between gap-4"><span>Mitoverso</span><button type="button" onClick={() => toggleStudentToggle(student.id, 'hasMitoverso', student.hasMitoverso)} className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${student.hasMitoverso ? 'bg-indigo-100 text-indigo-700' : 'bg-zinc-100 text-zinc-500'}`}>{student.hasMitoverso ? 'Activo' : 'Desactivado'}</button></div>
+                      <label className="flex items-center justify-between gap-4"><span>Mitolocker</span><select aria-label="Modalidad de Mitolocker" value={student.hasMitolocker ? student.mitolockerMode || '' : ''} onChange={event => changeStudentMitolocker(student.id, event.target.value)} className="p-2 border rounded-lg text-xs"><option value="">Desactivado</option><option value="compartido" disabled={getFixedStudentClasses(student.id).length === 0}>Compartido · gratis</option><option value="exclusivo" disabled={getFixedStudentClasses(student.id).length === 0}>Exclusivo · 5 €/mes</option></select></label>
                       <div className="flex justify-between gap-4"><span>Gymusik</span><span className="uppercase text-emerald-700">{{ preenrolled: 'Preinscrito', active: 'Activo', paused: 'En pausa', cancelled: 'Baja' }[student.gymusikStatus] || (student.hasGymusik ? 'Activo' : 'No inscrito')}</span></div>
                     </div>
                   </section>
@@ -13731,6 +13852,8 @@ ${startDateWarning}
             hasMitobox: false,
             hasMitoverso: false,
             hasGymusik: false,
+            hasMitolocker: false,
+            mitolockerMode: '',
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido al reactivar grupo',
@@ -14012,6 +14135,8 @@ ${startDateWarning}
             hasMitobox: false,
             hasMitoverso: false,
             hasGymusik: false,
+            hasMitolocker: false,
+            mitolockerMode: '',
             triviaPoints: 0,
             triviaVictories: 0,
             internalNotes: 'Añadido desde panel de clase',
@@ -14497,7 +14622,7 @@ ${startDateWarning}
                               return (
                                 <div className="mt-2 p-2 rounded-xl bg-slate-50 border border-slate-100 text-[10px] font-bold text-slate-700 leading-snug">
                                   <span className="font-black uppercase tracking-widest block mb-0.5">Servicio extra</span>
-                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} · cuota {g.extraMonthlyFee || extraConfig?.monthlyFee || '—'}€/mes
+                                  {g.extraServiceName || g.serviceName || extraConfig?.name || 'Extra'} · cuota {g.extraMonthlyFee ?? extraConfig?.monthlyFee ?? '—'}€/mes
                                   <span className="block text-zinc-500 mt-0.5">Prorrata del mes corriente: a calcular al activar.</span>
                                 </div>
                               );
@@ -14649,6 +14774,7 @@ ${startDateWarning}
                 <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasMitobox ? 'border-blue-500 bg-blue-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasMitobox} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasMitobox: event.target.checked }))} className="accent-blue-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Mitobox</span></label>
                 <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasMitoverso ? 'border-indigo-500 bg-indigo-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasMitoverso} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasMitoverso: event.target.checked }))} className="accent-indigo-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Mitoverso</span></label>
                 <label className={`p-4 rounded-2xl border-2 cursor-pointer ${serviceStudentDraft.hasGymusik ? 'border-emerald-500 bg-emerald-50' : 'border-zinc-200 bg-zinc-50'}`}><input type="checkbox" checked={serviceStudentDraft.hasGymusik} onChange={event => setServiceStudentDraft(previous => ({ ...previous, hasGymusik: event.target.checked }))} className="accent-emerald-600 mr-2"/><span className="font-black text-xs uppercase tracking-widest">Gymusik</span></label>
+
               </div>
               <p className="text-xs font-medium text-zinc-500 leading-relaxed">Después, el usuario entra en alumnos.escuelalosmitos.com, pulsa «Primera vez aquí» y crea su contraseña con este correo.</p>
               <button type="button" onClick={createServiceOnlyStudent} disabled={savingServiceStudent} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black uppercase tracking-widest text-xs disabled:opacity-50">{savingServiceStudent ? 'Creando…' : 'Crear usuario'}</button>
@@ -14940,6 +15066,8 @@ ${startDateWarning}
                   <div><span className="block text-2xl font-black text-blue-700">{businessIntelligence.alumnosMantenimiento || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">En mantenimiento</span></div>
                   <div><span className="block text-2xl font-black text-indigo-700">{businessIntelligence.alumnosMitoverso || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Mitoverso · {businessIntelligence.ingresosMitoverso || 0}€</span></div>
                   <div><span className="block text-2xl font-black text-sky-700">{businessIntelligence.alumnosMitobox || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Mitobox · {businessIntelligence.ingresosMitobox || 0}€</span></div>
+                  <div><span className="block text-2xl font-black text-amber-700">{businessIntelligence.alumnosMitolockerCompartido || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Mitolocker compartido · gratis</span></div>
+                  <div><span className="block text-2xl font-black text-amber-700">{businessIntelligence.alumnosMitolockerExclusivo || 0}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Mitolocker exclusivo · {businessIntelligence.ingresosMitolocker || 0}€</span></div>
                   {businessIntelligence.alumnosMantenimientoLegacy > 0 && <p className="col-span-2 lg:col-span-6 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">{businessIntelligence.alumnosMantenimientoLegacy} ficha(s) con estado antiguo «congelado» o pausa heredada se tratan como mantenimiento.</p>}
                 </div>
               </div>
@@ -15647,12 +15775,13 @@ ${startDateWarning}
           <div className="space-y-6 animate-in fade-in">
             <header className="mb-2">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Servicios</h2>
-              <p className="text-zinc-500 font-medium text-sm">Gestión centralizada de Mitobox, Mitoverso y Gymusik.</p>
+              <p className="text-zinc-500 font-medium text-sm">Gestión centralizada de Mitobox, Mitoverso, Mitolocker y Gymusik.</p>
             </header>
-            <div className="grid grid-cols-3 gap-2 bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-white border border-zinc-200 rounded-2xl p-2 shadow-sm">
               {[
                 { id: 'mitobox', label: 'Mitobox', icon: DoorOpen },
                 { id: 'mitoverso', label: 'Mitoverso', icon: MonitorPlay },
+                { id: 'mitolocker', label: 'Mitolocker', icon: Lock },
                 { id: 'gymusik', label: 'Gymusik', icon: Activity }
               ].map(serviceItem => <button key={serviceItem.id} type="button" onClick={() => setServicesSubTab(serviceItem.id)} className={`px-3 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${servicesSubTab === serviceItem.id ? 'bg-black text-white shadow-md' : 'text-zinc-400 hover:bg-zinc-50 hover:text-black'}`}><serviceItem.icon className="w-4 h-4"/>{serviceItem.label}</button>)}
             </div>
@@ -15714,6 +15843,7 @@ ${startDateWarning}
             </div>
             </> : <ServicesAdmin
               service={servicesSubTab}
+              canUseMitolocker={studentId => getFixedStudentClasses(studentId).length > 0}
               db={db}
               appId={appId}
               user={user}

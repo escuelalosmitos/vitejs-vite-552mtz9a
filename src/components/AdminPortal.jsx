@@ -12,6 +12,7 @@ import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import { MITOLOCKER_MODES, hasIndependentServices, getMitolockerMode, mitolockerPatch, cancelledServiceKeys, serviceCancellationPatch, fixedServiceSummary, mitolockerMetrics } from './fixedServicesUtils.js';
+import { mitoboxEvidenceError, mitoboxEarliestActivation, mitoboxMonthlyFee, downloadMitoboxContract, buildMitoboxContractCopy } from './mitoboxContractUtils.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
 import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
@@ -4324,6 +4325,13 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
             skippedPending.push({ id: gestion.id, type: gestion.type, reason: 'Mitolocker requiere plaza de clases' });
             return;
           }
+          if (config.key === 'mitobox') {
+            if (!gestion.mitoboxContract?.accepted || ![35,50].includes(gestion.mitoboxContract.monthlyFee)) {
+              skippedPending.push({ id: gestion.id, type: gestion.type, reason: 'contrato Mitobox pendiente' });
+              return;
+            }
+            studentInfo.mitoboxMonthlyFee = gestion.mitoboxContract.monthlyFee;
+          }
           studentInfo[config.studentFlag] = true;
           if (config.mode) studentInfo.mitolockerMode = config.mode;
           appliedPending.push({ id: gestion.id, type: gestion.type, studentId: studentInfo.id });
@@ -4847,7 +4855,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const alumnosMitoverso = extraEligibleStudents.filter(student => student.hasMitoverso === true).length;
     const alumnosMitobox = extraEligibleStudents.filter(student => student.hasMitobox === true).length;
     const ingresosMitoverso = alumnosMitoverso * EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso.monthlyFee;
-    const ingresosMitobox = alumnosMitobox * EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox.monthlyFee;
+    const ingresosMitobox = extraEligibleStudents.filter(student => student.hasMitobox === true).reduce((sum, student) => sum + ([35,50].includes(student.mitoboxMonthlyFee) ? student.mitoboxMonthlyFee : EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox.monthlyFee), 0);
     const lockerEntitledIds = new Set(extraEligibleStudents.filter(student => classesSnapshot.some(clase => !isPunctualClass(clase) && (clase.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, referenceDate)))).map(student => student.id));
     const lockerMetrics = mitolockerMetrics(extraEligibleStudents, lockerEntitledIds);
     const ingresosExtras = ingresosMitoverso + ingresosMitobox + lockerMetrics.ingresosMitolocker;
@@ -6104,7 +6112,7 @@ ${portalAction} accediendo a tu portal.`;
 
   const isExtraServiceGestion = (gestion = {}) => isExtraServiceGestionType(gestion?.type || '');
 
-  const getExtraServiceConfigForGestion = (gestion = {}) => getExtraServiceConfigByType(gestion?.type || '', gestion) || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
+  const getExtraServiceConfigForGestion = (gestion = {}) => gestion.type === 'alta_mitobox' && [35,50].includes(gestion.mitoboxContract?.monthlyFee) ? { ...EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox, monthlyFee: gestion.mitoboxContract.monthlyFee } : getExtraServiceConfigByType(gestion?.type || '', gestion) || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
 
   const getGestionTypeBadgeClass = (gestion = {}) => {
     const extraConfig = getExtraServiceConfigForGestion(gestion);
@@ -6198,6 +6206,9 @@ PERIODO_MANTENIMIENTO: ${maintenancePeriodLine}
 CUOTA_MANTENIMIENTO: ${maintenanceFeeLine}
 FECHA_RECUPERACION: ${gestion.recoveryDate ? formatDateSpanish(gestion.recoveryDate) : ''}
 SERVICIO_EXTRA: ${extraServiceLine}
+CONTRATANTE_MITOBOX: ${gestion.mitoboxContract?.signerFullName || ''}
+VERSION_CONTRATO_MITOBOX: ${gestion.mitoboxContract?.version || ''}
+HUELLA_CONTRATO_MITOBOX: ${gestion.mitoboxContract?.sha256 || ''}
 CUOTA_MENSUAL_EXTRA: ${extraMonthlyFeeLine}
 PRORRATA_MES_ACTUAL: ${extraProratedFeeLine}
 ACTIVACION_EXTRA: ${extraActivationLine}
@@ -6584,7 +6595,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     return !gestion?.skipTadosi && target?.autoAdvanceStartDate !== true && TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
   };
   const isGestionTadosiDone = (gestion = {}) => Boolean(gestion?.tadosiDone || gestion?.tadosiDoneAt || gestion?.workflowStatus === 'tadosi_hecho' || gestion?.workflowStatus === 'listo_ejecucion');
-  const isGestionReadyForExecution = (gestion = {}) => !gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion);
+  const isGestionReadyForExecution = (gestion = {}) => (!gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion)) && (gestion.type !== 'alta_mitobox' || Boolean(gestion.mitoboxContract?.accepted && gestion.mitoboxIdentityVerifiedAt));
 
   const getGestionWorkflowLabel = (gestion = {}) => {
     if (gestion.status !== 'pendiente') return gestion.status || 'cerrado';
@@ -6605,6 +6616,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       return;
     }
 
+    if (gestion.type === 'alta_mitobox') {
+      const student = students.find(item => item.id === gestion.studentId) || {};
+      const error = await mitoboxEvidenceError(gestion, student);
+      if (error) return alert(error);
+    }
     const extraConfig = getExtraServiceConfigForGestion(gestion);
     const confirmText = extraConfig
       ? `¿Marcar como TADOSI HECHO la domiciliación de ${extraConfig.name} para ${gestion.studentName || 'alumno'}?
@@ -6616,9 +6632,12 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
 
     const expansionDateNote = gestion.type === 'ampliar_clases' && gestion.requestedClassStartDate
       ? `\n\nIncorporación solicitada: ${formatDateSpanish(gestion.requestedClassStartDate)}. Ajusta la cuota desde esa fecha y revísala si cambias la incorporación al aprobar.` : '';
-    if (!window.confirm(confirmText + expansionDateNote)) return;
+    const identityNote = gestion.type === 'alta_mitobox'
+      ? `\n\nAntes de confirmar: contrasta en Tadosi o en la documentación del Centro el nombre del Contratante «${gestion.mitoboxContract.signerFullName}» y, si actúa por un menor, su representación. Al confirmar dejas registrada esta comprobación manual. No copies el DNI al portal.` : '';
+    if (!window.confirm(confirmText + expansionDateNote + identityNote)) return;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
+      ...(gestion.type === 'alta_mitobox' ? { mitoboxIdentityVerifiedAt: new Date().toISOString(), mitoboxIdentityVerifiedBy: user?.email || 'admin' } : {}),
       tadosiDone: true,
       tadosiDoneAt: new Date().toISOString(),
       tadosiDoneBy: user?.email || 'admin',
@@ -6664,7 +6683,7 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
       }
 
       if (isExtraServiceGestion(gestionData)) {
-        const extraConfig = getExtraServiceConfigForGestion(gestionData);
+        let extraConfig = getExtraServiceConfigForGestion(gestionData);
         if (!extraConfig) {
           return fail('⚠️ No se ha podido identificar el servicio extra solicitado.');
         }
@@ -6678,10 +6697,26 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
         if (extraConfig.key === 'mitolocker' && studentInfo.hasMitolocker && studentInfo.mitolockerMode !== extraConfig.mode) {
           return fail('El alumno ya tiene otra modalidad de Mitolocker. Revisa su ficha antes de activar esta solicitud.');
         }
+        if (extraConfig.key === 'mitobox') {
+          const savedRequest = await getDocFromServer(doc(db, 'artifacts', appId, 'gestiones', gestionId));
+          if (!savedRequest.exists() || savedRequest.data().status !== 'pendiente') return fail('La solicitud ya no está pendiente. Actualiza la bandeja.');
+          const saved = savedRequest.data();
+          const error = await mitoboxEvidenceError(saved, studentInfo);
+          if (error) return fail(error);
+          if (!saved.mitoboxIdentityVerifiedAt || !isGestionTadosiDone(saved)) return fail('Comprueba identidad y Tadosi antes de activar Mitobox.');
+          const acceptedFee = saved.mitoboxContract.monthlyFee;
+          const currentFee = mitoboxMonthlyFee(getFixedStudentClasses(studentId).length > 0);
+          if (acceptedFee !== currentFee) return fail('Ha cambiado la condición de alumno y la tarifa aceptada ya no coincide. Solicita un nuevo contrato antes de activar.');
+          const earliest = mitoboxEarliestActivation(saved.mitoboxContract);
+          if (!earliest || Date.now() < Date.parse(earliest)) return fail(`El solicitante no pidió inicio anticipado. Mitobox podrá activarse a partir de ${formatDateSpanish(earliest.slice(0,10))}.`);
+          gestionData = { ...gestionData, ...saved };
+          extraConfig = getExtraServiceConfigForGestion(gestionData);
+        }
         const alreadyActive = Boolean(studentInfo?.[extraConfig.studentFlag]);
         const nowIso = new Date().toISOString();
         const updatePayload = {
           [extraConfig.studentFlag]: true,
+          ...(extraConfig.key === 'mitobox' ? { mitoboxMonthlyFee: gestionData.mitoboxContract.monthlyFee, mitoboxContractVersion: gestionData.mitoboxContract.version, mitoboxContractSha256: gestionData.mitoboxContract.sha256, mitoboxContractGestionId: gestionId } : {}),
           ...(extraConfig.key === 'mitolocker' ? mitolockerPatch(extraConfig.mode) : {}),
           [`${extraConfig.key}ActivatedAt`]: studentInfo?.[`${extraConfig.key}ActivatedAt`] || nowIso,
           [`${extraConfig.key}ActivatedBy`]: user?.email || 'admin',
@@ -6702,7 +6737,7 @@ ${extraConfig.monthlyFee > 0 ? `La cuota es de ${extraConfig.monthlyFee} €/mes
 ${extraConfig.key === 'mitolocker' ? `${extraConfig.description} Coordina con la escuela la entrega y recogida de tu instrumento.` : extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Área del Alumno, pestaña Extras, usando el botón de Classroom.' : 'Ya puedes reservar sala desde el Área del Alumno, pestaña Extras.'}
 
 Un saludo,
-Coordinación Los Mitos.`
+Coordinación Los Mitos.${extraConfig.key === 'mitobox' ? `\n\nCopia del contrato aceptado:\n${buildMitoboxContractCopy(gestionData.mitoboxContract, gestionId)}` : ''}`
         });
 
         await finalizeGestionStatus(
@@ -14627,6 +14662,16 @@ ${startDateWarning}
                                 </div>
                               );
                             })()}
+                            {g.type === 'alta_mitobox' && <div className="mt-3 p-3 border border-blue-200 bg-blue-50 rounded-xl text-xs space-y-1">
+                              {g.mitoboxContract ? <>
+                                <p className="font-black">Contrato Mitobox aceptado</p>
+                                <p>Contratante: {g.mitoboxContract.signerFullName}</p><p>Usuario: {g.mitoboxContract.studentFullName} · {g.mitoboxContract.role === 'guardian' ? 'Representante de menor' : 'En nombre propio'}</p>
+                                <p>Cuenta: {g.mitoboxContract.accountEmail}</p><p>Versión: {g.mitoboxContract.version} · {g.mitoboxContract.monthlyFee} €/mes</p>
+                                <p>{g.mitoboxContract.immediateStart ? 'Inicio durante los primeros 14 días solicitado expresamente.' : `Sin inicio anticipado. Fecha mínima: ${mitoboxEarliestActivation(g.mitoboxContract) ? formatDateSpanish(mitoboxEarliestActivation(g.mitoboxContract).slice(0,10)) : 'pendiente de sincronización'}.`}</p>
+                                <p>{g.mitoboxIdentityVerifiedAt ? `Identidad contrastada por ${g.mitoboxIdentityVerifiedBy}` : 'Pendiente de contrastar identidad y representación con Tadosi al preparar la domiciliación.'}</p>
+                                <button type="button" onClick={() => downloadMitoboxContract(g.mitoboxContract, g.id)} className="font-bold underline">Descargar contrato y registro de aceptación</button>
+                              </> : <p>Esta solicitud no incluye contrato. Rechaza la solicitud antigua y pide al alumno que la envíe de nuevo desde Extras.</p>}
+                            </div>}
                             {bajaScopeLabel && (
                               <div className={`mt-2 inline-flex px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${isTotalBajaGestion(g) ? 'bg-red-100 text-red-700' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
                                 {bajaScopeLabel}

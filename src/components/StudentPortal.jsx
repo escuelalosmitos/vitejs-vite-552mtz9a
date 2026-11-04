@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
-import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch, deleteField } from 'firebase/firestore';
+import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch, deleteField, serverTimestamp } from 'firebase/firestore';
 import { deleteObject, getBlob, ref as storageRef, uploadBytes } from 'firebase/storage';
 import {
   buildMitoboxReservationGroupId,
@@ -12,6 +12,8 @@ import {
   toggleMitoboxSlotSelection
 } from './mitoboxUtils';
 import { MITOLOCKER_MODES, activeFixedServices, hasIndependentServices } from './fixedServicesUtils.js';
+import MitoboxContractForm from './MitoboxContractForm.jsx';
+import { createMitoboxContractDraft, createMitoboxAcceptance, mitoboxDraftError, mitoboxMonthlyFee, downloadMitoboxContract, buildMitoboxContractCopy } from './mitoboxContractUtils.js';
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
 import { getExpansionStartDate, getPublicExpansionClasses, compareClassWeekdayAndTime } from './classExpansionUtils.js';
@@ -786,6 +788,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [mitoboxSlotUsage, setMitoboxSlotUsage] = useState([]);
   const [mitoboxReservationError, setMitoboxReservationError] = useState('');
   const [extraSignupModal, setExtraSignupModal] = useState(null);
+  const [mitoboxContractDraft, setMitoboxContractDraft] = useState(null);
   const [isSendingExtraSignup, setIsSendingExtraSignup] = useState(false);
   const [workshops, setWorkshops] = useState([]);
   const [myWorkshopRegistrations, setMyWorkshopRegistrations] = useState([]);
@@ -4253,6 +4256,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       showToast('Mitolocker requiere mantener una plaza de clases en la escuela.', 'error');
       return;
     }
+    if (serviceKey === 'mitobox') setMitoboxContractDraft(createMitoboxContractDraft(profile, user, mitoboxMonthlyFee(fixedMyClasses.length > 0)));
     setExtraSignupModal(serviceKey);
   };
 
@@ -4279,31 +4283,42 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       showToast('Mitolocker requiere mantener una plaza de clases en la escuela.', 'error');
       return;
     }
+    const isMitobox = serviceConfig.key === 'mitobox';
+    const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
+    if (isMitobox) {
+      const error = mitoboxDraftError(mitoboxContractDraft);
+      if (error) { showToast(error, 'error'); return; }
+      if (mitoboxContractDraft.studentId !== profile.id || mitoboxContractDraft.authUid !== user.uid || mitoboxContractDraft.accountEmail !== String(user.email || profile.email || '').trim().toLowerCase() || mitoboxContractDraft.monthlyFee !== monthlyFee) {
+        showToast('Han cambiado la cuenta o la tarifa. Cierra y vuelve a abrir el contrato.', 'error'); return;
+      }
+    }
     const gestionId = `${serviceConfig.type}-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
     setIsSendingExtraSignup(true);
     try {
+      const contract = isMitobox ? await createMitoboxAcceptance(mitoboxContractDraft, nowIso) : null;
       const payload = {
+        ...(contract ? { mitoboxContract: { ...contract, acceptedAt: serverTimestamp() } } : {}),
         studentId: profile.id,
         studentName: profile.name,
         studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         type: serviceConfig.type,
         title: serviceConfig.title,
-        details: `${profile.name} solicita el alta en ${serviceConfig.name}. ${serviceConfig.mode ? serviceConfig.shortDescription + ' ' : ''}${serviceConfig.monthlyFee === 0 ? 'Modalidad gratuita, sin domiciliación.' : `Acepta la parte proporcional del mes corriente y una cuota de ${serviceConfig.monthlyFee}€/mes. Preparar domiciliación en Tadosi.`} Administración debe activar el servicio manualmente.`,
+        details: `${profile.name} solicita el alta en ${serviceConfig.name}. ${serviceConfig.mode ? serviceConfig.shortDescription + ' ' : ''}${monthlyFee === 0 ? 'Modalidad gratuita, sin domiciliación.' : `Acepta la parte proporcional del mes corriente y una cuota de ${monthlyFee}€/mes. Preparar domiciliación en Tadosi.`} Administración debe activar el servicio manualmente.`,
         ...(serviceConfig.mode ? { mitolockerMode: serviceConfig.mode } : {}),
         extraService: serviceConfig.key,
         extraServiceName: serviceConfig.name,
         serviceName: serviceConfig.name,
-        extraMonthlyFee: serviceConfig.monthlyFee,
+        extraMonthlyFee: monthlyFee,
         extraProratedFee: null,
         extraProrationFrom: '',
         extraProrationUntil: '',
         extraProrationDays: null,
         extraProrationMonth: '',
-        extraProrationPolicy: serviceConfig.monthlyFee === 0 ? 'gratuito' : 'parte_proporcional_mes_corriente_segun_fecha_activacion_admin',
+        extraProrationPolicy: monthlyFee === 0 ? 'gratuito' : 'parte_proporcional_mes_corriente_segun_fecha_activacion_admin',
         requiresManualActivation: true,
-        requiresTadosiSetup: serviceConfig.monthlyFee > 0,
+        requiresTadosiSetup: monthlyFee > 0,
         tadosiDone: false,
         status: 'pendiente',
         date: nowIso
@@ -4321,11 +4336,20 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         }
       }
 
+      if (contract) {
+        // The request is already durable even if the email relay is unavailable.
+        try {
+          await fetch(APPS_SCRIPT_URL, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({
+            type: 'confirmacion_alumno', to: contract.accountEmail, subject: 'Solicitud de alta y contrato Mitobox - Escuela Los Mitos',
+            body: `Hemos registrado tu solicitud de alta en Mitobox. El servicio está pendiente de revisión y activación. Conserva esta copia.\n\n${buildMitoboxContractCopy(contract, gestionId)}`
+          }) });
+        } catch (error) { console.warn('No se pudo solicitar la copia por correo; sigue disponible en Extras.', error); }
+      }
       setExtraSignupModal(null);
-      showToast(`Solicitud de alta en ${serviceConfig.name} enviada a Administración.`);
+      showToast(contract ? 'Solicitud de Mitobox registrada. Puedes descargar el contrato aceptado en Extras.' : `Solicitud de alta en ${serviceConfig.name} enviada a Administración.`);
     } catch (error) {
       console.error('Error al solicitar alta extra', error);
-      showToast(`Error al solicitar el alta en ${serviceConfig.name}.`, 'error');
+      showToast(error.message || `Error al solicitar el alta en ${serviceConfig.name}.`, 'error');
     } finally {
       setIsSendingExtraSignup(false);
     }
@@ -5352,6 +5376,8 @@ END:VCALENDAR`;
     const serviceConfig = getExtraServiceConfig(extraSignupModal);
     if (!serviceConfig) return null;
 
+    const isMitobox = serviceConfig.key === 'mitobox';
+    const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
     const ServiceIcon = serviceConfig.Icon || Sparkles;
     const accentClasses = serviceConfig.key === 'mitoverso'
       ? {
@@ -5367,7 +5393,7 @@ END:VCALENDAR`;
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
-        <div className="bg-white rounded-3xl max-w-md w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto">
+        <div role="dialog" aria-modal="true" aria-label={isMitobox ? 'Contrato de alta en Mitobox' : `Alta en ${serviceConfig.name}`} className={`bg-white rounded-3xl ${isMitobox ? 'max-w-3xl' : 'max-w-md'} w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto`}>
           <button onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
 
           <div className="flex flex-col items-center text-center mb-6">
@@ -5381,22 +5407,23 @@ END:VCALENDAR`;
           <div className={`p-4 rounded-2xl border mb-4 ${accentClasses.box}`}>
             <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Condiciones económicas</p>
             <div className="space-y-2 text-sm font-bold leading-relaxed">
-              <p>Cuota mensual: <strong>{formatEuro(serviceConfig.monthlyFee)}</strong> / mes.</p>
-              {serviceConfig.monthlyFee > 0 ? <p>Se te pasará la parte proporcional del mes corriente.</p> : <p>Gratuito. Autorizas que otros alumnos utilicen tu instrumento.</p>}
+              <p>Cuota mensual: <strong>{formatEuro(monthlyFee)}</strong> / mes.</p>
+              {monthlyFee > 0 ? <p>Se te pasará la parte proporcional del mes corriente.</p> : <p>Gratuito. Autorizas que otros alumnos utilicen tu instrumento.</p>}
             </div>
           </div>
 
           <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5 text-xs font-bold text-zinc-600 leading-relaxed space-y-2">
-            <p>{serviceConfig.monthlyFee > 0 ? 'Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.' : 'Coordinación confirmará dónde dejar el instrumento y activará el servicio sin cobro.'}</p>
+            <p>{monthlyFee > 0 ? 'Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.' : 'Coordinación confirmará dónde dejar el instrumento y activará el servicio sin cobro.'}</p>
             <p className="text-slate-800 font-black">El acceso no es inmediato: quedará pendiente de revisión administrativa.</p>
           </div>
 
+          {isMitobox && <MitoboxContractForm draft={mitoboxContractDraft} onChange={setMitoboxContractDraft} disabled={isSendingExtraSignup}/>}
           <div className="grid grid-cols-2 gap-3">
             <button onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors disabled:opacity-50">
               Cancelar
             </button>
-            <button onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup} className={`${accentClasses.button} text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors shadow-md flex items-center justify-center gap-2 disabled:opacity-50`}>
-              {isSendingExtraSignup ? 'Enviando...' : <><Send className="w-4 h-4"/> Aceptar alta</>}
+            <button onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup || (isMitobox && Boolean(mitoboxDraftError(mitoboxContractDraft)))} className={`${accentClasses.button} text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors shadow-md flex items-center justify-center gap-2 disabled:opacity-50`}>
+              {isSendingExtraSignup ? 'Enviando...' : <><Send className="w-4 h-4"/> {isMitobox ? `Aceptar alta con obligación de pago · ${monthlyFee} €/mes` : 'Aceptar alta'}</>}
             </button>
           </div>
         </div>
@@ -6897,16 +6924,6 @@ END:VCALENDAR`;
               </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {fixedMyClasses.length > 0 && Object.entries(MITOLOCKER_MODES).map(([mode, config]) => {
-                const active = profile?.hasMitolocker === true;
-                const current = active && profile.mitolockerMode === mode;
-                const pending = hasPendingExtraSignup(`mitolocker_${mode}`);
-                return <div key={mode} className="bg-white border-2 border-amber-200 rounded-3xl p-6 flex flex-col gap-4 shadow-sm">
-                  <div className="bg-zinc-950 text-white rounded-2xl p-5"><DoorOpen className="w-7 h-7 mb-3"/><h3 className="text-2xl font-black uppercase">{config.name}</h3><p className="font-black text-amber-300 mt-2">{config.monthlyFee === 0 ? 'Gratis' : '5 €/mes'}</p></div>
-                  <p className="text-sm text-zinc-600 flex-1">Tu instrumento siempre en la escuela, en Tarragona y Reus. {config.description}</p>
-                  <button type="button" onClick={() => openExtraSignupModal(`mitolocker_${mode}`)} disabled={active || pending} className="w-full bg-black text-white py-4 rounded-xl font-black text-xs uppercase disabled:bg-zinc-100 disabled:text-zinc-500">{current ? 'Servicio activo' : active ? 'Ya tienes otra modalidad activa' : pending ? 'Solicitud enviada' : 'Solicitar alta'}</button>
-                </div>;
-              })}
               
               <div className="bg-gradient-to-b from-indigo-50/60 via-white to-white rounded-3xl p-6 shadow-sm hover:shadow-md transition-shadow duration-300 border-2 border-indigo-200 flex flex-col h-full relative overflow-hidden">
                 <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5 border-b-4 border-indigo-500">
@@ -6967,6 +6984,9 @@ END:VCALENDAR`;
                     </div>
                   </div>
                 </div>
+                {myGestiones.filter(gestion => gestion.type === 'alta_mitobox' && gestion.mitoboxContract?.text).map(gestion => (
+                  <button type="button" key={gestion.id} onClick={() => downloadMitoboxContract(gestion.mitoboxContract, gestion.id)} className="mb-3 text-xs font-bold text-blue-800 underline text-left">Descargar contrato aceptado · {formatDateSpanish(gestion.date)}</button>
+                ))}
                 {profile?.hasMitobox && upcomingMitoboxReservations.length > 0 && (
                   <div className="mb-5 space-y-2">
                     <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Próximas reservas</p>
@@ -6984,7 +7004,7 @@ END:VCALENDAR`;
                 {!profile?.hasMitobox && (
                   <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
                     <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Tarifa Plana</span>
-                    <span className="text-xl font-black text-slate-800">35€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                    <span className="text-xl font-black text-slate-800">{mitoboxMonthlyFee(fixedMyClasses.length > 0)}€ <span className="text-sm text-zinc-500">/ mes</span></span>
                   </div>
                 )}
                 
@@ -7005,6 +7025,22 @@ END:VCALENDAR`;
                   </button>
                 )}
               </div>
+
+              {fixedMyClasses.length > 0 && Object.entries(MITOLOCKER_MODES).map(([mode, config]) => {
+                const active = profile?.hasMitolocker === true;
+                const current = active && profile.mitolockerMode === mode;
+                const pending = hasPendingExtraSignup(`mitolocker_${mode}`);
+                return <div key={mode} className="bg-white border-2 border-amber-200 rounded-3xl p-6 flex flex-col gap-4 shadow-sm relative overflow-hidden h-full">
+                  <div className="-mx-6 -mt-6 mb-2 bg-zinc-950 text-white p-5 border-b-4 border-amber-500">
+                    <div className="flex items-center gap-4">
+                      <div className="w-14 h-14 shrink-0 rounded-2xl bg-white/10 text-amber-300 flex items-center justify-center"><DoorOpen className="w-7 h-7"/></div>
+                      <div className="min-w-0 flex-1"><h3 className="text-2xl font-black uppercase tracking-tight">Mitolocker <span className="block text-sm font-bold tracking-normal mt-1">{mode === 'compartido' ? 'Compartido' : 'Exclusivo'}</span></h3><p className="font-black text-amber-300 mt-2">{config.monthlyFee === 0 ? 'Gratis' : '5 €/mes'}</p></div>
+                    </div>
+                  </div>
+                  <p className="text-sm text-zinc-600 flex-1">Tu instrumento siempre en la escuela, en Tarragona y Reus. {config.description}</p>
+                  <button type="button" onClick={() => openExtraSignupModal(`mitolocker_${mode}`)} disabled={active || pending} className="w-full bg-black text-white py-4 rounded-xl font-black text-xs uppercase disabled:bg-zinc-100 disabled:text-zinc-500">{current ? 'Servicio activo' : active ? 'Ya tienes otra modalidad activa' : pending ? 'Solicitud enviada' : 'Solicitar alta'}</button>
+                </div>;
+              })}
 
               <GymusikStudent db={db} appId={appId} profile={profile} instruments={globalSettings.instrumentos || INSTRUMENTOS}/>
 

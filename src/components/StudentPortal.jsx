@@ -237,6 +237,7 @@ const EXTRA_SERVICES = {
 };
 
 const getExtraServiceConfig = (serviceKey = '') => {
+  if (typeof serviceKey !== 'string' || !serviceKey) return null;
   if (serviceKey.startsWith('mitolocker_')) {
     const mode = serviceKey.slice('mitolocker_'.length);
     const config = MITOLOCKER_MODES[mode];

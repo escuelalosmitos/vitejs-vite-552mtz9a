@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { collection, query, where, documentId, getDoc, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction, writeBatch } from 'firebase/firestore';
 import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
+import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import GymusikTeacher from './GymusikTeacher';
 import { retainGestionForAttendance, getMatchingAbsenceGestiones, getRelatedAbsenceTickets, getAbsenceAttendanceUpdate, findRecordedPresentAbsence } from './absenceAttendanceUtils.js';
 import { reconcileAttendedAbsence } from './absenceAttendanceReconciliation.js';
@@ -2054,8 +2055,9 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   };
 
   const getRecoveryClass = (gestion = {}) => {
-    if (!gestion.requestedClass) return null;
-    return recurringClasses.find(c => c.id === gestion.requestedClass) || null;
+    if (gestion.requestedClassRefPath) return recurringClasses.find(c => c.refPath === gestion.requestedClassRefPath) || null;
+    const matches = recurringClasses.filter(c => c.id === gestion.requestedClass);
+    return matches.length === 1 ? matches[0] : null;
   };
 
   const formatClassSummary = (clase = {}) => {
@@ -2802,7 +2804,7 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
     if (!ok) return;
 
     try {
-      if (!alreadyScheduled) {
+      {
         const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (studentInfo?.name || gestion.studentName || 'Alumno');
         const email = studentInfo?.email || gestion.studentEmail || '';
 
@@ -2819,14 +2821,8 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
           recoveryTicketSubject: normalizeTicketSubject(ticketInfo.ticket.subject || ticketInfo.subject)
         };
 
-        const updatedTargetStudents = [
-          ...(targetClass.students || []).filter(s => !(s.id === gestion.studentId && s.isRecovery && s.recoveryDate === recoveryDate)),
-          recoveryStudent
-        ];
-        await updateDoc(doc(db, targetClass.refPath), {
-          students: updatedTargetStudents,
-          studentIds: getClassStudentIds(updatedTargetStudents)
-        });
+        await createRecoveryCapacityStore({ db, appId }).approve({ gestionId: gestion.id, clase: targetClass, newStudentPayload: recoveryStudent,
+          today: todayISO, options: { students: globalStudents, maintenancePeriods, temporaryRelocations } });
       }
 
       await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
@@ -2840,7 +2836,7 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
       showNotification({ type: 'success', text: 'Recuperación aceptada. Aparecerá en tu lista el día indicado.' });
     } catch (e) {
       console.error('Error al aprobar recuperación', e);
-      showNotification({ type: 'error', text: 'No se pudo aprobar la recuperación.' });
+      showNotification({ type: 'error', text: e.message || 'No se pudo aprobar la recuperación.' });
     }
   };
 
@@ -2850,6 +2846,7 @@ El alumno aparecerá en tu lista solo ese día. El ticket se consumirá únicame
     if (reason === null) return;
 
     try {
+      await createRecoveryCapacityStore({ db, appId }).release({ gestionId: gestion.id, status: 'rechazado', clase: getRecoveryClass(gestion) });
       await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
         status: 'rechazado',
         rejectedByTeacher: true,

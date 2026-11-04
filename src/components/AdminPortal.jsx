@@ -13,6 +13,8 @@ import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailabi
 import { calculateVacationPayroll } from './payrollVacationUtils';
 import { MITOLOCKER_MODES, hasIndependentServices, getMitolockerMode, mitolockerPatch, cancelledServiceKeys, serviceCancellationPatch, fixedServiceSummary, mitolockerMetrics } from './fixedServicesUtils.js';
 import { mitoboxEvidenceError, mitoboxEarliestActivation, mitoboxMonthlyFee, downloadMitoboxContract, buildMitoboxContractCopy } from './mitoboxContractUtils.js';
+import { recoveryPublicationSignature } from './recoveryCapacityUtils.js';
+import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
 import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
@@ -2206,6 +2208,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [servicesSubTab, setServicesSubTab] = useState('mitobox');
   const [loading, setLoading] = useState(true);
   const [startupLoadErrors, setStartupLoadErrors] = useState({});
+  const recoveryPublicationCacheRef = useRef(new Map());
   const [startupRetryVersion, setStartupRetryVersion] = useState(0);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [studentsLoaded, setStudentsLoaded] = useState(false);
@@ -4064,6 +4067,32 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       signature: buildPublicAvailabilitySignature([...classes, ...sanitizedChanges, ...sanitizedMitoboxRelocations])
     };
   }, [operationalClasses, temporaryClassChanges, temporaryRelocations, students, maintenancePeriods, todayStr]);
+
+  useEffect(() => {
+    if (loading || !studentsLoaded || !classesLoaded || !settingsLoaded || startupLoadErrors.gestiones || startupLoadErrors.temporaryRelocations || startupLoadErrors.maintenancePeriods) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const store = createRecoveryCapacityStore({ db, appId });
+      const options = { students, maintenancePeriods, temporaryRelocations };
+      const current = new Map(allClasses.filter(clase => clase.refPath).map(clase => [clase.refPath, clase]));
+      // Retire calendars for classes removed while this admin session is open.
+      recoveryPublicationCacheRef.current.forEach((value, path) => { if (!current.has(path)) current.set(path, { ...value.clase, status: 'deleted' }); });
+      for (const clase of current.values()) {
+        if (cancelled) break;
+        const enabled = isClassRecoveryEnabled(clase) && clase.status !== 'deleted';
+        const center = centers.find(item => String(item.id) === String(clase.centerId) || item.name === clase.sede);
+        const blockedDates = [...(settings.festivos || []), ...(settings.vacaciones || []), ...(center?.holidays || getLegacyCenterHolidays({ id: clase.centerId || clase.sede }, settings))];
+        const signature = recoveryPublicationSignature(clase, options, gestiones, todayStr, enabled) + JSON.stringify(blockedDates);
+        if (recoveryPublicationCacheRef.current.get(clase.refPath)?.signature === signature) continue;
+        try {
+          await store.publish({ clase, today: todayStr, options, pending: gestiones.filter(gestion => gestion.type === 'recuperacion' && gestion.status === 'pendiente'), enabled,
+            blockedDates });
+          recoveryPublicationCacheRef.current.set(clase.refPath, { signature, clase });
+        } catch (error) { console.error('No se pudo sincronizar el aforo de recuperaciones', error); }
+      }
+    }, 1200);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [loading, studentsLoaded, classesLoaded, startupLoadErrors.gestiones, startupLoadErrors.temporaryRelocations, startupLoadErrors.maintenancePeriods, settingsLoaded, allClasses, students, maintenancePeriods, temporaryRelocations, gestiones, todayStr, centers, settings.festivos, settings.vacaciones, settings.festivosTarragona, settings.festivosReus, db, appId]);
 
   const studentSettingsPublication = useMemo(() => {
     const data = {
@@ -6235,6 +6264,11 @@ ${gestion.details || gestion.title || 'Sin detalles añadidos.'}${executionNotes
     const now = new Date().toISOString();
     const baseUpdate = { status, ...extraUpdate };
 
+    if (gestionData?.type === 'recuperacion' && ['rechazado','cancelado','cancelada'].includes(status)) {
+      const clase = allClasses.find(item => gestionData.requestedClassRefPath ? item.refPath === gestionData.requestedClassRefPath : item.id === gestionData.requestedClass);
+      await createRecoveryCapacityStore({ db, appId }).release({ gestionId, status, clase });
+    }
+
     if (gestionData && isAdminCopyGestionType(gestionData)) {
       const alreadySent = status === 'pendiente'
         ? gestionData.adminCopySentAt
@@ -7219,7 +7253,8 @@ ${displayName} tiene la plaza en mantenimiento ${formatMaintenancePeriodLine(act
           await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Archivado sin clase destino');
           return notify("⚠️ Aviso: Este ticket no tiene ninguna clase de destino guardada. Solo se ha archivado el ticket.");
         }
-        const targetClass = operationalClasses.find(c => c.id === requestedClass);
+        const matchingTargetClasses = operationalClasses.filter(c => gestionData.requestedClassRefPath ? c.refPath === gestionData.requestedClassRefPath : c.id === requestedClass);
+        const targetClass = matchingTargetClasses.length === 1 ? matchingTargetClasses[0] : null;
         if (!targetClass) {
           return fail(`❌ Error crítico: La clase elegida por el alumno ya no existe en la base de datos.`);
         }
@@ -7424,11 +7459,9 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           recoveryTicketRefPath: type === 'recuperacion' ? (matchedRecoveryTicket?.refPath || gestionData.ticketRefPath || '') : '',
           recoveryTicketSubject: type === 'recuperacion' ? normalizeTicketSubject(matchedRecoveryTicket?.subject || gestionData.ticketSubject || targetClass.subject) : ''
         };
-        const updatedTargetStudents = [...(targetClass.students || []).filter(s => s.id !== studentId), newStudentPayload];
-        await updateDoc(doc(db, targetClass.refPath), {
-          ...withClassStudentIndex(updatedTargetStudents),
-          ...getFormationActivationPatch(targetClass, updatedTargetStudents)
-        });
+        const approval = await createRecoveryCapacityStore({ db, appId }).approve({ gestionId, clase: targetClass, newStudentPayload, today: todayStr,
+          options: { students, maintenancePeriods, temporaryRelocations } });
+        if (approval.alreadyApproved) return notify('Esta recuperación ya estaba aprobada; no se ha duplicado.');
         logMessage += `➕ Añadido a la clase de ${targetClass.subject} (${targetClass.time}h).\n`;
         await finalizeGestionStatus(gestionId, 'completado', gestionData, 'Ejecutado desde bandeja Admin');
         logMessage += `✅ Trámite archivado con éxito.\n`;

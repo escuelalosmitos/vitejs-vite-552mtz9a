@@ -12,6 +12,8 @@ import {
   toggleMitoboxSlotSelection
 } from './mitoboxUtils';
 import { MITOLOCKER_MODES, activeFixedServices, hasIndependentServices } from './fixedServicesUtils.js';
+import { recoveryAvailabilityId, recoverySessionState, recoveryDates } from './recoveryCapacityUtils.js';
+import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import MitoboxContractForm from './MitoboxContractForm.jsx';
 import { createMitoboxContractDraft, createMitoboxAcceptance, mitoboxDraftError, mitoboxMonthlyFee, downloadMitoboxContract, buildMitoboxContractCopy } from './mitoboxContractUtils.js';
 import GymusikStudent from './GymusikStudent';
@@ -761,6 +763,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [healthCheck, setHealthCheck] = useState(false); 
 
   const [gestionModal, setGestionModal] = useState(null);
+  const [recoveryAvailability, setRecoveryAvailability] = useState({});
+  const [recoveryCapacityStatus, setRecoveryCapacityStatus] = useState('idle');
   const [gestionText, setGestionText] = useState('');
   const [selectedInst, setSelectedInst] = useState('');
   const [selectedNewClass, setSelectedNewClass] = useState(null);
@@ -4086,6 +4090,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       return;
     }
 
+    if (isTicketRedemption && (!selectedRecoveryDate || !getRecoveryDatesForClass(selectedNewClass, selectedRecoveryTicket).includes(selectedRecoveryDate))) {
+      showToast('Esta fecha ya no tiene plazas disponibles. Elige otra fecha o turno.', 'error');
+      return;
+    }
     let expansionStartDate = '';
     let expansionTarget = null;
     if (isAmpliarClases) {
@@ -4111,7 +4119,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     
     setIsSendingGestion(true);
     try {
-      const gestionId = Date.now().toString();
+      const gestionId = isTicketRedemption ? `rec-${globalThis.crypto.randomUUID()}` : Date.now().toString();
       const payload = {
         studentId: profile.id,
         studentName: profile.name,
@@ -4144,6 +4152,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         title: gestionUiCopyForPayload.title || gestionModal.title,
         details: isBajaSelection ? `${bajaClassesRequested ? 'Baja de clases. ' : 'Conserva sus clases. '}Servicios solicitados: ${activeFixedServices(profile).filter(service => selectedBajaServiceKeys.includes(service.key)).map(service => service.name).join(', ') || 'ninguno'}. ${gestionText}` : gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
+        ...(isTicketRedemption ? { requestedClassRefPath: getClassRefPath(selectedNewClass) } : {}),
         ...(isAmpliarClases ? {
           requestedClassRefPath: selectedNewClass.refPath || '',
           requestedPublicSelectionId: expansionTarget.publicSelectionId,
@@ -4183,18 +4192,13 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         date: new Date().toISOString()
       };
 
-      const gestionBatch = writeBatch(db);
-      gestionBatch.set(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
-      if (isTicketRedemption && selectedRecoveryTicket?.refPath && selectedNewClass?.teacher) {
-        const recoveryTeacherEmail = getTeacherOperationalEmail(selectedNewClass.teacher, globalSettings.teacherEmails);
-        gestionBatch.update(doc(db, selectedRecoveryTicket.refPath), {
-          recoveryTeacherKeys: arrayUnion(normalizeTeacherKey(selectedNewClass.teacher)),
-          ...(recoveryTeacherEmail ? { recoveryTeacherEmails: arrayUnion(recoveryTeacherEmail) } : {}),
-          recoveryGestionIds: arrayUnion(gestionId),
-          recoveryAuthorizedAt: new Date().toISOString()
-        });
+      if (isTicketRedemption) {
+        await createRecoveryCapacityStore({ db, appId }).reserve({ gestionId, payload, ticket: selectedRecoveryTicket });
+      } else {
+        const gestionBatch = writeBatch(db);
+        gestionBatch.set(doc(db, 'artifacts', appId, 'gestiones', gestionId), payload);
+        await gestionBatch.commit();
       }
-      await gestionBatch.commit();
       if (ADMIN_COPY_GESTION_TYPES.has(payload.type)) {
         const sent = await sendAdminGestionCopy({ gestionId, payload, selectedClass: selectedNewClass, phase: 'recibida', status: 'pendiente' });
         if (sent) {
@@ -4217,7 +4221,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       setSelectedInst(''); 
       showToast('Solicitud enviada a Administración.');
     } catch (error) {
-      showToast('Error al enviar la solicitud.', 'error');
+      showToast(error.message || 'Error al enviar la solicitud.', 'error');
     } finally {
       setIsSendingGestion(false);
     }
@@ -4888,33 +4892,21 @@ END:VCALENDAR`;
     setGestionModal(gestionPayload);
   };
   
-  const getValidRecoveryDates = (dayOfWeekStr, recoveryTicket = null) => {
-    const targetDay = parseInt(dayOfWeekStr);
-    const validDates = [];
-    let currentDate = new Date();
-    currentDate.setDate(currentDate.getDate() + 1); 
-    let checkedDays = 0;
-    
-    while (validDates.length < 4 && checkedDays < 120) { 
-      if (currentDate.getDay() === targetDay) {
-        const dateStr = currentDate.toISOString().split('T')[0];
-        const isGlobalBlocked = globalSettings.festivos.includes(dateStr) || globalSettings.vacaciones.includes(dateStr);
-        const targetCenter = getClassCenter(selectedNewClass || {});
-        const isLocalBlocked = Boolean(targetCenter?.holidays?.includes(dateStr));
-        const isTicketValid = !recoveryTicket || (
-          (!recoveryTicket.validFrom || recoveryTicket.validFrom <= dateStr)
-          && (!recoveryTicket.validUntil || recoveryTicket.validUntil >= dateStr)
-        );
+  useEffect(() => {
+    if (gestionModal?.type !== 'recuperacion') return undefined;
+    setRecoveryCapacityStatus('loading');
+    return onSnapshot(collection(db, 'artifacts', appId, 'recoveryAvailability'), snapshot => {
+      setRecoveryAvailability(Object.fromEntries(snapshot.docs.map(item => [item.id, item.data()])));
+      setRecoveryCapacityStatus(snapshot.empty ? 'missing' : 'ready');
+    }, error => { console.error('No se pudo consultar el aforo por fecha', error); setRecoveryCapacityStatus('error'); });
+  }, [gestionModal?.type, db, appId]);
 
-        if (!isGlobalBlocked && !isLocalBlocked && isTicketValid) {
-          validDates.push(dateStr);
-        }
-      }
-      currentDate.setDate(currentDate.getDate() + 1);
-      checkedDays++;
-    }
-    return validDates;
-  };
+  const getRecoveryAvailabilityForClass = clase => recoveryAvailability[recoveryAvailabilityId(getClassRefPath(clase))];
+  const getRecoveryDatesForClass = (clase, ticket = null) => recoveryDates(clase, todayStr, {
+    ticket, availability: getRecoveryAvailabilityForClass(clase),
+    blockedDates: [...(globalSettings.festivos || []), ...(globalSettings.vacaciones || []), ...(getClassCenter(clase)?.holidays || [])]
+  });
+  const getValidRecoveryDates = (_dayOfWeekStr, recoveryTicket = null) => selectedNewClass ? getRecoveryDatesForClass(selectedNewClass, recoveryTicket) : [];
 
   const renderAbsenceModal = () => {
     if (!absenceModal) return null;
@@ -5036,8 +5028,8 @@ END:VCALENDAR`;
         const maxCap = parseInt(c.capacity || 4);
         if (gestionModal.type === 'cambio_horario' && gestionModal.changeKind === 'private_to_group' && maxCap <= 1) return false;
         const currentStudents = getCommittedSeatCountForClass(c, todayStr);
-        if (currentStudents >= maxCap) return false;
-        if (myClasses.some(ownClass => getClassDocumentId(ownClass) === getClassDocumentId(c))) return false;
+        if (isTicketRedemption ? getRecoveryDatesForClass(c, selectedRecoveryTicket).length === 0 : currentStudents >= maxCap) return false;
+        if ((isTicketRedemption ? fixedSeatClasses : myClasses).some(ownClass => getClassRefPath(ownClass) === getClassRefPath(c))) return false;
         
         if (isTicketRedemption && targetInstrument === 'Guitarra') {
           if (maxCap !== 8) return false; 
@@ -5049,8 +5041,8 @@ END:VCALENDAR`;
     }
 
     const isMaintenanceChoiceInvalid = isMaintenanceRequest && ![1, 2].includes(Number(maintenanceMonths));
-    const choicesError = classCatalogError || (isAmpliarClases && publicExpansion.phase === 'error' ? 'No se ha podido consultar la oferta de plazas.' : isAmpliarClases && publicExpansion.phase === 'missing' ? 'Todavía no hay una oferta de plazas publicada.' : '');
-    const choicesLoading = classCatalogLoading || !classCatalogLoaded || (isAmpliarClases && publicExpansion.phase === 'loading');
+    const choicesError = (isTicketRedemption && recoveryCapacityStatus === 'error' ? 'No se ha podido consultar el aforo por fecha.' : isTicketRedemption && recoveryCapacityStatus === 'missing' ? 'Administración debe sincronizar el aforo de recuperaciones. No se puede reservar todavía.' : '') || classCatalogError || (isAmpliarClases && publicExpansion.phase === 'error' ? 'No se ha podido consultar la oferta de plazas.' : isAmpliarClases && publicExpansion.phase === 'missing' ? 'Todavía no hay una oferta de plazas publicada.' : '');
+    const choicesLoading = (isTicketRedemption && ['idle','loading'].includes(recoveryCapacityStatus)) || classCatalogLoading || !classCatalogLoaded || (isAmpliarClases && publicExpansion.phase === 'loading');
 
     const isSendDisabled = isSendingGestion ||
       (isBajaSelection && !bajaClassesRequested && bajaServiceKeys.length === 0) || 
@@ -5059,9 +5051,9 @@ END:VCALENDAR`;
       (isClassSearch && (!classCatalogLoaded || classCatalogLoading)) ||
       (isClassSearch && Boolean(classCatalogError)) ||
       (isAmpliarClases && (publicExpansion.phase !== 'ready' || !selectedNewClass?.publicMappingReady)) ||
-      (isTicketRedemption && (!selectedRecoveryTicket || !resolvedRecoverySubject)) ||
+      (isTicketRedemption && (recoveryCapacityStatus !== 'ready' || !selectedRecoveryTicket || !resolvedRecoverySubject)) ||
       (isClassSearch && !selectedNewClass) || 
-      (isTicketRedemption && !selectedRecoveryDate) ||
+      (isTicketRedemption && (!selectedRecoveryDate || !getRecoveryDatesForClass(selectedNewClass, selectedRecoveryTicket).includes(selectedRecoveryDate))) ||
       (isOtherGestion && !gestionText.trim()) ||
       isMaintenanceChoiceInvalid;
 
@@ -5323,7 +5315,7 @@ END:VCALENDAR`;
                             <MapPin className="w-3 h-3" /> {getClassCenterName(c)}
                           </span>
                           <span>Prof: {c.teacher}</span>
-                          <span>Quedan {isAmpliarClases ? c.publicFreeSpots : Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas</span>
+                          <span>{isTicketRedemption ? 'Plazas disponibles según fecha' : `Quedan ${isAmpliarClases ? c.publicFreeSpots : Math.max(parseInt(c.capacity || 4) - getCommittedSeatCountForClass(c, todayStr), 0)} plazas`}</span>
                         </div>
                         {isAmpliarClases && c.price && <p className="text-xs font-bold mt-2">Cuota: {c.price}</p>}
                         {isAmpliarClases && <p className="text-xs font-bold text-blue-800 bg-blue-50 rounded-lg p-2 mt-2">{c.autoAdvanceStartDate ? `Grupo en formación. ${c.startDate ? `Inicio previsto: ${formatDateSpanish(c.startDate)}. ` : ''}La fecha definitiva está pendiente de confirmar.` : c.startDate && c.startDate > todayStr ? `Inicio: ${formatDateSpanish(getExpansionStartDate(c, todayStr))}.` : 'Inicio inmediato, sujeto a aprobación de la ampliación.'}</p>}
@@ -5347,7 +5339,7 @@ END:VCALENDAR`;
                         onClick={() => setSelectedRecoveryDate(d)} 
                         className={`p-3 rounded-xl border-2 cursor-pointer transition-all flex items-center justify-between ${selectedRecoveryDate === d ? 'border-amber-500 bg-amber-50 text-amber-900' : 'border-zinc-100 hover:border-amber-300 text-slate-700'}`}
                       >
-                        <span className="font-black text-sm uppercase">{formatDateSpanish(d)}</span>
+                        <span className="font-black text-sm uppercase">{formatDateSpanish(d)} · {recoverySessionState(getRecoveryAvailabilityForClass(selectedNewClass), d).free} plaza(s)</span>
                         {selectedRecoveryDate === d && <CheckCircle className="w-5 h-5 text-amber-500"/>}
                       </div>
                     ))}

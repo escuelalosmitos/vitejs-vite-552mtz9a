@@ -11,6 +11,7 @@ import {
   sortMitoboxSlots,
   toggleMitoboxSlotSelection
 } from './mitoboxUtils';
+import { MITOLOCKER_MODES, activeFixedServices, hasIndependentServices } from './fixedServicesUtils.js';
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
 import { getExpansionStartDate, getPublicExpansionClasses, compareClassWeekdayAndTime } from './classExpansionUtils.js';
@@ -19,7 +20,7 @@ import { isBoardPublicationArchived, matchesBoardClass } from './announcementAud
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_MEKpKnv-L1g0e1khYf45nXCQKuUx6ZP3-bYwypTyrYzWadR4yzDd4ambExbQquvo/exec";
 const ADMIN_GESTION_EMAIL = "gestiones@escuelalosmitos.com";
-const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox"]);
+const ADMIN_COPY_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "ampliar_clases", "cambio_horario", "alta_mitoverso", "alta_mitobox", "alta_mitolocker", "baja_servicios"]);
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
 const AVATAR_OUTPUT_SIZE = 256;
 const AVATAR_MAX_SOURCE_BYTES = 12 * 1024 * 1024;
@@ -235,7 +236,14 @@ const EXTRA_SERVICES = {
   }
 };
 
-const getExtraServiceConfig = (serviceKey = '') => EXTRA_SERVICES[serviceKey] || null;
+const getExtraServiceConfig = (serviceKey = '') => {
+  if (serviceKey.startsWith('mitolocker_')) {
+    const mode = serviceKey.slice('mitolocker_'.length);
+    const config = MITOLOCKER_MODES[mode];
+    return config ? { ...config, key: serviceKey, mode, type: 'alta_mitolocker', title: `Solicitud de alta en ${config.name}`, Icon: DoorOpen, shortDescription: config.description } : null;
+  }
+  return EXTRA_SERVICES[serviceKey] || null;
+};
 
 const getSafeAnnouncementUrl = (url = '') => {
   const cleanUrl = String(url || '').trim();
@@ -759,6 +767,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [selectedRecoveryTicketId, setSelectedRecoveryTicketId] = useState('');
   const [selectedRecoverySubject, setSelectedRecoverySubject] = useState('');
   const [bajaTotalRequested, setBajaTotalRequested] = useState(false);
+  const [bajaClassesRequested, setBajaClassesRequested] = useState(true);
+  const [bajaServiceKeys, setBajaServiceKeys] = useState([]);
   const [selectedRecoveryDate, setSelectedRecoveryDate] = useState('');
   const [maintenanceMonths, setMaintenanceMonths] = useState(1);
   const [acceptLatePenalty, setAcceptLatePenalty] = useState(false);
@@ -939,7 +949,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     return `${centerName}${roomName ? ` · ${roomName}` : ''}`;
   };
   const portalStartDate = String(profile?.classStartDate || '').trim();
-  const hasServicePortalAccess = Boolean(profile?.hasMitobox || profile?.hasMitoverso || profile?.hasGymusik);
+  const hasServicePortalAccess = hasIndependentServices(profile || {});
   const isPortalAccessScheduled = Boolean(!hasServicePortalAccess && portalStartDate && portalStartDate > todayStr);
   const maintenanceOptions = useMemo(() => [
     getMaintenancePeriodForMonths(1, timeRules.isLate),
@@ -1321,7 +1331,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   };
 
   const scheduledBajaEffectiveDate = normalizeClassDate(profile?.scheduledBajaEffectiveDate || profile?.bajaEffectiveDate || profile?.effectiveBajaDate || '');
-  const isProfileBajaEffective = profile?.globalStatus === 'baja' || Boolean(profile?.scheduledBaja && scheduledBajaEffectiveDate && scheduledBajaEffectiveDate <= todayStr);
+  const isProfileBajaEffective = profile?.globalStatus === 'baja' || Boolean(profile?.scheduledBaja && !profile?.scheduledBajaKeepsServices && scheduledBajaEffectiveDate && scheduledBajaEffectiveDate <= todayStr);
 
   const getStudentClassSlotFingerprint = (clase = {}) => {
     const studentEntry = getStudentEntryInClass(clase, profile?.id);
@@ -3854,15 +3864,16 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     const maintenancePeriodLine = payload.maintenanceFrom && payload.maintenanceUntil ? formatMaintenancePeriodLine({ from: payload.maintenanceFrom, until: payload.maintenanceUntil }) : '';
     const submittedAt = payload.date ? new Date(payload.date).toLocaleString('es-ES') : new Date().toLocaleString('es-ES');
     const extraServiceLine = payload.extraServiceName || payload.serviceName || '';
-    const extraMonthlyFeeLine = payload.extraMonthlyFee ? `${payload.extraMonthlyFee} €` : '';
-    const extraProratedFeeLine = payload.extraProratedFee ? `${payload.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
-    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : (extraServiceLine ? 'Mes corriente según activación administrativa' : '');
+    const extraMonthlyFeeLine = Number.isFinite(payload.extraMonthlyFee) ? `${payload.extraMonthlyFee} €` : '';
+    const extraProratedFeeLine = payload.extraMonthlyFee === 0 ? 'No procede: modalidad gratuita' : payload.extraProratedFee ? `${payload.extraProratedFee} €` : (extraServiceLine ? 'A calcular manualmente según fecha real de activación' : '');
+    const extraProrationPeriodLine = payload.extraProrationFrom && payload.extraProrationUntil ? `${formatDateSpanish(payload.extraProrationFrom)} - ${formatDateSpanish(payload.extraProrationUntil)}` : (payload.extraMonthlyFee === 0 ? 'Servicio gratuito' : extraServiceLine ? 'Mes corriente según activación administrativa' : '');
 
     const body = `TIPO_GESTION: ${typeLabel}
 ESTADO: ${status}
 FASE: ${phaseLabel}
 ALUMNO: ${payload.studentName || ''}
 EMAIL: ${payload.studentEmail || ''}
+SERVICIOS_A_CANCELAR: ${payload.cancelledServicesLabel || ''}
 ALCANCE_BAJA: ${payload.type === 'baja' ? (payload.bajaScope === 'total' ? 'baja total de todas las clases' : 'baja de plaza concreta') : ''}
 PLAZA_ORIGEN: ${sourceClassLine}
 CLASE_SOLICITADA: ${classLine}
@@ -3996,16 +4007,28 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type) && !isServiceOnlyStudent;
-    const isBajaTotalRequest = gestionModal.type === 'baja' && (isServiceOnlyStudent || (isMultiSeatStudent && bajaTotalRequested));
+    const isSourceClassGestion = (gestionModal.type === 'cambio_horario' || (gestionModal.type === 'baja' && bajaClassesRequested)) && !isServiceOnlyStudent;
+    const isBajaTotalRequest = gestionModal.type === 'baja' && bajaClassesRequested && isMultiSeatStudent && bajaTotalRequested;
     const gestionUiCopyForPayload = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
     const sourceClassCandidates = getAvailableFixedSeatClassesForGestion(gestionModal.type);
     const resolvedSourceClass = isSourceClassGestion && !isBajaTotalRequest
       ? (selectedSourceClass || (sourceClassCandidates.length === 1 ? sourceClassCandidates[0] : null))
       : null;
+    const isBajaSelection = gestionModal.type === 'baja';
+    const autoCancelsMitolocker = isBajaSelection && bajaClassesRequested && (isBajaTotalRequest || fixedMyClasses.length === 1) && profile?.hasMitolocker;
+    const selectedBajaServiceKeys = isBajaSelection ? [...new Set([...bajaServiceKeys, ...(autoCancelsMitolocker ? ['mitolocker'] : [])])] : [];
     const isOtherGestion = gestionModal.type === 'otras_gestiones';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases || isOtherGestion;
 
+    if (isBajaSelection && ((!bajaClassesRequested && selectedBajaServiceKeys.length === 0)
+      || selectedBajaServiceKeys.some(key => !activeFixedServices(profile).some(service => service.key === key)))) {
+      showToast('Selecciona al menos una plaza o un servicio activo para dar de baja.', 'error');
+      return;
+    }
+    if (isBajaSelection && selectedBajaServiceKeys.some(key => myGestiones.some(gestion => (gestion.status === 'pendiente' || (gestion.status === 'completado' && !gestion.consolidatedAt)) && gestion.cancelledServiceKeys?.includes(key)))) {
+      showToast('Ya hay una baja pendiente para uno de los servicios elegidos.', 'error');
+      return;
+    }
     if (isOtherGestion && !gestionText.trim()) {
       showToast('Escribe tu consulta para Administración.', 'error');
       return;
@@ -4107,9 +4130,15 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         changeKind: gestionModal.type === 'cambio_horario'
           ? (gestionModal.changeKind || (isOnlyPrivateSeatStudent ? 'private_to_group' : 'schedule_change'))
           : '',
-        type: gestionModal.type,
+        type: isBajaSelection && !bajaClassesRequested ? 'baja_servicios' : gestionModal.type,
+        ...(isBajaSelection ? {
+          serviceSelectionVersion: 1,
+          cancelledServiceKeys: selectedBajaServiceKeys,
+          cancelClasses: bajaClassesRequested,
+          cancelledServicesLabel: activeFixedServices(profile).filter(service => selectedBajaServiceKeys.includes(service.key)).map(service => service.name).join(', ')
+        } : {}),
         title: gestionUiCopyForPayload.title || gestionModal.title,
-        details: gestionText,
+        details: isBajaSelection ? `${bajaClassesRequested ? 'Baja de clases. ' : 'Conserva sus clases. '}Servicios solicitados: ${activeFixedServices(profile).filter(service => selectedBajaServiceKeys.includes(service.key)).map(service => service.name).join(', ') || 'ninguno'}. ${gestionText}` : gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
         ...(isAmpliarClases ? {
           requestedClassRefPath: selectedNewClass.refPath || '',
@@ -4215,6 +4244,14 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       return;
     }
 
+    if (serviceConfig.mode && profile?.hasMitolocker) {
+      showToast('Ya tienes Mitolocker activo. Para cambiar de modalidad, contacta con Administración.', 'error');
+      return;
+    }
+    if (serviceConfig.mode && fixedMyClasses.length === 0) {
+      showToast('Mitolocker requiere mantener una plaza de clases en la escuela.', 'error');
+      return;
+    }
     setExtraSignupModal(serviceKey);
   };
 
@@ -4227,12 +4264,20 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     const serviceConfig = getExtraServiceConfig(extraSignupModal);
     if (!serviceConfig || !profile?.id || isSendingExtraSignup) return;
 
+    if (serviceConfig.mode && profile?.hasMitolocker) {
+      showToast('Mitolocker ya está activo. Contacta con Administración para cambiar de modalidad.', 'error');
+      return;
+    }
     if (hasPendingExtraSignup(serviceConfig.key)) {
       showToast(`Ya tienes una solicitud de alta en ${serviceConfig.name} pendiente de revisión.`, 'error');
       setExtraSignupModal(null);
       return;
     }
 
+    if (serviceConfig.mode && fixedMyClasses.length === 0) {
+      showToast('Mitolocker requiere mantener una plaza de clases en la escuela.', 'error');
+      return;
+    }
     const gestionId = `${serviceConfig.type}-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
@@ -4244,7 +4289,8 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         type: serviceConfig.type,
         title: serviceConfig.title,
-        details: `${profile.name} solicita el alta en ${serviceConfig.name}. Acepta que se le cobre la parte proporcional del mes corriente y que después se aplique la cuota mensual de ${serviceConfig.monthlyFee}€. Administración debe activar el acceso manualmente y preparar la domiciliación en Tadosi.`,
+        details: `${profile.name} solicita el alta en ${serviceConfig.name}. ${serviceConfig.mode ? serviceConfig.shortDescription + ' ' : ''}${serviceConfig.monthlyFee === 0 ? 'Modalidad gratuita, sin domiciliación.' : `Acepta la parte proporcional del mes corriente y una cuota de ${serviceConfig.monthlyFee}€/mes. Preparar domiciliación en Tadosi.`} Administración debe activar el servicio manualmente.`,
+        ...(serviceConfig.mode ? { mitolockerMode: serviceConfig.mode } : {}),
         extraService: serviceConfig.key,
         extraServiceName: serviceConfig.name,
         serviceName: serviceConfig.name,
@@ -4254,9 +4300,9 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         extraProrationUntil: '',
         extraProrationDays: null,
         extraProrationMonth: '',
-        extraProrationPolicy: 'parte_proporcional_mes_corriente_segun_fecha_activacion_admin',
+        extraProrationPolicy: serviceConfig.monthlyFee === 0 ? 'gratuito' : 'parte_proporcional_mes_corriente_segun_fecha_activacion_admin',
         requiresManualActivation: true,
-        requiresTadosiSetup: true,
+        requiresTadosiSetup: serviceConfig.monthlyFee > 0,
         tadosiDone: false,
         status: 'pendiente',
         date: nowIso
@@ -4577,6 +4623,7 @@ END:VCALENDAR`;
     // baja pendiente. Solo mostramos el aviso cuando hay una fecha vigente.
     .filter(g => Boolean(g.effectiveDate && g.effectiveDate >= todayStr))
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0] || null;
+  const activeServicesForBaja = activeFixedServices(profile || {});
   const shouldShowBajaRevocationNotice = Boolean(profile?.scheduledBaja || scheduledBajaGestion);
   const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');
   const pendingMitoboxSignup = hasPendingExtraSignup('mitobox');
@@ -4657,7 +4704,7 @@ END:VCALENDAR`;
   const frozenRestrictedGestionTypes = ['recuperacion', 'cambio_horario', 'ampliar_clases'];
   const isAcademicGestionLocked = isStudentFrozen || hasGlobalPendingAdminGestion;
   const isChangeHorarioLocked = isStudentFrozen || hasGlobalPendingAdminGestion || !hasAvailableSeatForGestion('cambio_horario');
-  const isBajaLocked = hasGlobalPendingAdminGestion || (!isServiceOnlyStudent && !hasAvailableSeatForGestion('baja'));
+  const isBajaLocked = hasGlobalPendingAdminGestion || (activeServicesForBaja.length === 0 && !isServiceOnlyStudent && !hasAvailableSeatForGestion('baja'));
   const isMantenimientoLocked = hasPendingAdminGestion;
 
   const getGestionUiCopy = (type = '', { isBajaTotalRequest = false } = {}) => {
@@ -4707,11 +4754,22 @@ END:VCALENDAR`;
           };
     }
 
+    if (type === 'baja' && activeServicesForBaja.length > 0) {
+      return {
+        title: 'Dar de baja',
+        description: 'Marca las clases y los servicios que deseas cancelar. Administración revisará la solicitud y confirmará la fecha efectiva.',
+        notice: 'Conservarás las opciones que no marques. Mitolocker requiere una plaza de clases y se cancelará al dejar la última. Los demás servicios pueden mantenerse.',
+        sourceLabel: 'Plaza afectada',
+        totalBajaCheckboxTitle: 'Quiero darme de baja de todas mis clases',
+        totalBajaCheckboxText: 'Los servicios se seleccionan por separado.',
+        placeholder: bajaPlaceholder
+      };
+    }
     if (type === 'baja') {
       if (isServiceOnlyStudent) {
         return {
           title: 'Dar de baja mis servicios',
-          description: 'Solicita la cancelación de tus servicios activos de Mitobox, Mitoverso o Gymusik.',
+          description: 'Solicita la cancelación de tus servicios activos de Mitobox, Mitoverso, Mitolocker o Gymusik.',
           notice: 'Al tramitarse la baja dejarás de acceder al área de usuario si no conservas ninguna clase ni otro servicio activo.',
           sourceLabel: 'Servicios activos',
           placeholder: bajaPlaceholder
@@ -4761,7 +4819,7 @@ END:VCALENDAR`;
       return;
     }
 
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type) && !isServiceOnlyStudent;
+    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionPayload.type) && !isServiceOnlyStudent && (gestionPayload.type !== 'baja' || activeServicesForBaja.length === 0);
     const availableSourceClasses = getAvailableFixedSeatClassesForGestion(gestionPayload.type);
     const isGlobalGestion = ['mantenimiento', 'reactivar_plaza'].includes(gestionPayload.type);
 
@@ -4788,6 +4846,8 @@ END:VCALENDAR`;
     setSelectedRecoveryTicketId('');
     setSelectedRecoverySubject('');
     setBajaTotalRequested(false);
+    setBajaClassesRequested(!isServiceOnlyStudent && hasAvailableSeatForGestion('baja'));
+    setBajaServiceKeys([]);
     setSelectedSourceClass(isSourceClassGestion && availableSourceClasses.length === 1 ? availableSourceClasses[0] : null);
 
     if (gestionPayload.type === 'mantenimiento') {
@@ -4907,10 +4967,10 @@ END:VCALENDAR`;
     const isTicketRedemption = gestionModal.type === 'recuperacion';
     const isAmpliarClases = gestionModal.type === 'ampliar_clases';
     const isMaintenanceRequest = gestionModal.type === 'mantenimiento';
-    const isSourceClassGestion = ['cambio_horario', 'baja'].includes(gestionModal.type) && !isServiceOnlyStudent;
+    const isSourceClassGestion = (gestionModal.type === 'cambio_horario' || (gestionModal.type === 'baja' && bajaClassesRequested)) && !isServiceOnlyStudent;
     const isBajaRequest = gestionModal.type === 'baja';
     const canChooseTotalBaja = isBajaRequest && isMultiSeatStudent;
-    const isBajaTotalRequest = isServiceOnlyStudent || (canChooseTotalBaja && bajaTotalRequested);
+    const isBajaTotalRequest = bajaClassesRequested && canChooseTotalBaja && bajaTotalRequested;
     const gestionUiCopy = getGestionUiCopy(gestionModal.type, { isBajaTotalRequest });
     const modalTitle = gestionUiCopy.title || gestionModal.title;
     const modalDescription = gestionUiCopy.description || gestionModal.desc || '';
@@ -4921,6 +4981,8 @@ END:VCALENDAR`;
       : null;
     const requiresSourceClassChoice = isSourceClassGestion && !isBajaTotalRequest && sourceClassCandidates.length > 1;
     const sourceClassLabel = gestionUiCopy.sourceLabel || (requiresSourceClassChoice ? 'Elige la plaza afectada' : 'Plaza afectada');
+    const isBajaSelection = gestionModal.type === 'baja';
+    const autoCancelsMitolocker = isBajaSelection && bajaClassesRequested && (isBajaTotalRequest || fixedMyClasses.length === 1) && profile?.hasMitolocker;
     const isOtherGestion = gestionModal.type === 'otras_gestiones';
     const isExemptFromLateRule = isTicketRedemption || isAmpliarClases || isOtherGestion;
 
@@ -4965,7 +5027,8 @@ END:VCALENDAR`;
     const choicesError = classCatalogError || (isAmpliarClases && publicExpansion.phase === 'error' ? 'No se ha podido consultar la oferta de plazas.' : isAmpliarClases && publicExpansion.phase === 'missing' ? 'Todavía no hay una oferta de plazas publicada.' : '');
     const choicesLoading = classCatalogLoading || !classCatalogLoaded || (isAmpliarClases && publicExpansion.phase === 'loading');
 
-    const isSendDisabled = isSendingGestion || 
+    const isSendDisabled = isSendingGestion ||
+      (isBajaSelection && !bajaClassesRequested && bajaServiceKeys.length === 0) || 
       (!isExemptFromLateRule && timeRules.isLate && !acceptLatePenalty) || 
       (isSourceClassGestion && !isBajaTotalRequest && !resolvedSourceClass) ||
       (isClassSearch && (!classCatalogLoaded || classCatalogLoading)) ||
@@ -5015,6 +5078,22 @@ END:VCALENDAR`;
             <p className="text-sm font-medium text-zinc-500 mb-6">{modalDescription}</p>
           )}
 
+          {isBajaRequest && activeServicesForBaja.length > 0 && (
+            <div className="mb-5 space-y-3" aria-label="Qué quieres dar de baja">
+              {!isServiceOnlyStudent && <label className="flex gap-3 p-3 border rounded-xl cursor-pointer">
+                <input type="checkbox" checked={bajaClassesRequested} disabled={!hasAvailableSeatForGestion('baja')} onChange={event => setBajaClassesRequested(event.target.checked)}/>
+                <span className="text-sm font-bold">Mi plaza de clases{isMultiSeatStudent ? ' (elegir plaza o todas)' : ''}</span>
+              </label>}
+              {activeServicesForBaja.map(service => {
+                const pending = myGestiones.some(gestion => (gestion.status === 'pendiente' || (gestion.status === 'completado' && !gestion.consolidatedAt)) && Array.isArray(gestion.cancelledServiceKeys) && gestion.cancelledServiceKeys.includes(service.key));
+                return <label key={service.key} className="flex gap-3 p-3 border rounded-xl cursor-pointer">
+                  <input type="checkbox" checked={bajaServiceKeys.includes(service.key) || (service.key === 'mitolocker' && Boolean(autoCancelsMitolocker))} disabled={pending || (service.key === 'mitolocker' && Boolean(autoCancelsMitolocker))} onChange={event => setBajaServiceKeys(previous => event.target.checked ? [...previous, service.key] : previous.filter(key => key !== service.key))}/>
+                  <span className="text-sm font-bold">{service.name}{service.monthlyFee !== undefined ? ` · ${service.monthlyFee} €/mes` : ''}{service.key === 'mitolocker' && autoCancelsMitolocker ? ' · Se cancela al dejar la última clase' : pending ? ' · Baja ya solicitada' : ''}</span>
+                </label>;
+              })}
+              <p className="text-xs text-zinc-500">Se cancelará lo que marques. Mitolocker también se cancela automáticamente al dejar la última plaza de clases. Administración confirmará las fechas.</p>
+            </div>
+          )}
           {isSourceClassGestion && (
             <div className="mb-5 space-y-3 border-t border-b border-zinc-100 py-4">
               {canChooseTotalBaja && (
@@ -5302,12 +5381,12 @@ END:VCALENDAR`;
             <p className="text-[10px] font-black uppercase tracking-widest opacity-70 mb-2">Condiciones económicas</p>
             <div className="space-y-2 text-sm font-bold leading-relaxed">
               <p>Cuota mensual: <strong>{formatEuro(serviceConfig.monthlyFee)}</strong> / mes.</p>
-              <p>Se te pasará la parte proporcional del mes corriente.</p>
+              {serviceConfig.monthlyFee > 0 ? <p>Se te pasará la parte proporcional del mes corriente.</p> : <p>Gratuito. Autorizas que otros alumnos utilicen tu instrumento.</p>}
             </div>
           </div>
 
           <div className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 mb-5 text-xs font-bold text-zinc-600 leading-relaxed space-y-2">
-            <p>Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.</p>
+            <p>{serviceConfig.monthlyFee > 0 ? 'Coordinación activará el servicio manualmente y preparará la domiciliación correspondiente.' : 'Coordinación confirmará dónde dejar el instrumento y activará el servicio sin cobro.'}</p>
             <p className="text-slate-800 font-black">El acceso no es inmediato: quedará pendiente de revisión administrativa.</p>
           </div>
 
@@ -6215,7 +6294,7 @@ END:VCALENDAR`;
                   <div className="bg-white/10 p-3 rounded-2xl"><Sparkles className="w-7 h-7 text-blue-300"/></div>
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tight">Tus servicios están activos</h3>
-                    <p className="text-sm font-medium text-slate-300 mt-2 leading-relaxed">Puedes consultar el tablón, el calendario y los talleres. En Extras encontrarás tus servicios activos de Mitobox, Mitoverso o Gymusik.</p>
+                    <p className="text-sm font-medium text-slate-300 mt-2 leading-relaxed">Puedes consultar el tablón, el calendario y los talleres. En Extras encontrarás tus servicios activos de Mitobox, Mitoverso, Mitolocker o Gymusik.</p>
                   </div>
                 </div>
               </div>
@@ -6817,6 +6896,16 @@ END:VCALENDAR`;
               </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {fixedMyClasses.length > 0 && Object.entries(MITOLOCKER_MODES).map(([mode, config]) => {
+                const active = profile?.hasMitolocker === true;
+                const current = active && profile.mitolockerMode === mode;
+                const pending = hasPendingExtraSignup(`mitolocker_${mode}`);
+                return <div key={mode} className="bg-white border-2 border-amber-200 rounded-3xl p-6 flex flex-col gap-4 shadow-sm">
+                  <div className="bg-zinc-950 text-white rounded-2xl p-5"><DoorOpen className="w-7 h-7 mb-3"/><h3 className="text-2xl font-black uppercase">{config.name}</h3><p className="font-black text-amber-300 mt-2">{config.monthlyFee === 0 ? 'Gratis' : '5 €/mes'}</p></div>
+                  <p className="text-sm text-zinc-600 flex-1">Tu instrumento siempre en la escuela, en Tarragona y Reus. {config.description}</p>
+                  <button type="button" onClick={() => openExtraSignupModal(`mitolocker_${mode}`)} disabled={active || pending} className="w-full bg-black text-white py-4 rounded-xl font-black text-xs uppercase disabled:bg-zinc-100 disabled:text-zinc-500">{current ? 'Servicio activo' : active ? 'Ya tienes otra modalidad activa' : pending ? 'Solicitud enviada' : 'Solicitar alta'}</button>
+                </div>;
+              })}
               
               <div className="bg-gradient-to-b from-indigo-50/60 via-white to-white rounded-3xl p-6 shadow-sm hover:shadow-md transition-shadow duration-300 border-2 border-indigo-200 flex flex-col h-full relative overflow-hidden">
                 <div className="-mx-6 -mt-6 mb-6 bg-zinc-950 text-white p-5 border-b-4 border-indigo-500">
@@ -7311,7 +7400,7 @@ END:VCALENDAR`;
               >
                 <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-4 transition-transform ${isBajaLocked ? 'bg-zinc-100' : 'bg-red-50 group-hover:scale-110'}`}><UserMinus className={`w-6 h-6 ${isBajaLocked ? 'text-zinc-400' : 'text-red-500'}`}/></div>
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isServiceOnlyStudent ? 'Dar de baja mis servicios' : 'Dar de Baja'}</h3>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Cancela Mitobox, Mitoverso o Gymusik' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Elige los servicios que quieres cancelar' : activeServicesForBaja.length > 0 ? 'Elige clases y servicios que quieres cancelar' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
               </button>
 
               <button

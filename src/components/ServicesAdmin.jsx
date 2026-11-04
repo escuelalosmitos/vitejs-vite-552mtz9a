@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { MITOLOCKER_MODES, mitolockerPatch } from './fixedServicesUtils.js';
 import {
   AlertCircle, Calendar, ChevronDown, ChevronUp,
   Edit3, MapPin, Music, Plus, Save, Search, Trash2, UserCheck,
@@ -128,9 +129,48 @@ function MitoversoRoster({ students = [] }) {
   );
 }
 
+function MitolockerRoster({ students = [], db, appId, canUseMitolocker }) {
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [studentId, setStudentId] = useState('');
+  const [mode, setMode] = useState('compartido');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const active = students.filter(student => student.hasMitolocker && student.globalStatus !== 'baja');
+  const visible = active.filter(student => (filter === 'all' || student.mitolockerMode === filter)
+    && `${student.name || ''} ${student.email || ''}`.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'));
+  const update = async (id, value) => {
+    if (!id || saving) return;
+    if (value && !canUseMitolocker(id)) { setMessage('Mitolocker requiere una plaza de clases.'); return; }
+    if (!window.confirm(`¿${value ? `Activar ${MITOLOCKER_MODES[value]?.name}` : 'Desactivar Mitolocker'}? Revisa la cuota en Tadosi si corresponde.`)) return;
+    setSaving(true); setMessage('');
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'students', id), mitolockerPatch(value));
+      setMessage('Mitolocker actualizado.'); setStudentId('');
+    } catch (error) { setMessage(`No se ha podido guardar: ${error.message}`); }
+    finally { setSaving(false); }
+  };
+  return <div className="space-y-5">
+    <div className="bg-white p-6 border rounded-3xl space-y-4">
+      <h3 className="text-xl font-black uppercase">Mitolocker · Tu instrumento siempre en la escuela</h3>
+      <p className="text-sm text-zinc-500">Vinculado a una plaza de clases en Tarragona o Reus. Se cancela al dejar la última plaza. Compartido: gratis, con permiso de uso por otros alumnos. Exclusivo: 5 €/mes, reservado solo a su propietario.</p>
+      <p className="font-bold text-amber-800">{active.filter(student => student.mitolockerMode === 'compartido').length} compartidos · {active.filter(student => student.mitolockerMode === 'exclusivo').length} exclusivos · {active.filter(student => student.mitolockerMode === 'exclusivo').length * 5} €/mes</p>
+      {message && <p role="status" className="text-sm font-bold">{message}</p>}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <select aria-label="Alumno para alta en Mitolocker" value={studentId} onChange={event => setStudentId(event.target.value)} className="p-3 border rounded-xl flex-1 min-w-0"><option value="">Selecciona alumno para dar de alta</option>{students.filter(student => student.globalStatus !== 'baja' && !student.hasMitolocker && canUseMitolocker(student.id)).sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es')).map(student => <option key={student.id} value={student.id}>{student.name} · {student.email}</option>)}</select>
+        <select aria-label="Modalidad para alta en Mitolocker" value={mode} onChange={event => setMode(event.target.value)} className="p-3 border rounded-xl"><option value="compartido">Compartido · gratis</option><option value="exclusivo">Exclusivo · 5 €/mes</option></select>
+        <button type="button" disabled={!studentId || saving} onClick={() => update(studentId, mode)} className="p-3 bg-black text-white rounded-xl font-bold disabled:opacity-50">Activar</button>
+      </div>
+      <div className="flex flex-col sm:flex-row gap-3"><input aria-label="Buscar usuario de Mitolocker" placeholder="Buscar por nombre o correo" value={search} onChange={event => setSearch(event.target.value)} className="p-3 border rounded-xl flex-1"/><select aria-label="Filtrar Mitolocker por modalidad" value={filter} onChange={event => setFilter(event.target.value)} className="p-3 border rounded-xl"><option value="all">Todas las modalidades</option><option value="compartido">Compartido</option><option value="exclusivo">Exclusivo</option></select></div>
+    </div>
+    <div className="bg-white border rounded-3xl overflow-hidden">{visible.length === 0 ? <p className="p-6 text-zinc-500">No hay alumnos con este filtro.</p> : visible.map(student => <div key={student.id} className="p-4 border-b last:border-b-0 flex flex-col sm:flex-row gap-3 sm:items-center justify-between"><div><p className="font-black">{student.name}</p><p className="text-xs text-zinc-500">{student.email}</p></div><select aria-label={`Modalidad de ${student.name}`} disabled={saving} value={student.mitolockerMode || ''} onChange={event => update(student.id, event.target.value)} className="p-3 border rounded-xl"><option value="">Desactivado</option><option value="compartido">Compartido · gratis</option><option value="exclusivo">Exclusivo · 5 €/mes</option></select></div>)}</div>
+  </div>;
+}
+
 export default function ServicesAdmin({
   service = 'gymusik', db, appId, user, students = [], centers = [], settings = {},
-  classes = [], availabilities = {}, availabilityStatus = 'ready', resolveClassForDate = classData => classData
+  classes = [], canUseMitolocker = () => false, availabilities = {}, availabilityStatus = 'ready', resolveClassForDate = classData => classData
 }) {
   const [config, setConfig] = useState(normalizeGymusikConfig());
   const [configDraft, setConfigDraft] = useState(normalizeGymusikConfig());
@@ -190,6 +230,7 @@ export default function ServicesAdmin({
       : { ...previous, instrument: configuredInstruments[0] });
   }, [service, editingSessionId, settings.instrumentos]);
 
+  if (service === 'mitolocker') return <MitolockerRoster students={students} db={db} appId={appId} canUseMitolocker={canUseMitolocker}/>;
   if (service === 'mitoverso') return <MitoversoRoster students={students}/>;
   if (service !== 'gymusik') return null;
 

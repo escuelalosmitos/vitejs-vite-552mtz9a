@@ -58,3 +58,15 @@ test('Apps Script rechaza alias ausente y destinatarios múltiples, sin caer en 
 test('Gestiones como cuenta principal no necesita alias de sí misma',()=>{
  const {ctx,sent}=environment([]);ctx.Session.getEffectiveUser=()=>({getEmail:()=> 'gestiones@escuelalosmitos.com'});assert.equal(ctx.doPost(post(payload)).ok,true);assert.equal(sent[0][3].from,undefined);
 });
+
+test('Apps Script reconoce contactos por el tipo general y mantiene intactos los otros correos',()=>{
+ const {ctx,sent,original}=environment();
+ assert.equal(ctx.doPost(post({...payload,type:'notificacion_email',category:'contacto_localizador'})).ok,true);
+ assert.equal(sent.length,1);assert.equal(sent[0][3].from,'gestiones@escuelalosmitos.com');assert.equal(original.length,0);
+ assert.equal(ctx.doPost(post({type:'notificacion_email',to:'normal@example.com'})),'original');
+});
+test('Apps Script no presenta como enviado un fallo incierto ni lo reintenta automáticamente',()=>{
+ const {ctx,sent}=environment();ctx.GmailApp.sendEmail=()=>{throw new Error('Error de Gmail');};
+ assert.equal(ctx.doPost(post(payload)).ok,false);
+ const repeated=ctx.doPost(post(payload));assert.equal(repeated.ok,false);assert.equal(repeated.pending,true);assert.equal(sent.length,0);
+});

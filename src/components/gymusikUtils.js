@@ -1,3 +1,5 @@
+import { schoolDateTimeMillis } from './vacationChallengeUtils.js';
+
 export const GYMUSIK_DEFAULTS = Object.freeze({
   active: false,
   preenrollmentOpen: false,
@@ -98,7 +100,7 @@ export const getGymusikSessionStart = session => {
   const date = String(session?.date || '').slice(0, 10);
   const time = String(session?.time || '00:00').slice(0, 5);
   if (!date) return null;
-  const parsed = new Date(`${date}T${time}:00`);
+  const parsed = new Date(schoolDateTimeMillis(date, time));
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 

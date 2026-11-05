@@ -1,3 +1,4 @@
+import { initializeGymusikCredits, cancelGymusik, gymusikCreditRef } from './gymusikCreditStore.js';
 import { useEffect, useMemo, useState } from 'react';
 import { MITOLOCKER_MODES, mitolockerPatch } from './fixedServicesUtils.js';
 import {
@@ -6,7 +7,7 @@ import {
   Users, X
 } from 'lucide-react';
 import {
-  collection, deleteDoc, doc, onSnapshot, runTransaction, setDoc, updateDoc, writeBatch
+  collection, deleteDoc, doc, onSnapshot, runTransaction, setDoc, updateDoc, writeBatch, arrayRemove
 } from 'firebase/firestore';
 import {
   buildGymusikSessionId, GYMUSIK_MEMBER_STATUSES, GYMUSIK_SESSION_STATUSES,
@@ -229,6 +230,15 @@ export default function ServicesAdmin({
       ? previous
       : { ...previous, instrument: configuredInstruments[0] });
   }, [service, editingSessionId, settings.instrumentos]);
+
+  useEffect(() => {
+    if (service !== 'gymusik' || loading) return;
+    const pending = members.filter(member => member.creditLedgerVersion !== 1);
+    Promise.all(pending.map(member => initializeGymusikCredits({ db, appId, member }))).catch(error => {
+      console.error('No se pudieron preparar los créditos de Gymusik', error);
+      setMessage('No se pudieron sincronizar los créditos. Reabre Servicios para reintentar.');
+    });
+  }, [service, loading, members, db, appId]);
 
   if (service === 'mitolocker') return <MitolockerRoster students={students} db={db} appId={appId} canUseMitolocker={canUseMitolocker}/>;
   if (service === 'mitoverso') return <MitoversoRoster students={students}/>;
@@ -500,9 +510,14 @@ export default function ServicesAdmin({
     const linked = reservations.filter(item => item.sessionId === session.id && ['confirmed', 'waitlist'].includes(item.status));
     const batch = writeBatch(db);
     batch.update(sessionRef, { status: 'cancelled', reservedCount: 0, waitlistCount: 0, promotionPending: false, cancelledAt: nowIso(), updatedAt: nowIso(), updatedBy: user?.email || 'admin' });
-    linked.forEach(reservation => batch.update(doc(db, 'artifacts', appId, 'gymusikReservations', reservation.id), { status: 'cancelled', cancelledAt: nowIso(), cancelledBy: 'admin_session_cancelled', creditConsumed: false, creditReturned: true, updatedAt: nowIso() }));
+    linked.forEach(reservation => {
+      batch.update(doc(db, 'artifacts', appId, 'gymusikReservations', reservation.id), { status: 'cancelled', cancelledAt: nowIso(), cancelledBy: 'admin_session_cancelled', creditConsumed: false, creditReturned: true, updatedAt: nowIso() });
+      batch.set(gymusikCreditRef(db, appId, reservation.studentId, String(reservation.sessionDate).slice(0,7)), { reservationIds: arrayRemove(reservation.id) }, { merge: true });
+    });
     await batch.commit();
   };
+
+
 
   const promoteReservation = async reservation => {
     const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', reservation.sessionId);
@@ -521,18 +536,7 @@ export default function ServicesAdmin({
   const cancelReservation = async reservation => {
     if (!['confirmed', 'waitlist'].includes(reservation.status)) return;
     if (!window.confirm('¿Cancelar esta reserva desde Administración?')) return;
-    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', reservation.sessionId);
-    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservation.id);
-    await runTransaction(db, async transaction => {
-      const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
-      if (!sessionSnapshot.exists() || !reservationSnapshot.exists()) return;
-      const session = sessionSnapshot.data(); const current = reservationSnapshot.data();
-      const patch = current.status === 'waitlist'
-        ? { waitlistCount: Math.max(0, Number(session.waitlistCount || 0) - 1) }
-        : { reservedCount: Math.max(0, Number(session.reservedCount || 0) - 1), promotionPending: Number(session.waitlistCount || 0) > 0 };
-      transaction.update(sessionRef, { ...patch, updatedAt: nowIso() });
-      transaction.update(reservationRef, { status: 'cancelled', cancelledAt: nowIso(), cancelledBy: 'admin', creditReturned: true, updatedAt: nowIso() });
-    });
+    await cancelGymusik({ db, appId, reservation, admin: true });
   };
 
   if (loading) return <div className="bg-white rounded-3xl border border-zinc-200 p-10 text-center font-black uppercase tracking-widest text-zinc-400">Cargando Gymusik…</div>;

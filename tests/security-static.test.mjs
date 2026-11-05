@@ -214,7 +214,7 @@ test('los profesores comparten lectura operativa sin adquirir permisos administr
   assert.match(admin, /teacherSecurityAuthorizationVersion: 2/);
   assert.match(teacher, /where\('authorizedTeacherEmails', 'array-contains', teacherEmail\)/);
   assert.match(teacher, /where\('teacherEmails', 'array-contains', teacherEmail\)/);
-  assert.match(student, /recoveryTeacherEmails: arrayUnion/);
+  assert.match(await read('src/components/recoveryCapacityStore.js'), /recoveryTeacherEmails:\s*sdk.arrayUnion/);
 });
 
 test('Firestore indexa la localización de clases por alumno', async () => {
@@ -288,8 +288,9 @@ test('Gymusik separa administración, alumno y profesor con reservas transaccion
   assert.match(teacher, /GymusikTeacher/);
   assert.match(services, /gymusikSessions/);
   assert.match(services, /formationCount/);
-  assert.match(gymusikStudent, /runTransaction\(db/);
-  assert.match(gymusikStudent, /buildGymusikReservationId/);
+  assert.match(gymusikStudent, /reserveGymusik/);
+  assert.match(await read('src/components/gymusikCreditStore.js'), /runTransaction\(db/);
+  assert.match(await read('src/components/gymusikCreditStore.js'), /buildGymusikReservationId/);
   assert.match(gymusikTeacher, /Sesión Gymusik/);
   assert.match(rules, /match \/artifacts\/\{appId\}\/gymusikMembers\/\{studentId\}/);
   assert.match(rules, /match \/artifacts\/\{appId\}\/gymusikSessions\/\{sessionId\}/);

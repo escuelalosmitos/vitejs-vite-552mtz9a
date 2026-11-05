@@ -1,3 +1,11 @@
+import { schoolDateTimeMillis, getSchoolDate } from './vacationChallengeUtils.js';
+
+export const canReserveMitoboxAt = (date, time, now = Date.now()) => {
+  const startsAt = schoolDateTimeMillis(date, time);
+  return Number.isFinite(startsAt) && startsAt - now >= 24 * 60 * 60 * 1000
+    && String(date).slice(0, 7) === getSchoolDate(now).slice(0, 7);
+};
+
 const normalizeId = (value = '', fallback = '') => {
   const normalized = String(value || '')
     .normalize('NFD')
@@ -96,17 +104,15 @@ const temporaryChangeBelongsToClass = (change = {}, classData = {}) => {
   const ids = new Set(getClassIds(classData));
   const changeId = String(change.classId || '').trim();
 
-  if (changeId && ids.has(changeId)) return true;
-
   const classPath = String(
     classData.refPath || classData.classRefPath || ''
   ).trim();
 
-  return Boolean(
+  if (change.classRefPath) return Boolean(
     classPath
-    && change.classRefPath
     && String(change.classRefPath) === classPath
   );
+  return Boolean(changeId && ids.has(changeId));
 };
 
 const isTemporaryChangeActive = (change = {}, date = '') => {
@@ -195,14 +201,9 @@ const classMatchesReference = (
   classId = '',
   classPath = ''
 ) => {
-  if (
-    classPath
-    && [classData.refPath, classData.classRefPath]
+  if (classPath) return [classData.refPath, classData.classRefPath]
       .filter(Boolean)
-      .includes(classPath)
-  ) {
-    return true;
-  }
+      .includes(classPath);
 
   return Boolean(
     classId
@@ -503,7 +504,8 @@ export const calculateMitoboxAvailability = ({
   temporaryClassChanges = [],
   temporaryRelocations = [],
   settings = {},
-  slotUsage = []
+  slotUsage = [],
+  now = null
 } = {}) => {
   if (
     !date
@@ -552,6 +554,7 @@ export const calculateMitoboxAvailability = ({
   const slots = [];
 
   candidateTimes.forEach(time => {
+    if (now !== null && !canReserveMitoboxAt(date, time, now)) return;
     const overlappingClasses = occupyingClasses.filter(classData =>
       classOverlapsReservation(classData, time, 60)
     );

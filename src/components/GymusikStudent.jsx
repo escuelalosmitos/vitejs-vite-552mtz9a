@@ -1,8 +1,9 @@
+import { reserveGymusik, cancelGymusik } from './gymusikCreditStore.js';
 import { useEffect, useMemo, useState } from 'react';
 import { Calendar, Download, Dumbbell, MapPin, Users, X } from 'lucide-react';
-import { collection, doc, onSnapshot, query, runTransaction, setDoc, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import {
-  buildGymusikReservationId, canCancelGymusikReservationWithCredit,
+  canCancelGymusikReservationWithCredit,
   getGymusikCreditsRemaining, getGymusikMonth,
   normalizeGymusikConfig, sortGymusikSessions
 } from './gymusikUtils';
@@ -118,39 +119,7 @@ export default function GymusikStudent({ db, appId, profile, instruments = [] })
     } catch (error) { console.error(error); alert(`No se pudo enviar la preinscripción: ${error.message}`); } finally { setBusyId(''); }
   };
 
-  const createSessionReservation = async session => {
-    const month = getGymusikMonth(session.date);
-    const reservationId = buildGymusikReservationId(session.id, profile.id);
-    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
-    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservationId);
-    let finalStatus = 'confirmed';
-    await runTransaction(db, async transaction => {
-      const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
-      if (!sessionSnapshot.exists()) throw new Error('La sesión ya no está disponible.');
-      const liveSession = sessionSnapshot.data();
-      if (liveSession.status !== 'published') throw new Error('La sesión ya no admite reservas.');
-      const previous = reservationSnapshot.exists() ? reservationSnapshot.data() : null;
-      if (previous && ['confirmed', 'waitlist', 'attended', 'no_show'].includes(previous.status)) throw new Error('Ya tienes una reserva para esta sesión.');
-      const reservedCount = Math.max(0, Number(liveSession.reservedCount || 0));
-      const waitlistCount = Math.max(0, Number(liveSession.waitlistCount || 0));
-      const capacity = Math.max(1, Number(liveSession.capacity || 1));
-      finalStatus = reservedCount < capacity ? 'confirmed' : 'waitlist';
-      transaction.set(reservationRef, {
-        sessionId: session.id, sessionDate: liveSession.date, sessionTime: liveSession.time,
-        instrument: liveSession.instrument, centerId: liveSession.centerId || '', sede: liveSession.sede || '', roomId: liveSession.roomId || '', sala: liveSession.sala || '',
-        teacherName: liveSession.teacherName || '', teacherEmail: String(liveSession.teacherEmail || '').trim().toLowerCase(),
-        studentId: String(profile.id), studentName: profile.name || '', studentEmail: String(profile.email || '').trim().toLowerCase(),
-        status: finalStatus, creditMonth: month, creditConsumed: false,
-        createdAt: previous?.createdAt || nowIso(), updatedAt: nowIso(), createdBy: 'student'
-      }, { merge: true });
-      transaction.update(sessionRef, {
-        reservedCount: reservedCount + (finalStatus === 'confirmed' ? 1 : 0),
-        waitlistCount: waitlistCount + (finalStatus === 'waitlist' ? 1 : 0),
-        lastReservationId: reservationId, updatedAt: nowIso()
-      });
-    });
-    return finalStatus;
-  };
+  const createSessionReservation = session => reserveGymusik({ db, appId, profile, session });
 
   const reserveSession = async session => {
     if (!isActiveMember || !config.active) return;
@@ -216,24 +185,10 @@ export default function GymusikStudent({ db, appId, profile, instruments = [] })
     const returnsCredit = reservation.status === 'waitlist' || canCancelGymusikReservationWithCredit({ session, cancellationHours: config.cancellationHours });
     const warning = returnsCredit ? 'Recuperarás el crédito.' : `Faltan menos de ${config.cancellationHours} horas: la cancelación consumirá el crédito.`;
     if (!window.confirm(`¿Cancelar tu plaza?\n\n${warning}`)) return;
-    const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
-    const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservation.id);
     setBusyId(session.id);
     try {
-      await runTransaction(db, async transaction => {
-        const [sessionSnapshot, reservationSnapshot] = await Promise.all([transaction.get(sessionRef), transaction.get(reservationRef)]);
-        if (!sessionSnapshot.exists() || !reservationSnapshot.exists()) return;
-        const liveSession = sessionSnapshot.data(); const liveReservation = reservationSnapshot.data();
-        if (!['confirmed', 'waitlist'].includes(liveReservation.status)) return;
-        transaction.update(reservationRef, { status: 'cancelled', cancelledAt: nowIso(), cancelledBy: 'student', creditConsumed: !returnsCredit, creditReturned: returnsCredit, updatedAt: nowIso() });
-        transaction.update(sessionRef, {
-          reservedCount: Math.max(0, Number(liveSession.reservedCount || 0) - (liveReservation.status === 'confirmed' ? 1 : 0)),
-          waitlistCount: Math.max(0, Number(liveSession.waitlistCount || 0) - (liveReservation.status === 'waitlist' ? 1 : 0)),
-          promotionPending: liveReservation.status === 'confirmed' && Number(liveSession.waitlistCount || 0) > 0,
-          lastReservationId: reservation.id, updatedAt: nowIso()
-        });
-      });
-      notify(returnsCredit ? 'Reserva cancelada y crédito recuperado.' : 'Reserva cancelada fuera de plazo; el crédito queda consumido.');
+      const actualReturn = await cancelGymusik({ db, appId, reservation });
+      notify(actualReturn ? 'Reserva cancelada y crédito recuperado.' : 'Reserva cancelada fuera de plazo; el crédito queda consumido.');
     } catch (error) { console.error(error); alert(error.message || 'No se pudo cancelar.'); } finally { setBusyId(''); }
   };
 

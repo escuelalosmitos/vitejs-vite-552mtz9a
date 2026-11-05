@@ -8,8 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:static": "node --test tests/security-static.test.mjs tests/mitobox-utils.test.mjs tests/payroll-vacation-utils.test.mjs tests/gymusik-utils.test.mjs tests/absence-attendance.test.mjs tests/avatar-access.test.mjs tests/vacation-challenges.test.mjs tests/vacation-card-render.test.mjs tests/announcement-audience.test.mjs tests/music-challenges.test.mjs",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-escuela-seguridad \"node --test --test-concurrency=1 tests/firestore-rules.test.mjs\"",
+    "test:static": "node --test tests/security-static.test.mjs tests/mitobox-utils.test.mjs tests/payroll-vacation-utils.test.mjs tests/gymusik-utils.test.mjs tests/absence-attendance.test.mjs tests/avatar-access.test.mjs tests/vacation-challenges.test.mjs tests/vacation-card-render.test.mjs tests/announcement-audience.test.mjs tests/music-challenges.test.mjs tests/public-enrollment.test.mjs tests/daily-trivia.test.mjs tests/locator-email.test.mjs tests/admin-bi-board.test.mjs tests/teacher-email-routing.test.mjs tests/class-expansion.test.mjs tests/responsive-admin-detail.test.mjs tests/fixed-services.test.mjs tests/mitobox-contract.test.mjs tests/recovery-capacity.test.mjs tests/audit-regressions.test.mjs tests/mitoverso-contract.test.mjs tests/locator.test.mjs tests/inbox-presentation.test.mjs tests/crm-navigation.test.mjs",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-escuela-seguridad \"node --test --test-concurrency=1 tests/firestore-rules.test.mjs tests/recovery-capacity-rules.test.mjs tests/audit-regressions-rules.test.mjs\"",
     "test:security": "npm run test:static && npm run test:rules"
   },
   "dependencies": {

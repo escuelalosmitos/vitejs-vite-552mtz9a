@@ -81,6 +81,25 @@ service cloud.firestore {
         || teacherInAuthorizedClassEmails(appId, data);
     }
 
+    function teacherInvalidatesAttendedTicket(appId, userId) {
+      let data = request.resource.data;
+      let attendance = getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(data.attendanceRecordId)).data;
+      return teacherOwnsNamespace(appId, userId)
+        && authEmail() in resource.data.teacherEmails
+        && resource.data.get('isUsed', false) == false
+        && resource.data.get('voided', false) == false
+        && data.isUsed == true && data.voided == true
+        && data.voidReason == 'attendance_confirmed' && data.voidedBy == authEmail()
+        && data.attendanceRecordId is string
+        && data.diff(resource.data).affectedKeys().hasOnly([
+          'isUsed', 'voided', 'voidReason', 'voidedAt', 'voidedBy',
+          'attendanceRecordId', 'attendanceCorrectedOn', 'attendanceClassId'
+        ])
+        && attendance.date == data.attendanceCorrectedOn
+        && attendance.classId == data.attendanceClassId
+        && resource.data.studentId in attendance.presentStudentIds;
+    }
+
     function teacherCanReadTicket(appId, data) {
       return teacherInTeacherEmails(appId, data)
         || teacherInRecoveryTeacherEmails(appId, data);
@@ -121,7 +140,8 @@ service cloud.firestore {
         && accessData.studentId.matches('^[A-Za-z0-9_-]+$')
         // Compatibilidad durante el despliegue: los vínculos antiguos todavía
         // no tienen el campo. La nueva aplicación los actualiza al iniciar.
-        && (!('portalEnabled' in accessData) || accessData.portalEnabled == true);
+        && (!('portalEnabled' in accessData) || accessData.portalEnabled == true)
+        && studentHasPortalEntitlement(appId, accessData.studentId);
     }
 
     function ownStudentId(appId) {
@@ -167,7 +187,57 @@ service cloud.firestore {
         && reservationData.studentEmail is string
         && reservationData.studentEmail.lower() == authEmail()
         && reservationData.sessionId == sessionId
-        && reservationData.status == expectedStatus;
+        && reservationData.status == expectedStatus
+        && (expectedStatus == 'cancelled'
+          ? get(gymusikReservationPath(appId, reservationId)).data.status in ['confirmed', 'waitlist']
+          : (!exists(gymusikReservationPath(appId, reservationId))
+            || get(gymusikReservationPath(appId, reservationId)).data.status == 'cancelled'));
+    }
+
+    function gymusikCreditPath(appId, studentId, month) {
+      return /databases/$(database)/documents/artifacts/$(appId)/gymusikCredits/$(studentId)/months/$(month);
+    }
+
+    function gymusikCreditPaired(appId, reservationId, data) {
+      let path = gymusikCreditPath(appId, data.studentId, data.sessionDate[0:7]);
+      let after = getAfter(path).data;
+      return after.lastReservationId == reservationId
+        && after.revision == (exists(path) ? get(path).data.revision : 0) + 1
+        && (data.status == 'cancelled' && data.creditConsumed == false
+          ? !(reservationId in after.reservationIds) : reservationId in after.reservationIds);
+    }
+
+    function studentUpdatesGymusikCredit(appId, studentId, month) {
+      let data = request.resource.data;
+      let path = gymusikCreditPath(appId, studentId, month);
+      let previous = exists(path) ? get(path).data : {'reservationIds': [], 'revision': 0};
+      let id = data.lastReservationId;
+      let reservationPath = gymusikReservationPath(appId, id);
+      let after = getAfter(reservationPath).data;
+      let before = exists(reservationPath) ? get(reservationPath).data : {'status': ''};
+      let ids = data.reservationIds;
+      let old = previous.reservationIds;
+      return studentHasGymusik(appId) && studentId == ownStudentId(appId)
+        && get(gymusikMemberPath(appId, studentId)).data.creditLedgerVersion == 1
+        && month.matches('^[0-9]{4}-[0-9]{2}$')
+        && data.keys().hasOnly(['studentId', 'studentEmail', 'month', 'reservationIds', 'lastReservationId', 'revision', 'updatedAt'])
+        && data.studentId == studentId && data.studentEmail == authEmail() && data.month == month
+        && data.revision == previous.revision + 1 && ids is list && ids.toSet().size() == ids.size()
+        && after.studentId == studentId && after.studentEmail == authEmail() && after.sessionDate[0:7] == month
+        && (
+          (after.status in ['confirmed', 'waitlist'] && before.status in ['', 'cancelled'] && id in ids
+            && ids.hasAll(old) && ids.size() == old.size() + (id in old ? 0 : 1)
+            && (id in old || ids.size() <= get(/databases/$(database)/documents/artifacts/$(appId)/gymusikSettings/main).data.monthlyCredits))
+          || (after.status == 'cancelled' && before.status in ['confirmed', 'waitlist']
+            && (after.creditConsumed == true ? ids.toSet() == old.toSet()
+              : (!(id in ids) && old.hasAll(ids) && ids.size() == old.size() - (id in old ? 1 : 0))))
+        );
+    }
+
+    match /artifacts/{appId}/gymusikCredits/{studentId}/months/{month} {
+      allow get: if isAdmin() || (hasStudentAccess(appId) && studentId == ownStudentId(appId));
+      allow list, delete: if isAdmin();
+      allow create, update: if isAdmin() || studentUpdatesGymusikCredit(appId, studentId, month);
     }
 
     function mitoboxSlotPath(appId, slotId) {
@@ -187,7 +257,63 @@ service cloud.firestore {
         && reservationData.studentEmail is string
         && reservationData.studentEmail.lower() == authEmail()
         && reservationData.slotId == slotId
-        && reservationData.status == expectedStatus;
+        && reservationData.reservationDate == request.resource.data.reservationDate
+        && reservationData.reservationTime == request.resource.data.reservationTime
+        && reservationData.status == expectedStatus
+        && (expectedStatus == 'cancelled'
+          ? get(mitoboxReservationPath(appId, reservationId)).data.status == 'confirmed'
+          : (!exists(mitoboxReservationPath(appId, reservationId))
+            || get(mitoboxReservationPath(appId, reservationId)).data.status == 'cancelled'));
+    }
+
+    function madridOffset(at) {
+      let march = timestamp.date(at.year(), 3, 31);
+      let october = timestamp.date(at.year(), 10, 31);
+      let summer = march - duration.value(march.dayOfWeek() % 7, 'd') + duration.value(1, 'h');
+      let winter = october - duration.value(october.dayOfWeek() % 7, 'd') + duration.value(1, 'h');
+      return duration.value(at >= summer && at < winter ? 2 : 1, 'h');
+    }
+
+    function validMitoboxStart(data) {
+      let local = data.startsAt + madridOffset(data.startsAt);
+      let today = request.time + madridOffset(request.time);
+      let parts = data.reservationDate.split('-');
+      let time = data.reservationTime.split(':');
+      return data.startsAt is timestamp
+        && data.startsAt >= request.time + duration.value(24, 'h')
+        && local.year() == int(parts[0]) && local.month() == int(parts[1]) && local.day() == int(parts[2])
+        && local.hours() == int(time[0]) && local.minutes() == int(time[1]) && local.seconds() == 0
+        && local.year() == today.year() && local.month() == today.month();
+    }
+
+    function schoolScheduledTime(date, time) {
+      let parts = date.split('-');
+      let clock = time.split(':');
+      let local = timestamp.date(int(parts[0]), int(parts[1]), int(parts[2])) + duration.value(int(clock[0]), 'h') + duration.value(int(clock[1]), 'm');
+      return local - madridOffset(local - duration.value(1, 'h'));
+    }
+
+    function validGymusikCancellation(appId, before, after) {
+      let session = get(gymusikSessionPath(appId, before.sessionId)).data;
+      let hours = get(/databases/$(database)/documents/artifacts/$(appId)/gymusikSettings/main).data.cancellationHours;
+      let returned = before.status == 'waitlist' || schoolScheduledTime(session.date, session.time) >= request.time + duration.value(hours, 'h');
+      return after.creditReturned == returned && after.creditConsumed == !returned;
+    }
+
+    function mitoboxSlotChanges(appId, reservationId, slotId, delta) {
+      let path = mitoboxSlotPath(appId, slotId);
+      let after = getAfter(path).data;
+      return after.lastMutationId == reservationId
+        && after.reservedCount == (exists(path) ? get(path).data.reservedCount : 0) + delta;
+    }
+
+    function gymusikSessionChanges(appId, reservationId, sessionId, previous, next) {
+      let path = gymusikSessionPath(appId, sessionId);
+      let before = get(path).data;
+      let after = getAfter(path).data;
+      return after.lastReservationId == reservationId
+        && after.reservedCount == before.reservedCount + (next == 'confirmed' ? 1 : 0) - (previous == 'confirmed' ? 1 : 0)
+        && after.waitlistCount == before.waitlistCount + (next == 'waitlist' ? 1 : 0) - (previous == 'waitlist' ? 1 : 0);
     }
 
     function ownStudentEmailRecord() {
@@ -252,6 +378,29 @@ service cloud.firestore {
       return hasStudentAccess(appId)
         && (('audienceType' in resource.data && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'])
           || ('recipientStudentIds' in resource.data && resource.data.recipientStudentIds is list && ownStudentId(appId) in resource.data.recipientStudentIds));
+    }
+
+    function studentNotifiesOwnAbsence(appId) {
+      let data = request.resource.data;
+      let date = data.lastAbsenceDate;
+      let before = resource.data.get('exceptions', {});
+      let after = data.exceptions;
+      let own = ownStudentId(appId);
+      let oldDay = before.get(date, {});
+      let day = after[date];
+      let oldCancelled = resource.data.get('autoCancelled', {});
+      let cancelled = data.get('autoCancelled', {});
+      return date is string && date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.lastAbsenceStudentId == own && own in resource.data.studentIds
+        && data.diff(resource.data).affectedKeys().hasOnly(['exceptions', 'autoCancelled', 'lastAbsenceDate', 'lastAbsenceStudentId'])
+        && after.diff(before).affectedKeys().hasOnly([date])
+        && day.diff(oldDay).affectedKeys().hasOnly([own])
+        && day[own] in ['notified', 'notified_no_ticket'] && oldDay.get(own, '') != 'present'
+        && (cancelled == oldCancelled || (
+          cancelled.diff(oldCancelled).affectedKeys().hasOnly([date]) && cancelled[date] == true
+          && day.keys().hasAll(resource.data.studentIds)
+          && day.values().hasOnly(['absent', 'notified', 'notified_no_ticket'])
+        ));
     }
 
     // Única lectura sin iniciar sesión.
@@ -327,7 +476,14 @@ service cloud.firestore {
     }
 
     match /artifacts/{appId}/announcements/{announcementId} {
-      allow get, list: if isAdmin() || isTeacher(appId) || studentCanReadAnnouncement(appId);
+      allow get: if isAdmin() || isTeacher(appId) || studentCanReadAnnouncement(appId);
+      // Each query proves its own audience restriction. Presence/type checks on
+      // an unconstrained alternative cannot be proved by an array-contains query.
+      allow list: if isAdmin() || isTeacher(appId);
+      allow list: if hasStudentAccess(appId)
+        && resource.data.audienceType in ['all', 'sede', 'instrumento', 'profesor'];
+      allow list: if hasStudentAccess(appId)
+        && ownStudentId(appId) in resource.data.recipientStudentIds;
       allow create, delete: if isAdmin();
       allow update: if isAdmin() || (
         studentCanReadAnnouncement(appId)
@@ -494,11 +650,170 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    function validMitoboxContractAcceptance(data) {
+      let contract = data.mitoboxContract;
+      return contract is map
+        && contract.keys().hasAll(['version', 'studentId', 'accountEmail', 'authUid', 'signerFullName', 'studentFullName', 'role', 'monthlyFee', 'accepted', 'immediateStart', 'acceptedAt', 'text', 'sha256'])
+        && contract.version == 'mitobox-2026-11-04-v2'
+        && contract.studentId == data.studentId
+        && contract.accountEmail == authEmail()
+        && contract.authUid == request.auth.uid
+        && contract.signerFullName is string && contract.signerFullName.size() >= 3 && contract.signerFullName.size() <= 160
+        && contract.studentFullName is string && contract.studentFullName.size() >= 3 && contract.studentFullName.size() <= 160
+        && contract.role in ['adult', 'guardian']
+        && contract.monthlyFee in [35, 50]
+        && data.extraMonthlyFee == contract.monthlyFee
+        && contract.accepted == true && contract.immediateStart is bool
+        && contract.acceptedAt == request.time
+        && contract.text is string && contract.text.size() > 10000 && contract.text.size() < 60000
+        && contract.sha256 is string && contract.sha256.matches('^[a-f0-9]{64}$');
+    }
+
+    function validMitoversoContractAcceptance(data) {
+      let contract = data.mitoversoContract;
+      return contract is map
+        && contract.keys().hasAll(['version', 'studentId', 'accountEmail', 'authUid', 'signerFullName', 'studentFullName', 'role', 'monthlyFee', 'accepted', 'immediateStart', 'acceptedAt', 'text', 'sha256'])
+        && contract.version == 'mitoverso-2026-11-05-v1'
+        && contract.studentId == data.studentId
+        && contract.accountEmail == authEmail()
+        && contract.authUid == request.auth.uid
+        && contract.signerFullName is string && contract.signerFullName.size() >= 3 && contract.signerFullName.size() <= 160
+        && contract.studentFullName is string && contract.studentFullName.size() >= 3 && contract.studentFullName.size() <= 160
+        && contract.role in ['adult', 'guardian']
+        && contract.monthlyFee in [10, 20]
+        && data.extraMonthlyFee == contract.monthlyFee
+        && contract.accepted == true && contract.immediateStart is bool
+        && contract.acceptedAt == request.time
+        && contract.text is string && contract.text.size() > 10000 && contract.text.size() < 60000
+        && contract.sha256 is string && contract.sha256.matches('^[a-f0-9]{64}$');
+    }
+
+    // Anonymous, date-specific capacity. A pupil can only add one hold, paired
+    // atomically with their own request and exclusive ticket claim.
+    function recoveryAvailabilityPath(appId, availabilityId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/recoveryAvailability/$(availabilityId);
+    }
+    function recoveryRequestPath(appId, gestionId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/gestiones/$(gestionId);
+    }
+    function recoveryClaimPath(appId, owner, ticketId) {
+      return /databases/$(database)/documents/artifacts/$(appId)/recoveryTicketClaims/$(owner)/claims/$(ticketId);
+    }
+    function validStudentRecoveryRequest(appId, gestionId, data) {
+      let availability = getAfter(recoveryAvailabilityPath(appId, data.recoveryAvailabilityId)).data;
+      let claim = getAfter(recoveryClaimPath(appId, data.ticketOwnerUid, data.ticketDocumentId)).data;
+      return data.status == 'pendiente' && data.recoveryCapacityVersion == 1
+        && data.requestedClassRefPath == availability.classRefPath
+        && data.requestedClass == availability.classId
+        && availability.enabled == true
+        && gestionId in availability.sessions[data.recoveryDate].holds
+        && claim.gestionId == gestionId && claim.status == 'held'
+        && claim.studentId == data.studentId && claim.studentEmail == data.studentEmail
+        && claim.recoveryDate == data.recoveryDate
+        && data.ticketRefPath == 'artifacts/' + appId + '/users/' + data.ticketOwnerUid + '/tickets/' + data.ticketDocumentId
+        && claim.ticketRefPath == data.ticketRefPath;
+    }
+    function studentAddsRecoveryHold(appId, availabilityId) {
+      let data = request.resource.data;
+      let date = data.lastHoldDate;
+      let id = data.lastHoldId;
+      let before = resource.data.sessions[date];
+      let after = data.sessions[date];
+      let gestion = getAfter(recoveryRequestPath(appId, id)).data;
+      return resource.data.enabled == true
+        && data.diff(resource.data).affectedKeys().hasOnly(['sessions', 'revision', 'lastHoldId', 'lastHoldDate', 'updatedAt'])
+        && data.revision == resource.data.revision + 1
+        && data.sessions.diff(resource.data.sessions).affectedKeys().hasOnly([date])
+        && after.diff(before).affectedKeys().hasOnly(['holds'])
+        && before.cancelled == false
+        && resource.data.capacity > before.baseCount + before.recoveryCount + before.holds.size()
+        && !(id in before.holds) && after.holds.hasAll(before.holds)
+        && after.holds.size() == before.holds.size() + 1
+        && after.holds.toSet().size() == after.holds.size() && id in after.holds
+        && gestion.type == 'recuperacion' && gestion.status == 'pendiente'
+        && gestion.recoveryAvailabilityId == availabilityId
+        && gestion.recoveryDate == date && gestion.studentId == ownStudentId(appId)
+        && gestion.studentEmail == authEmail() && gestion.requestedClassRefPath == resource.data.classRefPath;
+    }
+    function teacherUpdatesRecoveryAvailability(appId) {
+      let data = request.resource.data;
+      let gestion = getAfter(recoveryRequestPath(appId, data.lastActionId)).data;
+      return authEmail() in gestion.teacherEmails
+        && gestion.type == 'recuperacion'
+        && gestion.status in ['completado', 'rechazado', 'cancelado']
+        && gestion.requestedClassRefPath == resource.data.classRefPath
+        && gestion.recoveryDate == data.lastActionDate
+        && data.diff(resource.data).affectedKeys().hasOnly(['sessions', 'revision', 'lastActionId', 'lastActionDate', 'updatedAt'])
+        && data.revision == resource.data.revision + 1
+        && data.sessions.diff(resource.data.sessions).affectedKeys().hasOnly([data.lastActionDate]);
+    }
+    match /artifacts/{appId}/recoveryAvailability/{availabilityId} {
+      allow read: if isAdmin() || isTeacher(appId) || hasStudentAccess(appId);
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isTeacher(appId) && teacherUpdatesRecoveryAvailability(appId))
+        || (hasStudentAccess(appId) && studentAddsRecoveryHold(appId, availabilityId));
+    }
+    function studentClaimsRecoveryTicket(appId, owner, ticketId) {
+      let data = request.resource.data;
+      let ticket = get(/databases/$(database)/documents/artifacts/$(appId)/users/$(owner)/tickets/$(ticketId)).data;
+      let gestion = getAfter(recoveryRequestPath(appId, data.gestionId)).data;
+      let availability = getAfter(recoveryAvailabilityPath(appId, gestion.recoveryAvailabilityId)).data;
+      return data.keys().hasOnly(['studentId', 'studentEmail', 'gestionId', 'ticketRefPath', 'recoveryDate', 'status', 'ticketOwnerUid', 'ticketDocumentId', 'expiresAt'])
+        && data.studentId == ownStudentId(appId) && data.studentEmail == authEmail()
+        && data.ticketOwnerUid == owner && data.ticketDocumentId == ticketId
+        && data.ticketRefPath == 'artifacts/' + appId + '/users/' + owner + '/tickets/' + ticketId
+        && ticket.studentId == ownStudentId(appId)
+        && ticket.get('isUsed', false) == false && ticket.get('voided', false) == false
+        && (ticket.get('validFrom', '') == '' || ticket.validFrom <= data.recoveryDate)
+        && (ticket.get('validUntil', '') == '' || ticket.validUntil >= data.recoveryDate)
+        && data.expiresAt == availability.sessions[data.recoveryDate].expiresAt
+        && data.expiresAt > request.time
+        && data.status == 'held' && gestion.type == 'recuperacion' && gestion.status == 'pendiente'
+        && gestion.studentId == data.studentId && gestion.studentEmail == data.studentEmail
+        && gestion.ticketOwnerUid == owner && gestion.ticketDocumentId == ticketId
+        && gestion.ticketRefPath == data.ticketRefPath && gestion.recoveryDate == data.recoveryDate
+        && data.gestionId in availability.sessions[data.recoveryDate].holds;
+    }
+    function teacherDecidesRecoveryClaim(appId, owner, ticketId) {
+      let data = request.resource.data;
+      let gestion = getAfter(recoveryRequestPath(appId, data.gestionId)).data;
+      return authEmail() in gestion.teacherEmails
+        && gestion.type == 'recuperacion' && gestion.ticketOwnerUid == owner && gestion.ticketDocumentId == ticketId
+        && gestion.ticketRefPath == data.ticketRefPath && gestion.studentId == data.studentId
+        && gestion.recoveryDate == data.recoveryDate
+        && ((data.status == 'approved' && gestion.status == 'completado')
+          || (data.status == 'released' && gestion.status in ['rechazado', 'cancelado']));
+    }
+    match /artifacts/{appId}/recoveryTicketClaims/{owner}/claims/{ticketId} {
+      allow get: if isAdmin() || isTeacher(appId) || (hasStudentAccess(appId)
+        && (!exists(recoveryClaimPath(appId, owner, ticketId)) || resource.data.studentId == ownStudentId(appId)));
+      allow list: if isAdmin() || isTeacher(appId);
+      allow create: if isAdmin() || (isTeacher(appId) && teacherDecidesRecoveryClaim(appId, owner, ticketId))
+        || (hasStudentAccess(appId) && studentClaimsRecoveryTicket(appId, owner, ticketId));
+      allow update: if isAdmin() || (isTeacher(appId) && teacherDecidesRecoveryClaim(appId, owner, ticketId)) || (
+        hasStudentAccess(appId) && studentClaimsRecoveryTicket(appId, owner, ticketId)
+        && resource.data.studentId == ownStudentId(appId)
+        && (resource.data.status == 'released' || resource.data.expiresAt < request.time)
+      );
+      allow delete: if isAdmin();
+    }
+
     match /artifacts/{appId}/gestiones/{gestionId} {
       // Los trámites forman parte del trabajo compartido: una recuperación puede
       // comenzar con un profesor y terminar en la clase de otro.
       allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
-      allow create: if isAdmin() || teacherInTeacherEmails(appId, request.resource.data) || studentCreatesOwnResource(appId);
+      allow create: if isAdmin() || teacherInTeacherEmails(appId, request.resource.data) || (
+        studentCreatesOwnResource(appId)
+        && request.resource.data.get('status', '') == 'pendiente'
+        && request.resource.data.get('type', '') != 'reserva_mitobox'
+        && request.resource.data.get('tadosiDone', false) == false
+        && !request.resource.data.keys().hasAny(['tadosiDoneAt', 'tadosiDoneBy', 'skipTadosi', 'workflowStatus', 'mitoboxIdentityVerifiedAt', 'mitoboxIdentityVerifiedBy', 'mitoversoIdentityVerifiedAt', 'mitoversoIdentityVerifiedBy', 'extraServiceActivatedAt', 'scheduledAction', 'scheduledEffectiveDate'])
+        && !request.resource.data.keys().hasAny(['legacyMitoboxMigrationApprovedAt', 'legacyMitoboxMigrationApprovedBy', 'consolidatedAt', 'executionMode'])
+        && (request.resource.data.get('type', '') != 'recuperacion' || validStudentRecoveryRequest(appId, gestionId, request.resource.data))
+        && (!('type' in request.resource.data) || request.resource.data.type != 'alta_mitobox'
+          || validMitoboxContractAcceptance(request.resource.data))
+        && (request.resource.data.get('type', '') != 'alta_mitoverso' || validMitoversoContractAcceptance(request.resource.data))
+      );
       allow update: if isAdmin() || (
         teacherInTeacherEmails(appId, resource.data)
         && teacherInTeacherEmails(appId, request.resource.data)
@@ -526,8 +841,9 @@ service cloud.firestore {
         && request.resource.data.slotId is string
         && request.resource.data.reservationDate is string
         && request.resource.data.reservationTime is string
+        && validMitoboxStart(request.resource.data)
         && existsAfter(mitoboxSlotPath(appId, request.resource.data.slotId))
-        && getAfter(mitoboxSlotPath(appId, request.resource.data.slotId)).data.lastMutationId == reservationId
+        && mitoboxSlotChanges(appId, reservationId, request.resource.data.slotId, 1)
       );
       allow update: if isAdmin() || (
         studentHasMitobox(appId)
@@ -539,7 +855,7 @@ service cloud.firestore {
             resource.data.status == 'confirmed'
             && request.resource.data.status == 'cancelled'
             && request.resource.data.cancelledBy == 'student'
-            && getAfter(mitoboxSlotPath(appId, resource.data.slotId)).data.lastMutationId == reservationId
+            && mitoboxSlotChanges(appId, reservationId, resource.data.slotId, -1)
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               'status', 'cancelledAt', 'cancelledBy', 'updatedAt'
             ])
@@ -549,7 +865,8 @@ service cloud.firestore {
             && request.resource.data.status == 'confirmed'
             && request.resource.data.reservationDate == resource.data.reservationDate
             && request.resource.data.reservationTime == resource.data.reservationTime
-            && getAfter(mitoboxSlotPath(appId, request.resource.data.slotId)).data.lastMutationId == reservationId
+            && validMitoboxStart(request.resource.data)
+            && mitoboxSlotChanges(appId, reservationId, request.resource.data.slotId, 1)
           )
         )
       );
@@ -566,6 +883,7 @@ service cloud.firestore {
         ])
         && request.resource.data.reservedCount == 1
         && request.resource.data.capacity >= 1
+        && request.resource.data.capacity == get(/databases/$(database)/documents/artifacts/$(appId)/roleData/studentSettings).data.mitoboxRoomCapacities[request.resource.data.centerId + '__' + request.resource.data.roomId]
         && request.resource.data.reservedCount <= request.resource.data.capacity
         && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'confirmed')
       );
@@ -671,6 +989,7 @@ service cloud.firestore {
         studentHasGymusik(appId)
         && studentCreatesOwnResource(appId)
         && request.resource.data.status in ['confirmed', 'waitlist']
+        && gymusikCreditPaired(appId, reservationId, request.resource.data)
         && request.resource.data.sessionId is string
         && request.resource.data.teacherEmail is string
         && existsAfter(gymusikSessionPath(appId, request.resource.data.sessionId))
@@ -679,7 +998,7 @@ service cloud.firestore {
         && request.resource.data.sessionTime == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.time
         && request.resource.data.instrument == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.instrument
         && request.resource.data.teacherEmail == getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.teacherEmail
-        && getAfter(gymusikSessionPath(appId, request.resource.data.sessionId)).data.lastReservationId == reservationId
+        && gymusikSessionChanges(appId, reservationId, request.resource.data.sessionId, '', request.resource.data.status)
       );
       allow update: if isAdmin() || (
         teacherMatchesData(appId, resource.data)
@@ -704,17 +1023,19 @@ service cloud.firestore {
           'status', 'cancelledAt', 'cancelledBy', 'creditConsumed',
           'creditReturned', 'updatedAt'
         ])
+        && gymusikCreditPaired(appId, reservationId, request.resource.data)
         && (
           (
             resource.data.status in ['confirmed', 'waitlist']
             && request.resource.data.status == 'cancelled'
+            && validGymusikCancellation(appId, resource.data, request.resource.data)
           )
           || (
             resource.data.status == 'cancelled'
             && request.resource.data.status in ['confirmed', 'waitlist']
           )
         )
-        && getAfter(gymusikSessionPath(appId, resource.data.sessionId)).data.lastReservationId == reservationId
+        && gymusikSessionChanges(appId, reservationId, resource.data.sessionId, resource.data.status == 'cancelled' ? '' : resource.data.status, request.resource.data.status == 'cancelled' ? '' : request.resource.data.status)
       );
       allow delete: if isAdmin();
     }
@@ -882,7 +1203,7 @@ service cloud.firestore {
           && 'studentIds' in resource.data
           && resource.data.studentIds is list
           && ownStudentId(appId) in resource.data.studentIds
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['exceptions', 'autoCancelled'])
+          && studentNotifiesOwnAbsence(appId)
         );
       }
 
@@ -896,7 +1217,13 @@ service cloud.firestore {
           teacherOwnsNamespace(appId, userId)
           && teacherInTeacherEmails(appId, request.resource.data)
         );
+        // Check this narrow attendance correction before the more expensive
+        // ordinary ticket-update branches, keeping the atomic batch under the
+        // Firestore expression limit without widening any pupil permissions.
         allow update: if isAdmin() || (
+          request.resource.data.get('voidReason', '') == 'attendance_confirmed'
+          && teacherInvalidatesAttendedTicket(appId, userId)
+        ) || (
           teacherCanReadTicket(appId, resource.data)
           && teacherCanReadTicket(appId, request.resource.data)
           && request.resource.data.studentId == resource.data.studentId
@@ -905,25 +1232,6 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'isUsed', 'usedAt', 'usedOn', 'usedInSubject', 'usedInClassId'
           ])
-        ) || (
-          // Anular un ticket propio no consumido exige una asistencia guardada
-          // del mismo alumno, fecha y clase (también en el mismo lote).
-          teacherOwnsNamespace(appId, userId)
-          && teacherInTeacherEmails(appId, resource.data)
-          && resource.data.get('isUsed', false) == false
-          && resource.data.get('voided', false) == false
-          && request.resource.data.isUsed == true
-          && request.resource.data.voided == true
-          && request.resource.data.voidReason == 'attendance_confirmed'
-          && request.resource.data.voidedBy == authEmail()
-          && request.resource.data.attendanceRecordId is string
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'isUsed', 'voided', 'voidReason', 'voidedAt', 'voidedBy',
-            'attendanceRecordId', 'attendanceCorrectedOn', 'attendanceClassId'
-          ])
-          && getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(request.resource.data.attendanceRecordId)).data.date == request.resource.data.attendanceCorrectedOn
-          && getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(request.resource.data.attendanceRecordId)).data.classId == request.resource.data.attendanceClassId
-          && resource.data.studentId in getAfter(/databases/$(database)/documents/artifacts/$(appId)/users/$(userId)/records/$(request.resource.data.attendanceRecordId)).data.presentStudentIds
         ) || (
           studentOwnsResource(appId)
           && request.resource.data.studentId == resource.data.studentId

@@ -17,10 +17,14 @@ export const retainGestionForAttendance = (gestion, today) => (
 export const getMatchingAbsenceGestiones = (gestiones, studentId, session, date) => gestiones.filter(gestion => {
   if (gestion.type !== 'aviso_ausencia' || text(gestion.studentId) !== text(studentId)) return false;
   if (getAbsenceDate(gestion) !== text(date)) return false;
-  if (gestion.requestedClass) return text(gestion.requestedClass) === text(session.classId);
+  const noticePath = text(gestion.requestedClassRefPath);
+  const sessionPath = text(session.classRefPath || session.refPath);
+  if (noticePath && (!sessionPath || noticePath !== sessionPath)) return false;
+  if (gestion.requestedClass && text(gestion.requestedClass) !== text(session.classId || session.id)) return false;
   // Compatibilidad con avisos antiguos: nunca cruzar dos asignaturas/turnos.
   const subject = gestion.absenceSubject || text(gestion.title).replace(/^Falta a clase:\s*/i, '');
-  if (!subject || subjectKey(subject) !== subjectKey(session.subject)) return false;
+  if (subject && subjectKey(subject) !== subjectKey(session.subject)) return false;
+  if (!subject && !noticePath && !gestion.requestedClass) return false;
   const time = gestion.absenceTime || text(gestion.details).match(/a las (\d{1,2}:\d{2})/)?.[1];
   return !time || text(time) === text(session.time);
 });
@@ -28,6 +32,8 @@ export const getMatchingAbsenceGestiones = (gestiones, studentId, session, date)
 export const getRelatedAbsenceTickets = (tickets, gestiones, studentId, session, date) => tickets.filter(ticket => {
   if (text(ticket.studentId) !== text(studentId) || ticket.isGift === true || ticket.subjectScope === 'any') return false;
   if (ticket.absenceGestionId && gestiones.some(gestion => text(gestion.id) === text(ticket.absenceGestionId))) return true;
+  const sessionPath = text(session.classRefPath || session.refPath);
+  if (ticket.originalClassRefPath && text(ticket.originalClassRefPath) !== sessionPath) return false;
   return text(ticket.originalDate) === text(date)
     && subjectKey(ticket.subject) === subjectKey(session.subject)
     && (!ticket.originalClassId || text(ticket.originalClassId) === text(session.classId));

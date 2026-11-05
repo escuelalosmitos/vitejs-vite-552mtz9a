@@ -23,7 +23,7 @@ node --version
 java -version
 ```
 
-Se necesita Node.js 18 o posterior y Java 11 o posterior. Si cualquiera de los
+Se necesita Node.js 22.12 o posterior y JDK 21 o posterior, según los requisitos de Vite y Firebase CLI incluidos en este proyecto. Si cualquiera de los
 dos comandos dice que no se reconoce, detente y comunica exactamente el
 mensaje recibido antes de continuar.
 

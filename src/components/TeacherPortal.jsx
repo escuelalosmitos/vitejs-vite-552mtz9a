@@ -1538,13 +1538,11 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
   const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
     const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
     const classId = classData?.id ?? classDataOrId;
-    const sameId = Boolean(String(change.classId ?? '')) && String(change.classId) === String(classId ?? '');
-    if (sameId) return true;
-    return Boolean(
-      classData?.refPath &&
-      change.classRefPath &&
-      String(change.classRefPath) === String(classData.refPath)
-    );
+    const classes = [...recurringClasses, ...externalRecurringClasses];
+    const candidates = [...new Map(classes.filter(item => String(item.id) === String(classId)).map(item => [item.refPath || item.id, item])).values()];
+    const resolved = classData || (candidates.length === 1 ? candidates[0] : null);
+    if (change.classRefPath) return Boolean(resolved?.refPath && change.classRefPath === resolved.refPath);
+    return Boolean(candidates.length <= 1 && String(change.classId || '') && String(change.classId) === String(classId));
   };
 
   const getClassTemporaryChanges = (classDataOrId = '') => temporaryClassChanges
@@ -3777,9 +3775,9 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
               createdByUid: user.uid,
               createdByEmail: String(user.email || '').trim().toLowerCase(),
               originalDate: date,
-              originalMonth: currentMonth,
               originalClassId: currentSession.classId || '',
               originalClassRefPath: currentSession.refPath || '',
+              originalMonth: currentMonth,
               validFrom,
               validUntil,
               isUsed: false,
@@ -3850,6 +3848,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
       const savedRecord = {
         id: recordId,
         classId: currentSession.classId,
+        classRefPath: currentSession.refPath || '',
         date,
         time: currentSession.time,
         sede: getClassCenterName(currentSession),

@@ -12,17 +12,21 @@ service firebase.storage {
         && request.auth.token.email.lower() == 'paco@escuelalosmitos.com';
     }
 
-    match /studentAvatars/{ownerUid}/{studentId}/profile.webp {
-      allow read: if signedIn() && (request.auth.uid == ownerUid || isAdmin());
+    function validAvatarName(fileName) {
+      return fileName.matches('^profile(-[0-9]+)?[.]webp$');
+    }
 
-      allow create, update: if signedIn()
+    match /studentAvatars/{ownerUid}/{studentId}/{fileName} {
+      allow read: if validAvatarName(fileName) && signedIn() && (request.auth.uid == ownerUid || isAdmin());
+
+      allow create, update: if validAvatarName(fileName) && signedIn()
         && request.auth.uid == ownerUid
         && request.resource.size <= 300 * 1024
         && request.resource.contentType == 'image/webp'
         && request.resource.metadata.ownerUid == ownerUid
         && request.resource.metadata.studentId == studentId;
 
-      allow delete: if signedIn() && (request.auth.uid == ownerUid || isAdmin());
+      allow delete: if validAvatarName(fileName) && signedIn() && (request.auth.uid == ownerUid || isAdmin());
     }
 
     match /{allPaths=**} {

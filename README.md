@@ -1,16 +1,37 @@
-# React + Vite
+# Escuela Los Mitos
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicación de gestión de Escuela Los Mitos, con portales de Administración, Profesor y Alumno. Código completo preparado para continuar el desarrollo en Codex desde un ordenador local.
 
-Currently, two official plugins are available:
+## Empezar
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Abre esta carpeta, la que contiene `package.json` y `AGENTS.md`.
+2. Sigue `ABRIR_EN_CODEX.md` para asociarla al proyecto y arrancar en Windows.
+3. Lee `CONTEXTO_PROYECTO.md` para conocer la arquitectura, decisiones y estado real del trabajo.
 
-## React Compiler
+## Entorno y comandos
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Node.js 22.12 o posterior. Para las pruebas del emulador Firebase, JDK 21 o posterior.
 
-## Expanding the ESLint configuration
+```bash
+npm ci
+npm run test:security
+npm run build
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Para desarrollo: `npm run dev`. En PowerShell puedes utilizar `npm.cmd` si la política de ejecución afecta al comando `npm`.
+
+El frontend conserva su configuración Firebase real. Vite local no es una base de datos de pruebas: utiliza las pruebas incluidas o un emulador para verificar sin operar sobre producción.
+
+## Estado de referencia
+
+La revisión local del 5 de noviembre de 2026 supera 221 pruebas locales y 48 comprobaciones de reglas/transacciones, y compila correctamente. Incluye las correcciones autorizadas de la auditoría y el contrato Mitoverso: consulta `CORRECCIONES_AUDITORIA_Y_MITOVERSO.md` antes de publicar, porque requiere preparar saldos de Gymusik, coordinar frontend/reglas y recargar sesiones. No está desplegada desde este trabajo. El estado real de Vercel y Firebase debe comprobarse por separado.
+
+## Decisiones esenciales
+
+- Recuperaciones: aforo por fecha, reserva pendiente y aprobación transaccional.
+- Oferta web: plazas de matrícula fija, sin restar recuperaciones.
+- Mitolocker: compartido gratis y exclusivo 5 €/mes; requiere una plaza de clases.
+- Mitobox: contrato aceptado antes de solicitar el alta, con versiones históricas y evidencia conservadas.
+- Aplicación en Vercel; Auth, datos y almacenamiento en Firebase; integraciones externas de Apps Script y cobros en Tadosi.
+
+Consulta `DESPLIEGUE_SEGURO.md` y la documentación del módulo correspondiente antes de publicar cambios. El README genérico original de la plantilla se conserva en `referencias/README_ORIGINAL_PLANTILLA.md`.

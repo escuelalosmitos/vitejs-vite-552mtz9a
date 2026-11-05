@@ -1,11 +1,13 @@
+import MitoversoContractForm from './MitoversoContractForm.jsx';
+import { createMitoversoContractDraft, createMitoversoAcceptance, mitoversoDraftError, mitoversoMonthlyFee, downloadMitoversoContract, buildMitoversoContractCopy } from './mitoversoContractUtils.js';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
-import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch, deleteField, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch, deleteField, serverTimestamp, Timestamp } from 'firebase/firestore';
 import { deleteObject, getBlob, ref as storageRef, uploadBytes } from 'firebase/storage';
 import {
   buildMitoboxReservationGroupId,
   buildMitoboxReservationId,
-  calculateMitoboxAvailability,
+  calculateMitoboxAvailability, canReserveMitoboxAt,
   isActiveMitoboxReservation,
   isMitoboxSlotSelectionConsecutive,
   sortMitoboxSlots,
@@ -793,6 +795,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [mitoboxReservationError, setMitoboxReservationError] = useState('');
   const [extraSignupModal, setExtraSignupModal] = useState(null);
   const [mitoboxContractDraft, setMitoboxContractDraft] = useState(null);
+  const [mitoversoContractDraft, setMitoversoContractDraft] = useState(null);
   const [isSendingExtraSignup, setIsSendingExtraSignup] = useState(false);
   const [workshops, setWorkshops] = useState([]);
   const [myWorkshopRegistrations, setMyWorkshopRegistrations] = useState([]);
@@ -956,6 +959,9 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     const roomName = room?.name || workshop.room || '';
     return `${centerName}${roomName ? ` · ${roomName}` : ''}`;
   };
+  useEffect(() => {
+    if (profile?.id && profile.globalStatus === 'baja') logout();
+  }, [profile?.id, profile?.globalStatus, logout]);
   const portalStartDate = String(profile?.classStartDate || '').trim();
   const hasServicePortalAccess = hasIndependentServices(profile || {});
   const isPortalAccessScheduled = Boolean(!hasServicePortalAccess && portalStartDate && portalStartDate > todayStr);
@@ -1037,7 +1043,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
 
   const classesShareStableIdentity = (left = {}, right = {}) => {
     const leftPaths = new Set(getClassIdentityPaths(left));
-    if (getClassIdentityPaths(right).some(path => leftPaths.has(path))) return true;
+    const rightPaths = getClassIdentityPaths(right);
+    if (leftPaths.size && rightPaths.length) return rightPaths.some(path => leftPaths.has(path));
     const leftIds = new Set(getClassIdentityIds(left));
     return getClassIdentityIds(right).some(id => leftIds.has(id));
   };
@@ -1050,6 +1057,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
       if (referencedPathStillExists) return false;
     }
     const cleanId = String(referenceId || '').trim();
+    if (allClasses.filter(candidate => getClassIdentityIds(candidate).includes(cleanId)).length > 1) return false;
     return Boolean(cleanId && getClassIdentityIds(clase).includes(cleanId));
   };
 
@@ -1123,6 +1131,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
 
     const changeClassId = String(change.classId || '').trim();
     if (!changeClassId) return false;
+    if (allClasses.filter(candidate => getClassIdentityIds(candidate).includes(changeClassId)).length > 1) return false;
     if (classData) return getClassIdentityIds(classData).includes(changeClassId);
     return changeClassId === String(classId || '').trim();
   };
@@ -3934,22 +3943,26 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     try {
       const classRef = doc(db, absenceModal.clase.refPath);
       
-      const currentExceptions = absenceModal.clase.exceptions?.[absenceModal.dateStr] || {};
-      currentExceptions[profile.id] = status; 
-      
-      const activeStudents = (absenceModal.clase.students || []).filter(s => !isStudentInMaintenanceForDate(getStudentEntryId(s), absenceModal.dateStr));
-      const allAbsentNow = activeStudents.length > 0 && activeStudents.every(s => {
-        const st = currentExceptions[getStudentEntryId(s)];
-        return st === 'absent' || st === 'notified' || st === 'notified_no_ticket';
+      const outcome = await runTransaction(db, async transaction => {
+        const snapshot = await transaction.get(classRef);
+        if (!snapshot.exists()) throw new Error('La clase ya no está disponible.');
+        const live = snapshot.data();
+        if (!(live.studentIds || (live.students || []).map(s => s.id)).includes(profile.id)) throw new Error('Ya no tienes plaza en esta clase.');
+        const currentExceptions = { ...(live.exceptions?.[absenceModal.dateStr] || {}), [profile.id]: status };
+        const activeStudents = (live.students || []).filter(s => !isStudentInMaintenanceForDate(getStudentEntryId(s), absenceModal.dateStr));
+        const allAbsentNow = activeStudents.length > 0 && activeStudents.every(s => ['absent', 'notified', 'notified_no_ticket'].includes(currentExceptions[getStudentEntryId(s)]));
+        const indexedIds = live.studentIds || (live.students || []).map(s => s.id);
+        const isCancelledWithNotice = allAbsentNow && absenceModal.diffHours >= 2
+          && indexedIds.every(id => ['absent', 'notified', 'notified_no_ticket'].includes(currentExceptions[id]));
+        transaction.set(classRef, {
+          exceptions: { [absenceModal.dateStr]: { [profile.id]: status } },
+          lastAbsenceDate: absenceModal.dateStr, lastAbsenceStudentId: profile.id,
+          ...(isCancelledWithNotice ? { autoCancelled: { [absenceModal.dateStr]: true } } : {})
+        }, { merge: true });
+        return { allAbsentNow, isCancelledWithNotice };
       });
+      const { allAbsentNow, isCancelledWithNotice } = outcome;
 
-      const isCancelledWithNotice = allAbsentNow && (absenceModal.diffHours >= 2);
-
-      await setDoc(classRef, { 
-        exceptions: { [absenceModal.dateStr]: { [profile.id]: status } },
-        ...(isCancelledWithNotice ? { autoCancelled: { [absenceModal.dateStr]: true } } : {})
-      }, { merge: true });
-      
       const gestionId = `falta-${Date.now()}`;
       await setDoc(doc(db, 'artifacts', appId, 'gestiones', gestionId), {
         studentId: profile.id,
@@ -3965,6 +3978,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         ticketEligible: Boolean(!isLate && wantsTicket),
         ticketOutcome: !isLate && wantsTicket ? 'awaiting_attendance' : 'not_requested',
         requestedClass: absenceModal.clase.id,
+        requestedClassRefPath: absenceModal.clase.refPath || '',
         requestedTeacher: absenceModal.clase.teacher || '',
         teacherKeys: [normalizeTeacherKey(absenceModal.clase.teacher)],
         teacherEmails: teacherEmail ? [teacherEmail] : [],
@@ -4125,6 +4139,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         studentName: profile.name,
         studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
         sourceClassId: resolvedSourceClass ? resolvedSourceClass.id : null,
+        sourceClassRefPath: resolvedSourceClass?.refPath || '',
         sourceClass: resolvedSourceClass ? resolvedSourceClass.id : null,
         sourceClassLine: resolvedSourceClass ? formatClassLineForAdminCopy(resolvedSourceClass) : '',
         sourceSubject: resolvedSourceClass?.subject || '',
@@ -4152,6 +4167,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         title: gestionUiCopyForPayload.title || gestionModal.title,
         details: isBajaSelection ? `${bajaClassesRequested ? 'Baja de clases. ' : 'Conserva sus clases. '}Servicios solicitados: ${activeFixedServices(profile).filter(service => selectedBajaServiceKeys.includes(service.key)).map(service => service.name).join(', ') || 'ninguno'}. ${gestionText}` : gestionText,
         requestedClass: selectedNewClass ? selectedNewClass.id : null,
+        ...(selectedNewClass?.refPath ? { requestedClassRefPath: selectedNewClass.refPath } : {}),
         ...(isTicketRedemption ? { requestedClassRefPath: getClassRefPath(selectedNewClass) } : {}),
         ...(isAmpliarClases ? {
           requestedClassRefPath: selectedNewClass.refPath || '',
@@ -4260,6 +4276,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       showToast('Mitolocker requiere mantener una plaza de clases en la escuela.', 'error');
       return;
     }
+    if (serviceKey === 'mitoverso') setMitoversoContractDraft(createMitoversoContractDraft(profile, user, mitoversoMonthlyFee(fixedMyClasses.length > 0)));
     if (serviceKey === 'mitobox') setMitoboxContractDraft(createMitoboxContractDraft(profile, user, mitoboxMonthlyFee(fixedMyClasses.length > 0)));
     setExtraSignupModal(serviceKey);
   };
@@ -4288,11 +4305,13 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       return;
     }
     const isMitobox = serviceConfig.key === 'mitobox';
-    const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
-    if (isMitobox) {
-      const error = mitoboxDraftError(mitoboxContractDraft);
+    const isMitoverso = serviceConfig.key === 'mitoverso';
+    const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : isMitoverso ? mitoversoMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
+    if (isMitobox || isMitoverso) {
+      const draft = isMitobox ? mitoboxContractDraft : mitoversoContractDraft;
+      const error = isMitobox ? mitoboxDraftError(draft) : mitoversoDraftError(draft);
       if (error) { showToast(error, 'error'); return; }
-      if (mitoboxContractDraft.studentId !== profile.id || mitoboxContractDraft.authUid !== user.uid || mitoboxContractDraft.accountEmail !== String(user.email || profile.email || '').trim().toLowerCase() || mitoboxContractDraft.monthlyFee !== monthlyFee) {
+      if (draft.studentId !== profile.id || draft.authUid !== user.uid || draft.accountEmail !== String(user.email || profile.email || '').trim().toLowerCase() || draft.monthlyFee !== monthlyFee) {
         showToast('Han cambiado la cuenta o la tarifa. Cierra y vuelve a abrir el contrato.', 'error'); return;
       }
     }
@@ -4301,9 +4320,9 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
 
     setIsSendingExtraSignup(true);
     try {
-      const contract = isMitobox ? await createMitoboxAcceptance(mitoboxContractDraft, nowIso) : null;
+      const contract = isMitobox ? await createMitoboxAcceptance(mitoboxContractDraft, nowIso) : isMitoverso ? await createMitoversoAcceptance(mitoversoContractDraft, nowIso) : null;
       const payload = {
-        ...(contract ? { mitoboxContract: { ...contract, acceptedAt: serverTimestamp() } } : {}),
+        ...(contract ? { [isMitobox ? 'mitoboxContract' : 'mitoversoContract']: { ...contract, acceptedAt: serverTimestamp() } } : {}),
         studentId: profile.id,
         studentName: profile.name,
         studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
@@ -4344,13 +4363,13 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         // The request is already durable even if the email relay is unavailable.
         try {
           await fetch(APPS_SCRIPT_URL, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({
-            type: 'confirmacion_alumno', to: contract.accountEmail, subject: 'Solicitud de alta y contrato Mitobox - Escuela Los Mitos',
-            body: `Hemos registrado tu solicitud de alta en Mitobox. El servicio está pendiente de revisión y activación. Conserva esta copia.\n\n${buildMitoboxContractCopy(contract, gestionId)}`
+            type: 'confirmacion_alumno', to: contract.accountEmail, subject: `Solicitud de alta y contrato ${serviceConfig.name} - Escuela Los Mitos`,
+            body: `Hemos registrado tu solicitud de alta en ${serviceConfig.name}. El servicio está pendiente de revisión y activación. Conserva esta copia.\n\n${isMitobox ? buildMitoboxContractCopy(contract, gestionId) : buildMitoversoContractCopy(contract, gestionId)}`
           }) });
         } catch (error) { console.warn('No se pudo solicitar la copia por correo; sigue disponible en Extras.', error); }
       }
       setExtraSignupModal(null);
-      showToast(contract ? 'Solicitud de Mitobox registrada. Puedes descargar el contrato aceptado en Extras.' : `Solicitud de alta en ${serviceConfig.name} enviada a Administración.`);
+      showToast(contract ? `Solicitud de ${serviceConfig.name} registrada. Puedes descargar el contrato aceptado en Extras.` : `Solicitud de alta en ${serviceConfig.name} enviada a Administración.`);
     } catch (error) {
       console.error('Error al solicitar alta extra', error);
       showToast(error.message || `Error al solicitar el alta en ${serviceConfig.name}.`, 'error');
@@ -4362,6 +4381,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
   const sendMitoboxReservation = async () => {
     const selectedSlots = sortMitoboxSlots(mboxSelectedSlots);
     if (!mboxDate || !mboxSede || !mboxInst || selectedSlots.length === 0) return;
+    if (selectedSlots.some(slot => !canReserveMitoboxAt(mboxDate, slot.time))) {
+      showToast('Elige una hora con al menos 24 horas de antelación dentro del mes corriente.', 'error');
+      return;
+    }
     if (profile?.hasMitobox !== true) {
       showToast('Necesitas tener Mitobox activo para reservar una sala.', 'error');
       return;
@@ -4449,6 +4472,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
             status: 'confirmed',
             reservationDate: mboxDate,
             reservationTime: row.slot.time,
+            startsAt: Timestamp.fromMillis(schoolDateTimeMillis(mboxDate, row.slot.time)),
             durationMinutes: 60,
             instrument: mboxInst,
             sede: selectedCenterName,
@@ -5369,7 +5393,8 @@ END:VCALENDAR`;
     if (!serviceConfig) return null;
 
     const isMitobox = serviceConfig.key === 'mitobox';
-    const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
+    const isMitoverso = serviceConfig.key === 'mitoverso';
+    const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : isMitoverso ? mitoversoMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
     const ServiceIcon = serviceConfig.Icon || Sparkles;
     const accentClasses = serviceConfig.key === 'mitoverso'
       ? {
@@ -5385,7 +5410,7 @@ END:VCALENDAR`;
 
     return (
       <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
-        <div role="dialog" aria-modal="true" aria-label={isMitobox ? 'Contrato de alta en Mitobox' : `Alta en ${serviceConfig.name}`} className={`bg-white rounded-3xl ${isMitobox ? 'max-w-3xl' : 'max-w-md'} w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto`}>
+        <div role="dialog" aria-modal="true" aria-label={isMitobox ? 'Contrato de alta en Mitobox' : `Alta en ${serviceConfig.name}`} className={`bg-white rounded-3xl ${isMitobox || isMitoverso ? 'max-w-3xl' : 'max-w-md'} w-full p-5 sm:p-8 shadow-2xl relative my-4 sm:my-8 max-h-[calc(100vh-2rem)] overflow-y-auto`}>
           <button onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full disabled:opacity-50"><X className="w-5 h-5"/></button>
 
           <div className="flex flex-col items-center text-center mb-6">
@@ -5410,11 +5435,12 @@ END:VCALENDAR`;
           </div>
 
           {isMitobox && <MitoboxContractForm draft={mitoboxContractDraft} onChange={setMitoboxContractDraft} disabled={isSendingExtraSignup}/>}
+          {isMitoverso && <MitoversoContractForm draft={mitoversoContractDraft} onChange={setMitoversoContractDraft} disabled={isSendingExtraSignup}/>}
           <div className="grid grid-cols-2 gap-3">
             <button onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-[10px] tracking-widest hover:bg-zinc-200 transition-colors disabled:opacity-50">
               Cancelar
             </button>
-            <button onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup || (isMitobox && Boolean(mitoboxDraftError(mitoboxContractDraft)))} className={`${accentClasses.button} text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors shadow-md flex items-center justify-center gap-2 disabled:opacity-50`}>
+            <button onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup || (isMitobox && Boolean(mitoboxDraftError(mitoboxContractDraft))) || (isMitoverso && Boolean(mitoversoDraftError(mitoversoContractDraft)))} className={`${accentClasses.button} text-white font-black py-4 rounded-xl uppercase text-[10px] tracking-widest transition-colors shadow-md flex items-center justify-center gap-2 disabled:opacity-50`}>
               {isSendingExtraSignup ? 'Enviando...' : <><Send className="w-4 h-4"/> {isMitobox ? `Aceptar alta con obligación de pago · ${monthlyFee} €/mes` : 'Aceptar alta'}</>}
             </button>
           </div>
@@ -5593,7 +5619,8 @@ END:VCALENDAR`;
       temporaryClassChanges,
       temporaryRelocations: catalogMitoboxRelocations.length > 0 ? catalogMitoboxRelocations : temporaryRelocations,
       settings: globalSettings,
-      slotUsage: mitoboxSlotUsage
+      slotUsage: mitoboxSlotUsage,
+      now: pollClock
     });
 
     const toggleSelectedMitoboxSlot = (slot) => {
@@ -6934,10 +6961,13 @@ END:VCALENDAR`;
                     </div>
                   </div>
                 </div>
+                {myGestiones.filter(gestion => gestion.type === 'alta_mitoverso' && gestion.mitoversoContract?.text).map(gestion => (
+                  <button type="button" key={gestion.id} onClick={() => downloadMitoversoContract(gestion.mitoversoContract, gestion.id)} className="mb-3 text-xs font-bold text-indigo-800 underline text-left">Descargar contrato Mitoverso aceptado · {formatDateSpanish(gestion.date)}</button>
+                ))}
                 {!profile?.hasMitoverso && (
                   <div className="bg-zinc-50 border border-zinc-100 p-4 rounded-xl mb-6">
                     <span className="block text-xs font-black uppercase tracking-widest text-zinc-400 mb-1">Precio Alumno</span>
-                    <span className="text-xl font-black text-slate-800">15€ <span className="text-sm text-zinc-500">/ mes</span></span>
+                    <span className="text-xl font-black text-slate-800">{mitoversoMonthlyFee(fixedMyClasses.length > 0)}€ <span className="text-sm text-zinc-500">/ mes</span></span>
                   </div>
                 )}
                 

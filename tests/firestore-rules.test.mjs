@@ -1,4 +1,7 @@
+import { getSchoolDate, schoolDateTimeMillis } from '../src/components/vacationChallengeUtils.js';
+import { gymusikCreditRef } from '../src/components/gymusikCreditStore.js';
 import { startMusicAttempt, saveMusicAttempt } from '../src/components/musicChallengeStore.js';
+import { createMitoboxContractDraft, createMitoboxAcceptance } from '../src/components/mitoboxContractUtils.js';
 import { MUSIC_GAMES } from '../src/components/musicChallengeCatalog.js';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
@@ -187,6 +190,7 @@ async function seed(testEnv) {
         studentName: 'Usuario Gymusik',
         studentEmail: GYMUSIK_STUDENT.email,
         instrument: 'Guitarra',
+        creditLedgerVersion: 1,
         status: 'active'
       }],
       [`${ROOT}/gymusikSessions/gym-session-1`, {
@@ -204,7 +208,7 @@ async function seed(testEnv) {
       }],
 
       [`${ROOT}/settings/global`, { adminSecret: 'solo personal' }],
-      [`${ROOT}/roleData/studentSettings`, { maintenanceFee: 15 }],
+      [`${ROOT}/roleData/studentSettings`, { maintenanceFee: 15, mitoboxRoomCapacities: { 'tarragona__sala-1': 2 } }],
       [`${ROOT}/roleData/studentClassCatalog`, { classes: [{ id: 'class-own' }] }],
       [`${ROOT}/roleData/adminProjection`, { secret: 'solo admin' }],
 
@@ -541,7 +545,8 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       for (const attempt of attempts.slice(0, 7)) {
         const reference = doc(db, `${ROOT}/vacationChallengeAttempts/${attempt.id}`);
         await assertFails(updateDoc(reference, { seed: '1234', revision: 1, updatedAt: serverTimestamp() }));
-        await assertFails(updateDoc(reference, { challengeId: 'composer-v1', revision: 1, updatedAt: serverTimestamp() }));
+        const differentChallengeId = attempt.challengeId === 'composer-v1' ? 'tempo-v1' : 'composer-v1';
+        await assertFails(updateDoc(reference, { challengeId: differentChallengeId, revision: 1, updatedAt: serverTimestamp() }));
         const answers = Array.from({ length: attempt.totalActivities }, (_, index) => ({ questionId: `q-${index}`, firstOption: 0, lastOption: 0, firstCorrect: true, correct: true }));
         await assertSucceeds(saveMusicAttempt({ db, appId: APP_ID, attempt: { ...attempt, answers, cursor: attempt.totalActivities, status: 'completed' }, expectedRevision: 0, vacationDates: dates }));
         await assertFails(updateDoc(reference, { difficulty: 'advanced', revision: 2, updatedAt: serverTimestamp() }));
@@ -632,6 +637,10 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       assert.deepEqual(own.docs.map(item => item.id), ['filtered-own']);
       await assertFails(getDocs(query(collection(db, `${ROOT}/announcements`), where('recipientStudentIds', 'array-contains', OTHER_STUDENT.id))));
       await assertFails(getDocs(collection(db, `${ROOT}/announcements`)));
+      const legacy = await assertSucceeds(getDocs(query(collection(db, `${ROOT}/announcements`), where('audienceType', 'in', ['all', 'sede', 'instrumento', 'profesor']))));
+      assert.ok(legacy.docs.every(item => ['all', 'sede', 'instrumento', 'profesor'].includes(item.data().audienceType)));
+      await assertFails(getDocs(query(collection(db, `${ROOT}/announcements`), where('audienceType', '==', 'filtered'))));
+      await assertFails(getDocs(query(collection(db, `${ROOT}/announcements`), where('audienceType', '==', 'teachers'))));
       await assertFails(updateDoc(doc(db, `${ROOT}/announcements/filtered-own`), { recipientStudentIds: [STUDENT.id, OTHER_STUDENT.id] }));
       await assertFails(getDoc(doc(authenticated(testEnv, OTHER_STUDENT), `${ROOT}/announcements/filtered-own`)));
     });
@@ -743,8 +752,30 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       )));
     });
 
+    await t.test('Mitobox: contrato obligatorio, sello del servidor, identidad de cuenta y aceptación no editable por alumno', async () => {
+      const db = authenticated(testEnv, STUDENT);
+      const draft = { ...createMitoboxContractDraft({ id: STUDENT.id, name: 'Alumna Uno Apellido' }, { uid: STUDENT.uid, email: STUDENT.email }, 35), accepted: true };
+      const contract = await createMitoboxAcceptance(draft);
+      const request = {
+        type: 'alta_mitobox', studentId: STUDENT.id, studentName: draft.studentFullName, studentEmail: STUDENT.email,
+        status: 'pendiente', extraMonthlyFee: 35, mitoboxContract: { ...contract, acceptedAt: serverTimestamp() }
+      };
+      const requestRef = doc(db, `${ROOT}/gestiones/mitobox-contract-valid`);
+      await assertSucceeds(setDoc(requestRef, request));
+      await assertFails(updateDoc(requestRef, { 'mitoboxContract.signerFullName': 'Otra Persona' }));
+      for (const [index, patch] of [
+        { accepted: false }, { authUid: OTHER_STUDENT.uid }, { accountEmail: OTHER_STUDENT.email },
+        { acceptedAt: Timestamp.fromMillis(1) }, { version: 'old-version' }
+      ].entries()) {
+        await assertFails(setDoc(doc(db, `${ROOT}/gestiones/mitobox-contract-invalid-${index}`), { ...request, mitoboxContract: { ...request.mitoboxContract, ...patch } }));
+      }
+      const missing = { ...request }; delete missing.mitoboxContract;
+      await assertFails(setDoc(doc(db, `${ROOT}/gestiones/mitobox-contract-missing`), missing));
+    });
+
     await t.test('usuario solo Mitobox: entra sin clase y reserva con aforo transaccional', async () => {
       const db = authenticated(testEnv, MITOBOX_STUDENT);
+      const bookingDate = getSchoolDate(Date.now() + 48 * 3600000);
       const reservationId = '2026-09-21_1800_mitobox-student';
       const slotId = '2026-09-21_tarragona_sala-1_1800';
       const reservationRef = doc(db, `${ROOT}/mitoboxReservations/${reservationId}`);
@@ -757,7 +788,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         assert.equal(reservationSnapshot.exists(), false);
         assert.equal(slotSnapshot.exists(), false);
         transaction.set(slotRef, {
-          reservationDate: '2026-09-21',
+          reservationDate: bookingDate,
           reservationTime: '18:00',
           centerId: 'tarragona',
           roomId: 'sala-1',
@@ -771,7 +802,8 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
           studentName: 'Usuario Mitobox',
           studentEmail: MITOBOX_STUDENT.email,
           status: 'confirmed',
-          reservationDate: '2026-09-21',
+          startsAt: Timestamp.fromMillis(schoolDateTimeMillis(bookingDate, '18:00')),
+          reservationDate: bookingDate,
           reservationTime: '18:00',
           durationMinutes: 60,
           instrument: 'Piano',
@@ -997,6 +1029,50 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(updateDoc(doc(db, ticketPath), { voided: false, isUsed: false }));
     });
 
+    await t.test('asistencia: concilia tickets duplicados, conserva el consumido y abre una sola incidencia', async () => {
+      const noticeId = 'aviso-tickets-mixtos';
+      const recordId = 'registro-tickets-mixtos';
+      const noticeData = {
+        type: 'aviso_ausencia', studentId: STUDENT.id, studentEmail: STUDENT.email,
+        studentName: 'Alumna Uno', requestedClass: 'class-own', absenceDate: '2026-10-10',
+        teacherEmails: [TEACHER.email], status: 'archivado', ticketOutcome: 'awaiting_attendance'
+      };
+      const recordData = {
+        classId: 'class-own', date: '2026-10-10', subject: 'Guitarra', teacher: 'Norman',
+        students: [{ id: STUDENT.id, status: 'present' }]
+      };
+      const ids = ['mixed-free-1', 'mixed-free-2', 'mixed-used', 'mixed-gift'];
+      const ticketPath = id => `${ROOT}/users/${TEACHER.uid}/tickets/${id}`;
+      await testEnv.withSecurityRulesDisabled(async context => {
+        const db = context.firestore();
+        await setDoc(doc(db, `${ROOT}/gestiones/${noticeId}`), noticeData);
+        await setDoc(doc(db, `${ROOT}/users/${TEACHER.uid}/records/${recordId}`), recordData);
+        for (const id of ids) await setDoc(doc(db, ticketPath(id)), {
+          studentId: STUDENT.id, studentEmail: STUDENT.email, subject: 'Guitarra',
+          originalDate: recordData.date, originalClassId: recordData.classId,
+          absenceGestionId: noticeId, teacherEmails: [TEACHER.email],
+          isUsed: id === 'mixed-used', isGift: id === 'mixed-gift'
+        });
+      });
+      const db = authenticated(testEnv, TEACHER);
+      const reconcile = () => reconcileAttendedAbsence({ db, appId: APP_ID, user: TEACHER,
+        gestion: { ...noticeData, id: noticeId }, record: { ...recordData, id: recordId } });
+      await assertSucceeds(reconcile());
+      for (const id of ids.slice(0, 2)) assert.equal((await getDoc(doc(db, ticketPath(id)))).data().voided, true);
+      const consumed = (await getDoc(doc(db, ticketPath('mixed-used')))).data();
+      assert.equal(consumed.isUsed, true); assert.equal(consumed.voided, undefined);
+      const gift = (await getDoc(doc(db, ticketPath('mixed-gift')))).data();
+      assert.equal(gift.isUsed, false); assert.equal(gift.voided, undefined);
+      const resolved = (await getDoc(doc(db, `${ROOT}/gestiones/${noticeId}`))).data();
+      assert.equal(resolved.status, 'archivado');
+      assert.equal(resolved.ticketOutcome, 'attended_ticket_already_used');
+      const incidentRef = doc(db, `${ROOT}/gestiones/attendance-reconciliation-${noticeId}`);
+      const incident = (await getDoc(incidentRef)).data();
+      assert.equal(incident.status, 'pendiente'); assert.deepEqual(incident.relatedTicketIds, ['mixed-used']);
+      assert.equal(await reconcile(), false);
+      assert.deepEqual((await getDoc(incidentRef)).data(), incident);
+    });
+
     await t.test('profesor autorizado: comparte la bolsa de sustituciones sin poder alterar ofertas ajenas', async () => {
       const db = authenticated(testEnv, TEACHER);
 
@@ -1087,6 +1163,7 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertSucceeds(getDoc(doc(studentDb, `${ROOT}/gymusikMembers/${GYMUSIK_STUDENT.id}`)));
       await assertSucceeds(runTransaction(studentDb, async transaction => {
         const sessionSnapshot = await transaction.get(sessionRef);
+        transaction.set(gymusikCreditRef(studentDb, APP_ID, GYMUSIK_STUDENT.id, '2026-10'), { studentId: GYMUSIK_STUDENT.id, studentEmail: GYMUSIK_STUDENT.email, month: '2026-10', reservationIds: [reservationId], lastReservationId: reservationId, revision: 1, updatedAt: 'test' });
         transaction.set(reservationRef, {
           sessionId: 'gym-session-1',
           sessionDate: '2026-10-03',

@@ -8,8 +8,8 @@ import {
   isVacationChallengeOpen, isCalendarDate, createVacationAttempt, recordVacationAnswer,
   summarizeVacationAnswers, isUnreadVacationAttempt
 } from '../src/components/vacationChallengeUtils.js';
-import { buildTempoQuestions, TEMPO_LESSONS } from '../src/components/tempoChallengeContent.js';
-import { playTempoClip } from '../src/components/tempoChallengeAudio.js';
+import { buildTempoQuestions, buildTempoQuestionsForAttempt, upgradeTempoAttempt, TEMPO_LESSONS, TEMPO_MELODIES } from '../src/components/tempoChallengeContent.js';
+import { playTempoClip, buildTempoAudioEvents } from '../src/components/tempoChallengeAudio.js';
 
 test('las vacaciones terminan a medianoche de Madrid incluso con los cambios de hora', () => {
   for (const [date, end] of [
@@ -51,7 +51,7 @@ test('los dos niveles tienen 36 ejercicios únicos, cuatro capítulos y audios c
     for (const item of questions) {
       assert.ok(item.correct >= 0 && item.correct < item.options.length);
       assert.ok(item.explanation && item.hint && item.clips.length);
-      if (item.id.startsWith('tempo-')) assert.equal(item.correct, item.clips[1].bpm > item.clips[0].bpm ? 1 : 0);
+      if (item.id.startsWith('tempo-')) assert.equal(item.options[item.correct], item.clips[1].bpm > item.clips[0].bpm ? 'La versión B' : 'La versión A');
       if (item.id.startsWith('density-')) assert.equal(item.clips[0].bpm, item.clips[1].bpm);
       if (item.id.startsWith('property-')) assert.equal(item.clips[0].bpm, item.clips[1].bpm);
       for (const clip of item.clips) {
@@ -196,7 +196,7 @@ test('el sintetizador reproduce pulsos y notas y libera el audio al detener o fi
     globalThis.clearTimeout = () => {};
     const clip = buildTempoQuestions()[0].clips[0];
     const stop = await playTempoClip(clip, { onEnd: () => ended++ });
-    assert.equal(created.length, 16);
+    assert.equal(created.length, 17); // Ocho pulsos, ocho notas y un marcador silencioso de fin.
     assert.equal(ended, 0);
     stop(); assert.equal(ended, 0); assert.equal(closed, 1);
     await playTempoClip(clip, { onEnd: () => ended++ });
@@ -204,4 +204,87 @@ test('el sintetizador reproduce pulsos y notas y libera el audio al detener o fi
   } finally {
     globalThis.window = originalWindow; globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout;
   }
+});
+
+test('las 36 melodías son diferentes y el audio usa sus notas y ritmos en ambos niveles', () => {
+  assert.equal(TEMPO_MELODIES.length, 36);
+  assert.equal(new Set(TEMPO_MELODIES.map(melody => melody.join(','))).size, 36);
+  for (const level of ['beginner', 'advanced']) {
+    const audibleMelodies = [];
+    for (const question of buildTempoQuestions(level, '2026-12-24')) {
+      const first = question.clips[0];
+      const audio = buildTempoAudioEvents(first);
+      const notes = audio.events.filter(event => event.type === 'triangle');
+      const pulses = audio.events.filter(event => event.type === 'sine');
+      assert.equal(pulses.length, first.beats);
+      assert.ok(audio.duration > notes.at(-1).at);
+      assert.equal(notes[0].frequency, 261.6256 * 2 ** ((first.melody[0] + first.semitones) / 12));
+      assert.ok(notes.every(event => Number.isFinite(event.at) && event.duration > 0));
+      audibleMelodies.push(notes.map(event => Math.round(event.frequency * 1000)).join(','));
+      question.clips.slice(1).forEach(clip => {
+        assert.deepEqual(clip.melody, first.melody);
+        assert.deepEqual(clip.rhythm, first.rhythm);
+      });
+    }
+    assert.equal(new Set(audibleMelodies).size, 36, `${level}: deben sonar 36 secuencias distintas`);
+  }
+});
+
+test('el tempo difícil tiene diferencias proporcionales más próximas y las comparaciones siguen siendo coherentes', () => {
+  for (const date of ['2026-12-24', '2026-12-31', '2027-04-01']) {
+    const easy = buildTempoQuestions('beginner', date);
+    const hard = buildTempoQuestions('advanced', date);
+    hard.forEach((question, index) => {
+      if (question.id.startsWith('tempo-')) {
+        const bpms = question.clips.map(clip => clip.bpm);
+        const delta = Math.abs(bpms[0] - bpms[1]);
+        assert.ok(delta >= 3 && delta < Math.abs(easy[index].clips[0].bpm - easy[index].clips[1].bpm));
+        assert.ok(delta / Math.min(...bpms) <= 0.11);
+      }
+      if (question.id.startsWith('property-')) {
+        assert.equal(question.clips[0].bpm, question.clips[1].bpm);
+        const a = question.clips[0], b = question.clips[1];
+        const label = a.gain !== b.gain ? (b.gain > a.gain ? 'Más fuerte' : 'Más suave') : b.semitones > a.semitones ? 'Más aguda' : 'Más grave';
+        assert.equal(question.options[question.correct], label);
+      }
+      if (question.id.startsWith('count-')) assert.equal(question.clips[0].beats, question.options[question.correct] === 'Siete' ? 7 : 9);
+      if (question.id.startsWith('change-')) assert.equal(question.options[question.correct], question.clips[0].endBpm > question.clips[0].bpm ? 'Se acelera' : 'Se hace más lento');
+    });
+  }
+});
+
+test('los resultados antiguos mantienen su pregunta, opciones y puntuación al actualizar y cambiar de dificultad', () => {
+  const oldQuestion = buildTempoQuestions('beginner', '2099-12-24', 1)[0];
+  assert.equal(Math.abs(oldQuestion.clips[0].bpm - oldQuestion.clips[1].bpm), 30);
+  const oldAnswer = recordVacationAnswer(null, oldQuestion, oldQuestion.correct);
+  delete oldAnswer.contentVersion; delete oldAnswer.difficulty;
+  const legacy = { ...baseAttempt(), contentVersion: undefined, answers: [oldAnswer], cursor: 0 };
+  delete legacy.contentVersion;
+  const updated = upgradeTempoAttempt(legacy);
+  assert.equal(updated.contentVersion, 2);
+  assert.equal(updated.answers[0].contentVersion, 1);
+  const mixed = { ...updated, difficulty: 'advanced' };
+  const questions = buildTempoQuestionsForAttempt(mixed);
+  assert.deepEqual(questions[0], oldQuestion);
+  assert.equal(questions[1].difficulty, 'advanced');
+  assert.equal(questions[1].contentVersion, 2);
+  assert.deepEqual(summarizeVacationAnswers(mixed.answers), summarizeVacationAnswers(legacy.answers));
+  assert.equal(upgradeTempoAttempt({ ...legacy, status: 'completed' }).contentVersion, undefined);
+  assert.equal(legacy.answers[0].difficulty, undefined, 'no se modifica el objeto anterior');
+});
+
+test('guardar y retomar un intento mixto conserva el nivel de cada respuesta y la selección para las pendientes', async () => {
+  const store = makeStore();
+  const first = await store.save(baseAttempt());
+  const easy = buildTempoQuestionsForAttempt(first)[0];
+  const answered = await store.save({ ...first, answers: [recordVacationAnswer(null, easy, easy.correct)] }, 0);
+  const switched = await store.save({ ...answered, difficulty: 'advanced', cursor: 1 }, answered.revision);
+  const hard = buildTempoQuestionsForAttempt(switched)[1];
+  await store.save({ ...switched, answers: [...switched.answers, recordVacationAnswer(null, hard, hard.correct)] }, switched.revision);
+  const resumed = store.get();
+  assert.equal(resumed.difficulty, 'advanced');
+  assert.deepEqual(resumed.answers.map(answer => answer.difficulty), ['beginner', 'advanced']);
+  assert.equal(resumed.firstCorrect, 2);
+  assert.equal(buildTempoQuestionsForAttempt(resumed)[0].difficulty, 'beginner');
+  assert.equal(buildTempoQuestionsForAttempt(resumed)[2].difficulty, 'advanced');
 });

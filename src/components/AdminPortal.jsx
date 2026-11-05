@@ -1,3 +1,5 @@
+import { mitoversoEvidenceError, mitoversoEarliestActivation, mitoversoMonthlyFee, downloadMitoversoContract, buildMitoversoContractCopy } from './mitoversoContractUtils.js';
+import { initializeGymusikCredits, gymusikCreditRef } from './gymusikCreditStore.js';
 // AdminPortal · configuración multi-sede dinámica y compatible con datos heredados
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 // HOTFIX 2026-09-29: la apertura particular no depende de sede, instrumento, profesor ni aforo.
@@ -7,7 +9,7 @@ import {
   ArrowRightLeft, PartyPopper, Palmtree, Lock, Trophy, Award, Gift, Star, 
   Target, Timer, BookOpen, AlertTriangle, Calculator, ChevronDown, ChevronUp, History, UserMinus, Info, Clock, CheckCircle, Ticket, Pencil, AlertCircle, Ghost, PlusCircle, MapPin, Globe, LayoutGrid, Save, TrendingUp, DollarSign, PieChart, Activity, Music, Minus, Snowflake, Send, Mail
 } from 'lucide-react';
-import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, getDocFromServer, getDocsFromServer, query, where, orderBy, limit, startAfter, runTransaction, Timestamp } from 'firebase/firestore';
+import { collection, doc, setDoc, updateDoc, deleteDoc, deleteField, onSnapshot, collectionGroup, writeBatch, getDoc, getDocs, getDocFromServer, getDocsFromServer, query, where, orderBy, limit, startAfter, runTransaction, Timestamp, arrayRemove } from 'firebase/firestore';
 import { deleteObject, getBlob, ref as storageRef } from 'firebase/storage';
 import { buildMitoboxReservationId, buildMitoboxSlotId, calculateMitoboxAvailability, isActiveMitoboxReservation } from './mitoboxUtils';
 import { calculateVacationPayroll } from './payrollVacationUtils';
@@ -3093,7 +3095,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const legacyReservations = gestiones.filter(gestion => (
       gestion.type === 'reserva_mitobox'
       && gestion.reservationDate >= getTodayLocalString()
-      && !['rechazado', 'cancelado', 'archivado'].includes(String(gestion.status || '').toLowerCase())
+      && gestion.legacyMitoboxMigrationApprovedAt
+      && gestion.legacyMitoboxMigrationApprovedBy === 'paco@escuelalosmitos.com'
+      && gestion.status === 'completado'
       && !gestion.migratedToMitoboxReservationsAt
     ));
     const signature = legacyReservations.map(gestion => `${gestion.id}:${gestion.reservationDate}:${gestion.reservationTime}`).sort().join('|');
@@ -3113,10 +3117,13 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         await runTransaction(db, async transaction => {
           const reservationSnapshot = await transaction.get(reservationRef);
           const slotSnapshot = await transaction.get(slotRef);
+          const studentSnapshot = await transaction.get(doc(db, 'artifacts', appId, 'students', gestion.studentId));
+          if (!studentSnapshot.exists() || studentSnapshot.data().hasMitobox !== true || studentSnapshot.data().globalStatus === 'baja') throw new Error('La reserva histórica requiere un usuario con Mitobox activo.');
           if (reservationSnapshot.exists()) return;
           const reservedCount = Math.max(0, Number(slotSnapshot.data()?.reservedCount || 0));
           const configuredCapacity = Math.max(1, Number(room.capacity || 1));
-          const capacity = Math.max(configuredCapacity, reservedCount + 1);
+          const capacity = slotSnapshot.exists() ? Number(slotSnapshot.data().capacity) : configuredCapacity;
+          if (reservedCount >= capacity) throw new Error('La reserva histórica requiere revisar el aforo; no se ha ampliado la capacidad.');
           transaction.set(slotRef, {
             reservationDate: gestion.reservationDate,
             reservationTime: gestion.reservationTime,
@@ -3380,9 +3387,14 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const doesTemporaryChangeBelongToClass = (change = {}, classDataOrId = '') => {
     const classData = typeof classDataOrId === 'object' && classDataOrId !== null ? classDataOrId : null;
     const classId = classData?.id ?? classDataOrId;
+    if (change.classRefPath) {
+      const resolved = classData || (typeof allClasses === 'undefined' ? [] : allClasses.filter(item => String(item.id) === String(classId)));
+      const candidate = Array.isArray(resolved) ? (resolved.length === 1 ? resolved[0] : null) : resolved;
+      return Boolean(candidate?.refPath && String(change.classRefPath) === String(candidate.refPath));
+    }
     const sameId = String(change.classId ?? '') && String(change.classId) === String(classId ?? '');
-    if (sameId) return true;
-    return Boolean(classData?.refPath && change.classRefPath && String(change.classRefPath) === String(classData.refPath));
+    const candidates = typeof allClasses === 'undefined' ? [] : allClasses.filter(item => String(item.id) === String(classId));
+    return Boolean(sameId && candidates.length <= 1);
   };
 
   const getClassTemporaryChanges = (classDataOrId) => temporaryClassChanges
@@ -4109,6 +4121,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       festivosReus: Array.isArray(settings.festivosReus) ? settings.festivosReus : [],
       instrumentos: Array.isArray(settings.instrumentos) ? settings.instrumentos : defaultInstrumentos,
       centers: normalizeCenters(settings.centers, settings),
+      mitoboxRoomCapacities: Object.fromEntries(normalizeCenters(settings.centers, settings).flatMap(center => (center.rooms || []).filter(room => center.status !== 'inactive' && room.active !== false && room.mitoboxEnabled !== false).map(room => [`${center.id}__${room.id}`, Math.max(1, Number(room.capacity) || 1)]))),
       studentClassIndexVersion: Number(settings.studentClassIndexVersion || 0)
     };
     return { data, signature: buildPublicAvailabilitySignature([data]) };
@@ -4271,7 +4284,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const potentialClasses = cloneClasses(confirmedClasses);
     const potentialStudents = cloneStudents(confirmedStudents);
     const potentialMaintenancePeriods = cloneMaintenance(confirmedMaintenancePeriods);
-    const classById = new Map(potentialClasses.map(clase => [String(clase.id), clase]));
+    const classById = new Map();
+    for (const clase of potentialClasses) {
+      if (clase.refPath) classById.set(clase.refPath, clase);
+      const key = String(clase.id || '');
+      classById.set(key, classById.has(key) ? null : clase);
+    }
     const studentById = new Map(potentialStudents.map(student => [student.id, student]));
     const appliedPending = [];
     const skippedPending = [];
@@ -4362,6 +4380,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
             studentInfo.mitoboxMonthlyFee = gestion.mitoboxContract.monthlyFee;
           }
           studentInfo[config.studentFlag] = true;
+          if (config.key === 'mitoverso' && gestion.mitoversoContract) studentInfo.mitoversoMonthlyFee = gestion.mitoversoContract.monthlyFee;
           if (config.mode) studentInfo.mitolockerMode = config.mode;
           appliedPending.push({ id: gestion.id, type: gestion.type, studentId: studentInfo.id });
           return;
@@ -4414,7 +4433,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         }
         if (gestion.type === 'baja') {
           Object.assign(studentInfo, serviceCancellationPatch(gestion, studentInfo));
-          const sourceClass = classById.get(String(gestion.sourceClassId || ''));
+          const sourceClass = classById.get(String(gestion.sourceClassRefPath || gestion.sourceClassId || ''));
           const totalBaja = isProjectedTotalBaja(gestion) || (!gestion.sourceClassId && !gestion.sourceClassLine);
           let changed = false;
           if (totalBaja) {
@@ -4434,13 +4453,13 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
 
         if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
           const targetClassId = String(gestion.requestedClass || gestion.scheduledTargetClassId || '');
-          const targetClass = classById.get(targetClassId);
+          const targetClass = classById.get(gestion.requestedClassRefPath || gestion.scheduledTargetClassRefPath || targetClassId);
           if (!targetClass) {
             skippedPending.push({ id: gestion.id, type: gestion.type, reason: 'clase de destino no localizada' });
             return;
           }
           if (gestion.type === 'cambio_horario') {
-            const sourceClass = classById.get(String(gestion.sourceClassId || ''));
+            const sourceClass = classById.get(String(gestion.sourceClassRefPath || gestion.sourceClassId || ''));
             if (gestion.sourceClassId && sourceClass) {
               setStudentEntryEnd(sourceClass, studentInfo.id, effectiveDate);
             } else if (!gestion.sourceClassId) {
@@ -4883,7 +4902,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       });
     const alumnosMitoverso = extraEligibleStudents.filter(student => student.hasMitoverso === true).length;
     const alumnosMitobox = extraEligibleStudents.filter(student => student.hasMitobox === true).length;
-    const ingresosMitoverso = alumnosMitoverso * EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso.monthlyFee;
+    const ingresosMitoverso = extraEligibleStudents.filter(student => student.hasMitoverso === true).reduce((sum, student) => sum + ([10,15,20].includes(student.mitoversoMonthlyFee) ? student.mitoversoMonthlyFee : 15), 0);
     const ingresosMitobox = extraEligibleStudents.filter(student => student.hasMitobox === true).reduce((sum, student) => sum + ([35,50].includes(student.mitoboxMonthlyFee) ? student.mitoboxMonthlyFee : EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox.monthlyFee), 0);
     const lockerEntitledIds = new Set(extraEligibleStudents.filter(student => classesSnapshot.some(clase => !isPunctualClass(clase) && (clase.students || []).some(entry => entry.id === student.id && isFixedClassStudent(entry) && isStudentClassCommittedOnDate(entry, student, referenceDate)))).map(student => student.id));
     const lockerMetrics = mitolockerMetrics(extraEligibleStudents, lockerEntitledIds);
@@ -5239,7 +5258,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   // una recolocación o un cambio temporal. Las sustituciones usan su colección
   // compartida y, al asumirse, crean una clase puntual bajo el profesor sustituto.
   const teacherSecurityAuthorization = useMemo(() => {
-    const classById = new Map(recurringClassesOnly.map(clase => [String(clase.id || ''), clase]));
+    const classById = new Map();
+    for (const clase of recurringClassesOnly) {
+      if (clase.refPath) classById.set(clase.refPath, clase);
+      const key = String(clase.id || '');
+      classById.set(key, classById.has(key) ? null : clase);
+    }
     const classByPath = new Map(recurringClassesOnly
       .filter(clase => clase.refPath)
       .map(clase => [String(clase.refPath), clase]));
@@ -5251,25 +5275,24 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       const emails = [getTeacherEmail(clase.teacher)];
       temporaryClassChanges
         .filter(change => change.status !== 'cancelled' && normalizeTemporaryClassChangeDate(change.until) >= todayStr && (
-          String(change.classId || '') === String(clase.id || '')
-          || (change.classRefPath && change.classRefPath === clase.refPath)
+          change.classRefPath ? change.classRefPath === clase.refPath : classById.get(String(change.classId || '')) === clase
         ))
         .forEach(change => {
           keys.push(normalizeTeacherKey(change.teacher));
           emails.push(getTeacherEmail(change.teacher));
         });
-      classKeys.set(String(clase.id || clase.refPath || ''), uniqueStrings(keys));
-      classEmails.set(String(clase.id || clase.refPath || ''), uniqueStrings(emails));
+      classKeys.set(String(clase.refPath || clase.id || ''), uniqueStrings(keys));
+      classEmails.set(String(clase.refPath || clase.id || ''), uniqueStrings(emails));
     });
 
     const keysForClass = (classId = '', classPath = '') => {
-      const clase = classById.get(String(classId || '')) || classByPath.get(String(classPath || ''));
-      return clase ? (classKeys.get(String(clase.id || clase.refPath || '')) || []) : [];
+      const clase = classPath ? classByPath.get(String(classPath)) : classById.get(String(classId || ''));
+      return clase ? (classKeys.get(String(clase.refPath || clase.id || '')) || []) : [];
     };
 
     const emailsForClass = (classId = '', classPath = '') => {
-      const clase = classById.get(String(classId || '')) || classByPath.get(String(classPath || ''));
-      return clase ? (classEmails.get(String(clase.id || clase.refPath || '')) || []) : [];
+      const clase = classPath ? classByPath.get(String(classPath)) : classById.get(String(classId || ''));
+      return clase ? (classEmails.get(String(clase.refPath || clase.id || '')) || []) : [];
     };
 
     const classAuthorizations = recurringClassesOnly
@@ -5277,9 +5300,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       .map(clase => ({
         refPath: clase.refPath,
         current: clase.authorizedTeacherKeys || [],
-        desired: classKeys.get(String(clase.id || clase.refPath || '')) || [normalizeTeacherKey(clase.teacher)],
+        desired: classKeys.get(String(clase.refPath || clase.id || '')) || [normalizeTeacherKey(clase.teacher)],
         currentEmails: clase.authorizedTeacherEmails || [],
-        desiredEmails: classEmails.get(String(clase.id || clase.refPath || '')) || [getTeacherEmail(clase.teacher)]
+        desiredEmails: classEmails.get(String(clase.refPath || clase.id || '')) || [getTeacherEmail(clase.teacher)]
       }));
 
     const relocationAuthorizations = temporaryRelocations.map(relocation => ({
@@ -5301,7 +5324,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     }));
 
     const changeAuthorizations = temporaryClassChanges.map(change => {
-      const clase = classById.get(String(change.classId || '')) || classByPath.get(String(change.classRefPath || ''));
+      const clase = change.classRefPath ? classByPath.get(String(change.classRefPath)) : classById.get(String(change.classId || ''));
       return {
         id: change.id,
         current: change.teacherKeys || [],
@@ -5467,9 +5490,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   };
 
   const getGestionSourceClass = (gestion = {}, classes = allClasses) => {
+    const path = String(gestion.sourceClassRefPath || gestion.originClassRefPath || '').trim();
+    if (path) return (classes || []).find(clase => clase.refPath === path) || null;
     const sourceId = String(gestion.sourceClassId || gestion.originClassId || gestion.previousClassId || '').trim();
     if (!sourceId) return null;
-    return (classes || []).find(clase => clase.id === sourceId) || null;
+    const matches = (classes || []).filter(clase => String(clase.id) === sourceId);
+    return matches.length === 1 ? matches[0] : null;
   };
 
   const getGestionSourceClassLine = (gestion = {}, classes = allClasses) => {
@@ -6141,7 +6167,7 @@ ${portalAction} accediendo a tu portal.`;
 
   const isExtraServiceGestion = (gestion = {}) => isExtraServiceGestionType(gestion?.type || '');
 
-  const getExtraServiceConfigForGestion = (gestion = {}) => gestion.type === 'alta_mitobox' && [35,50].includes(gestion.mitoboxContract?.monthlyFee) ? { ...EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox, monthlyFee: gestion.mitoboxContract.monthlyFee } : getExtraServiceConfigByType(gestion?.type || '', gestion) || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
+  const getExtraServiceConfigForGestion = (gestion = {}) => gestion.type === 'alta_mitoverso' && [10,20].includes(gestion.mitoversoContract?.monthlyFee) ? { ...EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso, monthlyFee: gestion.mitoversoContract.monthlyFee } : gestion.type === 'alta_mitobox' && [35,50].includes(gestion.mitoboxContract?.monthlyFee) ? { ...EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox, monthlyFee: gestion.mitoboxContract.monthlyFee } : getExtraServiceConfigByType(gestion?.type || '', gestion) || (gestion?.extraService === 'mitoverso' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitoverso : gestion?.extraService === 'mitobox' ? EXTRA_SERVICE_CONFIG_BY_TYPE.alta_mitobox : null);
 
   const getGestionTypeBadgeClass = (gestion = {}) => {
     const extraConfig = getExtraServiceConfigForGestion(gestion);
@@ -6629,7 +6655,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
     return !gestion?.skipTadosi && target?.autoAdvanceStartDate !== true && TADOSI_REQUIRED_GESTION_TYPES.has(gestion?.type);
   };
   const isGestionTadosiDone = (gestion = {}) => Boolean(gestion?.tadosiDone || gestion?.tadosiDoneAt || gestion?.workflowStatus === 'tadosi_hecho' || gestion?.workflowStatus === 'listo_ejecucion');
-  const isGestionReadyForExecution = (gestion = {}) => (!gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion)) && (gestion.type !== 'alta_mitobox' || Boolean(gestion.mitoboxContract?.accepted && gestion.mitoboxIdentityVerifiedAt));
+  const isGestionReadyForExecution = (gestion = {}) => (!gestionRequiresTadosi(gestion) || isGestionTadosiDone(gestion)) && (gestion.type !== 'alta_mitobox' || Boolean(gestion.mitoboxContract?.accepted && gestion.mitoboxIdentityVerifiedAt)) && (!gestion.mitoversoContract || Boolean(gestion.mitoversoContract.accepted && gestion.mitoversoIdentityVerifiedAt));
 
   const getGestionWorkflowLabel = (gestion = {}) => {
     if (gestion.status !== 'pendiente') return gestion.status || 'cerrado';
@@ -6666,12 +6692,13 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
 
     const expansionDateNote = gestion.type === 'ampliar_clases' && gestion.requestedClassStartDate
       ? `\n\nIncorporación solicitada: ${formatDateSpanish(gestion.requestedClassStartDate)}. Ajusta la cuota desde esa fecha y revísala si cambias la incorporación al aprobar.` : '';
-    const identityNote = gestion.type === 'alta_mitobox'
-      ? `\n\nAntes de confirmar: contrasta en Tadosi o en la documentación del Centro el nombre del Contratante «${gestion.mitoboxContract.signerFullName}» y, si actúa por un menor, su representación. Al confirmar dejas registrada esta comprobación manual. No copies el DNI al portal.` : '';
+    const identityNote = gestion.type === 'alta_mitobox' || Boolean(gestion.mitoversoContract)
+      ? `\n\nAntes de confirmar: contrasta en Tadosi o en la documentación del Centro el nombre del Contratante «${(gestion.mitoboxContract || gestion.mitoversoContract).signerFullName}» y, si actúa por un menor, su representación. Al confirmar dejas registrada esta comprobación manual. No copies el DNI al portal.` : '';
     if (!window.confirm(confirmText + expansionDateNote + identityNote)) return;
 
     await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), {
       ...(gestion.type === 'alta_mitobox' ? { mitoboxIdentityVerifiedAt: new Date().toISOString(), mitoboxIdentityVerifiedBy: user?.email || 'admin' } : {}),
+      ...(gestion.mitoversoContract ? { mitoversoIdentityVerifiedAt: new Date().toISOString(), mitoversoIdentityVerifiedBy: user?.email || 'admin' } : {}),
       tadosiDone: true,
       tadosiDoneAt: new Date().toISOString(),
       tadosiDoneBy: user?.email || 'admin',
@@ -6731,18 +6758,18 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
         if (extraConfig.key === 'mitolocker' && studentInfo.hasMitolocker && studentInfo.mitolockerMode !== extraConfig.mode) {
           return fail('El alumno ya tiene otra modalidad de Mitolocker. Revisa su ficha antes de activar esta solicitud.');
         }
-        if (extraConfig.key === 'mitobox') {
+        if (extraConfig.key === 'mitobox' || (extraConfig.key === 'mitoverso' && gestionData.mitoversoContract)) {
+          const isBox = extraConfig.key === 'mitobox';
           const savedRequest = await getDocFromServer(doc(db, 'artifacts', appId, 'gestiones', gestionId));
           if (!savedRequest.exists() || savedRequest.data().status !== 'pendiente') return fail('La solicitud ya no está pendiente. Actualiza la bandeja.');
-          const saved = savedRequest.data();
-          const error = await mitoboxEvidenceError(saved, studentInfo);
+          const saved = savedRequest.data(), accepted = isBox ? saved.mitoboxContract : saved.mitoversoContract;
+          const error = await (isBox ? mitoboxEvidenceError(saved, studentInfo) : mitoversoEvidenceError(saved, studentInfo));
           if (error) return fail(error);
-          if (!saved.mitoboxIdentityVerifiedAt || !isGestionTadosiDone(saved)) return fail('Comprueba identidad y Tadosi antes de activar Mitobox.');
-          const acceptedFee = saved.mitoboxContract.monthlyFee;
-          const currentFee = mitoboxMonthlyFee(getFixedStudentClasses(studentId).length > 0);
-          if (acceptedFee !== currentFee) return fail('Ha cambiado la condición de alumno y la tarifa aceptada ya no coincide. Solicita un nuevo contrato antes de activar.');
-          const earliest = mitoboxEarliestActivation(saved.mitoboxContract);
-          if (!earliest || Date.now() < Date.parse(earliest)) return fail(`El solicitante no pidió inicio anticipado. Mitobox podrá activarse a partir de ${formatDateSpanish(earliest.slice(0,10))}.`);
+          if (!(isBox ? saved.mitoboxIdentityVerifiedAt : saved.mitoversoIdentityVerifiedAt) || !isGestionTadosiDone(saved)) return fail('Comprueba identidad y Tadosi antes de activar el servicio.');
+          const currentFee = (isBox ? mitoboxMonthlyFee : mitoversoMonthlyFee)(getFixedStudentClasses(studentId).length > 0);
+          if (accepted.monthlyFee !== currentFee) return fail('Ha cambiado la condición de alumno y la tarifa aceptada ya no coincide. Solicita un nuevo contrato antes de activar.');
+          const earliest = (isBox ? mitoboxEarliestActivation : mitoversoEarliestActivation)(accepted);
+          if (!earliest || Date.now() < Date.parse(earliest)) return fail(`El solicitante no pidió inicio anticipado. El servicio podrá activarse a partir de ${earliest ? formatDateSpanish(earliest.slice(0,10)) : 'la recepción de la fecha del servidor'}.`);
           gestionData = { ...gestionData, ...saved };
           extraConfig = getExtraServiceConfigForGestion(gestionData);
         }
@@ -6750,6 +6777,7 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
         const nowIso = new Date().toISOString();
         const updatePayload = {
           [extraConfig.studentFlag]: true,
+          ...(extraConfig.key === 'mitoverso' && gestionData.mitoversoContract ? { mitoversoMonthlyFee: gestionData.mitoversoContract.monthlyFee, mitoversoContractVersion: gestionData.mitoversoContract.version, mitoversoContractSha256: gestionData.mitoversoContract.sha256, mitoversoContractGestionId: gestionId } : {}),
           ...(extraConfig.key === 'mitobox' ? { mitoboxMonthlyFee: gestionData.mitoboxContract.monthlyFee, mitoboxContractVersion: gestionData.mitoboxContract.version, mitoboxContractSha256: gestionData.mitoboxContract.sha256, mitoboxContractGestionId: gestionId } : {}),
           ...(extraConfig.key === 'mitolocker' ? mitolockerPatch(extraConfig.mode) : {}),
           [`${extraConfig.key}ActivatedAt`]: studentInfo?.[`${extraConfig.key}ActivatedAt`] || nowIso,
@@ -6771,7 +6799,7 @@ ${extraConfig.monthlyFee > 0 ? `La cuota es de ${extraConfig.monthlyFee} €/mes
 ${extraConfig.key === 'mitolocker' ? `${extraConfig.description} Coordina con la escuela la entrega y recogida de tu instrumento.` : extraConfig.key === 'mitoverso' ? 'Ya puedes acceder desde el Área del Alumno, pestaña Extras, usando el botón de Classroom.' : 'Ya puedes reservar sala desde el Área del Alumno, pestaña Extras.'}
 
 Un saludo,
-Coordinación Los Mitos.${extraConfig.key === 'mitobox' ? `\n\nCopia del contrato aceptado:\n${buildMitoboxContractCopy(gestionData.mitoboxContract, gestionId)}` : ''}`
+Coordinación Los Mitos.${extraConfig.key === 'mitobox' ? `\n\nCopia del contrato aceptado:\n${buildMitoboxContractCopy(gestionData.mitoboxContract, gestionId)}` : gestionData.mitoversoContract ? `\n\nCopia del contrato aceptado:\n${buildMitoversoContractCopy(gestionData.mitoversoContract, gestionId)}` : ''}`
         });
 
         await finalizeGestionStatus(
@@ -6831,11 +6859,11 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
         const fixedClassesBefore = getFixedStudentClasses(studentId);
         const remainingFixedClasses = canExecutePartialBaja && sourceClass
-          ? fixedClassesBefore.filter(c => c.id !== sourceClass.id)
+          ? fixedClassesBefore.filter(c => c.refPath !== sourceClass.refPath)
           : [];
 
         const seatsAtEffectiveDate = getFixedStudentClasses(studentId, recurringClassesOnly, scheduledEffectiveDate);
-        const keepsTeachingSeat = canExecutePartialBaja && sourceClass && seatsAtEffectiveDate.some(clase => clase.id !== sourceClass.id);
+        const keepsTeachingSeat = canExecutePartialBaja && sourceClass && seatsAtEffectiveDate.some(clase => clase.refPath !== sourceClass.refPath);
         const resolvedKeys = cancelledServiceKeys(gestionData, studentInfo, !keepsTeachingSeat);
         const resolvedServiceScope = { serviceSelectionVersion: 1, cancelledServiceKeys: resolvedKeys };
         gestionData = { ...gestionData, ...resolvedServiceScope };
@@ -7352,7 +7380,7 @@ Plaza indicada:
 ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           }
 
-          if (hasScopedChange && sourceClass?.id === targetClass.id) {
+          if (hasScopedChange && sourceClass?.refPath === targetClass.refPath) {
             return fail('⚠️ No se puede ejecutar el cambio: la plaza de origen y la clase de destino son la misma.');
           }
 
@@ -7407,6 +7435,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
               scheduledAction: 'cambio_horario',
               scheduledClassStartDate: scheduledStartDate,
               scheduledTargetClassId: targetClass.id,
+              scheduledTargetClassRefPath: targetClass.refPath,
               scheduledTargetClassLine: formatClassLine(targetClass)
             })
           );
@@ -7594,7 +7623,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
   const getClassStudentsAfterLocalUpdates = (classData = {}, localUpdates = new Map()) => {
     if (!classData?.id) return classData.students || [];
-    return localUpdates.has(classData.id) ? localUpdates.get(classData.id) : (classData.students || []);
+    return localUpdates.has(classData.refPath || classData.id) ? localUpdates.get(classData.refPath || classData.id) : (classData.students || []);
   };
 
   const hasRemainingCommittedFixedSeat = (studentId, studentInfo = {}, localUpdates = new Map()) => {
@@ -7750,6 +7779,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           updatedAt: now
         });
 
+        transaction.set(gymusikCreditRef(db, appId, studentId, String(currentReservation.sessionDate).slice(0,7)), { reservationIds: arrayRemove(reservation.id) }, { merge: true });
         if (sessionSnapshot.exists()) {
           const session = sessionSnapshot.data();
           transaction.update(sessionRef, {
@@ -7920,7 +7950,8 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
     const isTotalBaja = isTotalBajaGestion(gestion);
     const sourceClass = getGestionSourceClass(gestion);
-    const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+    const hasScopedBaja = Boolean(gestion.sourceClassRefPath || gestion.sourceClassId || gestion.sourceClassLine);
+    if (hasScopedBaja && !isTotalBaja && !sourceClass) return { ok: false, message: 'La clase de origen no se puede identificar de forma inequívoca. Revisa su ruta antes de consolidar.' };
     const endDate = getScheduledGestionEndDate(gestion);
     const effectiveDate = getScheduledGestionEffectiveDate(gestion);
     const localClassUpdates = new Map();
@@ -7941,7 +7972,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         const entryEndDate = getScheduledEntryEndDate(studentEntry, studentInfo);
         const entryIsDue = Boolean(entryEndDate && entryEndDate < todayStr);
         const entryWasScheduledForThisBaja = isEntryScheduledByGestion(studentEntry, gestion, 'baja') && entryIsDue;
-        const isSourceClass = Boolean(sourceClass?.id && classData.id === sourceClass.id);
+        const isSourceClass = Boolean(sourceClass?.refPath && classData.refPath === sourceClass.refPath);
 
         if (entryWasScheduledForThisBaja) return false;
         if (hasScopedBaja && isSourceClass && isFixedClassStudent(studentEntry)) return false;
@@ -7950,7 +7981,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
 
       if (updatedStudents.length !== currentStudents.length) {
         await updateDoc(doc(db, classData.refPath), withClassStudentIndex(updatedStudents));
-        localClassUpdates.set(classData.id, updatedStudents);
+        localClassUpdates.set(classData.refPath || classData.id, updatedStudents);
         removedClassLines.push(formatClassLine(classData));
       }
     }
@@ -8033,15 +8064,18 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     const studentInfo = students.find(s => s.id === studentId) || {};
     const displayName = studentInfo?.useAlias && studentInfo?.alias ? studentInfo.alias : (gestion.studentName || studentInfo?.name || 'Alumno');
     const targetClassId = String(gestion.scheduledTargetClassId || gestion.requestedClass || '').trim();
-    const targetClass = allClasses.find(classData => classData.id === targetClassId) || null;
+    const targetPath = gestion.scheduledTargetClassRefPath || gestion.requestedClassRefPath || '';
+    const targets = allClasses.filter(classData => targetPath ? classData.refPath === targetPath : classData.id === targetClassId);
+    const targetClass = targets.length === 1 ? targets[0] : null;
     const sourceClass = getGestionSourceClass(gestion);
-    const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
+    const hasScopedChange = Boolean(gestion.sourceClassRefPath || gestion.sourceClassId || gestion.sourceClassLine);
+    if (!targetClass || (hasScopedChange && !sourceClass)) return { ok: false, message: 'No se puede identificar de forma inequívoca el origen o el destino del cambio.' };
     const scheduledStartDate = normalizeGestionDateString(gestion.scheduledClassStartDate || gestion.effectiveStartDate || '') || getScheduledGestionEffectiveDate(gestion);
     const removedClassLines = [];
 
     const classesWithStudent = allClasses.filter(classData =>
       classData.refPath &&
-      classData.id !== targetClassId &&
+      classData.refPath !== targetClass?.refPath &&
       (classData.students || []).some(studentEntry => studentEntry.id === studentId)
     );
 
@@ -8054,7 +8088,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
         const entryEndDate = getScheduledEntryEndDate(studentEntry, studentInfo);
         const entryIsDue = Boolean(entryEndDate && entryEndDate < todayStr);
         const entryWasScheduledForThisChange = isEntryScheduledByGestion(studentEntry, gestion, 'cambio_horario') && entryIsDue;
-        const isSourceClass = Boolean(sourceClass?.id && classData.id === sourceClass.id);
+        const isSourceClass = Boolean(sourceClass?.refPath && classData.refPath === sourceClass.refPath);
         const sameSubjectFallback = !hasScopedChange && targetClass?.subject && classData.subject === targetClass.subject;
 
         if (entryWasScheduledForThisChange) return false;
@@ -8171,6 +8205,16 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
     }
   };
 
+  const approveLegacyMitoboxMigration = async gestion => {
+    const student = students.find(item => item.id === gestion.studentId);
+    if (!student?.hasMitobox || student.globalStatus === 'baja') return alert('Activa y comprueba Mitobox en la ficha antes de aprobar esta reserva antigua.');
+    if (!window.confirm(`¿Revisar y autorizar la reserva antigua de ${student.name} para ${formatDateSpanish(gestion.reservationDate)} a las ${gestion.reservationTime}? Comprueba sede y sala. Solo se migrará si hay aforo; no se aumentará la capacidad.`)) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'gestiones', gestion.id), { status: 'completado', legacyMitoboxMigrationApprovedAt: new Date().toISOString(), legacyMitoboxMigrationApprovedBy: String(user.email).trim().toLowerCase() });
+      alert('Reserva histórica autorizada. Abre Servicios para procesarla. Si hay conflicto, revisa la disponibilidad antes de reservar manualmente.');
+    } catch (error) { alert(`No se pudo autorizar la reserva antigua: ${error.message}`); }
+  };
+
   const toggleStudentToggle = async (studentId, field, currentValue) => {
     const isStatusField = field === 'globalStatus';
     const newStatus = isStatusField ? (currentValue === 'congelado' ? 'activo' : 'congelado') : !currentValue;
@@ -8251,6 +8295,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
           }, { merge: true });
         });
       }
+      if (hasGymusik) await initializeGymusikCredits({ db, appId, member: { id: studentId } });
       setServiceStudentModal(false);
       setServiceStudentDraft({ name: '', email: '', hasMitobox: true, hasMitoverso: false, hasGymusik: false });
       setFilterStatus('sin_plaza');
@@ -9484,7 +9529,12 @@ Coordinación Los Mitos.`
       ...clase,
       students: (clase.students || []).map(studentEntry => ({ ...studentEntry }))
     }));
-    const classById = new Map(projectedClasses.map(clase => [clase.id, clase]));
+    const classById = new Map();
+    for (const clase of projectedClasses) {
+      if (clase.refPath) classById.set(clase.refPath, clase);
+      const key = String(clase.id || '');
+      classById.set(key, classById.has(key) ? null : clase);
+    }
     const studentById = new Map(students.map(student => [student.id, { ...student } ]));
     const studentMovements = new Map();
     const classMovementNotes = new Map();
@@ -9595,7 +9645,7 @@ Coordinación Los Mitos.`
       }
 
       if (gestion.type === 'baja') {
-        const sourceClass = classById.get(gestion.sourceClassId);
+        const sourceClass = classById.get(String(gestion.sourceClassRefPath || gestion.sourceClassId));
         const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
         const isTotalBaja = isTotalBajaGestion(gestion);
 
@@ -9618,7 +9668,7 @@ Coordinación Los Mitos.`
         if (hasScopedBaja && sourceClass) {
           const removed = removeStudentFromClass(sourceClass, studentInfo.id, 'BAJA PARCIAL PENDIENTE · sale de esta plaza al cierre');
           const remainingFixed = projectedClasses.filter(clase =>
-            clase.id !== sourceClass.id &&
+            clase.refPath !== sourceClass.refPath &&
             !isPunctualClass(clase) &&
             (clase.students || []).some(studentEntry => studentEntry.id === studentInfo.id && isFixedClassStudent(studentEntry))
           );
@@ -9676,7 +9726,7 @@ Coordinación Los Mitos.`
       }
 
       if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
-        const targetClass = classById.get(gestion.requestedClass);
+        const targetClass = classById.get(String(gestion.requestedClassRefPath || gestion.requestedClass));
         if (!targetClass) {
           movementsSummary.push(`- ${studentName} — ${studentEmail || 'sin email'} · ${gestion.type}: no aplicada porque no se encontró clase destino (${gestion.requestedClass || 'sin clase destino'}).`);
           return;
@@ -9684,7 +9734,7 @@ Coordinación Los Mitos.`
 
         if (gestion.type === 'cambio_horario') {
           let removedFrom = 0;
-          const sourceClass = classById.get(gestion.sourceClassId);
+          const sourceClass = classById.get(String(gestion.sourceClassRefPath || gestion.sourceClassId));
           const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
 
           if (hasScopedChange && !sourceClass) {
@@ -11389,7 +11439,12 @@ Coordinación Los Mitos.`
         projectedGlobalStatus: studentStatusById.get(studentEntry.id) || 'activo'
       }))
     }));
-    const classById = new Map(projectedClasses.map(clase => [clase.id, clase]));
+    const classById = new Map();
+    for (const clase of projectedClasses) {
+      if (clase.refPath) classById.set(clase.refPath, clase);
+      const key = String(clase.id || '');
+      classById.set(key, classById.has(key) ? null : clase);
+    }
 
     const getDisplayNameForProjection = (studentInfo, gestion) => {
       if (studentInfo?.useAlias && studentInfo?.alias) return studentInfo.alias;
@@ -11432,7 +11487,7 @@ Coordinación Los Mitos.`
         };
 
         if (gestion.type === 'baja') {
-          const sourceClass = classById.get(gestion.sourceClassId);
+          const sourceClass = classById.get(String(gestion.sourceClassRefPath || gestion.sourceClassId));
           const hasScopedBaja = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
           const isTotalBaja = isTotalBajaGestion(gestion);
 
@@ -11451,7 +11506,7 @@ Coordinación Los Mitos.`
           if (hasScopedBaja && sourceClass) {
             sourceClass.students = (sourceClass.students || []).filter(studentEntry => studentEntry.id !== gestion.studentId);
             const remainingFixed = projectedClasses.filter(clase =>
-              clase.id !== sourceClass.id &&
+              clase.refPath !== sourceClass.refPath &&
               !isPunctualClass(clase) &&
               (clase.students || []).some(studentEntry => studentEntry.id === gestion.studentId && isFixedClassStudent(studentEntry))
             );
@@ -11492,11 +11547,11 @@ Coordinación Los Mitos.`
         }
 
         if (gestion.type === 'cambio_horario' || gestion.type === 'ampliar_clases') {
-          const targetClass = classById.get(gestion.requestedClass);
+          const targetClass = classById.get(String(gestion.requestedClassRefPath || gestion.requestedClass));
           if (!targetClass) return;
 
           if (gestion.type === 'cambio_horario') {
-            const sourceClass = classById.get(gestion.sourceClassId);
+            const sourceClass = classById.get(String(gestion.sourceClassRefPath || gestion.sourceClassId));
             const hasScopedChange = Boolean(gestion.sourceClassId || gestion.sourceClassLine);
 
             if (hasScopedChange && !sourceClass) {
@@ -13782,7 +13837,7 @@ ${valueOrDash(comments.privateNote)}`,
     const sourceClass = sourceClasses.find(c => c.id === effectiveSourceId) || null;
     const targetInstrument = selectedInstForChange;
     const availableClasses = targetInstrument && sourceClass ? recurringClassesOnly.filter(c =>
-      c.id !== sourceClass.id
+      c.refPath !== sourceClass.refPath
       && c.subject === targetInstrument
       && getCommercialFreeSpots(c) > 0
     ) : [];
@@ -14695,6 +14750,7 @@ ${startDateWarning}
                                 </div>
                               );
                             })()}
+                            {g.type === 'reserva_mitobox' && !g.migratedToMitoboxReservationsAt && <button type="button" onClick={() => approveLegacyMitoboxMigration(g)} className="mt-3 p-3 border rounded-xl text-xs font-bold">Revisar y autorizar reserva antigua de Mitobox</button>}
                             {g.type === 'alta_mitobox' && <div className="mt-3 p-3 border border-blue-200 bg-blue-50 rounded-xl text-xs space-y-1">
                               {g.mitoboxContract ? <>
                                 <p className="font-black">Contrato Mitobox aceptado</p>
@@ -14703,6 +14759,16 @@ ${startDateWarning}
                                 <p>{g.mitoboxContract.immediateStart ? 'Inicio durante los primeros 14 días solicitado expresamente.' : `Sin inicio anticipado. Fecha mínima: ${mitoboxEarliestActivation(g.mitoboxContract) ? formatDateSpanish(mitoboxEarliestActivation(g.mitoboxContract).slice(0,10)) : 'pendiente de sincronización'}.`}</p>
                                 <p>{g.mitoboxIdentityVerifiedAt ? `Identidad contrastada por ${g.mitoboxIdentityVerifiedBy}` : 'Pendiente de contrastar identidad y representación con Tadosi al preparar la domiciliación.'}</p>
                                 <button type="button" onClick={() => downloadMitoboxContract(g.mitoboxContract, g.id)} className="font-bold underline">Descargar contrato y registro de aceptación</button>
+                              </> : <p>Esta solicitud no incluye contrato. Rechaza la solicitud antigua y pide al alumno que la envíe de nuevo desde Extras.</p>}
+                            </div>}
+                            {g.type === 'alta_mitoverso' && g.mitoversoContract && <div className="mt-3 p-3 border border-indigo-200 bg-indigo-50 rounded-xl text-xs space-y-1">
+                              {g.mitoversoContract ? <>
+                                <p className="font-black">Contrato Mitoverso aceptado</p>
+                                <p>Contratante: {g.mitoversoContract.signerFullName}</p><p>Usuario: {g.mitoversoContract.studentFullName} · {g.mitoversoContract.role === 'guardian' ? 'Representante de menor' : 'En nombre propio'}</p>
+                                <p>Cuenta: {g.mitoversoContract.accountEmail}</p><p>Versión: {g.mitoversoContract.version} · {g.mitoversoContract.monthlyFee} €/mes</p>
+                                <p>{g.mitoversoContract.immediateStart ? 'Inicio durante los primeros 14 días solicitado expresamente.' : `Sin inicio anticipado. Fecha mínima: ${mitoversoEarliestActivation(g.mitoversoContract) ? formatDateSpanish(mitoversoEarliestActivation(g.mitoversoContract).slice(0,10)) : 'pendiente de sincronización'}.`}</p>
+                                <p>{g.mitoversoIdentityVerifiedAt ? `Identidad contrastada por ${g.mitoversoIdentityVerifiedBy}` : 'Pendiente de contrastar identidad y representación con Tadosi al preparar la domiciliación.'}</p>
+                                <button type="button" onClick={() => downloadMitoversoContract(g.mitoversoContract, g.id)} className="font-bold underline">Descargar contrato y registro de aceptación</button>
                               </> : <p>Esta solicitud no incluye contrato. Rechaza la solicitud antigua y pide al alumno que la envíe de nuevo desde Extras.</p>}
                             </div>}
                             {bajaScopeLabel && (

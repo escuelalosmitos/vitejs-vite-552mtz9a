@@ -24,7 +24,7 @@ El frontend conserva su configuración Firebase real. Vite local no es una base 
 
 ## Estado de referencia
 
-La revisión local del 5 de noviembre de 2026 supera 221 pruebas locales y 48 comprobaciones de reglas/transacciones, y compila correctamente. Incluye las correcciones autorizadas de la auditoría y el contrato Mitoverso: consulta `CORRECCIONES_AUDITORIA_Y_MITOVERSO.md` antes de publicar, porque requiere preparar saldos de Gymusik, coordinar frontend/reglas y recargar sesiones. No está desplegada desde este trabajo. El estado real de Vercel y Firebase debe comprobarse por separado.
+La revisión del 5 de noviembre de 2026 supera 221 pruebas locales y 48 comprobaciones de reglas/transacciones, y compila correctamente. Las correcciones autorizadas y el contrato Mitoverso se publicaron ese día en Vercel y Firestore, con autorización expresa de Paco. La web de alumnos sirve los archivos compilados comprobados y las reglas activas coinciden con el archivo probado. Consulta `PUBLICACION_2026-11-05.md` para las referencias y límites de verificación. Las sesiones que estuvieran abiertas deben recargarse.
 
 ## Decisiones esenciales
 

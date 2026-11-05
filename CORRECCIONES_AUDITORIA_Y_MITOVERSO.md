@@ -2,7 +2,7 @@
 
 ## Alcance acordado con Paco
 
-Se preparan las correcciones 2, 3, 4, 5, 6, 8 y 9 de la auditoría. No se despliega ni se modifican datos reales en este trabajo.
+Se prepararon las correcciones 2, 3, 4, 5, 6, 8 y 9 de la auditoría. Después, con autorización expresa de Paco, se publicaron frontend y reglas el 5 de noviembre de 2026. La preparación real se limitó al campo de capacidades Mitobox; Gymusik no tenía miembros que migrar. Detalle en `PUBLICACION_2026-11-05.md`.
 
 - **1:** se mantiene el acceso actual por decisión de Paco. No se añade verificación obligatoria del correo.
 - **7:** Paco confirma que el alta y los cobros externos se gestionan manualmente en Tadosi y después él incorpora al usuario a la plataforma. Se conservan el alta directa y los interruptores administrativos. No se consideran por sí mismos un error ni se añade una integración automática de cobro.
@@ -66,9 +66,9 @@ node --test --test-concurrency=1 tests/firestore-rules.test.mjs tests/recovery-c
 
 Para una ejecución desde cero se puede utilizar `npm run test:security` con los puertos habituales libres, o la configuración separada `firebase.audit.local.json` mediante `firebase emulators:exec`. Los tests de regresión de permisos rechazan un host que no sea un emulador local. No usar el proyecto real como prueba.
 
-## Publicación pendiente y compatibilidad
+## Procedimiento de publicación y compatibilidad
 
-**No se ha publicado esta versión.** No ejecutar automáticamente estos pasos como consecuencia de leer el documento; forman parte de una futura publicación autorizada, junto a `DESPLIEGUE_SEGURO.md`.
+**Publicada el 5 de noviembre de 2026:** ver `PUBLICACION_2026-11-05.md`. Se conserva el procedimiento seguido para futuras referencias. No ejecutar automáticamente estos pasos por leer el documento; una publicación posterior necesita su propio alcance autorizado, junto a `DESPLIEGUE_SEGURO.md`.
 
 1. Guardar las reglas actualmente publicadas y la versión Vercel anterior. Conservar los índices existentes.
 2. Preparar un Preview con el frontend nuevo. Desde Administración de ese Preview, y como parte de la publicación autorizada, esperar a que se publique `roleData/studentSettings.mitoboxRoomCapacities` y abrir Servicios → Gymusik hasta preparar los miembros existentes. Esta preparación utiliza los datos reales si se hace con una cuenta real; no forma parte de las pruebas locales.

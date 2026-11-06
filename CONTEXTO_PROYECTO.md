@@ -220,9 +220,9 @@ Verificación del 5/11/2026 a las 14:55 CET: dominio y recursos HTTP 200; JavaSc
 
 ## 15. Baja de servicios efectiva hoy — 6 de noviembre de 2026
 
-Paco detectó que «Ejecutar ahora» programaba la baja de servicios aun cuando la fecha efectiva ya había llegado. El campo de fecha representa el último día con acceso. Introducir ayer da como fecha efectiva hoy. La versión publicada exige después «Consolidar gestiones programadas vencidas» en Gestiones, que muestra el lote antes de confirmar.
+Paco detectó que «Ejecutar ahora» programaba la baja de servicios aun cuando la fecha efectiva ya había llegado. El campo de fecha representa el último día con acceso. Introducir ayer da como fecha efectiva hoy. La versión anterior exigía después «Consolidar gestiones programadas vencidas» en Gestiones, que muestra el lote antes de confirmar.
 
-Se preparó una corrección local para que «Ejecutar ahora» aplique la baja de servicios cuando la fecha efectiva sea hoy o anterior. Reutiliza la consolidación selectiva y conserva la gestión en Programadas si falla la aplicación. Las fechas futuras siguen el circuito de consolidación. La corrección está pendiente de publicación.
+Esta revisión corrige el flujo para que «Ejecutar ahora» aplique la baja de servicios cuando la fecha efectiva sea hoy o anterior. Reutiliza la consolidación selectiva y conserva la gestión en Programadas si falla la aplicación. Las fechas futuras siguen el circuito de consolidación.
 
 ## 16. Alta con contrato Mitolocker — 6 de noviembre de 2026
 
@@ -232,4 +232,10 @@ La solicitud exige plaza de clases y guarda en `mitolockerContract` la modalidad
 
 En Servicios → Mitolocker → Contrato y entrega, Administración puede registrar el inventario cuando recibe el instrumento y descargar el resguardo para firmarlo con el titular. El resguardo queda separado de la aceptación en `gestiones/{gestionId}/mitolockerDelivery/record`, con lectura administrativa. El alumno puede descargar su contrato desde Extras.
 
-Implementación local pendiente de publicación. El frontend y `firestore.rules` deben publicarse de forma coordinada, ya que el cliente anterior envía altas de Mitolocker sin contrato. Mantener separadas las comprobaciones del emulador y cualquier revisión operativa en producción.
+El frontend y `firestore.rules` deben publicarse de forma coordinada, ya que el cliente anterior envía altas de Mitolocker sin contrato. Mantener separadas las comprobaciones del emulador y cualquier revisión operativa en producción.
+
+Paco autorizó publicar. El Preview de `codex/contrato-mitolocker-20261106` está listo con el commit `53323780b7e47d298f42d5e34f84a06a2080fb8e` y el despliegue `dpl_AsmcxaZfzkYyd4pEYNRJdCbK953L`. Se preparó en `.despliegue.local`, desde `d9d924e`, sin incluir la corrección de bajas del apartado 15. Compilación y 223 pruebas estáticas correctas en la copia aislada, con las dos plantillas de pruebas locales como archivos auxiliares sin subir.
+
+**Publicado el 6/11/2026.** Tras renovar la sesión de Firebase, se guardó la versión anterior de las reglas en `.revision-deploy.local/mitolocker-20261106/firestore-before.rules` (ruleset `d0085831-89f8-4121-980c-fd68a85c3f21`). Se validó la compilación de las reglas sin publicar, se actualizó `main` al commit del Preview y se activaron solo las reglas de Firestore una vez que el dominio servía el contrato nuevo. Los cuatro despliegues de Vercel terminaron correctamente. El de alumnos es `dpl_8iamKvzapvNCvTzv3DSKriJA4mKX`. El anterior era `dpl_5XM343S8wko49BSz49aHzX2zDR6g` en `d9d924e`. Si hay que revertir, coordinar web y reglas.
+
+Comprobación a las 10:02 CET: dominio HTTP 200, `index-D9rqEh79.js` idéntico a la compilación local y con el contrato `mitolocker-2026-11-06-v1`. Las reglas publicadas coinciden con las probadas, ruleset `237d84c0-0c7f-4516-960e-14f1212da4f8`, SHA-256 `508932620ddf77d3bb19dfde9412cf921e9b00b2232a48b1dd4bb07e7c12864f`. La oferta pública respondió 200 y la configuración privada rechazó acceso anónimo con 403. Las 49 comprobaciones de reglas pasaron en el emulador de la copia de publicación. No se hicieron altas ni entregas reales como prueba.

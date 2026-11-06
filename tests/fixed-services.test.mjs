@@ -100,7 +100,7 @@ test('ambas altas reales exigen contrato y guardan la modalidad y el precio acep
   }
 });
 function adminContext(overrides={}) {
-  const writes=[],mail=[],finals=[],context={...utils,console,db:{},appId:'app',user:{email:'admin@example.com'},students:[profile],
+  const writes=[],mail=[],finals=[],context={...utils,console,db:{},appId:'app',user:{email:'admin@example.com'},students:[profile],todayStr:'2026-11-06',
     getFixedStudentClasses:()=>[{id:'c1'}],recurringClassesOnly:[],TADOSI_REQUIRED_GESTION_TYPES:new Set(['alta_mitolocker','baja_servicios','baja']),EXTRA_SERVICE_CONFIG_BY_TYPE:{},
     window:{confirm:()=>true},alert:noop,doc:(...p)=>p.slice(1).join('/'),updateDoc:async(ref,data)=>writes.push({ref,data:clean(data)}),
     resolveStudentEmail:()=>profile.email,isExtraServiceGestion:g=>g.type==='alta_mitolocker',
@@ -207,6 +207,43 @@ test('consolidar solo un servicio conserva clases, otros servicios, tickets y pu
   const result=await load(0,'consolidateScheduledServiceBajaGestion',context)({...selection,id:'g1',studentId:profile.id,type:'baja_servicios'});
   assert.equal(result.ok,true);assert.equal(result.finalizedGlobalBaja,false);
   assert.deepEqual(writes[0].data,{hasMitolocker:false,mitolockerMode:''});assert.deepEqual(effects,[]);
+});
+test('ejecutar una baja de servicios efectiva hoy o antes aplica la selección en la misma acción', async () => {
+  for (const [endDate, effectiveDate] of [['2026-11-05', '2026-11-06'], ['2026-11-04', '2026-11-05']]) {
+    const {context: consolidation, writes, effects} = consolidationContext(profile, true);
+    const {context, mail, finals} = adminContext({
+      promptScheduledClassEndDate: () => endDate,
+      getScheduledClassStartAfterEndDate: () => effectiveDate,
+      buildScheduledExecutionUpdate: (date, extra) => ({scheduledClassEndDate: date, scheduledEffectiveDate: effectiveDate, ...extra}),
+      consolidateScheduledServiceBajaGestion: load(0, 'consolidateScheduledServiceBajaGestion', {
+        ...consolidation, getScheduledGestionEffectiveDate: gestion => gestion.bajaEffectiveDate
+      })
+    });
+    const request = {...selection, cancelledServiceKeys: ['mitobox', 'mitolocker'], type: 'baja_servicios', studentId: profile.id, studentName: profile.name, tadosiDone: true};
+    const result = await load(0, 'updateGestionStatus', context)('g1', 'completado', request, {skipConfirm: true, silent: true});
+    assert.equal(result.ok, true, result.message);
+    assert.equal(finals[0][4].scheduledEffectiveDate, effectiveDate);
+    assert.equal(writes[0]?.ref, 'artifacts/app/students/s1');
+    assert.deepEqual(writes[0].data, {hasMitobox: false, hasMitolocker: false, mitolockerMode: ''});
+    assert.equal(writes[1].ref, 'artifacts/app/gestiones/g1');
+    assert.deepEqual(effects, ['mitobox']);
+    assert.match(mail[0].subject, /aplicada/i);
+  }
+});
+test('una baja vencida que no se puede aplicar queda programada para reintentar sin confirmar al alumno', async () => {
+  const {context, mail, finals} = adminContext({
+    promptScheduledClassEndDate: () => '2026-11-05',
+    getScheduledClassStartAfterEndDate: () => '2026-11-06',
+    buildScheduledExecutionUpdate: (date, extra) => ({scheduledClassEndDate: date, scheduledEffectiveDate: '2026-11-06', ...extra}),
+    consolidateScheduledServiceBajaGestion: async () => { throw new Error('Conexión interrumpida'); }
+  });
+  const request = {...selection, type: 'baja_servicios', studentId: profile.id, studentName: profile.name, tadosiDone: true};
+  const result = await load(0, 'updateGestionStatus', context)('g1', 'completado', request, {skipConfirm: true, silent: true});
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Programadas/);
+  assert.equal(finals[0][4].scheduledAction, 'baja_servicios');
+  assert.equal(finals[0][4].scheduledEffectiveDate, '2026-11-06');
+  assert.deepEqual(mail, []);
 });
 test('cancelar el último servicio sin clases desactiva la cuenta; conservar otro mantiene el acceso',async()=>{
   for(const keepsOther of [false,true]) {

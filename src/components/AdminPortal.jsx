@@ -3632,8 +3632,11 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     if (silentMode) return defaultEndDate;
 
     const defaultStartDate = getScheduledClassStartAfterEndDate(defaultEndDate);
+    const promptText = gestion.type === 'baja_servicios'
+      ? `Indica el último día con acceso a los servicios (AAAA-MM-DD).\n\nLa baja surte efecto al día siguiente. Si esa fecha ya ha llegado, se aplica al confirmar. Las fechas futuras quedan en Programadas.\n\nCon la fecha propuesta, la baja será efectiva el ${formatDateSpanish(defaultStartDate)}.`
+      : `Fecha efectiva de fin para ${actionLabel}.\n\nPor defecto se aplica al último día del mes administrativo: ${formatDateSpanish(defaultEndDate)}.\nDesde ${formatDateSpanish(defaultStartDate)} dejará de aparecer en Student/Teacher.\n\nPuedes cambiarla si necesitas una fecha especial. Formato: AAAA-MM-DD`;
     const answer = window.prompt(
-      `Fecha efectiva de fin para ${actionLabel}.\n\nPor defecto se aplica al último día del mes administrativo: ${formatDateSpanish(defaultEndDate)}.\nDesde ${formatDateSpanish(defaultStartDate)} dejará de aparecer en Student/Teacher.\n\nPuedes cambiarla si necesitas una fecha especial. Formato: AAAA-MM-DD`,
+      promptText,
       defaultEndDate
     );
 
@@ -6850,11 +6853,27 @@ Coordinación Los Mitos.${extraConfig.key === 'mitobox' ? `\n\nCopia del contrat
         if (!endDate) return { ok: false, cancelled: true, message: 'Fecha efectiva no seleccionada.' };
         const effectiveDate = getScheduledClassStartAfterEndDate(endDate);
         const summary = fixedServiceSummary(gestionData, studentInfo);
-        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Baja de servicios programada: ${summary}. Conserva sus clases y servicios no seleccionados.`, buildScheduledExecutionUpdate(endDate, {
+        const schedule = buildScheduledExecutionUpdate(endDate, {
           scheduledAction: 'baja_servicios', bajaEffectiveDate: effectiveDate, bajaClassEndDate: endDate
-        }));
-        await sendStudentNotification({ studentEmail, subject: 'Baja de servicios programada - Escuela Los Mitos', body: `Hola ${studentName},\n\nHemos programado la baja de: ${summary}.\nÚltimo día de servicio: ${formatDateSpanish(endDate)}. Baja efectiva: ${formatDateSpanish(effectiveDate)}.\nConservas tus clases y los servicios que no has solicitado cancelar.\n\nUn saludo,\nCoordinación Los Mitos.` });
-        return notify(`Baja de ${summary} programada desde ${formatDateSpanish(effectiveDate)}.`);
+        });
+        await finalizeGestionStatus(gestionId, 'completado', gestionData, `Baja de servicios registrada: ${summary}. Fecha efectiva: ${formatDateSpanish(effectiveDate)}.`, schedule);
+
+        let appliedBaja = null;
+        if (effectiveDate <= todayStr) {
+          try {
+            appliedBaja = await consolidateScheduledServiceBajaGestion({ ...gestionData, ...schedule, id: gestionId, status: 'completado' });
+          } catch (error) {
+            appliedBaja = { ok: false, message: error.message };
+          }
+          if (!appliedBaja.ok) return fail(`La baja sigue en Programadas. Puedes reintentar con «Consolidar gestiones programadas vencidas».\n\n${appliedBaja.message}`);
+        }
+
+        const action = appliedBaja ? 'aplicada' : 'programada';
+        const accessMessage = appliedBaja?.finalizedGlobalBaja
+          ? 'Tu acceso al portal se ha desactivado al finalizar tu último servicio.'
+          : 'Conservas tus clases y los servicios que no has solicitado cancelar.';
+        await sendStudentNotification({ studentEmail, subject: `Baja de servicios ${action} - Escuela Los Mitos`, body: `Hola ${studentName},\n\nHemos ${appliedBaja ? 'aplicado' : 'programado'} la baja de: ${summary}.\nÚltimo día de servicio: ${formatDateSpanish(endDate)}. Baja efectiva: ${formatDateSpanish(effectiveDate)}.\n${accessMessage}\n\nUn saludo,\nCoordinación Los Mitos.` });
+        return notify(`Baja de ${summary} ${action} desde ${formatDateSpanish(effectiveDate)}.`);
       }
       else if (type === 'baja') {
         const sourceClass = getGestionSourceClass(gestionData);

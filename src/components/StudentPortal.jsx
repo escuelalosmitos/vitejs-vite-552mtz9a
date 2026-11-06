@@ -22,6 +22,7 @@ import MitoboxContractForm from './MitoboxContractForm.jsx';
 import { createMitoboxContractDraft, createMitoboxAcceptance, mitoboxDraftError, mitoboxMonthlyFee, downloadMitoboxContract, buildMitoboxContractCopy } from './mitoboxContractUtils.js';
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
+import TeacherContactCard from './TeacherContactCard.jsx';
 import { getExpansionStartDate, getPublicExpansionClasses, compareClassWeekdayAndTime } from './classExpansionUtils.js';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from './vacationChallengeUtils.js';
 import { isBoardPublicationArchived, matchesBoardClass } from './announcementAudienceUtils.js';
@@ -122,6 +123,19 @@ const getTeacherOperationalEmail = (name = '', configuredEmails = {}) => {
   const uniqueEmails = [...new Set(matches)];
   const email = uniqueEmails.length === 1 ? uniqueEmails[0] : '';
   return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@escuelalosmitos\.com$/.test(email) ? email : '';
+};
+
+const getTeacherContactOptions = (classes, configuredEmails, getClassLabel) => {
+  const contacts = new Map();
+  for (const clase of classes) {
+    const name = String(clase.teacher || '').trim();
+    if (!name) continue;
+    const email = getTeacherOperationalEmail(name, configuredEmails);
+    const key = email || normalizeTeacherKey(name);
+    if (!contacts.has(key)) contacts.set(key, { key, name, email, classLabels: new Set() });
+    contacts.get(key).classLabels.add(getClassLabel(clase));
+  }
+  return [...contacts.values()];
 };
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
@@ -1698,6 +1712,11 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     !isStudentClassScheduledToEnd(c) &&
     (c.students || []).some(s => isStudentEntryFor(s, profile?.id) && isFixedClassStudent(s))
   ));
+  const teacherContactClasses = activeTab === 'contact' ? myClasses.filter(clase =>
+    !isPunctualClass(clase) && (clase.students || []).some(entry =>
+      isStudentEntryFor(entry, profile?.id) && isFixedClassStudent(entry) && isStudentEntryActiveOnDate(entry, profile || {}, todayStr)
+    )
+  ) : [];
   const isOnlyPrivateSeatStudent = fixedSeatClasses.length === 1
     && Math.max(1, Number(fixedSeatClasses[0]?.capacity) || 1) === 1;
   const expansionOwnedClasses = myClasses.filter(clase => (clase.students || []).some(entry =>
@@ -7502,6 +7521,14 @@ END:VCALENDAR`;
                 <h3 className="font-black text-slate-800 uppercase tracking-tight">{isServiceOnlyStudent ? 'Dar de baja mis servicios' : 'Dar de Baja'}</h3>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 mt-1">{isServiceOnlyStudent ? 'Elige los servicios que quieres cancelar' : activeServicesForBaja.length > 0 ? 'Elige clases y servicios que quieres cancelar' : isMultiSeatStudent ? 'Cancela una plaza o todas tus clases' : 'Cancela tu plaza actual'}</p>
               </button>
+
+              {teacherContactClasses.length > 0 && (
+                <TeacherContactCard contacts={getTeacherContactOptions(
+                  teacherContactClasses,
+                  globalSettings.teacherEmails,
+                  clase => `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek) || ''} ${clase.time || ''} · ${getClassCenterName(clase)}`
+                )} />
+              )}
 
               <button
                 type="button"

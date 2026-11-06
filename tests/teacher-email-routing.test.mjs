@@ -5,6 +5,9 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { parse } from 'espree';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
 
 const student = await readFile('src/components/StudentPortal.jsx', 'utf8');
 const admin = await readFile('src/components/AdminPortal.jsx', 'utf8');
@@ -40,6 +43,61 @@ test('la dirección configurada prevalece sobre el nombre y no se inventan desti
     assert.equal(helpers.getTeacherOperationalEmail('Marti Viñas', { 'Marti Viñas': email }), '');
   }
   assert.equal(helpers.getTeacherOperationalEmail('Marti Viñas', { 'Martí Viñas': 'uno@escuelalosmitos.com', 'Marti Vinas': 'otro@escuelalosmitos.com' }), '');
+});
+
+test('el contacto directo usa los profesores habituales de las plazas fijas vigentes', () => {
+  const context = { ...helpers, activeTab: 'contact', profile: { id: 's' }, todayStr: '2026-11-06' };
+  for (const name of [
+    'isPunctualClass', 'isFixedClassStudent', 'isPendingClassStartEntry', 'normalizeClassDate', 'getStudentEntryId',
+    'isStudentEntryFor', 'getClassEntryStartDate', 'getClassEntryEndDate', 'isStudentEntryActiveOnDate', 'getTeacherContactOptions'
+  ]) {
+    context[name] = evaluate(student, declaration(studentAst, name), context);
+  }
+  const seat = (teacher, subject, entry = {}, clase = {}) => ({ teacher, subject, students: [{ id: 's', ...entry }], ...clase });
+  context.myClasses = [
+    seat('Martí Viñas', 'Batería', {}, { id: 'a', refPath: 'classes/a' }),
+    seat('marti vinas', 'Combo'),
+    seat('Elia', 'Canto', { classEndDate: '2026-11-20' }, { id: 'a', refPath: 'centers/reus/classes/a' }),
+    seat('Sin configurar', 'Piano'),
+    seat('Recuperación', 'Batería', { isRecovery: true }),
+    seat('Traslado', 'Combo', { isTemporaryRelocation: true }),
+    seat('Puntual', 'Piano', {}, { date: '2026-11-06' }),
+    seat('Otro alumno', 'Canto', { id: 'otro' }),
+    seat('Alta futura', 'Batería', { classStartDate: '2026-11-07' }),
+    seat('Alta pendiente', 'Batería', { pendingStart: true }),
+    seat('Plaza finalizada', 'Canto', { classEndDate: '2026-11-05' })
+  ];
+  const eligible = evaluate(student, declaration(studentAst, 'teacherContactClasses'), context);
+  const options = context.getTeacherContactOptions(eligible, configured, clase => clase.subject);
+  assert.deepEqual(plain(options.map(({ name, email, classLabels }) => [name, email, [...classLabels]])), [
+    ['Martí Viñas', 'martivg@escuelalosmitos.com', ['Batería', 'Combo']],
+    ['Elia', 'elia@escuelalosmitos.com', ['Canto']],
+    ['Sin configurar', '', ['Piano']]
+  ]);
+});
+
+test('la tarjeta de contacto abre un borrador, muestra los destinatarios y explica el alcance', async () => {
+  const server = await createServer({ server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true, include: [] }, appType: 'custom', logLevel: 'error' });
+  try {
+    const { default: Card } = await server.ssrLoadModule('/src/components/TeacherContactCard.jsx');
+    const teacher = { key: 'marti', name: 'Martí', email: 'marti+clases#1@escuelalosmitos.com', classLabels: new Set(['Batería · Viernes 18:00']) };
+    const render = contacts => renderToStaticMarkup(createElement(Card, { contacts }));
+    const single = render([teacher]);
+    assert.match(single, /href="mailto:marti%2Bclases%231@escuelalosmitos\.com\?subject=Consulta%20de%20clase"/);
+    assert.match(single, /Contactar con mi profesor/);
+    assert.match(single, /Copiar dirección/);
+    assert.match(single, /El profesorado no tramita gestiones administrativas/);
+    assert.doesNotMatch(single, /<summary/);
+
+    const unavailable = { key: 'elia', name: 'Elia', email: '', classLabels: new Set(['Canto · Jueves 19:00']) };
+    const multiple = render([teacher, unavailable]);
+    assert.match(multiple, /<summary/);
+    assert.match(multiple, /Batería · Viernes 18:00/);
+    assert.match(multiple, /Canto · Jueves 19:00/);
+    assert.match(multiple, /Correo no configurado/);
+    assert.equal((multiple.match(/href="mailto:/g) || []).length, 1);
+    assert.doesNotMatch(render([unavailable]), /href="mailto:/);
+  } finally { await server.close(); }
 });
 
 test('admin publica solo el mapa corporativo necesario, sin el resto de ajustes privados', () => {

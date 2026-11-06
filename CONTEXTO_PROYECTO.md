@@ -217,3 +217,19 @@ Paco autorizó expresamente pasar las correcciones a producción. Se creó la ra
 Se guardaron las reglas publicadas antes de actualizar. Los índices administrativos de clases y correos de tickets ya tenían versión 1. Se añadió únicamente `roleData/studentSettings.mitoboxRoomCapacities`, con las seis capacidades reales ya configuradas, mediante una escritura condicionada a la versión leída. No había miembros Gymusik que migrar. Se publicaron solo reglas de Firestore: no índices, Storage, Hosting ni Apps Script.
 
 Verificación del 5/11/2026 a las 14:55 CET: dominio y recursos HTTP 200; JavaScript y CSS servidos idénticos a la compilación local; reglas activas idénticas al archivo probado; oferta pública de 48 clases accesible sin autenticación y sin campos privados; configuración y miembros Gymusik rechazan acceso anónimo (403). No se verificaron sesiones reales de alumno/profesor/administrador ni operaciones que envíen correo o afecten a cobros. Recargar pestañas antiguas. Detalles, copias y reversión en `PUBLICACION_2026-11-05.md`.
+
+## 15. Baja de servicios efectiva hoy — 6 de noviembre de 2026
+
+Paco detectó que «Ejecutar ahora» programaba la baja de servicios aun cuando la fecha efectiva ya había llegado. El campo de fecha representa el último día con acceso. Introducir ayer da como fecha efectiva hoy. La versión publicada exige después «Consolidar gestiones programadas vencidas» en Gestiones, que muestra el lote antes de confirmar.
+
+Se preparó una corrección local para que «Ejecutar ahora» aplique la baja de servicios cuando la fecha efectiva sea hoy o anterior. Reutiliza la consolidación selectiva y conserva la gestión en Programadas si falla la aplicación. Las fechas futuras siguen el circuito de consolidación. La corrección está pendiente de publicación.
+
+## 16. Alta con contrato Mitolocker — 6 de noviembre de 2026
+
+Paco aprobó una sola tarjeta en Extras con Compartido gratuito y Exclusivo por 5 €/mes. La selección empieza vacía y el alumno debe volver a aceptar si modifica la modalidad o los datos del contrato. Se conservan las 29 cláusulas del texto aportado, adaptadas a la aceptación en el portal y al resguardo separado. Se identifican titular, alumno y representante sin solicitar su DNI/NIE.
+
+La solicitud exige plaza de clases y guarda en `mitolockerContract` la modalidad, cuota, instrumento propuesto, texto aceptado, versión `mitolocker-2026-11-06-v1`, huella y fecha del servidor. En Gestiones se puede revisar y descargar la aceptación. El alta con contrato actualiza la ficha y cierra la solicitud en una transacción. Para Exclusivo se comprueba Tadosi en esa transacción. Las solicitudes previas y las gestiones administrativas directas conservan su tratamiento histórico.
+
+En Servicios → Mitolocker → Contrato y entrega, Administración puede registrar el inventario cuando recibe el instrumento y descargar el resguardo para firmarlo con el titular. El resguardo queda separado de la aceptación en `gestiones/{gestionId}/mitolockerDelivery/record`, con lectura administrativa. El alumno puede descargar su contrato desde Extras.
+
+Implementación local pendiente de publicación. El frontend y `firestore.rules` deben publicarse de forma coordinada, ya que el cliente anterior envía altas de Mitolocker sin contrato. Mantener separadas las comprobaciones del emulador y cualquier revisión operativa en producción.

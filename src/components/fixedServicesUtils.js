@@ -11,7 +11,7 @@ export const FIXED_SERVICES = [
   { key: 'mitolocker', name: 'Mitolocker', flag: 'hasMitolocker' }
 ];
 
-export const getMitolockerMode = value => MITOLOCKER_MODES[value] ? value : '';
+export const getMitolockerMode = value => Object.hasOwn(MITOLOCKER_MODES, value) ? value : '';
 export const mitolockerPatch = value => ({ hasMitolocker: Boolean(getMitolockerMode(value)), mitolockerMode: getMitolockerMode(value) });
 export const activeFixedServices = (student = {}) => FIXED_SERVICES
   .filter(service => student[service.flag] === true)

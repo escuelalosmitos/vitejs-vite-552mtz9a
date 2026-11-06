@@ -1,6 +1,7 @@
 import { reserveGymusik, cancelGymusik, initializeGymusikCredits, gymusikCreditRef } from '../src/components/gymusikCreditStore.js';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from '../src/components/vacationChallengeUtils.js';
 import { createMitoversoContractDraft, createMitoversoAcceptance } from '../src/components/mitoversoContractUtils.js';
+import { createMitolockerContractDraft, createMitolockerAcceptance } from '../src/components/mitolockerContractUtils.js';
 // Regresiones de los permisos corregidos. A01 conserva expresamente la decisión de Paco.
 // Solo se ejecutan contra Firestore Emulator, con identidades y datos ficticios.
 import test from 'node:test';
@@ -157,6 +158,54 @@ test('REGRESIONES: permisos y concurrencia, sin datos reales', async t => {
       await assertSucceeds(setDoc(doc(db,root,'gestiones','verse-with'),{...payload,mitoversoContract:{...contract,acceptedAt:serverTimestamp()}}));
       await assertFails(updateDoc(doc(db,root,'gestiones','verse-with'),{'mitoversoContract.monthlyFee':20}));
       await assertFails(setDoc(doc(db,root,'gestiones','verse-forged-identity'),{...payload,tadosiDone:true,mitoversoIdentityVerifiedAt:new Date().toISOString(),mitoversoContract:{...contract,acceptedAt:serverTimestamp()}}));
+    });
+    await t.test('Mitolocker exige aceptación propia y preserva el resguardo administrativo por separado', async () => {
+      await seed();
+      const db = student();
+      const admin = env.authenticatedContext('audit-admin', { email: 'paco@escuelalosmitos.com' }).firestore();
+      const payloads = [];
+      for (const mode of ['compartido', 'exclusivo']) {
+        const draft = { ...createMitolockerContractDraft(person, person), mode, instrument: 'Guitarra ficticia', accepted: true };
+        const acceptance = await createMitolockerAcceptance(draft);
+        const payload = {
+          studentId: person.id, studentName: person.name, studentEmail: person.email, type: 'alta_mitolocker',
+          title: 'Solicitud Mitolocker', details: 'Solicitud ficticia', date: new Date().toISOString(), status: 'pendiente',
+          mitolockerMode: mode, extraService: `mitolocker_${mode}`, extraMonthlyFee: acceptance.monthlyFee,
+          requiresManualActivation: true, requiresTadosiSetup: mode === 'exclusivo', tadosiDone: false,
+          mitolockerContract: { ...acceptance, acceptedAt: serverTimestamp() }
+        };
+        payloads.push(payload);
+        const ref = doc(db, root, 'gestiones', `locker-${mode}`);
+        await assertSucceeds(setDoc(ref, payload));
+        await assertSucceeds(getDoc(ref));
+        await assertSucceeds(updateDoc(ref, { adminCopySentAt: new Date().toISOString() }));
+        await assertFails(updateDoc(ref, { 'mitolockerContract.mode': 'otro' }));
+        await assertFails(updateDoc(doc(admin, ref.path), { 'mitolockerContract.text': 'reescritura' }));
+      }
+      const [shared] = payloads;
+      const { mitolockerContract, ...withoutContract } = shared;
+      await assertFails(setDoc(doc(db, root, 'gestiones', 'locker-without'), withoutContract));
+      const invalid = [
+        { ...shared, status: 'completado' }, { ...shared, extraMonthlyFee: 5 },
+        { ...shared, mitolockerMode: 'exclusivo' }, { ...shared, teacherEmails: ['staff@example.com'] },
+        { ...shared, mitolockerContract: { ...mitolockerContract, accepted: false } },
+        { ...shared, mitolockerContract: { ...mitolockerContract, authUid: 'other-uid' } },
+        { ...shared, mitolockerContract: { ...mitolockerContract, acceptedAt: Timestamp.fromMillis(1) } },
+        { ...shared, mitolockerContract: { ...mitolockerContract, instrument: 'x'.repeat(161) } }
+      ];
+      for (const [index, payload] of invalid.entries()) await assertFails(setDoc(doc(db, root, 'gestiones', `locker-invalid-${index}`), payload));
+
+      const receiptPath = `${root}/gestiones/locker-compartido/mitolockerDelivery/record`;
+      const receipt = { instrument: 'Guitarra ficticia', brand: '', model: '', serial: '123', finish: '', case: '', accessories: '', condition: 'Buen estado', declaredValue: '', date: '2026-11-06', mode: 'compartido', recordedAt: serverTimestamp() };
+      await assertFails(setDoc(doc(admin, receiptPath), receipt));
+      await assertSucceeds(updateDoc(doc(admin, root, 'gestiones', 'locker-compartido'), { status: 'completado' }));
+      await assertFails(setDoc(doc(db, receiptPath), receipt));
+      await assertSucceeds(setDoc(doc(admin, receiptPath), receipt));
+      await assertSucceeds(getDoc(doc(admin, receiptPath)));
+      await assertFails(getDoc(doc(db, receiptPath)));
+      await assertFails(updateDoc(doc(admin, receiptPath), { serial: 'otro' }));
+      await assertSucceeds(updateDoc(doc(admin, root, 'students', person.id), { classes: [], hasMitobox: true }));
+      await assertFails(setDoc(doc(db, root, 'gestiones', 'locker-without-class'), shared));
     });
     await t.test('A09: la preparación administrativa incluye las reservas antiguas y no admite que el alumno invente el saldo', async () => {
       await seed([...base(), [`${root}/students/${person.id}`, { ...profile, hasGymusik: true }],

@@ -1,5 +1,7 @@
 import MitoversoContractForm from './MitoversoContractForm.jsx';
 import { createMitoversoContractDraft, createMitoversoAcceptance, mitoversoDraftError, mitoversoMonthlyFee, downloadMitoversoContract, buildMitoversoContractCopy } from './mitoversoContractUtils.js';
+import MitolockerContractForm from './MitolockerContractForm.jsx';
+import { createMitolockerContractDraft, createMitolockerAcceptance, mitolockerDraftError, mitolockerModeLabel, downloadMitolockerContract, buildMitolockerContractCopy } from './mitolockerContractUtils.js';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Music, LogOut, Calendar, Ticket, Info, MessageSquare, LayoutGrid, AlertCircle, CheckCircle, User, ArrowRight, MapPin, X, Clock, FileText, Check, Bell, Megaphone, Snowflake, RefreshCcw, PlusCircle, UserMinus, Send, Mail, Sun, Sparkles, MonitorPlay, DoorOpen, Star, Trophy, Timer, Globe, Camera, ThumbsUp, Video, MessageCircle, Link as LinkIcon, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
 import { collection, query, where, getDoc, getDocs, doc, setDoc, updateDoc, collectionGroup, onSnapshot, runTransaction, arrayUnion, writeBatch, deleteField, serverTimestamp, Timestamp } from 'firebase/firestore';
@@ -244,9 +246,10 @@ const EXTRA_SERVICES = {
 
 const getExtraServiceConfig = (serviceKey = '') => {
   if (typeof serviceKey !== 'string' || !serviceKey) return null;
+  if (serviceKey === 'mitolocker') return { key: serviceKey, type: 'alta_mitolocker', name: 'Mitolocker' };
   if (serviceKey.startsWith('mitolocker_')) {
     const mode = serviceKey.slice('mitolocker_'.length);
-    const config = MITOLOCKER_MODES[mode];
+    const config = Object.hasOwn(MITOLOCKER_MODES, mode) ? MITOLOCKER_MODES[mode] : null;
     return config ? { ...config, key: serviceKey, mode, type: 'alta_mitolocker', title: `Solicitud de alta en ${config.name}`, Icon: DoorOpen, shortDescription: config.description } : null;
   }
   return EXTRA_SERVICES[serviceKey] || null;
@@ -796,6 +799,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [extraSignupModal, setExtraSignupModal] = useState(null);
   const [mitoboxContractDraft, setMitoboxContractDraft] = useState(null);
   const [mitoversoContractDraft, setMitoversoContractDraft] = useState(null);
+  const [mitolockerContractDraft, setMitolockerContractDraft] = useState(null);
   const [isSendingExtraSignup, setIsSendingExtraSignup] = useState(false);
   const [workshops, setWorkshops] = useState([]);
   const [myWorkshopRegistrations, setMyWorkshopRegistrations] = useState([]);
@@ -4246,7 +4250,8 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
   const hasPendingExtraSignup = (serviceKey = '') => {
     const serviceConfig = getExtraServiceConfig(serviceKey);
     if (!serviceConfig) return false;
-    return myGestiones.some(g => g.status === 'pendiente' && g.type === serviceConfig.type);
+    return myGestiones.some(g => g.status === 'pendiente' && g.type === serviceConfig.type
+      && (g.type !== 'alta_mitolocker' || g.studentId === profile?.id));
   };
 
   const openExtraSignupModal = (serviceKey) => {
@@ -4268,16 +4273,17 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       return;
     }
 
-    if (serviceConfig.mode && profile?.hasMitolocker) {
+    if (serviceConfig.type === 'alta_mitolocker' && profile?.hasMitolocker) {
       showToast('Ya tienes Mitolocker activo. Para cambiar de modalidad, contacta con Administración.', 'error');
       return;
     }
-    if (serviceConfig.mode && fixedMyClasses.length === 0) {
+    if (serviceConfig.type === 'alta_mitolocker' && fixedMyClasses.length === 0) {
       showToast('Mitolocker requiere mantener una plaza de clases en la escuela.', 'error');
       return;
     }
     if (serviceKey === 'mitoverso') setMitoversoContractDraft(createMitoversoContractDraft(profile, user, mitoversoMonthlyFee(fixedMyClasses.length > 0)));
     if (serviceKey === 'mitobox') setMitoboxContractDraft(createMitoboxContractDraft(profile, user, mitoboxMonthlyFee(fixedMyClasses.length > 0)));
+    if (serviceKey === 'mitolocker') setMitolockerContractDraft(createMitolockerContractDraft(profile, user));
     setExtraSignupModal(serviceKey);
   };
 
@@ -4287,7 +4293,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
   };
 
   const sendExtraSignupRequest = async () => {
-    const serviceConfig = getExtraServiceConfig(extraSignupModal);
+    const serviceConfig = getExtraServiceConfig(extraSignupModal === 'mitolocker' ? `mitolocker_${mitolockerContractDraft?.mode || ''}` : extraSignupModal);
     if (!serviceConfig || !profile?.id || isSendingExtraSignup) return;
 
     if (serviceConfig.mode && profile?.hasMitolocker) {
@@ -4306,6 +4312,7 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
     }
     const isMitobox = serviceConfig.key === 'mitobox';
     const isMitoverso = serviceConfig.key === 'mitoverso';
+    const isMitolocker = serviceConfig.type === 'alta_mitolocker';
     const monthlyFee = isMitobox ? mitoboxMonthlyFee(fixedMyClasses.length > 0) : isMitoverso ? mitoversoMonthlyFee(fixedMyClasses.length > 0) : serviceConfig.monthlyFee;
     if (isMitobox || isMitoverso) {
       const draft = isMitobox ? mitoboxContractDraft : mitoversoContractDraft;
@@ -4315,20 +4322,31 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
         showToast('Han cambiado la cuenta o la tarifa. Cierra y vuelve a abrir el contrato.', 'error'); return;
       }
     }
+    if (isMitolocker) {
+      const draft = mitolockerContractDraft;
+      const error = mitolockerDraftError(draft);
+      if (error) { showToast(error, 'error'); return; }
+      if (draft.mode !== serviceConfig.mode || draft.studentId !== profile.id || draft.authUid !== user.uid || draft.accountEmail !== String(user.email || profile.email || '').trim().toLowerCase()) {
+        showToast('Han cambiado la cuenta o la modalidad. Cierra y vuelve a abrir el contrato.', 'error'); return;
+      }
+    }
     const gestionId = `${serviceConfig.type}-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
     setIsSendingExtraSignup(true);
     try {
-      const contract = isMitobox ? await createMitoboxAcceptance(mitoboxContractDraft, nowIso) : isMitoverso ? await createMitoversoAcceptance(mitoversoContractDraft, nowIso) : null;
+      const contract = isMitobox ? await createMitoboxAcceptance(mitoboxContractDraft, nowIso)
+        : isMitoverso ? await createMitoversoAcceptance(mitoversoContractDraft, nowIso)
+        : isMitolocker ? await createMitolockerAcceptance(mitolockerContractDraft, nowIso) : null;
+      const contractField = isMitobox ? 'mitoboxContract' : isMitoverso ? 'mitoversoContract' : 'mitolockerContract';
       const payload = {
-        ...(contract ? { [isMitobox ? 'mitoboxContract' : 'mitoversoContract']: { ...contract, acceptedAt: serverTimestamp() } } : {}),
+        ...(contract ? { [contractField]: { ...contract, acceptedAt: serverTimestamp() } } : {}),
         studentId: profile.id,
         studentName: profile.name,
-        studentEmail: String(profile.email || user.email || '').trim().toLowerCase(),
+        studentEmail: isMitolocker ? contract.accountEmail : String(profile.email || user.email || '').trim().toLowerCase(),
         type: serviceConfig.type,
         title: serviceConfig.title,
-        details: `${profile.name} solicita el alta en ${serviceConfig.name}. ${serviceConfig.mode ? serviceConfig.shortDescription + ' ' : ''}${monthlyFee === 0 ? 'Modalidad gratuita, sin domiciliación.' : `Acepta la parte proporcional del mes corriente y una cuota de ${monthlyFee}€/mes. Preparar domiciliación en Tadosi.`} Administración debe activar el servicio manualmente.`,
+        details: `${profile.name} solicita el alta en ${serviceConfig.name}. ${isMitolocker ? `Instrumento propuesto: ${contract.instrument}. ` : ''}${monthlyFee === 0 ? 'Modalidad gratuita, sin domiciliación.' : isMitolocker ? `Cuota de ${monthlyFee} €/mes. Preparar domiciliación en Tadosi.` : `Acepta la parte proporcional del mes corriente y una cuota de ${monthlyFee}€/mes. Preparar domiciliación en Tadosi.`} Administración debe activar el servicio manualmente.`,
         ...(serviceConfig.mode ? { mitolockerMode: serviceConfig.mode } : {}),
         extraService: serviceConfig.key,
         extraServiceName: serviceConfig.name,
@@ -4362,9 +4380,11 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       if (contract) {
         // The request is already durable even if the email relay is unavailable.
         try {
+          const copy = isMitobox ? buildMitoboxContractCopy(contract, gestionId)
+            : isMitoverso ? buildMitoversoContractCopy(contract, gestionId) : buildMitolockerContractCopy(contract, gestionId);
           await fetch(APPS_SCRIPT_URL, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({
             type: 'confirmacion_alumno', to: contract.accountEmail, subject: `Solicitud de alta y contrato ${serviceConfig.name} - Escuela Los Mitos`,
-            body: `Hemos registrado tu solicitud de alta en ${serviceConfig.name}. El servicio está pendiente de revisión y activación. Conserva esta copia.\n\n${isMitobox ? buildMitoboxContractCopy(contract, gestionId) : buildMitoversoContractCopy(contract, gestionId)}`
+            body: `Hemos registrado tu solicitud de alta en ${serviceConfig.name}. El servicio está pendiente de revisión y activación. Conserva esta copia.\n\n${copy}`
           }) });
         } catch (error) { console.warn('No se pudo solicitar la copia por correo; sigue disponible en Extras.', error); }
       }
@@ -4680,6 +4700,8 @@ END:VCALENDAR`;
   const shouldShowBajaRevocationNotice = Boolean(profile?.scheduledBaja || scheduledBajaGestion);
   const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');
   const pendingMitoboxSignup = hasPendingExtraSignup('mitobox');
+  const pendingMitolockerSignup = myGestiones.find(g => g.type === 'alta_mitolocker' && g.studentId === profile?.id && g.status === 'pendiente');
+  const mitolockerContracts = myGestiones.filter(g => g.type === 'alta_mitolocker' && g.studentId === profile?.id && g.mitolockerContract?.text);
   const upcomingMitoboxReservations = myMitoboxReservations.filter(reservation => (
     isActiveMitoboxReservation(reservation)
     && `${reservation.reservationDate || ''}T${reservation.reservationTime || '00:00'}` >= `${todayStr}T00:00`
@@ -5389,6 +5411,18 @@ END:VCALENDAR`;
   };
 
   const renderExtraSignupModal = () => {
+    if (extraSignupModal === 'mitolocker' && mitolockerContractDraft) return (
+      <div className="fixed inset-0 bg-black/90 z-[100] flex items-start sm:items-center justify-center p-3 sm:p-4 overflow-y-auto">
+        <div role="dialog" aria-modal="true" aria-labelledby="mitolocker-signup-title" className="bg-white rounded-3xl max-w-2xl w-full p-5 sm:p-8 my-4 max-h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl">
+          <h2 id="mitolocker-signup-title" className="text-xl font-black mb-4">Alta en Mitolocker</h2>
+          <MitolockerContractForm draft={mitolockerContractDraft} onChange={setMitolockerContractDraft} disabled={isSendingExtraSignup}/>
+          <div className="flex flex-wrap justify-end gap-3">
+            <button type="button" onClick={closeExtraSignupModal} disabled={isSendingExtraSignup} className="px-5 py-3 rounded-xl bg-zinc-100 font-bold">Cancelar</button>
+            <button type="button" onClick={sendExtraSignupRequest} disabled={isSendingExtraSignup || Boolean(mitolockerDraftError(mitolockerContractDraft))} className="px-5 py-3 rounded-xl bg-black text-white font-bold disabled:opacity-40">{isSendingExtraSignup ? 'Enviando…' : 'Enviar solicitud'}</button>
+          </div>
+        </div>
+      </div>
+    );
     const serviceConfig = getExtraServiceConfig(extraSignupModal);
     if (!serviceConfig) return null;
 
@@ -7048,21 +7082,28 @@ END:VCALENDAR`;
                 )}
               </div>
 
-              {fixedMyClasses.length > 0 && Object.entries(MITOLOCKER_MODES).map(([mode, config]) => {
-                const active = profile?.hasMitolocker === true;
-                const current = active && profile.mitolockerMode === mode;
-                const pending = hasPendingExtraSignup(`mitolocker_${mode}`);
-                return <div key={mode} className="bg-white border-2 border-amber-200 rounded-3xl p-6 flex flex-col gap-4 shadow-sm relative overflow-hidden h-full">
+              {(fixedMyClasses.length > 0 || profile?.hasMitolocker || mitolockerContracts.length > 0) && (
+                <div className="bg-white border-2 border-amber-200 rounded-3xl p-6 flex flex-col gap-4 shadow-sm relative overflow-hidden h-full">
                   <div className="-mx-6 -mt-6 mb-2 bg-zinc-950 text-white p-5 border-b-4 border-amber-500">
                     <div className="flex items-center gap-4">
                       <div className="w-14 h-14 shrink-0 rounded-2xl bg-white/10 text-amber-300 flex items-center justify-center"><DoorOpen className="w-7 h-7"/></div>
-                      <div className="min-w-0 flex-1"><h3 className="text-2xl font-black uppercase tracking-tight">Mitolocker <span className="block text-sm font-bold tracking-normal mt-1">{mode === 'compartido' ? 'Compartido' : 'Exclusivo'}</span></h3><p className="font-black text-amber-300 mt-2">{config.monthlyFee === 0 ? 'Gratis' : '5 €/mes'}</p></div>
+                      <div className="min-w-0 flex-1"><h3 className="text-2xl font-black uppercase tracking-tight">Mitolocker</h3><p className="text-sm text-amber-300 font-bold mt-1">Guarda tu instrumento en la escuela</p></div>
                     </div>
                   </div>
-                  <p className="text-sm text-zinc-600 flex-1">Tu instrumento siempre en la escuela, en Tarragona y Reus. {config.description}</p>
-                  <button type="button" onClick={() => openExtraSignupModal(`mitolocker_${mode}`)} disabled={active || pending} className="w-full bg-black text-white py-4 rounded-xl font-black text-xs uppercase disabled:bg-zinc-100 disabled:text-zinc-500">{current ? 'Servicio activo' : active ? 'Ya tienes otra modalidad activa' : pending ? 'Solicitud enviada' : 'Solicitar alta'}</button>
-                </div>;
-              })}
+                  {profile?.hasMitolocker ? <p className="text-sm font-bold text-emerald-800">Activo · {mitolockerModeLabel(profile.mitolockerMode) || 'Modalidad pendiente'}</p>
+                    : pendingMitolockerSignup ? <p className="text-sm font-bold text-amber-800">En revisión · {mitolockerModeLabel(pendingMitolockerSignup.mitolockerMode) || 'Mitolocker'}</p>
+                    : fixedMyClasses.length > 0 && <>
+                      <div className="text-sm space-y-2 text-zinc-700">
+                        <p><strong>Compartido · Gratis</strong><br/>Autorizas el uso por otros alumnos.</p>
+                        <p><strong>Exclusivo · 5 €/mes</strong><br/>Uso reservado al titular.</p>
+                      </div>
+                      <button type="button" onClick={() => openExtraSignupModal('mitolocker')} className="w-full bg-black text-white py-4 rounded-xl font-black text-xs uppercase">Solicitar alta</button>
+                    </>}
+                  {mitolockerContracts.map(gestion => <div key={gestion.id} className="flex flex-col items-start gap-2 text-xs font-bold text-amber-900">
+                    <button type="button" onClick={() => downloadMitolockerContract(gestion.mitolockerContract, gestion.id)} className="underline text-left">Contrato aceptado · {formatDateSpanish(gestion.date)}</button>
+                  </div>)}
+                </div>
+              )}
 
               <GymusikStudent db={db} appId={appId} profile={profile} instruments={globalSettings.instrumentos || INSTRUMENTOS}/>
 

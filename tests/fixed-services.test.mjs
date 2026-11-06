@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { parse } from 'espree';
 import * as utils from '../src/components/fixedServicesUtils.js';
+import * as locker from '../src/components/mitolockerContractUtils.js';
 const sources = await Promise.all(['AdminPortal.jsx', 'StudentPortal.jsx', '../App.jsx'].map(name => readFile(`src/components/${name}`, 'utf8')));
 const asts = sources.map(source => parse(source, {ecmaVersion:'latest',sourceType:'module',range:true,ecmaFeatures:{jsx:true}}));
 function expression(index, name) {
@@ -71,17 +72,30 @@ test('una selección vacía o una segunda baja del mismo servicio no genera gest
     assert.equal(writes.length,0);assert.equal(toasts.at(-1)[1],'error');
   }
 });
-test('ambas altas reales guardan modalidad, precio y condiciones correctas sin activar la ficha',async()=>{
+test('ambas altas reales exigen contrato y guardan la modalidad y el precio aceptados',async()=>{
   for (const mode of ['compartido','exclusivo']) {
-    const writes=[],context={...utils,DoorOpen:noop,console,EXTRA_SERVICES:{},fixedMyClasses:[{id:'c1'}],extraSignupModal:`mitolocker_${mode}`,profile:{...profile,hasMitolocker:false},isSendingExtraSignup:false,
-      hasPendingExtraSignup:()=>false,user:{email:profile.email},db:{},appId:'app',doc:(...p)=>p.join('/'),setDoc:async(ref,data)=>writes.push(clean(data)),ADMIN_COPY_GESTION_TYPES:new Set(),
+    const student={...profile,name:'Alumna Ficticia',hasMitolocker:false},user={uid:'student-uid',email:student.email};
+    const draft={...locker.createMitolockerContractDraft(student,user),mode,instrument:'Guitarra de prueba'};
+    const writes=[],context={...utils,...locker,DoorOpen:noop,console,EXTRA_SERVICES:{},fixedMyClasses:[{id:'c1'}],extraSignupModal:'mitolocker',profile:student,isSendingExtraSignup:false,mitolockerContractDraft:draft,
+      hasPendingExtraSignup:()=>false,user,db:{},appId:'app',doc:(...p)=>p.join('/'),setDoc:async(ref,data)=>writes.push(clean(data)),ADMIN_COPY_GESTION_TYPES:new Set(),
+      serverTimestamp:()=> 'sello-servidor',fetch:async()=>{},APPS_SCRIPT_URL:'https://example.invalid/',
       showToast:noop,setIsSendingExtraSignup:noop,setExtraSignupModal:noop};
     context.getExtraServiceConfig=load(1,'getExtraServiceConfig',context);
-    await load(1,'sendExtraSignupRequest',context)();
+    const send=load(1,'sendExtraSignupRequest',context);
+    await send();
+    assert.equal(writes.length,0);
+    context.mitolockerContractDraft={...draft,accepted:true};
+    await send();
     assert.equal(writes.length,1);const request=writes[0];
     assert.equal(request.type,'alta_mitolocker');assert.equal(request.mitolockerMode,mode);assert.equal(request.extraMonthlyFee,mode==='compartido'?0:5);
     assert.equal(request.requiresTadosiSetup,mode==='exclusivo');assert.equal(request.status,'pendiente');
     assert.equal(request.hasMitolocker,undefined);
+    assert.equal(request.mitolockerContract.mode,mode);
+    assert.equal(request.mitolockerContract.acceptedAt,'sello-servidor');
+    assert.equal(request.mitolockerContract.instrument,'Guitarra de prueba');
+    assert.match(request.mitolockerContract.sha256,/^[a-f0-9]{64}$/);
+    assert.match(request.mitolockerContract.text,/## 29\. Conocimiento y aceptación/);
+    assert.doesNotMatch(request.mitolockerContract.text,/DNI\/NIE:/);
     if(mode==='compartido') assert.doesNotMatch(request.details,/Acepta la parte proporcional/);
   }
 });
@@ -112,6 +126,65 @@ test('admin activa la modalidad solicitada; gratis no exige Tadosi y exclusivo e
     assert.equal(result.ok,true);assert.equal(writes[0].data.hasMitolocker,true);assert.equal(writes[0].data.mitolockerMode,mode);assert.equal(finals.length,1);
     assert.match(mail[0].body,mode==='compartido'?/Modalidad gratuita/:/5 €\/mes/);assert.doesNotMatch(mail[0].body,/Ya puedes reservar sala/);
   }
+});
+test('admin aplica el contrato y cierra el alta juntos tras comprobar la solicitud del servidor', async () => {
+  const student = {...profile, name: 'Alumna Ficticia', classes: ['c1'], hasMitolocker: false};
+  const draft = {...locker.createMitolockerContractDraft(student, {uid: 'student-uid', email: student.email}), mode: 'exclusivo', instrument: 'Guitarra ficticia', accepted: true};
+  const contract = {...await locker.createMitolockerAcceptance(draft), acceptedAt: {seconds: 1793955600}};
+  const request = {type: 'alta_mitolocker', studentId: student.id, studentName: student.name, studentEmail: student.email, status: 'pendiente', mitolockerMode: 'exclusivo', extraMonthlyFee: 5, tadosiDone: true, mitolockerContract: contract};
+  const commits = [];
+  let saved = {...request, tadosiDone: false};
+  const {context, mail} = adminContext({
+    students: [student], mitolockerEvidenceError: locker.mitolockerEvidenceError,
+    isGestionTadosiDone: gestion => gestion.tadosiDone === true,
+    runTransaction: async (_, callback) => {
+      const writes = [];
+      await callback({get: async ref => ({data: () => ref.endsWith('/g1') ? saved : student}), update: (ref, data) => writes.push({ref, data: clean(data)})});
+      commits.push(writes);
+    }
+  });
+  const execute = load(0, 'updateGestionStatus', context);
+  const options = {skipConfirm: true, silent: true};
+  assert.match((await execute('g1', 'completado', request, options)).message, /Tadosi/);
+  saved = {...request, mitolockerContract: {...contract, text: contract.text + ' alterado'}};
+  assert.match((await execute('g1', 'completado', request, options)).message, /huella/);
+  assert.equal(commits.length, 0);
+  assert.equal(mail.length, 0);
+  saved = request;
+  const result = await execute('g1', 'completado', request, options);
+  assert.equal(result.ok, true, result.message);
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0][0].data.mitolockerContractGestionId, 'g1');
+  assert.equal(commits[0][0].data.mitolockerMode, 'exclusivo');
+  assert.equal(commits[0][1].data.status, 'completado');
+});
+
+test('el selector Mitolocker empieza vacío y desmarca la aceptación al cambiar la modalidad', async () => {
+  const {transformWithOxc} = await import('vite');
+  const runtime = await import('react/jsx-runtime');
+  const source = await readFile('src/components/MitolockerContractForm.jsx', 'utf8');
+  const fn = source.slice(source.indexOf('export default function')).replace('export default ', '');
+  const code = (await transformWithOxc(fn, 'MitolockerContractForm.jsx')).code;
+  const Form = vm.runInNewContext(`${code};MitolockerContractForm`, {...locker, ...utils, require: () => runtime, MitoversoContractDocument: noop});
+  const inputs = tree => {
+    const found = [];
+    function visit(node) {
+      if (Array.isArray(node)) return node.forEach(visit);
+      if (!node || typeof node !== 'object') return;
+      if (node.type === 'input') found.push(node.props);
+      visit(node.props?.children);
+    }
+    visit(tree);
+    return found;
+  };
+  const draft = locker.createMitolockerContractDraft(profile, {uid: 'student-uid', email: profile.email});
+  const changes = [];
+  const first = inputs(Form({draft, onChange: value => changes.push(value)}));
+  assert.deepEqual(first.map(input => input.checked), [false, false]);
+  const selected = inputs(Form({draft: {...draft, mode: 'compartido', accepted: true}, onChange: value => changes.push(value)}));
+  selected.find(input => input.value === 'exclusivo').onChange();
+  assert.equal(changes[0].mode, 'exclusivo');
+  assert.equal(changes[0].accepted, false);
 });
 test('admin rechaza cambiar a otra modalidad por una solicitud antigua y programa las bajas de servicios',async()=>{
   const {context,writes,finals}=adminContext();const execute=load(0,'updateGestionStatus',context);

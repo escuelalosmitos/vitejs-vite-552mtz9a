@@ -99,12 +99,13 @@ test('admin activa con evidencia válida y conserva referencia al contrato y cuo
  assert.equal(result.ok,true);assert.equal(writes[0].data.hasMitobox,true);assert.equal(writes[0].data.mitoboxMonthlyFee,35);assert.equal(writes[0].data.mitoboxContractSha256,accepted.sha256);
  assert.equal(finals.length,1);assert.ok(mails[0].body.includes(accepted.text));
 });
-test('Mitolocker se renderiza después de Mitobox, con icono y nombre juntos y modalidad en texto menor',async()=>{
+test('Mitolocker conserva su posición después de Mitobox y muestra ambas modalidades en una sola tarjeta',async()=>{
  const section=sources[0].slice(sources[0].indexOf('Servicios permanentes'));
  assert.ok(section.indexOf('>Mitoverso</h3>')<section.indexOf('>Mitobox</h3>'));
- assert.ok(section.indexOf('>Mitobox</h3>')<section.indexOf('Object.entries(MITOLOCKER_MODES)'));
- const block=section.slice(section.indexOf('Object.entries(MITOLOCKER_MODES)'),section.indexOf('<GymusikStudent'));
- assert.match(block,/flex items-center gap-4/);assert.match(block,/text-2xl[^>]*>Mitolocker/);assert.match(block,/text-sm font-bold[^>]*>\{mode/);
+ const block=section.slice(section.indexOf('>Mitobox</h3>'),section.indexOf('<GymusikStudent'));
+ assert.equal((block.match(/>Mitolocker<\/h3>/g)||[]).length,1);
+ assert.match(block,/Compartido · Gratis/);assert.match(block,/Exclusivo · 5 €\/mes/);
+ assert.match(block,/openExtraSignupModal\('mitolocker'\)/);
  assert.ok(block.indexOf('<DoorOpen')<block.indexOf('>Mitolocker'));
 });
 test('el formulario de contrato obliga a aceptar de nuevo tras cambiar identidad o inicio anticipado',async()=>{

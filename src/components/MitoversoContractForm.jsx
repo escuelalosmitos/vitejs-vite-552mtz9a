@@ -2,8 +2,8 @@ import { buildMitoversoContractText, downloadMitoversoContract, MITOVERSO_ACCEPT
 
 const readable = text => text.replace(/\[\*\*([^*]+)\*\*\]\(mailto:[^)]+\)/g, '$1').replace(/\*\*/g, '');
 
-export function MitoversoContractDocument({ text = '' }) {
-  return <article className="space-y-4 text-sm leading-relaxed text-slate-700" aria-label="Texto completo del contrato Mitoverso">
+export function MitoversoContractDocument({ text = '', label = 'Texto completo del contrato Mitoverso' }) {
+  return <article className="space-y-4 text-sm leading-relaxed text-slate-700" aria-label={label}>
     {text.split(/\n\s*\n/).map((block, index) => block.startsWith('#')
       ? <h3 key={index} className="font-black text-slate-950 text-base">{readable(block.replace(/^#+\s*/, ''))}</h3>
       : <p key={index} className="whitespace-pre-wrap break-words">{readable(block)}</p>)}

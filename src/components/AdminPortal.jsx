@@ -1,4 +1,5 @@
 import { mitoversoEvidenceError, mitoversoEarliestActivation, mitoversoMonthlyFee, downloadMitoversoContract, buildMitoversoContractCopy } from './mitoversoContractUtils.js';
+import { mitolockerEvidenceError, downloadMitolockerContract, mitolockerModeLabel } from './mitolockerContractUtils.js';
 import { initializeGymusikCredits, gymusikCreditRef } from './gymusikCreditStore.js';
 // AdminPortal · configuración multi-sede dinámica y compatible con datos heredados
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -6681,6 +6682,11 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
       const error = await mitoboxEvidenceError(gestion, student);
       if (error) return alert(error);
     }
+    if (gestion.type === 'alta_mitolocker' && gestion.mitolockerContract) {
+      const student = students.find(item => item.id === gestion.studentId) || {};
+      const error = await mitolockerEvidenceError(gestion, student);
+      if (error) return alert(error);
+    }
     const extraConfig = getExtraServiceConfigForGestion(gestion);
     const confirmText = extraConfig
       ? `¿Marcar como TADOSI HECHO la domiciliación de ${extraConfig.name} para ${gestion.studentName || 'alumno'}?
@@ -6775,17 +6781,43 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
         }
         const alreadyActive = Boolean(studentInfo?.[extraConfig.studentFlag]);
         const nowIso = new Date().toISOString();
+        const lockerContract = extraConfig.key === 'mitolocker' ? gestionData.mitolockerContract : null;
         const updatePayload = {
           [extraConfig.studentFlag]: true,
           ...(extraConfig.key === 'mitoverso' && gestionData.mitoversoContract ? { mitoversoMonthlyFee: gestionData.mitoversoContract.monthlyFee, mitoversoContractVersion: gestionData.mitoversoContract.version, mitoversoContractSha256: gestionData.mitoversoContract.sha256, mitoversoContractGestionId: gestionId } : {}),
           ...(extraConfig.key === 'mitobox' ? { mitoboxMonthlyFee: gestionData.mitoboxContract.monthlyFee, mitoboxContractVersion: gestionData.mitoboxContract.version, mitoboxContractSha256: gestionData.mitoboxContract.sha256, mitoboxContractGestionId: gestionId } : {}),
           ...(extraConfig.key === 'mitolocker' ? mitolockerPatch(extraConfig.mode) : {}),
+          ...(lockerContract ? { mitolockerContractGestionId: gestionId, mitolockerContractVersion: lockerContract.version, mitolockerContractSha256: lockerContract.sha256 } : {}),
           [`${extraConfig.key}ActivatedAt`]: studentInfo?.[`${extraConfig.key}ActivatedAt`] || nowIso,
           [`${extraConfig.key}ActivatedBy`]: user?.email || 'admin',
           [`${extraConfig.key}SourceGestionId`]: gestionId
         };
-
-        await updateDoc(doc(db, 'artifacts', appId, 'students', studentId), updatePayload);
+        const activation = {
+          workflowStatus: 'servicio_activado',
+          extraServiceActivatedAt: nowIso,
+          extraServiceActivatedBy: user?.email || 'admin',
+          activatedExtraService: extraConfig.key,
+          activatedStudentFlag: extraConfig.studentFlag
+        };
+        const studentRef = doc(db, 'artifacts', appId, 'students', studentId);
+        if (lockerContract) {
+          const gestionRef = doc(db, 'artifacts', appId, 'gestiones', gestionId);
+          await runTransaction(db, async transaction => {
+            const [studentSnapshot, gestionSnapshot] = await Promise.all([transaction.get(studentRef), transaction.get(gestionRef)]);
+            const currentStudent = studentSnapshot.data(), saved = gestionSnapshot.data();
+            if (!saved || saved.type !== 'alta_mitolocker' || saved.status !== 'pendiente' || saved.studentId !== studentId) throw new Error('La solicitud ya no está pendiente. Actualiza la bandeja.');
+            if (!currentStudent || currentStudent.globalStatus === 'baja' || !currentStudent.classes?.length) throw new Error('Mitolocker requiere una plaza de clases activa.');
+            if (currentStudent.hasMitolocker) throw new Error('El alumno ya tiene Mitolocker activo. Revisa su ficha.');
+            const error = await mitolockerEvidenceError(saved, currentStudent);
+            if (error) throw new Error(error);
+            if (saved.mitolockerMode !== extraConfig.mode || saved.mitolockerContract.sha256 !== lockerContract.sha256) throw new Error('Ha cambiado la aceptación. Actualiza la bandeja antes de activar.');
+            if (saved.mitolockerMode === 'exclusivo' && !isGestionTadosiDone(saved)) throw new Error('Prepara la cuota en Tadosi antes de activar Mitolocker Exclusivo.');
+            transaction.update(studentRef, updatePayload);
+            transaction.update(gestionRef, { ...activation, status: 'completado' });
+          });
+        } else {
+          await updateDoc(studentRef, updatePayload);
+        }
 
         await sendStudentNotification({
           studentEmail,
@@ -6807,13 +6839,7 @@ Coordinación Los Mitos.${extraConfig.key === 'mitobox' ? `\n\nCopia del contrat
           'completado',
           gestionData,
           `${extraConfig.name} activado manualmente. ${alreadyActive ? 'El alumno ya figuraba como activo; se ha cerrado igualmente la solicitud.' : 'Se ha activado el acceso en la ficha del alumno.'}`,
-          {
-            workflowStatus: 'servicio_activado',
-            extraServiceActivatedAt: nowIso,
-            extraServiceActivatedBy: user?.email || 'admin',
-            activatedExtraService: extraConfig.key,
-            activatedStudentFlag: extraConfig.studentFlag
-          }
+          activation
         );
 
         return notify(`✅ ${extraConfig.name} activado para ${displayName}. El trámite queda cerrado y el alumno ya verá el servicio como activo en Extras.`);
@@ -14751,6 +14777,16 @@ ${startDateWarning}
                               );
                             })()}
                             {g.type === 'reserva_mitobox' && !g.migratedToMitoboxReservationsAt && <button type="button" onClick={() => approveLegacyMitoboxMigration(g)} className="mt-3 p-3 border rounded-xl text-xs font-bold">Revisar y autorizar reserva antigua de Mitobox</button>}
+                            {g.type === 'alta_mitolocker' && <div className="mt-3 p-3 border border-amber-200 bg-amber-50 rounded-xl text-xs space-y-1">
+                              {g.mitolockerContract ? <>
+                                <p className="font-black">Contrato Mitolocker aceptado</p>
+                                <p>{mitolockerModeLabel(g.mitolockerContract.mode)} · {g.mitolockerContract.instrument}</p>
+                                <p>Contratante: {g.mitolockerContract.signerFullName}</p>
+                                <p>Alumno: {g.mitolockerContract.studentFullName} · {g.mitolockerContract.role === 'guardian' ? 'Representante de menor' : 'En nombre propio'}</p>
+                                <p>Confirma la identidad, el instrumento y la disponibilidad antes de activar.</p>
+                                <button type="button" onClick={() => downloadMitolockerContract(g.mitolockerContract, g.id)} className="font-bold underline">Descargar contrato y registro de aceptación</button>
+                              </> : <p>Solicitud anterior a la aceptación en Extras. Confirma las condiciones con el alumno antes de activarla.</p>}
+                            </div>}
                             {g.type === 'alta_mitobox' && <div className="mt-3 p-3 border border-blue-200 bg-blue-50 rounded-xl text-xs space-y-1">
                               {g.mitoboxContract ? <>
                                 <p className="font-black">Contrato Mitobox aceptado</p>

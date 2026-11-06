@@ -1,6 +1,7 @@
 import { initializeGymusikCredits, cancelGymusik, gymusikCreditRef } from './gymusikCreditStore.js';
 import { useEffect, useMemo, useState } from 'react';
 import { MITOLOCKER_MODES, mitolockerPatch } from './fixedServicesUtils.js';
+import MitolockerDeliveryDialog from './MitolockerDeliveryDialog.jsx';
 import {
   AlertCircle, Calendar, ChevronDown, ChevronUp,
   Edit3, MapPin, Music, Plus, Save, Search, Trash2, UserCheck,
@@ -131,6 +132,7 @@ function MitoversoRoster({ students = [] }) {
 }
 
 function MitolockerRoster({ students = [], db, appId, canUseMitolocker }) {
+  const [deliveryStudent, setDeliveryStudent] = useState(null);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [studentId, setStudentId] = useState('');
@@ -165,7 +167,20 @@ function MitolockerRoster({ students = [], db, appId, canUseMitolocker }) {
       </div>
       <div className="flex flex-col sm:flex-row gap-3"><input aria-label="Buscar usuario de Mitolocker" placeholder="Buscar por nombre o correo" value={search} onChange={event => setSearch(event.target.value)} className="p-3 border rounded-xl flex-1"/><select aria-label="Filtrar Mitolocker por modalidad" value={filter} onChange={event => setFilter(event.target.value)} className="p-3 border rounded-xl"><option value="all">Todas las modalidades</option><option value="compartido">Compartido</option><option value="exclusivo">Exclusivo</option></select></div>
     </div>
-    <div className="bg-white border rounded-3xl overflow-hidden">{visible.length === 0 ? <p className="p-6 text-zinc-500">No hay alumnos con este filtro.</p> : visible.map(student => <div key={student.id} className="p-4 border-b last:border-b-0 flex flex-col sm:flex-row gap-3 sm:items-center justify-between"><div><p className="font-black">{student.name}</p><p className="text-xs text-zinc-500">{student.email}</p></div><select aria-label={`Modalidad de ${student.name}`} disabled={saving} value={student.mitolockerMode || ''} onChange={event => update(student.id, event.target.value)} className="p-3 border rounded-xl"><option value="">Desactivado</option><option value="compartido">Compartido · gratis</option><option value="exclusivo">Exclusivo · 5 €/mes</option></select></div>)}</div>
+    <div className="bg-white border rounded-3xl overflow-hidden">
+      {visible.length === 0 ? <p className="p-6 text-zinc-500">No hay alumnos con este filtro.</p> : visible.map(student => (
+        <div key={student.id} className="p-4 border-b last:border-b-0 flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
+          <div><p className="font-black">{student.name}</p><p className="text-xs text-zinc-500">{student.email}</p></div>
+          <div className="flex flex-wrap gap-2 items-center">
+            {student.mitolockerContractGestionId && <button type="button" onClick={() => setDeliveryStudent(student)} className="text-sm font-bold text-amber-900 underline">Contrato y entrega</button>}
+            <select aria-label={`Modalidad de ${student.name}`} disabled={saving} value={student.mitolockerMode || ''} onChange={event => update(student.id, event.target.value)} className="p-3 border rounded-xl">
+              <option value="">Desactivado</option><option value="compartido">Compartido · gratis</option><option value="exclusivo">Exclusivo · 5 €/mes</option>
+            </select>
+          </div>
+        </div>
+      ))}
+    </div>
+    {deliveryStudent && <MitolockerDeliveryDialog key={deliveryStudent.id} student={deliveryStudent} db={db} appId={appId} onClose={() => setDeliveryStudent(null)}/>}
   </div>;
 }
 

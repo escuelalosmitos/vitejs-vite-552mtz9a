@@ -688,6 +688,59 @@ service cloud.firestore {
         && contract.sha256 is string && contract.sha256.matches('^[a-f0-9]{64}$');
     }
 
+    // Alta Mitolocker: selección y copia aceptada de la cuenta que la solicita.
+    function validMitolockerContractAcceptance(appId, data) {
+      let contract = data.mitolockerContract;
+      let student = get(studentRecordPath(appId, data.studentId)).data;
+      let mode = data.mitolockerMode;
+      return student.get('classes', []) is list && student.get('classes', []).size() > 0
+        && student.get('hasMitolocker', false) != true
+        && data.keys().hasOnly(['studentId', 'studentName', 'studentEmail', 'type', 'title', 'details', 'mitolockerMode', 'extraService', 'extraServiceName', 'serviceName', 'extraMonthlyFee', 'extraProratedFee', 'extraProrationFrom', 'extraProrationUntil', 'extraProrationDays', 'extraProrationMonth', 'extraProrationPolicy', 'requiresManualActivation', 'requiresTadosiSetup', 'tadosiDone', 'status', 'date', 'mitolockerContract'])
+        && data.studentName is string && data.studentName.size() <= 160
+        && data.title is string && data.title.size() <= 160
+        && data.details is string && data.details.size() <= 1200
+        && data.date is string && data.date.size() <= 32
+        && mode in ['compartido', 'exclusivo'] && data.extraService == 'mitolocker_' + mode
+        && data.get('extraServiceName', '') is string && data.get('extraServiceName', '').size() <= 80
+        && data.get('serviceName', '') is string && data.get('serviceName', '').size() <= 80
+        && data.get('extraProratedFee', null) == null && data.get('extraProrationDays', null) == null
+        && data.get('extraProrationFrom', '') == '' && data.get('extraProrationUntil', '') == '' && data.get('extraProrationMonth', '') == ''
+        && data.get('extraProrationPolicy', '') in ['', 'gratuito', 'parte_proporcional_mes_corriente_segun_fecha_activacion_admin']
+        && data.requiresManualActivation == true && data.requiresTadosiSetup == (mode == 'exclusivo')
+        && contract is map
+        && contract.keys().hasOnly(['version', 'studentId', 'accountEmail', 'authUid', 'signerFullName', 'studentFullName', 'role', 'mode', 'instrument', 'presentedAt', 'accepted', 'monthlyFee', 'acceptedAtClient', 'acceptedAt', 'acceptanceText', 'text', 'sha256'])
+        && contract.version == 'mitolocker-2026-11-06-v1'
+        && contract.studentId == data.studentId && contract.accountEmail == authEmail()
+        && contract.authUid == request.auth.uid && contract.mode == mode
+        && contract.signerFullName is string && contract.signerFullName.size() >= 3 && contract.signerFullName.size() <= 160
+        && contract.studentFullName is string && contract.studentFullName.size() >= 3 && contract.studentFullName.size() <= 160
+        && (contract.role == 'guardian' || (contract.role == 'adult' && contract.signerFullName == contract.studentFullName))
+        && contract.instrument is string && contract.instrument.size() > 0 && contract.instrument.size() <= 160
+        && contract.monthlyFee == (mode == 'compartido' ? 0 : 5) && data.extraMonthlyFee == contract.monthlyFee
+        && contract.presentedAt is string && contract.presentedAt.size() <= 32
+        && contract.acceptedAtClient is string && contract.acceptedAtClient.size() <= 32
+        && contract.acceptanceText is string && contract.acceptanceText.size() > 0 && contract.acceptanceText.size() <= 300
+        && contract.accepted == true && contract.acceptedAt == request.time
+        && contract.text is string && contract.text.size() > 10000 && contract.text.size() < 35000
+        && contract.sha256 is string && contract.sha256.matches('^[a-f0-9]{64}$');
+    }
+
+    function validMitolockerDelivery(data, gestion) {
+      return gestion.type == 'alta_mitolocker' && gestion.status == 'completado'
+        && data.keys().hasOnly(['instrument', 'brand', 'model', 'serial', 'finish', 'case', 'accessories', 'condition', 'declaredValue', 'date', 'mode', 'recordedAt'])
+        && data.mode == gestion.mitolockerContract.mode && data.recordedAt == request.time
+        && data.date is string && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.instrument is string && data.instrument.size() > 0 && data.instrument.size() <= 160
+        && data.brand is string && data.brand.size() <= 160
+        && data.model is string && data.model.size() <= 160
+        && data.serial is string && data.serial.size() <= 160
+        && data.finish is string && data.finish.size() <= 160
+        && data.case is string && data.case.size() <= 160
+        && data.accessories is string && data.accessories.size() <= 500
+        && data.condition is string && data.condition.size() > 0 && data.condition.size() <= 500
+        && data.declaredValue is string && data.declaredValue.size() <= 160;
+    }
+
     // Anonymous, date-specific capacity. A pupil can only add one hold, paired
     // atomically with their own request and exclusive ticket claim.
     function recoveryAvailabilityPath(appId, availabilityId) {
@@ -802,7 +855,9 @@ service cloud.firestore {
       // Los trámites forman parte del trabajo compartido: una recuperación puede
       // comenzar con un profesor y terminar en la clase de otro.
       allow read: if isAdmin() || isTeacher(appId) || studentOwnsResource(appId);
-      allow create: if isAdmin() || teacherInTeacherEmails(appId, request.resource.data) || (
+      allow create: if isAdmin() || (teacherInTeacherEmails(appId, request.resource.data)
+        && request.resource.data.get('type', '') != 'alta_mitolocker'
+        && !('mitolockerContract' in request.resource.data)) || (
         studentCreatesOwnResource(appId)
         && request.resource.data.get('status', '') == 'pendiente'
         && request.resource.data.get('type', '') != 'reserva_mitobox'
@@ -813,18 +868,33 @@ service cloud.firestore {
         && (!('type' in request.resource.data) || request.resource.data.type != 'alta_mitobox'
           || validMitoboxContractAcceptance(request.resource.data))
         && (request.resource.data.get('type', '') != 'alta_mitoverso' || validMitoversoContractAcceptance(request.resource.data))
+        && (request.resource.data.get('type', '') == 'alta_mitolocker'
+          ? validMitolockerContractAcceptance(appId, request.resource.data)
+          : !('mitolockerContract' in request.resource.data))
       );
-      allow update: if isAdmin() || (
+      allow update: if (isAdmin() && request.resource.data.get('mitolockerContract', null) == resource.data.get('mitolockerContract', null)) || (
         teacherInTeacherEmails(appId, resource.data)
         && teacherInTeacherEmails(appId, request.resource.data)
+        && resource.data.get('type', '') != 'alta_mitolocker' && request.resource.data.get('type', '') != 'alta_mitolocker'
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['mitolockerContract'])
         && request.resource.data.teacherEmails == resource.data.teacherEmails
         && request.resource.data.studentId == resource.data.studentId
         && request.resource.data.studentEmail == resource.data.studentEmail
       ) || (
         studentOwnsResource(appId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['adminCopySentAt', 'adminCopyRecipient'])
+        && (resource.data.get('type', '') != 'alta_mitolocker'
+          || (request.resource.data.get('adminCopySentAt', '') is string && request.resource.data.get('adminCopySentAt', '').size() <= 32
+            && request.resource.data.get('adminCopyRecipient', '') is string && request.resource.data.get('adminCopyRecipient', '').size() <= 160))
       );
       allow delete: if isAdmin();
+
+      // El inventario físico se archiva por separado, con acceso administrativo.
+      match /mitolockerDelivery/{deliveryId} {
+        allow get: if isAdmin();
+        allow create: if isAdmin() && deliveryId == 'record'
+          && validMitolockerDelivery(request.resource.data, get(recoveryRequestPath(appId, gestionId)).data);
+      }
     }
 
     match /artifacts/{appId}/mitoboxReservations/{reservationId} {
@@ -1266,8 +1336,13 @@ service cloud.firestore {
       allow read: if isAdmin();
     }
 
-    match /artifacts/{appId}/{document=**} {
+    match /artifacts/{appId} {
       allow read, write: if isAdmin();
+    }
+
+    match /artifacts/{appId}/{collection}/{document=**} {
+      // Gestiones tiene reglas propias para conservar contratos y resguardos.
+      allow read, write: if isAdmin() && collection != 'gestiones';
     }
 
     match /{document=**} {

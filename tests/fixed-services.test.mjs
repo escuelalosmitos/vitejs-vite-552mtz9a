@@ -336,16 +336,24 @@ test('proyección BI incluye ambas altas y respeta el alcance de bajas futuras s
   const cases=[
     {gestiones:[{type:'alta_mitolocker',mitolockerMode:'compartido',studentId:profile.id,status:'pendiente'}],student:{...profile,hasMitolocker:false},mode:'compartido'},
     {gestiones:[{type:'alta_mitolocker',mitolockerMode:'exclusivo',studentId:profile.id,status:'pendiente'}],student:{...profile,hasMitolocker:false},mode:'exclusivo'},
+    {gestiones:[{type:'alta_mitolocker',mitolockerMode:'exclusivo',studentId:profile.id,status:'pendiente'}],student:{...profile,hasMitolocker:false,mitolockerMode:''},mode:'',hasSeat:false},
     {gestiones:[{...selection,type:'baja_servicios',studentId:profile.id,status:'pendiente'}],student:profile,mode:''},
     {gestiones:[{...selection,cancelledServiceKeys:[],type:'baja',bajaScope:'total',studentId:profile.id,status:'completado',scheduledEffectiveDate:'2026-12-01'}],student:profile,mode:'exclusivo'},
     {gestiones:[{...selection,type:'baja_servicios',studentId:profile.id,status:'completado',scheduledEffectiveDate:'2026-10-01',consolidatedAt:'2026-10-01'}],student:profile,mode:'exclusivo'}
   ];
   for (const scenario of cases) {
-    const ctx={...utils,useMemo:fn=>fn(),recurringClassesOnly:[],students:[scenario.student],maintenancePeriods:[],gestiones:scenario.gestiones,nextMonthStartStr:'2026-12-01',nextMonthEndStr:'2026-12-31',
+    const ctx={...utils,useMemo:fn=>fn(),recurringClassesOnly:scenario.hasSeat===false?[]:biClasses,students:[scenario.student],maintenancePeriods:[],gestiones:scenario.gestiones,nextMonthStartStr:'2026-12-01',nextMonthEndStr:'2026-12-31',
       normalizeGestionDateString:value=>value,EXTRA_SERVICE_GESTION_TYPES:new Set(['alta_mitolocker']),PROJECTABLE_GESTION_TYPES:new Set(['baja','baja_servicios']),
-      getFixedStudentClasses:()=>[{id:'c1'}],isExtraServiceGestionType:type=>type==='alta_mitolocker',getMonthStartFromGestionTarget:()=> '2026-12-01'};
+      isPunctualClass:()=>false,isFixedClassStudent:()=>true,isStudentClassCommittedOnDate:()=>true,
+      isExtraServiceGestionType:type=>type==='alta_mitolocker',getMonthStartFromGestionTarget:()=> '2026-12-01'};
     ctx.getExtraServiceConfigByType=load(0,'getExtraServiceConfigByType',ctx);
-    const projection=load(0,'biProjectionInputs',ctx);
+    // Ejecuta ambas declaraciones en el orden real de render. Inyectar la función
+    // como un doble oculta un ReferenceError si el useMemo la llama demasiado pronto.
+    const declarations = ['biProjectionInputs', 'getFixedStudentClasses']
+      .sort((a, b) => sources[0].indexOf(`const ${a} =`) - sources[0].indexOf(`const ${b} =`))
+      .map(name => `const ${name} = ${expression(0, name)};`)
+      .join('\n');
+    const projection=vm.runInNewContext(`${declarations}\nbiProjectionInputs`,ctx);
     const student=projection.potential.students[0];
     assert.equal(student.mitolockerMode,scenario.mode);assert.equal(student.hasMitolocker,Boolean(scenario.mode));assert.equal(student.hasMitobox,true);
   }

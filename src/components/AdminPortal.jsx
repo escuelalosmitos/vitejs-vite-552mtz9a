@@ -4250,6 +4250,17 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const currentMonthStartStr = useMemo(() => getMonthStartStringFromDate(todayStr), [todayStr]);
   const currentMonthEndStr = useMemo(() => addDaysToLocalDateString(nextMonthStartStr, -1), [nextMonthStartStr]);
 
+  const getFixedStudentClasses = (studentId, classes = recurringClassesOnly, dateStr = todayStr) => {
+    if (!studentId) return [];
+    return (classes || []).filter(clase =>
+      !isPunctualClass(clase) &&
+      (clase.students || []).some(studentEntry => {
+        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
+        return studentEntry.id === studentId && isFixedClassStudent(studentEntry) && isStudentClassCommittedOnDate(studentEntry, studentInfo, dateStr);
+      })
+    );
+  };
+
   const biProjectionInputs = useMemo(() => {
     const cloneClasses = source => source.map(clase => ({
       ...clase,
@@ -5517,18 +5528,6 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     }
     return '';
   };
-
-  const getFixedStudentClasses = (studentId, classes = recurringClassesOnly, dateStr = todayStr) => {
-    if (!studentId) return [];
-    return (classes || []).filter(clase =>
-      !isPunctualClass(clase) &&
-      (clase.students || []).some(studentEntry => {
-        const studentInfo = students.find(student => student.id === studentEntry.id) || {};
-        return studentEntry.id === studentId && isFixedClassStudent(studentEntry) && isStudentClassCommittedOnDate(studentEntry, studentInfo, dateStr);
-      })
-    );
-  };
-
 
   const isTemporaryRelocationActiveForDate = (relocation = {}, dateStr = todayStr) => {
     if (!relocation || relocation.status === 'cancelled') return false;

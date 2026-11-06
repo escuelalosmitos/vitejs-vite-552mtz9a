@@ -15,7 +15,7 @@ function TeacherAddress({ email }) {
   };
 
   return (
-    <div className="mt-2 text-xs text-zinc-600">
+    <div className="mt-2 text-xs text-zinc-300">
       <p className="break-all select-all">{email}</p>
       <button type="button" onClick={copyAddress} className="py-2 font-bold underline">Copiar dirección</button>
       <p role="status">{copyMessage}</p>
@@ -25,46 +25,53 @@ function TeacherAddress({ email }) {
 
 export default function TeacherContactCard({ contacts }) {
   const single = contacts.length === 1 ? contacts[0] : null;
-  const heading = <>
-    <span className="inline-flex items-center gap-3 align-middle font-black uppercase tracking-tight text-slate-800 group-hover:underline">
-      <Mail className="w-6 h-6 shrink-0 text-blue-600" aria-hidden="true" />
-      Contactar con mi profesor
+  const actionClass = 'group block w-full rounded-[inherit] p-6 text-left transition-all hover:bg-zinc-800';
+  const heading = (
+    <span className="flex items-center justify-between gap-4">
+      <span>
+        <span className="block text-lg font-black uppercase tracking-tight text-white">Contactar con mi profesor</span>
+        <span className="mt-1 block text-xs font-medium text-zinc-400">
+          Escribe a tu profesor por correo para consultas sobre tus clases. El profesorado no tramita gestiones administrativas. Para esos trámites, usa «Dudas u otras gestiones».
+        </span>
+      </span>
+      <span className="shrink-0 rounded-full bg-zinc-800 p-4 transition-transform group-hover:scale-110">
+        <Mail className="w-6 h-6 text-white" aria-hidden="true" />
+      </span>
     </span>
-    <span className="mt-1 block text-xs font-medium text-zinc-600">
-      Escribe a tu profesor por correo para consultas sobre tus clases. El profesorado no tramita gestiones administrativas. Para esos trámites, usa «Dudas u otras gestiones».
-    </span>
-  </>;
+  );
 
   return (
-    <div className="col-span-1 sm:col-span-2 rounded-3xl border-2 border-zinc-100 bg-white p-6 shadow-sm">
+    <div className="col-span-1 sm:col-span-2 rounded-3xl border-2 border-black bg-black text-left text-white shadow-md">
       {contacts.length > 1 ? (
-        <details>
-          <summary className="group cursor-pointer">{heading}</summary>
-          <ul className="mt-3 space-y-3">
+        <details className="rounded-[inherit]">
+          <summary className={`${actionClass} cursor-pointer list-none [&::-webkit-details-marker]:hidden`}>{heading}</summary>
+          <ul className="space-y-3 px-6 pb-5">
             {contacts.map(({ key, name, email, classLabels }) => (
-              <li key={key} className="rounded-2xl bg-zinc-50 p-3 text-sm">
+              <li key={key} className="rounded-2xl bg-zinc-800 p-3 text-sm">
                 <p className="font-bold">{name}</p>
-                <p className="text-xs text-zinc-600">{[...classLabels].join(' / ')}</p>
+                <p className="text-xs text-zinc-300">{[...classLabels].join(' / ')}</p>
                 {email ? (
                   <>
-                    <a href={teacherMailto(email)} className="mt-2 inline-block font-bold text-blue-700 underline">Escribir a {name}</a>
+                    <a href={teacherMailto(email)} className="mt-2 inline-block font-bold underline">Escribir a {name}</a>
                     <TeacherAddress key={email} email={email} />
                   </>
-                ) : <p className="mt-2 text-xs text-zinc-600">Correo no configurado.</p>}
+                ) : <p className="mt-2 text-xs text-zinc-300">El correo de este profesor no está disponible.</p>}
               </li>
             ))}
           </ul>
         </details>
       ) : single?.email ? (
         <>
-          <a href={teacherMailto(single.email)} className="group block">{heading}</a>
-          <TeacherAddress key={single.email} email={single.email} />
+          <a href={teacherMailto(single.email)} className={actionClass}>{heading}</a>
+          <div className="px-6 pb-4">
+            <TeacherAddress key={single.email} email={single.email} />
+          </div>
         </>
       ) : (
-        <>
+        <div className="p-6">
           {heading}
-          <p className="mt-2 text-xs text-zinc-600">Tu clase aún no tiene un correo de profesor configurado.</p>
-        </>
+          <p className="mt-2 text-xs text-zinc-300">El correo de tu profesor no está disponible.</p>
+        </div>
       )}
     </div>
   );

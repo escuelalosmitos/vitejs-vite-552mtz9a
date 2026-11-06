@@ -5432,8 +5432,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       const operations = [];
       teacherSecurityAuthorization.classAuthorizations.forEach(item => {
         const payload = {};
-        if (!sameStringSet(item.current, item.desired)) payload.authorizedTeacherKeys = item.desired;
-        if (!sameStringSet(item.currentEmails, item.desiredEmails)) payload.authorizedTeacherEmails = item.desiredEmails;
+        // El primer elemento de ambas listas identifica al profesor titular para el contacto del alumno.
+        if (item.current[0] !== item.desired[0] || !sameStringSet(item.current, item.desired)) payload.authorizedTeacherKeys = item.desired;
+        if (item.currentEmails[0] !== item.desiredEmails[0] || !sameStringSet(item.currentEmails, item.desiredEmails)) payload.authorizedTeacherEmails = item.desiredEmails;
         if (Object.keys(payload).length > 0) {
           operations.push(batch => batch.update(doc(db, item.refPath), payload));
         }

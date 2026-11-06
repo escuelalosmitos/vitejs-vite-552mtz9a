@@ -49,16 +49,25 @@ test('el contacto directo usa los profesores habituales de las plazas fijas vige
   const context = { ...helpers, activeTab: 'contact', profile: { id: 's' }, todayStr: '2026-11-06' };
   for (const name of [
     'isPunctualClass', 'isFixedClassStudent', 'isPendingClassStartEntry', 'normalizeClassDate', 'getStudentEntryId',
-    'isStudentEntryFor', 'getClassEntryStartDate', 'getClassEntryEndDate', 'isStudentEntryActiveOnDate', 'getTeacherContactOptions'
+    'isStudentEntryFor', 'getClassEntryStartDate', 'getClassEntryEndDate', 'isStudentEntryActiveOnDate',
+    'getClassTeacherLoginEmail', 'getTeacherContactOptions'
   ]) {
     context[name] = evaluate(student, declaration(studentAst, name), context);
   }
   const seat = (teacher, subject, entry = {}, clase = {}) => ({ teacher, subject, students: [{ id: 's', ...entry }], ...clase });
   context.myClasses = [
-    seat('Martí Viñas', 'Batería', {}, { id: 'a', refPath: 'classes/a' }),
+    seat('Martí Viñas', 'Batería', {}, {
+      id: 'a', refPath: 'classes/a', authorizedTeacherKeys: ['marti vinas', 'profesor temporal'],
+      authorizedTeacherEmails: ['martivg@escuelalosmitos.com', 'temporal@escuelalosmitos.com']
+    }),
     seat('marti vinas', 'Combo'),
-    seat('Elia', 'Canto', { classEndDate: '2026-11-20' }, { id: 'a', refPath: 'centers/reus/classes/a' }),
-    seat('Sin configurar', 'Piano'),
+    seat('Elia', 'Canto', { classEndDate: '2026-11-20' }, {
+      id: 'a', refPath: 'centers/reus/classes/a', authorizedTeacherKeys: ['elia'],
+      authorizedTeacherEmails: ['cuenta-docente@escuelalosmitos.com']
+    }),
+    seat('Sin autorización', 'Piano', {}, {
+      authorizedTeacherKeys: ['profesor temporal'], authorizedTeacherEmails: ['temporal@escuelalosmitos.com']
+    }),
     seat('Recuperación', 'Batería', { isRecovery: true }),
     seat('Traslado', 'Combo', { isTemporaryRelocation: true }),
     seat('Puntual', 'Piano', {}, { date: '2026-11-06' }),
@@ -68,12 +77,46 @@ test('el contacto directo usa los profesores habituales de las plazas fijas vige
     seat('Plaza finalizada', 'Canto', { classEndDate: '2026-11-05' })
   ];
   const eligible = evaluate(student, declaration(studentAst, 'teacherContactClasses'), context);
-  const options = context.getTeacherContactOptions(eligible, configured, clase => clase.subject);
+  const options = context.getTeacherContactOptions(eligible, clase => clase.subject);
   assert.deepEqual(plain(options.map(({ name, email, classLabels }) => [name, email, [...classLabels]])), [
     ['Martí Viñas', 'martivg@escuelalosmitos.com', ['Batería', 'Combo']],
-    ['Elia', 'elia@escuelalosmitos.com', ['Canto']],
-    ['Sin configurar', '', ['Piano']]
+    ['Elia', 'cuenta-docente@escuelalosmitos.com', ['Canto']],
+    ['Sin autorización', '', ['Piano']]
   ]);
+  const conflicting = seat('Martí Viñas', 'Combo', {}, {
+    authorizedTeacherKeys: ['marti vinas'], authorizedTeacherEmails: ['otra-cuenta@escuelalosmitos.com']
+  });
+  assert.equal(context.getTeacherContactOptions([eligible[0], conflicting], clase => clase.subject)[0].email, '');
+});
+
+test('el contacto directo evita inventar un correo o usar el de un temporal como suplencia', () => {
+  const resolve = evaluate(student, declaration(studentAst, 'getClassTeacherLoginEmail'), helpers);
+  assert.equal(resolve({ teacher: 'Elia' }), '');
+  assert.equal(resolve({ teacher: 'Elia', authorizedTeacherEmails: ['elia@escuelalosmitos.com'] }), '');
+  assert.equal(resolve({ teacher: 'Elia', authorizedTeacherKeys: ['elia', 'temporal'], authorizedTeacherEmails: ['', 'temporal@escuelalosmitos.com'] }), '');
+  assert.equal(resolve({ teacher: 'Elia', authorizedTeacherKeys: ['elia'], authorizedTeacherEmails: ['personal@example.com'] }), '');
+});
+
+test('la sincronización conserva al titular en primer lugar cuando se intercambia con un temporal', () => {
+  let updateAuthorization;
+  walk(adminAst, node => {
+    if (node.type === 'CallExpression' && node.callee.object?.property?.name === 'classAuthorizations'
+      && node.callee.property?.name === 'forEach') updateAuthorization = node.arguments[0];
+  });
+  assert.ok(updateAuthorization);
+  const operations = [];
+  const sync = evaluate(admin, updateAuthorization, {
+    operations, db: {}, doc: (_db, path) => path,
+    sameStringSet: () => true
+  });
+  const desired = ['elia', 'marti vinas'];
+  const desiredEmails = ['elia@escuelalosmitos.com', 'martivg@escuelalosmitos.com'];
+  sync({ refPath: 'classes/a', current: [...desired].reverse(), desired, currentEmails: [...desiredEmails].reverse(), desiredEmails });
+  assert.equal(operations.length, 1);
+  operations[0]({ update: (path, data) => {
+    assert.equal(path, 'classes/a');
+    assert.deepEqual(plain(data), { authorizedTeacherKeys: desired, authorizedTeacherEmails: desiredEmails });
+  } });
 });
 
 test('la tarjeta de contacto abre un borrador, muestra los destinatarios y explica el alcance', async () => {
@@ -87,6 +130,8 @@ test('la tarjeta de contacto abre un borrador, muestra los destinatarios y expli
     assert.match(single, /Contactar con mi profesor/);
     assert.match(single, /Copiar dirección/);
     assert.match(single, /El profesorado no tramita gestiones administrativas/);
+    assert.match(single, /bg-black text-left text-white/);
+    assert.match(single, /flex items-center justify-between/);
     assert.doesNotMatch(single, /<summary/);
 
     const unavailable = { key: 'elia', name: 'Elia', email: '', classLabels: new Set(['Canto · Jueves 19:00']) };
@@ -94,7 +139,7 @@ test('la tarjeta de contacto abre un borrador, muestra los destinatarios y expli
     assert.match(multiple, /<summary/);
     assert.match(multiple, /Batería · Viernes 18:00/);
     assert.match(multiple, /Canto · Jueves 19:00/);
-    assert.match(multiple, /Correo no configurado/);
+    assert.match(multiple, /El correo de este profesor no está disponible/);
     assert.equal((multiple.match(/href="mailto:/g) || []).length, 1);
     assert.doesNotMatch(render([unavailable]), /href="mailto:/);
   } finally { await server.close(); }

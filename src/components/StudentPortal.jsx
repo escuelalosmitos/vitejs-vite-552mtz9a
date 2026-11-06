@@ -125,17 +125,32 @@ const getTeacherOperationalEmail = (name = '', configuredEmails = {}) => {
   return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@escuelalosmitos\.com$/.test(email) ? email : '';
 };
 
-const getTeacherContactOptions = (classes, configuredEmails, getClassLabel) => {
+const getClassTeacherLoginEmail = (clase) => {
+  // La autorización de la clase pone al titular delante de los docentes temporales.
+  const teacherKey = normalizeTeacherKey(clase.teacher);
+  if (!teacherKey || !Array.isArray(clase.authorizedTeacherKeys)
+    || normalizeTeacherKey(clase.authorizedTeacherKeys[0]) !== teacherKey
+    || !Array.isArray(clase.authorizedTeacherEmails)) return '';
+  const email = String(clase.authorizedTeacherEmails[0] || '').trim().toLowerCase();
+  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@escuelalosmitos\.com$/.test(email) ? email : '';
+};
+
+const getTeacherContactOptions = (classes, getClassLabel) => {
   const contacts = new Map();
   for (const clase of classes) {
     const name = String(clase.teacher || '').trim();
     if (!name) continue;
-    const email = getTeacherOperationalEmail(name, configuredEmails);
-    const key = email || normalizeTeacherKey(name);
-    if (!contacts.has(key)) contacts.set(key, { key, name, email, classLabels: new Set() });
-    contacts.get(key).classLabels.add(getClassLabel(clase));
+    const key = normalizeTeacherKey(name);
+    const email = getClassTeacherLoginEmail(clase);
+    if (!contacts.has(key)) contacts.set(key, { key, name, emails: new Set(), classLabels: new Set() });
+    const contact = contacts.get(key);
+    if (email) contact.emails.add(email);
+    contact.classLabels.add(getClassLabel(clase));
   }
-  return [...contacts.values()];
+  return [...contacts.values()].map(({ emails, ...contact }) => ({
+    ...contact,
+    email: emails.size === 1 ? [...emails][0] : ''
+  }));
 };
 
 import { TRIVIA_QUESTIONS } from './triviaQuestions';
@@ -7525,7 +7540,6 @@ END:VCALENDAR`;
               {teacherContactClasses.length > 0 && (
                 <TeacherContactCard contacts={getTeacherContactOptions(
                   teacherContactClasses,
-                  globalSettings.teacherEmails,
                   clase => `${clase.subject || 'Clase'} · ${getDayName(clase.dayOfWeek) || ''} ${clase.time || ''} · ${getClassCenterName(clase)}`
                 )} />
               )}

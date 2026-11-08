@@ -21,7 +21,7 @@ import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
 import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
-import { getExpansionStartDate, getExpansionDateError, buildPublicClassSelectionId, getPublishedExpansionClass, isPublicExpansionSeat } from './classExpansionUtils.js';
+import { getExpansionStartDate, getExpansionDateError, buildPublicClassSelectionId, getPublishedExpansionClass, isPublicExpansionSeat, isExpansionDate } from './classExpansionUtils.js';
 import { formatLocatorTurn, locatorClassSignature, locatorStudentPlanningData, buildLocatorEmailPayload } from './locatorEmailUtils.js';
 import VacationChallengeResults from './VacationChallengeResults.jsx';
 import { normalizeMusicOrder } from './musicChallengeCatalog.js';
@@ -2420,7 +2420,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [editClassData, setEditClassData] = useState(null);
   const [editClassMode, setEditClassMode] = useState('permanent');
   const [temporaryClassData, setTemporaryClassData] = useState(null);
-  const [socialModalText, setSocialModalText] = useState(''); 
+  const [socialModalText, setSocialModalText] = useState('');
+  const [socialListMode, setSocialListMode] = useState(null);
   const [photosModalOpen, setPhotosModalOpen] = useState(false);
   const [selectedInstForChange, setSelectedInstForChange] = useState('');
   const [selectedSourceClassForChange, setSelectedSourceClassForChange] = useState('');
@@ -10090,9 +10091,24 @@ Coordinación Los Mitos.`
   };
 
 
-  const handleGenerateSocialText = () => {
-    let t = "🎶 **¡ÚLTIMAS PLAZAS LIBRES EN ESCUELA LOS MITOS!** 🎶\n\n";
-    let foundAny = false;
+  const handleGenerateSocialText = (mode = 'started') => {
+    const startedClassIds = new Set(recurringClassesOnly
+      .filter(clase => getCommercialSeatDataForClass(clase).students.some(student => (
+        !student.isMaintenance && !student.isPendingStart && !student.isFutureStart
+      )))
+      .map(clase => buildPublicClassSelectionId(clase.refPath || clase.id)));
+    const offeredClasses = publicAvailabilityPublication.classes.flatMap(offer => {
+      const hasOpeningDate = isExpansionDate(offer.inicio);
+      const started = startedClassIds.has(offer.selectionId) && !offer.autoAdvanceStartDate
+        && (!hasOpeningDate || offer.inicio <= todayStr);
+      const future = !startedClassIds.has(offer.selectionId) && hasOpeningDate && offer.inicio >= todayStr;
+      const included = { started, future, both: started || future }[mode];
+      if (!included) return [];
+      return [{ ...offer, socialStartDate: future
+        ? getExpansionStartDate({ startDate: offer.inicio, dayOfWeek: offer.dayNum }, todayStr)
+        : '' }];
+    });
+    const sections = [];
 
     const getDaySortIndex = (dayVal) => {
       const num = parseInt(dayVal, 10);
@@ -10107,44 +10123,35 @@ Coordinación Los Mitos.`
     };
 
     activeCenterNames.forEach(sede => {
-      const clasesSede = recurringClassesOnly.filter(c => isSameCenter(c.centerId || c.sede || 'Tarragona', sede) && c.isWebVisible === true);
-      const filteredWithSpots = clasesSede.filter(c => getCommercialFreeSpots(c) > 0);
+      const filteredWithSpots = offeredClasses.filter(c => isSameCenter(c.escuela, sede) && c.plazas > 0);
 
       if (filteredWithSpots.length > 0) {
-        foundAny = true;
-        t += `📍 **SEDE ${sede.toUpperCase()}**\n`;
-        const instrumentosEnSede = [...new Set(filteredWithSpots.map(c => c.subject))].sort();
+        const lines = [`SEDE ${sede.toUpperCase()}`];
+        const instrumentosEnSede = [...new Set(filteredWithSpots.map(c => c.instrumento))].sort((a, b) => a.localeCompare(b, 'es'));
         
         instrumentosEnSede.forEach(inst => {
-          t += `🔹 *${inst.toUpperCase()}:*\n`;
+          lines.push('', inst.toUpperCase());
           
-          const grupos = filteredWithSpots.filter(c => c.subject === inst);
+          const grupos = filteredWithSpots.filter(c => c.instrumento === inst);
           
           grupos.sort((a, b) => {
-            const dayA = getDaySortIndex(a.dayOfWeek);
-            const dayB = getDaySortIndex(b.dayOfWeek);
+            const dayA = getDaySortIndex(a.dayNum);
+            const dayB = getDaySortIndex(b.dayNum);
             if (dayA !== dayB) return dayA - dayB;
-            return (a.time || '').localeCompare(b.time || '');
+            return (a.timeStr || '').localeCompare(b.timeStr || '') || a.socialStartDate.localeCompare(b.socialStartDate);
           });
 
           grupos.forEach(c => {
-            const libres = getCommercialFreeSpots(c);
-            const tagPlazas = libres === 1 ? " - Última plaza" : "";
-            
-            t += `• ${getDayName(c.dayOfWeek)} ${formatTimeCompact(c.time)}${tagPlazas}\n`;
+            const inicio = c.socialStartDate ? ` · Inicio ${formatDateSpanish(c.socialStartDate)}` : '';
+            lines.push(`${getDayName(c.dayNum)} ${formatTimeCompact(c.timeStr)}${inicio}`);
           });
         });
-        t += "\n";
+        sections.push(lines.join('\n'));
       }
     });
 
-    if (!foundAny) {
-      t = "📢 ¡Todos nuestros grupos web están completos en este momento! No hay plazas libres publicadas.";
-    } else {
-      t += "📲 ¡Reserva tu plaza directamente desde el formulario de nuestra web o escríbenos un mensaje privado antes de que se agoten! 🚀";
-    }
-
-    setSocialModalText(t);
+    setSocialListMode(mode);
+    setSocialModalText(sections.join('\n\n'));
   };
 
   const getTriviaPrize = period => String(settings.prizes?.[period] || '').trim();
@@ -13518,31 +13525,39 @@ ${valueOrDash(comments.privateNote)}`,
   };
 
   const SocialModalOverlay = () => {
-    if (!socialModalText) return null;
+    if (!socialListMode) return null;
     return (
       <div className="fixed inset-0 bg-black/80 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative">
-          <button onClick={() => setSocialModalText('')} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
+        <div className="bg-white rounded-3xl max-w-md w-full p-8 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+          <button onClick={() => setSocialListMode(null)} className="absolute top-4 right-4 text-zinc-400 hover:text-black bg-zinc-100 p-2 rounded-full"><X className="w-5 h-5"/></button>
           <div className="flex items-center gap-3 text-indigo-600 mb-4">
             <Megaphone className="w-8 h-8" />
             <h2 className="text-xl font-black uppercase tracking-tight">Texto para Redes</h2>
           </div>
-          <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-4">Copiado directo listo para Instagram, FB o WhatsApp:</p>
+          <label htmlFor="social-list-mode" className="block text-xs font-bold text-zinc-500 mb-2">Turnos incluidos</label>
+          <select id="social-list-mode" value={socialListMode} onChange={event => handleGenerateSocialText(event.target.value)} className="w-full p-3 mb-4 bg-zinc-50 border-2 border-zinc-200 rounded-xl text-sm font-bold">
+            <option value="started">Clases iniciadas con plazas libres</option>
+            <option value="future">Clases hibernadas con inicio futuro</option>
+            <option value="both">Ambas</option>
+          </select>
           
           <textarea 
             readOnly 
             value={socialModalText} 
+            aria-label="Texto para copiar en redes sociales"
+            placeholder="No hay turnos publicados con plazas libres para esta selección."
             className="w-full p-4 bg-zinc-900 text-zinc-100 font-sans text-xs rounded-2xl min-h-[220px] outline-none border-0 shadow-inner leading-relaxed select-all"
           />
           
           <div className="mt-6 flex gap-3">
-            <button onClick={() => setSocialModalText('')} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200 transition-colors">Cerrar</button>
+            <button onClick={() => setSocialListMode(null)} className="flex-1 bg-zinc-100 text-zinc-600 font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-200 transition-colors">Cerrar</button>
             <button 
+              disabled={!socialModalText}
               onClick={() => {
                 navigator.clipboard.writeText(socialModalText);
                 alert("📋 ¡Texto copiado al portapapeles con éxito!");
               }} 
-              className="flex-1 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-all shadow-md"
+              className="flex-1 bg-black text-white font-black py-4 rounded-xl uppercase text-xs tracking-widest hover:bg-zinc-800 transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Copiar Todo
             </button>
@@ -15034,7 +15049,7 @@ ${startDateWarning}
       {resurrectClassModal && <StableModalRenderer key={`resurrect-${resurrectClassModal.id || 'open'}`} render={ResurrectClassModalOverlay} />}
       {viewClassModal && !(activeTab === 'danger' || (activeTab === 'classes' && classesViewMode !== 'salas')) && <StableModalRenderer key={`view-class-${viewClassModal.id || 'open'}`} render={ViewClassModalOverlay} />}
       {photosModalOpen && <StableModalRenderer key="photos" render={PhotosModalOverlay} />}
-      {socialModalText && <StableModalRenderer key="social-text" render={SocialModalOverlay} />}
+      {socialListMode && <StableModalRenderer key="social-text" render={SocialModalOverlay} />}
       
       <aside className="w-full md:w-64 bg-zinc-950 text-zinc-300 flex flex-col sticky top-0 z-50 md:h-screen shrink-0 shadow-2xl overflow-y-auto">
         <div className="p-6 bg-black border-b border-zinc-900 flex justify-between items-center md:block">
@@ -16080,7 +16095,7 @@ ${startDateWarning}
                     <button onClick={() => setPhotosModalOpen(true)} className="flex-1 sm:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                       <FileText className="w-3 h-3"/> Fotos
                     </button>
-                    <button onClick={handleGenerateSocialText} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
+                    <button onClick={() => handleGenerateSocialText()} className="flex-1 sm:flex-none bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-md flex items-center justify-center gap-2 transition-colors">
                       <Megaphone className="w-3 h-3"/> Redes
                     </button>
                   </>

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parse } from 'espree';
 import { matchesBoardView } from '../src/components/announcementAudienceUtils.js';
+import { buildPublicClassSelectionId, getExpansionStartDate, isExpansionDate } from '../src/components/classExpansionUtils.js';
 
 const source = await readFile('src/components/AdminPortal.jsx', 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module', ecmaFeatures: { jsx: true }, range: true });
@@ -85,4 +86,62 @@ test('los cinco filtros de tipo se cruzan con Vigentes, Historial y Con novedade
   }
   assert.equal(JSON.stringify({ announcements, trayNotifications }), before);
   assert.deepEqual([...unreadBoardIds], ['poll', 'call-old']);
+});
+
+test('Redes distingue plazas iniciadas y aperturas futuras con texto limpio y fecha de primera sesión', () => {
+  const todayStr = '2026-11-08';
+  const clase = (path, subject, dayOfWeek, time, students = []) => ({
+    id: 'same-id', refPath: `artifacts/app/users/${path}/recurringClasses/same-id`,
+    sede: 'Reus', subject, dayOfWeek, time, capacity: 4, students
+  });
+  const active = clase('active', 'Guitarra', 1, '18:00', [{ id: 'active' }]);
+  const another = clase('another', 'Guitarra', 0, '09:30', [{ id: 'active' }]);
+  const recovery = clase('recovery', 'Batería', 3, '19:00', [{ id: 'active', isRecovery: true }]);
+  const future = clase('future', 'Canto', 5, '17:00');
+  const pending = clase('pending', 'Bajo', 2, '16:00', [{ id: 'active', pendingStart: true }]);
+  const maintenance = clase('maintenance', 'Violín', 4, '18:00', [{ id: 'maintenance' }]);
+  const futureStudent = clase('student-future', 'Teclado', 2, '18:00', [{ id: 'active', classStartDate: '2026-12-01' }]);
+  const noOpening = clase('no-opening', 'Sin fecha', 2, '18:00');
+  const pastOpening = clase('past-opening', 'Inicio vencido', 2, '18:00');
+  const hidden = clase('hidden', 'No publicado', 2, '18:00', [{ id: 'active' }]);
+  const full = clase('full', 'Completo', 2, '18:00', [{ id: 'active' }]);
+  const inactiveCenter = { ...active, refPath: 'inactive', sede: 'Cerrada', subject: 'Sede cerrada' };
+  const all = [another, future, recovery, pending, maintenance, futureStudent, noOpening, pastOpening, active, hidden, full, inactiveCenter];
+  const offer = (c, inicio = null) => ({ selectionId: buildPublicClassSelectionId(c.refPath), escuela: c.sede,
+    instrumento: c.subject, dayNum: c.dayOfWeek, timeStr: c.time, plazas: 2, inicio });
+  const offers = [offer(another), offer(active), offer(recovery, '2026-12-01'), offer(future, '2026-12-01'),
+    { ...offer(pending, '2026-12-01'), autoAdvanceStartDate: true }, offer(maintenance, '2026-12-01'),
+    offer(futureStudent, '2026-12-01'), offer(noOpening), offer(pastOpening, '2026-10-01'), offer(inactiveCenter)];
+  const context = { todayStr, students: [], recurringClassesOnly: all, publicAvailabilityPublication: { classes: offers },
+    activeCenterNames: ['Reus'], isSameCenter: (a, b) => a === b, buildPublicClassSelectionId, isExpansionDate, getExpansionStartDate,
+    isStudentInMaintenance: id => id === 'maintenance',
+    getDayName: day => ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][day],
+    formatDateSpanish: date => date,
+    setSocialListMode: mode => { context.mode = mode; }, setSocialModalText: text => { context.text = text; }
+  };
+  for (const name of ['isFixedClassStudent', 'normalizeStudentClassStartDate', 'normalizeStudentClassEndDate',
+    'getStudentClassStartDate', 'getStudentClassEndDate', 'hasStudentClassEndedBeforeDate', 'isPendingClassStartEntry', 'getCommercialSeatDataForClass']) {
+    context[name] = evaluate(name, context);
+  }
+  const generate = evaluate('handleGenerateSocialText', context);
+  generate();
+  assert.equal(context.mode, 'started');
+  assert.equal(context.text, 'SEDE REUS\n\nGUITARRA\nLunes 18h\nDomingo 9:30h');
+
+  generate('future');
+  const futureText = context.text;
+  for (const instrument of ['CANTO', 'BAJO', 'BATERÍA', 'VIOLÍN', 'TECLADO']) assert.ok(futureText.includes(instrument));
+  assert.match(futureText, /Viernes 17h · Inicio 2026-12-04/);
+  assert.match(futureText, /Miércoles 19h · Inicio 2026-12-02/);
+  assert.doesNotMatch(futureText, /GUITARRA/);
+
+  generate('both');
+  assert.match(context.text, /GUITARRA/);
+  assert.match(context.text, /CANTO/);
+  assert.doesNotMatch(context.text, /SIN FECHA|INICIO VENCIDO|NO PUBLICADO|COMPLETO|SEDE CERRADA|\*|🔹|iniciad|hibernad|formación|Última plaza/i);
+  assert.equal(all.length, 12);
+  context.publicAvailabilityPublication = { classes: [] };
+  generate('future');
+  assert.equal(context.mode, 'future');
+  assert.equal(context.text, '');
 });

@@ -290,6 +290,32 @@ const getSafeAnnouncementUrl = (url = '') => {
   return cleanUrl;
 };
 
+const toPortalTimestamp = (value) => {
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (Number.isFinite(Number(value?.seconds))) return Number(value.seconds) * 1000;
+  if (value instanceof Date) return value.getTime();
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && numericValue > 0) return numericValue;
+  const parsedValue = Date.parse(String(value || ''));
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
+};
+
+const buildPortalNotificationKey = (timestamp, type, id) => (
+  `${String(Math.max(0, Number(timestamp) || 0)).padStart(13, '0')}|${type}|${String(id || '')}`
+);
+
+const getAnnouncementNotificationKey = (announcement = {}) => buildPortalNotificationKey(
+  toPortalTimestamp(
+    announcement.publishedAt
+    || announcement.createdAt
+    || announcement.publishAt
+    || announcement.date
+    || announcement.id
+  ),
+  'announcement',
+  announcement.id
+);
+
 const WORKSHOP_REGISTRATION_STATUS_LABELS = {
   pending: 'Pendiente de revisión',
   confirmed: 'Inscripción confirmada',
@@ -2458,19 +2484,58 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 
   // 👇 LÓGICA DE LA BOLITA ROJA (NOTIFICACIONES TABLÓN)
-  const latestAnnounceId = visibleAnnouncements.length > 0 ? Math.max(...visibleAnnouncements.map(a => Number(a.id))).toString() : null;
-  const hasUnreadNews = latestAnnounceId && profile?.lastSeenTablon !== latestAnnounceId;
+  // El estado de lectura se basa en la fecha real de publicación + ID, no en que el ID sea numérico.
+  const announcementReadEntries = visibleAnnouncements
+    .map(announcement => ({
+      announcement,
+      key: getAnnouncementNotificationKey(announcement)
+    }))
+    .sort((left, right) => right.key.localeCompare(left.key));
+
+  const latestAnnouncementReadEntry = announcementReadEntries[0] || null;
+  const latestAnnounceKey = latestAnnouncementReadEntry?.key || '';
+  const latestAnnounceId = latestAnnouncementReadEntry?.announcement?.id != null
+    ? String(latestAnnouncementReadEntry.announcement.id)
+    : null;
+
+  // Compatibilidad con perfiles que todavía solo tienen el antiguo lastSeenTablon (ID numérico).
+  const legacyLastSeenTablon = String(profile?.lastSeenTablon || '');
+  const legacySeenAnnouncement = legacyLastSeenTablon
+    ? visibleAnnouncements.find(announcement => String(announcement.id) === legacyLastSeenTablon)
+    : null;
+  const migratedLegacyTablonKey = legacySeenAnnouncement
+    ? getAnnouncementNotificationKey(legacySeenAnnouncement)
+    : '';
+  const effectiveLastSeenTablonKey = String(profile?.lastSeenTablonKey || migratedLegacyTablonKey || '');
+
+  const hasUnreadNews = Boolean(latestAnnounceKey && (
+    effectiveLastSeenTablonKey
+      ? latestAnnounceKey > effectiveLastSeenTablonKey
+      : !legacyLastSeenTablon
+  ));
+
+  // Migra silenciosamente el estado antiguo. Si ya no existe la publicación de referencia,
+  // toma como línea base lo que el alumno tenía visible al desplegar esta versión para no
+  // convertir todo el histórico en "nuevo".
+  useEffect(() => {
+    if (!profile?.id || profile?.lastSeenTablonKey || !legacyLastSeenTablon || !latestAnnounceKey) return;
+
+    const migrationKey = migratedLegacyTablonKey || latestAnnounceKey;
+    setProfile(previous => previous ? ({ ...previous, lastSeenTablonKey: migrationKey }) : previous);
+    updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
+      lastSeenTablonKey: migrationKey
+    }).catch(error => console.error('No se pudo migrar el estado de lectura del tablón:', error));
+  }, [
+    profile?.id,
+    profile?.lastSeenTablonKey,
+    legacyLastSeenTablon,
+    migratedLegacyTablonKey,
+    latestAnnounceKey,
+    db,
+    appId
+  ]);
 
   const portalNotifications = useMemo(() => {
-    const toTimestamp = (value) => {
-      if (typeof value?.toMillis === 'function') return value.toMillis();
-      if (Number.isFinite(Number(value?.seconds))) return Number(value.seconds) * 1000;
-      const numericValue = Number(value);
-      if (Number.isFinite(numericValue) && numericValue > 0) return numericValue;
-      const parsedValue = Date.parse(String(value || ''));
-      return Number.isFinite(parsedValue) ? parsedValue : 0;
-    };
-    const buildKey = (timestamp, type, id) => `${String(timestamp).padStart(13, '0')}|${type}|${id}`;
     const workshopItems = visibleWorkshops
       .filter(workshop => (
         workshop.status === 'published'
@@ -2478,10 +2543,10 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         && (!workshop.registrationDeadline || new Date(workshop.registrationDeadline).getTime() > pollClock)
       ))
       .map(workshop => {
-        const timestamp = toTimestamp(workshop.publishedAt || workshop.publishAt || workshop.createdAt || workshop.id);
+        const timestamp = toPortalTimestamp(workshop.publishedAt || workshop.publishAt || workshop.createdAt || workshop.id);
         const workshopSeenKey = `${workshop.publishedAt || workshop.createdAt || workshop.publishAt || ''}|${workshop.id}`;
         return {
-          key: buildKey(timestamp, 'workshop', workshop.id),
+          key: buildPortalNotificationKey(timestamp, 'workshop', workshop.id),
           id: workshop.id,
           type: 'workshop',
           area: 'extras',
@@ -2494,14 +2559,15 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         };
       });
     const announcementItems = visibleAnnouncements.map(announcement => {
-      const timestamp = toTimestamp(announcement.publishedAt || announcement.createdAt || announcement.publishAt || announcement.id);
+      const timestamp = toPortalTimestamp(announcement.publishedAt || announcement.createdAt || announcement.publishAt || announcement.date || announcement.id);
+      const announcementReadKey = getAnnouncementNotificationKey(announcement);
       const typeLabel = announcement.type === 'poll'
         ? 'Nueva encuesta'
         : announcement.type === 'call'
           ? 'Nueva convocatoria'
           : 'Nuevo aviso';
       return {
-        key: buildKey(timestamp, 'announcement', announcement.id),
+        key: buildPortalNotificationKey(timestamp, 'announcement', announcement.id),
         id: announcement.id,
         type: 'announcement',
         area: 'news',
@@ -2509,7 +2575,11 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         title: announcement.title || 'Nueva publicación en el tablón',
         description: announcement.content || announcement.callResponsePrompt || 'Consulta la información publicada por la escuela.',
         timestamp,
-        areaUnread: Number(announcement.id || 0) > Number(profile?.lastSeenTablon || 0),
+        areaUnread: Boolean(announcementReadKey && (
+          effectiveLastSeenTablonKey
+            ? announcementReadKey > effectiveLastSeenTablonKey
+            : !legacyLastSeenTablon
+        )),
         source: announcement
       };
     });
@@ -2520,8 +2590,8 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
         && (!notification.expiresAt || notification.expiresAt > nowLocal)
       ))
       .map(notification => {
-        const timestamp = toTimestamp(notification.publishAt || notification.createdAt || notification.updatedAt || notification.id);
-        const key = buildKey(timestamp, 'tray_notice', notification.id);
+        const timestamp = toPortalTimestamp(notification.publishAt || notification.createdAt || notification.updatedAt || notification.id);
+        const key = buildPortalNotificationKey(timestamp, 'tray_notice', notification.id);
         return {
           key,
           id: notification.id,
@@ -2539,7 +2609,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     return [...workshopItems, ...announcementItems, ...directNotificationItems]
       .sort((left, right) => right.key.localeCompare(left.key))
       .slice(0, 6);
-  }, [visibleWorkshops, visibleAnnouncements, trayNotifications, profile?.lastSeenExtras, profile?.lastSeenTablon, profile?.lastSeenNotificationTray, pollClock]);
+  }, [visibleWorkshops, visibleAnnouncements, trayNotifications, profile?.lastSeenExtras, effectiveLastSeenTablonKey, legacyLastSeenTablon, profile?.lastSeenNotificationTray, pollClock]);
 
   const latestPortalNotificationKey = portalNotifications[0]?.key || '';
   const newTrayNotifications = portalNotifications.filter(item => (
@@ -2583,15 +2653,23 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     setActiveTab('news');
   };
 
-  // Actualiza la marca de tiempo del tablón en Firestore cuando el alumno entra a la pestaña 'news'
+  // Marca el Tablón como leído únicamente cuando el alumno entra en la pestaña 'news'.
   useEffect(() => {
-    if (activeTab === 'news' && hasUnreadNews && profile?.id) {
-      setProfile(previous => previous ? ({ ...previous, lastSeenTablon: latestAnnounceId }) : previous);
-      updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), {
-        lastSeenTablon: latestAnnounceId
-      }).catch(e => console.error("Error al actualizar estado del tablón:", e));
+    if (activeTab === 'news' && hasUnreadNews && profile?.id && latestAnnounceKey) {
+      const nextProfileState = { lastSeenTablonKey: latestAnnounceKey };
+      const firestoreUpdate = { lastSeenTablonKey: latestAnnounceKey };
+
+      // Conserva el campo legado cuando el ID sigue siendo numérico para no romper clientes antiguos.
+      if (latestAnnounceId != null && Number.isFinite(Number(latestAnnounceId))) {
+        nextProfileState.lastSeenTablon = latestAnnounceId;
+        firestoreUpdate.lastSeenTablon = latestAnnounceId;
+      }
+
+      setProfile(previous => previous ? ({ ...previous, ...nextProfileState }) : previous);
+      updateDoc(doc(db, 'artifacts', appId, 'students', profile.id), firestoreUpdate)
+        .catch(e => console.error("Error al actualizar estado del tablón:", e));
     }
-  }, [activeTab, hasUnreadNews, profile?.id, latestAnnounceId, db, appId]);
+  }, [activeTab, hasUnreadNews, profile?.id, latestAnnounceId, latestAnnounceKey, db, appId]);
 
   useEffect(() => {
     checkRegistration();

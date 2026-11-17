@@ -24,7 +24,7 @@ const displayWeekday = value => {
 const escapeIcs = value => String(value || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
 const toIcsDate = date => date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
-export default function GymusikStudent({ db, appId, profile, instruments = [] }) {
+export default function GymusikStudent({ db, appId, profile, instruments = null }) {
   const [config, setConfig] = useState(normalizeGymusikConfig());
   const [member, setMember] = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -52,11 +52,16 @@ export default function GymusikStudent({ db, appId, profile, instruments = [] })
   }, [db, appId, profile?.id, profile?.email]);
 
   const currentMonth = getGymusikMonth(todayLocal());
+  const availableInstruments = useMemo(() => Array.isArray(instruments)
+    ? [...new Set(instruments.map(item => String(item || '').trim()).filter(Boolean))]
+    : config.instruments, [instruments, config.instruments]);
   const upcomingSessions = useMemo(() => sessions.filter(session => (
     session.status === 'published'
     && session.date >= todayLocal()
     && getGymusikMonth(session.date) === currentMonth
-  )), [sessions, currentMonth]);
+    && (availableInstruments.includes(session.instrument) || reservations.some(reservation =>
+      reservation.sessionId === session.id && ['confirmed', 'waitlist'].includes(reservation.status)))
+  )), [sessions, currentMonth, availableInstruments, reservations]);
 
   const ownReservationBySession = useMemo(() => new Map(reservations.map(reservation => [reservation.sessionId, reservation])), [reservations]);
   const sessionGroups = useMemo(() => {
@@ -82,9 +87,6 @@ export default function GymusikStudent({ db, appId, profile, instruments = [] })
   const isActiveMember = member?.status === 'active' && profile?.hasGymusik === true;
   const isCurrentStudent = member ? member.isCurrentStudent !== false : Array.isArray(profile?.classes) && profile.classes.length > 0;
   const memberPrice = isCurrentStudent ? config.studentPrice : config.externalPrice;
-  const availableInstruments = Array.isArray(instruments) && instruments.length > 0
-    ? [...new Set(instruments.map(item => String(item || '').trim()).filter(Boolean))]
-    : config.instruments;
   const hasExistingMembership = Boolean(
     profile?.hasGymusik === true
     || (member && member.status !== 'cancelled')
@@ -107,10 +109,15 @@ export default function GymusikStudent({ db, appId, profile, instruments = [] })
       alert('Las preinscripciones de Gymusik están cerradas en este momento.');
       return;
     }
+    if (!availableInstruments.length || interestInstruments.some(instrument => !availableInstruments.includes(instrument))) {
+      alert('Revisa los instrumentos disponibles para Gymusik antes de preinscribirte.');
+      return;
+    }
     setBusyId('preenroll');
     try {
       await setDoc(doc(db, 'artifacts', appId, 'gymusikMembers', String(profile.id)), {
         studentId: String(profile.id), studentName: profile.name || '', studentEmail: String(profile.email || '').trim().toLowerCase(),
+        interestInstruments,
         instrument: interestInstruments.join(', ') || 'Acceso libre', status: 'preenrolled', isCurrentStudent: Array.isArray(profile.classes) && profile.classes.length > 0,
         createdAt: nowIso(), updatedAt: nowIso(), createdBy: 'student'
       }, { merge: true });

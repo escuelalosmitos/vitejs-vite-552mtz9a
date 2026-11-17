@@ -23,6 +23,8 @@ import { createMitoboxContractDraft, createMitoboxAcceptance, mitoboxDraftError,
 import GymusikStudent from './GymusikStudent';
 import VacationClassCard from './VacationClassCard.jsx';
 import TeacherContactCard from './TeacherContactCard.jsx';
+import StudentInbox from './StudentInbox.jsx';
+import { getGymusikInstruments } from './gymusikUtils.js';
 import { getExpansionStartDate, getPublicExpansionClasses, compareClassWeekdayAndTime } from './classExpansionUtils.js';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from './vacationChallengeUtils.js';
 import { isBoardPublicationArchived, matchesBoardClass } from './announcementAudienceUtils.js';
@@ -812,6 +814,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   const [activeTab, setActiveTab] = useState('home');
   const [notification, setNotification] = useState(null);
   const [showNotificationTray, setShowNotificationTray] = useState(false);
+  const [showPersonalInbox, setShowPersonalInbox] = useState(false);
   const classLoadRetryRef = useRef({ attempts: 0, timer: null });
   const classCatalogRetryRef = useRef({ attempts: 0, timer: null });
 
@@ -2631,6 +2634,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
   };
 
   const toggleNotificationTray = () => {
+    setShowPersonalInbox(false);
     const willOpen = !showNotificationTray;
     setShowNotificationTray(willOpen);
     if (!willOpen || !profile?.id || !latestPortalNotificationKey) return;
@@ -4808,7 +4812,9 @@ END:VCALENDAR`;
     // baja pendiente. Solo mostramos el aviso cuando hay una fecha vigente.
     .filter(g => Boolean(g.effectiveDate && g.effectiveDate >= todayStr))
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0] || null;
-  const activeServicesForBaja = activeFixedServices(profile || {});
+  const activeServicesForBaja = activeFixedServices(profile || {}).map(service => service.key === 'mitoverso'
+    ? { ...service, monthlyFee: mitoversoMonthlyFee(fixedMyClasses.length > 0) }
+    : service);
   const shouldShowBajaRevocationNotice = Boolean(profile?.scheduledBaja || scheduledBajaGestion);
   const pendingMitoversoSignup = hasPendingExtraSignup('mitoverso');
   const pendingMitoboxSignup = hasPendingExtraSignup('mitobox');
@@ -6326,16 +6332,19 @@ END:VCALENDAR`;
 
       <header className="bg-white p-5 sticky top-0 z-50 shadow-sm border-b border-zinc-200">
         <div className="max-w-3xl mx-auto flex items-center justify-between relative">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <button type="button" onClick={() => setShowAvatarMenu(true)} className="relative w-10 h-10 rounded-xl overflow-hidden bg-black text-white flex items-center justify-center shadow-sm hover:ring-2 hover:ring-zinc-300 transition-all" aria-label={profile?.avatarPath ? 'Cambiar foto de perfil' : 'Añadir foto de perfil'} title={profile?.avatarPath ? 'Cambiar foto de perfil' : 'Añadir foto de perfil'}>
               {avatarObjectUrl
                 ? <img src={avatarObjectUrl} alt="" className="w-full h-full object-cover" />
                 : <Music className="w-5 h-5"/>}
               <span className="absolute -right-1 -bottom-1 w-4 h-4 rounded-full bg-white text-black border border-zinc-200 flex items-center justify-center"><Camera className="w-2.5 h-2.5"/></span>
             </button>
-            <div><h1 className="text-lg font-black uppercase leading-none">Mi Portal</h1><span className="text-[10px] font-bold text-zinc-400 uppercase">{profile.name}</span></div>
+            <div className="min-w-0"><h1 className="text-lg font-black uppercase leading-none">Mi Portal</h1><span className="block truncate text-[10px] font-bold text-zinc-400 uppercase">{profile.name}</span></div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
+            <StudentInbox key={profile.id} db={db} appId={appId} studentId={profile.id} open={showPersonalInbox}
+              onToggle={() => { setShowPersonalInbox(value => !value); setShowNotificationTray(false); }}
+              onClose={() => setShowPersonalInbox(false)} />
             <button
               type="button"
               onClick={toggleNotificationTray}
@@ -7217,7 +7226,7 @@ END:VCALENDAR`;
                 </div>
               )}
 
-              <GymusikStudent db={db} appId={appId} profile={profile} instruments={globalSettings.instrumentos || INSTRUMENTOS}/>
+              <GymusikStudent db={db} appId={appId} profile={profile} instruments={getGymusikInstruments(globalSettings.instrumentos || INSTRUMENTOS, globalSettings.gymusikExcludedInstruments)}/>
 
             </div>
             </section>

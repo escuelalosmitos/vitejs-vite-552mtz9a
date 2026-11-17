@@ -4,8 +4,15 @@ import {
   buildGymusikReservationId,
   canCancelGymusikReservationWithCredit,
   getGymusikCreditsRemaining,
-  normalizeGymusikConfig
+  normalizeGymusikConfig, getGymusikInstruments
 } from '../src/components/gymusikUtils.js';
+
+test('la selección de Gymusik admite excluir todos los tipos y conserva las opciones antiguas', () => {
+  assert.deepEqual(getGymusikInstruments(['Piano', 'Guitarra', 'Piano'], ['Piano']), ['Guitarra']);
+  assert.deepEqual(getGymusikInstruments(['Piano'], ['Piano']), []);
+  assert.deepEqual(getGymusikInstruments(['Piano', 'Guitarra']), ['Piano', 'Guitarra']);
+  assert.deepEqual(normalizeGymusikConfig({ instruments: [] }).instruments, []);
+});
 
 test('Gymusik normaliza su configuración económica y operativa', () => {
   const config = normalizeGymusikConfig({ studentPrice: '20', externalPrice: '35', monthlyCredits: '4', minimumMembers: '6' });

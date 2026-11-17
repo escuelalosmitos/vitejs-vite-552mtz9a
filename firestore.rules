@@ -2,6 +2,34 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // students/{studentId}/inboxMessages/{messageId}: asunto <=100, texto <=1000,
+    // studentId, createdBy y createdAt inmutables. El alumno solo marca readAt.
+    function validPersonalMessage(data, studentId) {
+      return data.keys().hasAll(['studentId', 'title', 'body', 'createdAt', 'createdBy', 'readAt'])
+        && data.keys().hasOnly(['studentId', 'title', 'body', 'createdAt', 'createdBy', 'readAt'])
+        && data.studentId == studentId
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 100
+        && data.body is string && data.body.size() > 0 && data.body.size() <= 1000
+        && data.createdAt is timestamp && data.createdBy is string
+        && (data.readAt == null || data.readAt is timestamp);
+    }
+
+    function gymusikExcludedInstruments(appId) {
+      let path = /databases/$(database)/documents/artifacts/$(appId)/settings/global;
+      return exists(path) ? get(path).data.get('gymusikExcludedInstruments', []) : [];
+    }
+
+    function gymusikInstrumentEnabled(appId, instrument) {
+      let path = /databases/$(database)/documents/artifacts/$(appId)/settings/global;
+      return (!exists(path) || instrument in get(path).data.get('instrumentos', [instrument]))
+        && !(instrument in gymusikExcludedInstruments(appId));
+    }
+
+    function gymusikInterestsAllowed(appId, data) {
+      let excluded = gymusikExcludedInstruments(appId);
+      return excluded.size() == 0 || (data.get('interestInstruments', null) is list
+        && data.interestInstruments.size() <= 30 && !data.interestInstruments.hasAny(excluded));
+    }
     function signedIn() {
       return request.auth != null && request.auth.token.email is string;
     }
@@ -459,7 +487,7 @@ service cloud.firestore {
         (ownsStudentRecord(appId, studentId) || ownStudentEmailRecord())
         && request.resource.data.email == resource.data.email
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenExtras', 'lastSeenNotificationTray', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak',
+          'claimed', 'authUid', 'lastSeenTablon', 'lastSeenTablonKey', 'lastSeenExtras', 'lastSeenNotificationTray', 'triviaLastPlayed', 'triviaPoints', 'triviaStreak',
           'avatarPath', 'avatarUpdatedAt'
         ])
         // La foto ya guardada no debe bloquear claimed/authUid al iniciar sesión.
@@ -468,6 +496,18 @@ service cloud.firestore {
           || !('avatarPath' in request.resource.data)
           || validStudentAvatarPath(studentId, request.resource.data.avatarPath))
       );
+
+      match /inboxMessages/{messageId} {
+        allow read: if isAdmin() || ownsStudentRecord(appId, studentId);
+        allow create: if isAdmin() && validPersonalMessage(request.resource.data, studentId)
+          && request.resource.data.createdAt == request.time && request.resource.data.readAt == null;
+        allow update: if validPersonalMessage(request.resource.data, studentId) && (isAdmin() || (
+          ownsStudentRecord(appId, studentId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+          && request.resource.data.readAt == request.time
+        ));
+        allow delete: if isAdmin();
+      }
     }
 
     match /artifacts/{appId}/settings/{settingId} {
@@ -993,9 +1033,10 @@ service cloud.firestore {
         && request.resource.data.studentEmail is string
         && request.resource.data.studentEmail.lower() == authEmail()
         && request.resource.data.status == 'preenrolled'
+        && gymusikInterestsAllowed(appId, request.resource.data)
         && request.resource.data.keys().hasOnly([
           'studentId', 'studentName', 'studentEmail', 'instrument', 'status',
-          'isCurrentStudent', 'createdAt', 'updatedAt', 'createdBy'
+          'isCurrentStudent', 'createdAt', 'updatedAt', 'createdBy', 'interestInstruments'
         ])
       );
       allow update, delete: if isAdmin();
@@ -1059,6 +1100,7 @@ service cloud.firestore {
         studentHasGymusik(appId)
         && studentCreatesOwnResource(appId)
         && request.resource.data.status in ['confirmed', 'waitlist']
+        && gymusikInstrumentEnabled(appId, request.resource.data.instrument)
         && gymusikCreditPaired(appId, reservationId, request.resource.data)
         && request.resource.data.sessionId is string
         && request.resource.data.teacherEmail is string
@@ -1094,6 +1136,7 @@ service cloud.firestore {
           'creditReturned', 'updatedAt'
         ])
         && gymusikCreditPaired(appId, reservationId, request.resource.data)
+        && (request.resource.data.status == 'cancelled' || gymusikInstrumentEnabled(appId, resource.data.instrument))
         && (
           (
             resource.data.status in ['confirmed', 'waitlist']

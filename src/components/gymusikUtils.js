@@ -1,5 +1,9 @@
 import { schoolDateTimeMillis } from './vacationChallengeUtils.js';
 
+export const getGymusikInstruments = (instruments = [], excluded = []) => [...new Set(instruments
+  .map(value => String(value || '').trim()).filter(Boolean))]
+  .filter(instrument => !(excluded || []).includes(instrument));
+
 export const GYMUSIK_DEFAULTS = Object.freeze({
   active: false,
   preenrollmentOpen: false,
@@ -67,7 +71,7 @@ export const normalizeGymusikConfig = (value = {}) => ({
   monthlyCredits: Math.max(1, Math.trunc(Number(value?.monthlyCredits ?? GYMUSIK_DEFAULTS.monthlyCredits) || GYMUSIK_DEFAULTS.monthlyCredits)),
   minimumMembers: Math.max(1, Math.trunc(Number(value?.minimumMembers ?? GYMUSIK_DEFAULTS.minimumMembers) || GYMUSIK_DEFAULTS.minimumMembers)),
   cancellationHours: Math.max(0, Number(value?.cancellationHours ?? GYMUSIK_DEFAULTS.cancellationHours) || 0),
-  instruments: Array.isArray(value?.instruments) && value.instruments.length > 0 ? value.instruments : GYMUSIK_DEFAULTS.instruments
+  instruments: Array.isArray(value?.instruments) ? value.instruments : GYMUSIK_DEFAULTS.instruments
 });
 
 export const getGymusikMonth = value => String(value || '').slice(0, 7);

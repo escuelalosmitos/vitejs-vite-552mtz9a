@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parse } from 'espree';
-import { matchesBoardView } from '../src/components/announcementAudienceUtils.js';
+import { matchesBoardView, matchesBoardClass, normalizeBoardFilters } from '../src/components/announcementAudienceUtils.js';
 import { buildPublicClassSelectionId, getExpansionStartDate, isExpansionDate } from '../src/components/classExpansionUtils.js';
 
 const source = await readFile('src/components/AdminPortal.jsx', 'utf8');
@@ -56,6 +56,39 @@ test('BI muestra cero si solo hay horas de Paco y conserva el coste por hora con
   const records = [{ classId: 's1', date: '2026-11-02', teacher: 'Sara', isRenounced: true, duration: 30 }];
   assert.equal(calculate(records, 30).amount, 15);
   assert.equal(calculate(records, 0).amount, 0);
+});
+
+test('los filtros CRM combinan criterios en una misma clase y solo envían a seleccionados visibles', () => {
+  const students = [{ id: 'one', name: 'Primero', email: 'family@example.com' },
+    { id: 'two', name: 'Segundo', email: 'other@example.com' }, { id: 'sibling', name: 'Hermano', email: 'family@example.com' }];
+  const classes = [
+    { id: 'guitar', sede: 'Reus', subject: 'Guitarra', teacher: 'Sara', dayOfWeek: 1, students: [{ id: 'one' }] },
+    { id: 'piano', sede: 'Tarragona', subject: 'Piano', teacher: 'Paco', dayOfWeek: 2, students: [{ id: 'one' }] },
+    { id: 'second', sede: 'Tarragona', subject: 'Guitarra', teacher: 'Paco', dayOfWeek: 1, students: [{ id: 'two' }, { id: 'sibling', isRecovery: true }] },
+    { id: 'violin', sede: 'Reus', subject: 'Violín', teacher: 'Sara', dayOfWeek: 1, students: [{ id: 'sibling' }] }
+  ];
+  const context = { students, recurringClassesOnly: classes, todayStr: '2026-11-17',
+    matchesBoardClass, isSameCenter: (a, b) => a === b, isSameTeacher: (a, b) => a === b,
+    normalizeEmail: value => String(value || '').toLowerCase(), getEffectiveClassForDate: value => value,
+    searchStudent: '', filterStatus: 'activo', getStudentOperationalStatus: () => 'activo',
+    unreadVacationStudentIds: new Set(), getStudentAssignedClasses: id => classes.filter(c => c.students.some(entry => entry.id === id)),
+    crmSelectedIds: new Set(['one', 'sibling'])
+  };
+  for (const name of ['isFixedClassStudent', 'normalizeStudentClassStartDate', 'normalizeStudentClassEndDate',
+    'getStudentClassStartDate', 'getStudentClassEndDate', 'hasStudentClassEndedBeforeDate', 'isPendingClassStartEntry',
+    'isStudentClassActiveOnDate', 'matchesAnnouncementTarget', 'getAnnouncementStudentTargets']) context[name] = evaluate(name, context);
+  const filter = filters => {
+    context.crmAudienceFilters = normalizeBoardFilters(filters);
+    context.crmFilteredTargetIds = evaluate('crmFilteredTargetIds', context);
+    context.hasCrmAudienceFilters = evaluate('hasCrmAudienceFilters', context);
+    context.filteredCrmStudents = evaluate('filteredCrmStudents', context);
+    return context.filteredCrmStudents.map(student => student.id);
+  };
+  assert.deepEqual(filter({ centers: ['Reus'], instruments: ['Piano'] }), []);
+  assert.deepEqual(filter({ centers: ['Reus', 'Tarragona'], instruments: ['Guitarra'], weekdays: [1] }), ['one', 'two']);
+  assert.deepEqual(filter({ centers: ['Reus'], instruments: ['Guitarra'], teachers: ['Sara'] }), ['one']);
+  assert.deepEqual(evaluate('selectedCrmRecipients', context).map(student => student.id), ['one']);
+  assert.deepEqual(filter({}), ['one', 'two', 'sibling']);
 });
 
 test('los cinco filtros de tipo se cruzan con Vigentes, Historial y Con novedades', () => {

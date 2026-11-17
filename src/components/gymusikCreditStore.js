@@ -1,5 +1,5 @@
 import { collection, doc, getDocsFromServer, query, where, runTransaction } from 'firebase/firestore';
-import { buildGymusikReservationId, getGymusikMonth, canCancelGymusikReservationWithCredit } from './gymusikUtils.js';
+import { buildGymusikReservationId, getGymusikMonth, canCancelGymusikReservationWithCredit, getGymusikInstruments } from './gymusikUtils.js';
 
 export const gymusikCreditRef = (db, appId, studentId, month) => doc(db, 'artifacts', appId, 'gymusikCredits', String(studentId), 'months', month);
 const committed = row => ['confirmed', 'waitlist', 'attended', 'no_show'].includes(row.status) || (row.status === 'cancelled' && row.creditConsumed === true);
@@ -36,15 +36,19 @@ export async function reserveGymusik({ db, appId, profile, session }) {
   const sessionRef = doc(db, 'artifacts', appId, 'gymusikSessions', session.id);
   const reservationRef = doc(db, 'artifacts', appId, 'gymusikReservations', reservationId);
   return runTransaction(db, async transaction => {
-    const [sessionSnapshot, reservationSnapshot, member, config] = await Promise.all([
+    const [sessionSnapshot, reservationSnapshot, member, config, schoolSettings] = await Promise.all([
       transaction.get(sessionRef), transaction.get(reservationRef),
       transaction.get(doc(db, 'artifacts', appId, 'gymusikMembers', studentId)),
-      transaction.get(doc(db, 'artifacts', appId, 'gymusikSettings', 'main'))
+      transaction.get(doc(db, 'artifacts', appId, 'gymusikSettings', 'main')),
+      transaction.get(doc(db, 'artifacts', appId, 'roleData', 'studentSettings'))
     ]);
     if (!sessionSnapshot.exists() || sessionSnapshot.data().status !== 'published') throw new Error('La sesión ya no admite reservas.');
     if (!member.exists() || member.data().status !== 'active' || config.data()?.active !== true) throw new Error('Gymusik no está activo para realizar esta reserva.');
     if (member.data().creditLedgerVersion !== 1) throw new Error('Administración debe sincronizar tus créditos antes de la primera reserva.');
     const live = sessionSnapshot.data(), previous = reservationSnapshot.data();
+    if (!getGymusikInstruments(schoolSettings.data()?.instrumentos || [live.instrument], schoolSettings.data()?.gymusikExcludedInstruments).includes(live.instrument)) {
+      throw new Error('Este instrumento ya no está disponible para nuevas reservas de Gymusik.');
+    }
     if (previous && ['confirmed', 'waitlist', 'attended', 'no_show'].includes(previous.status)) throw new Error('Ya tienes una reserva para esta sesión.');
     const month = getGymusikMonth(live.date), budgetRef = gymusikCreditRef(db, appId, studentId, month);
     const budget = await transaction.get(budgetRef), ids = budget.data()?.reservationIds || [];

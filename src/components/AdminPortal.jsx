@@ -20,6 +20,8 @@ import { recoveryPublicationSignature } from './recoveryCapacityUtils.js';
 import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
+import PersonalMessageComposer from './PersonalMessageComposer.jsx';
+import { getGymusikInstruments } from './gymusikUtils.js';
 import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
 import { getExpansionStartDate, getExpansionDateError, buildPublicClassSelectionId, getPublishedExpansionClass, isPublicExpansionSeat, isExpansionDate } from './classExpansionUtils.js';
 import { formatLocatorTurn, locatorClassSignature, locatorStudentPlanningData, buildLocatorEmailPayload } from './locatorEmailUtils.js';
@@ -2342,6 +2344,9 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   // --- ESTADOS LOCALES UI ---
   const [searchStudent, setSearchStudent] = useState('');
   const [filterStatus, setFilterStatus] = useState('activo');
+  const [crmAudienceFilters, setCrmAudienceFilters] = useState(() => normalizeBoardFilters());
+  const [crmSelectedIds, setCrmSelectedIds] = useState(() => new Set());
+  const [personalMessageRecipients, setPersonalMessageRecipients] = useState(null);
   const [newAnnounce, setNewAnnounce] = useState(createEmptyAnnouncementDraft);
   const [announceEmailOptions, setAnnounceEmailOptions] = useState({ enabled: false, targetType: 'all', targetValue: '' });
   const [editingAnnouncementId, setEditingAnnouncementId] = useState(null);
@@ -4125,6 +4130,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       festivosTarragona: Array.isArray(settings.festivosTarragona) ? settings.festivosTarragona : [],
       festivosReus: Array.isArray(settings.festivosReus) ? settings.festivosReus : [],
       instrumentos: Array.isArray(settings.instrumentos) ? settings.instrumentos : defaultInstrumentos,
+      gymusikExcludedInstruments: Array.isArray(settings.gymusikExcludedInstruments) ? settings.gymusikExcludedInstruments : [],
       centers: normalizeCenters(settings.centers, settings),
       mitoboxRoomCapacities: Object.fromEntries(normalizeCenters(settings.centers, settings).flatMap(center => (center.rooms || []).filter(room => center.status !== 'inactive' && room.active !== false && room.mitoboxEnabled !== false).map(room => [`${center.id}__${room.id}`, Math.max(1, Number(room.capacity) || 1)]))),
       studentClassIndexVersion: Number(settings.studentClassIndexVersion || 0)
@@ -12872,6 +12878,28 @@ ${valueOrDash(comments.privateNote)}`,
     );
   };
 
+  const crmFilteredTargetIds = new Set(getAnnouncementStudentTargets({ targetType: 'filters', filters: crmAudienceFilters })
+    .map(target => String(target.studentId)));
+  const hasCrmAudienceFilters = Object.values(crmAudienceFilters).some(values => values.length > 0);
+  const filteredCrmStudents = students.filter(student => {
+    if (hasCrmAudienceFilters && !crmFilteredTargetIds.has(String(student.id))) return false;
+    const searchNeedle = searchStudent.trim().toLowerCase();
+    const classNames = getStudentAssignedClasses(student.id).flatMap(clase => (clase.students || [])
+      .filter(entry => entry.id === student.id).map(entry => entry.name || entry.studentName || ''));
+    const matchesSearch = !searchNeedle || [student.name, student.alias, student.email, ...classNames]
+      .some(value => String(value || '').toLowerCase().includes(searchNeedle));
+    if (!matchesSearch) return false;
+    if (filterStatus === 'retos_nuevos') return unreadVacationStudentIds.has(student.id);
+    if (filterStatus === 'sin_activar') return student.claimed === false;
+    return getStudentOperationalStatus(student) === filterStatus;
+  });
+  const selectedCrmRecipients = filteredCrmStudents.filter(student => crmSelectedIds.has(student.id));
+  const toggleCrmStudent = id => setCrmSelectedIds(previous => {
+    const next = new Set(previous);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
   const StudentDossierModalOverlay = () => {
     if (!studentDossierModal) return null;
     const [section, setSection] = useState('summary');
@@ -13140,6 +13168,7 @@ ${valueOrDash(comments.privateNote)}`,
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1"><p className="text-xs font-bold text-zinc-400 break-all">{student.email || 'Sin correo de acceso'}</p><span className={`inline-flex items-center gap-1 text-xs font-bold ${student.claimed ? 'text-emerald-300' : 'text-amber-300'}`}>{student.claimed ? <CheckCircle className="w-3.5 h-3.5"/> : <Clock className="w-3.5 h-3.5"/>}{student.claimed ? 'Activado' : 'Sin activar'}</span></div>
                 {student.avatarPath && <button type="button" onClick={removeDossierAvatar} disabled={removingAvatar} className="mt-2 text-[9px] font-black uppercase tracking-widest text-rose-300 hover:text-white disabled:opacity-50">{removingAvatar ? 'Retirando…' : 'Retirar fotografía'}</button>}
                 {avatarError && <p className="mt-2 text-[9px] font-bold text-amber-300">{avatarError}</p>}
+                <button type="button" onClick={() => setPersonalMessageRecipients([student])} className="mt-3 inline-flex items-center gap-2 rounded-xl bg-white text-black px-3 py-2 text-xs font-bold"><Mail className="w-4 h-4"/>Enviar mensaje personal</button>
               </div>
             </div>
           </div>
@@ -14941,6 +14970,7 @@ ${startDateWarning}
 
   return (
     <div className="min-h-screen bg-zinc-100 font-sans text-slate-800 flex flex-col md:flex-row">
+      {personalMessageRecipients && <PersonalMessageComposer db={db} appId={appId} user={user} recipients={personalMessageRecipients} onClose={() => setPersonalMessageRecipients(null)} />}
       {locatorEmail && <div className="fixed inset-0 bg-black/60 z-[200] flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-label="Preparar email">
         <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto p-5 space-y-4">
           <div className="flex justify-between"><h2 className="font-black text-xl">Preparar email</h2><button disabled={locatorSending} onClick={() => setLocatorEmail(null)} aria-label="Cerrar"><X/></button></div>
@@ -15951,28 +15981,23 @@ ${startDateWarning}
 
             <div className={`admin-crm-workspace ${studentDossierModal ? 'has-selection' : ''}`}>
               <section className="admin-crm-list" aria-label="Alumnos">
-                {(() => {
-                      const filtered = students.filter(s => {
-                        const searchNeedle = searchStudent.trim().toLowerCase();
-                        const classNamesForStudent = getStudentAssignedClasses(s.id)
-                          .flatMap(c => (c.students || [])
-                            .filter(studentEntry => studentEntry.id === s.id)
-                            .map(studentEntry => studentEntry.name || studentEntry.studentName || '')
-                          );
-                        const searchableValues = [s.name, s.alias, s.email, ...classNamesForStudent];
-                        const matchSearch = !searchNeedle || searchableValues
-                          .filter(Boolean)
-                          .some(value => String(value).toLowerCase().includes(searchNeedle));
-                        if (filterStatus === 'retos_nuevos') return matchSearch && unreadVacationStudentIds.has(s.id);
-                        if (filterStatus === 'sin_activar') {
-                          return matchSearch && (s.claimed === false);
-                        }
-
-                        const operationalStatus = getStudentOperationalStatus(s);
-                        return matchSearch && operationalStatus === filterStatus;
-                      });
-                  return <><p className="admin-list-count">{filtered.length} alumno(s)</p>{filtered.length === 0 && <p className="p-5 text-sm text-zinc-500">No hay alumnos en esta lista.</p>}{filtered.map(student => <button type="button" key={student.id} onClick={() => setStudentDossierModal(student)} aria-pressed={studentDossierModal?.id === student.id} className="admin-select-row"><strong>{student.useAlias && student.alias ? student.alias : student.name}{unreadVacationStudentIds.has(student.id) && <i aria-label="Resultados nuevos de retos musicales" title="Reto musical completado sin consultar" className="inline-block w-2 h-2 rounded-full bg-red-500 ml-2 align-middle"/>}</strong><span>{student.email || 'Sin correo'}</span><span>{getStudentOperationalStatus(student).replace(/_/g, ' ')} · {getStudentAssignedClasses(student.id).length} clase(s)</span></button>)}</>;
-                })()}
+                <details className="p-4 border-b border-zinc-200">
+                  <summary className="font-bold text-sm cursor-pointer">Filtros por clase{hasCrmAudienceFilters ? ' · activos' : ''}</summary>
+                  <div className="mt-3"><AnnouncementAudienceFilters filters={crmAudienceFilters} onChange={setCrmAudienceFilters}
+                    centers={getAnnouncementTargetOptions('sede')} instruments={getAnnouncementTargetOptions('instrumento')} teachers={getAnnouncementTargetOptions('profesor')}/></div>
+                  {hasCrmAudienceFilters && <button type="button" onClick={() => setCrmAudienceFilters(normalizeBoardFilters())} className="text-xs font-bold underline mt-2">Limpiar filtros por clase</button>}
+                </details>
+                <div className="p-4 border-b border-zinc-200 space-y-3">
+                  <p className="text-xs font-bold">{filteredCrmStudents.length} alumno(s) · {selectedCrmRecipients.length} seleccionado(s)</p>
+                  <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" disabled={!filteredCrmStudents.length} checked={filteredCrmStudents.length > 0 && selectedCrmRecipients.length === filteredCrmStudents.length}
+                    onChange={event => setCrmSelectedIds(new Set(event.target.checked ? filteredCrmStudents.map(student => student.id) : []))}/>Seleccionar listado visible</label>
+                  <button type="button" disabled={!selectedCrmRecipients.length} onClick={() => setPersonalMessageRecipients(selectedCrmRecipients)} className="w-full rounded-xl bg-black text-white p-3 text-xs font-bold disabled:opacity-40">Enviar mensaje a seleccionados</button>
+                </div>
+                {!filteredCrmStudents.length && <p className="p-5 text-sm text-zinc-500">No hay alumnos en esta lista.</p>}
+                {filteredCrmStudents.map(student => <div key={student.id} className="flex items-center gap-2 pl-3">
+                  <input type="checkbox" aria-label={`Seleccionar a ${student.alias || student.name}`} checked={crmSelectedIds.has(student.id)} onChange={() => toggleCrmStudent(student.id)}/>
+                  <button type="button" onClick={() => setStudentDossierModal(student)} aria-pressed={studentDossierModal?.id === student.id} className="admin-select-row min-w-0 flex-1"><strong>{student.useAlias && student.alias ? student.alias : student.name}{unreadVacationStudentIds.has(student.id) && <i aria-label="Resultados nuevos de retos musicales" title="Reto musical completado sin consultar" className="inline-block w-2 h-2 rounded-full bg-red-500 ml-2 align-middle"/>}</strong><span>{student.email || 'Sin correo'}</span><span>{getStudentOperationalStatus(student).replace(/_/g, ' ')} · {getStudentAssignedClasses(student.id).length} clase(s)</span></button>
+                </div>)}
               </section>
               <ResponsiveAdminDetail section="students" desktopClassName="admin-crm-detail" open={Boolean(studentDossierModal)} onClose={() => setStudentDossierModal(null)} title="Ficha del alumno">
                 {studentDossierModal ? <><button type="button" className="admin-back-list" onClick={() => setStudentDossierModal(null)}>← Volver al listado</button>
@@ -17763,6 +17788,13 @@ ${startDateWarning}
                 {(settings.instrumentos || defaultInstrumentos).map((inst, i) => (
                   <span key={i} className="bg-zinc-100 p-2 text-xs font-black uppercase tracking-widest rounded-lg border flex items-center gap-2 text-slate-700">
                     {inst}
+                    <label className="flex items-center gap-1 text-[10px] normal-case tracking-normal"><input type="checkbox" checked={getGymusikInstruments([inst], settings.gymusikExcludedInstruments).length > 0}
+                      onChange={event => {
+                        const excluded = new Set(settings.gymusikExcludedInstruments || []);
+                        if (event.target.checked) excluded.delete(inst); else excluded.add(inst);
+                        const next = { ...settings, gymusikExcludedInstruments: [...excluded] };
+                        setSettings(next); saveGlobalSettings(next);
+                      }}/>Gymusik</label>
                     <button onClick={() => { const s = {...settings, instrumentos: settings.instrumentos.filter((_, idx) => idx !== i)}; setSettings(s); saveGlobalSettings(s); }} className="text-red-500 hover:bg-red-50 p-1 rounded"><X className="w-3 h-3"/></button>
                   </span>
                 ))}

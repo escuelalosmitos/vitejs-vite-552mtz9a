@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import {
   buildGymusikSessionId, GYMUSIK_MEMBER_STATUSES, GYMUSIK_SESSION_STATUSES,
-  normalizeGymusikConfig, sortGymusikSessions
+  normalizeGymusikConfig, sortGymusikSessions, getGymusikInstruments
 } from './gymusikUtils';
 
 const nowIso = () => new Date().toISOString();
@@ -207,9 +207,10 @@ export default function ServicesAdmin({
   const [expandedSessionId, setExpandedSessionId] = useState('');
   const [memberFilter, setMemberFilter] = useState('all');
 
-  const configuredInstruments = Array.isArray(settings.instrumentos) && settings.instrumentos.length > 0
-    ? [...new Set(settings.instrumentos.map(item => String(item || '').trim()).filter(Boolean))]
-    : config.instruments;
+  const configuredInstruments = getGymusikInstruments(
+    Array.isArray(settings.instrumentos) ? settings.instrumentos : config.instruments,
+    settings.gymusikExcludedInstruments
+  );
 
   useEffect(() => {
     if (service !== 'gymusik') return undefined;
@@ -244,7 +245,7 @@ export default function ServicesAdmin({
     setSessionDraft(previous => configuredInstruments.includes(previous.instrument)
       ? previous
       : { ...previous, instrument: configuredInstruments[0] });
-  }, [service, editingSessionId, settings.instrumentos]);
+  }, [service, editingSessionId, settings.instrumentos, settings.gymusikExcludedInstruments]);
 
   useEffect(() => {
     if (service !== 'gymusik' || loading) return;
@@ -281,8 +282,9 @@ export default function ServicesAdmin({
   const availableRooms = (selectedCenter.rooms || []).filter(room => room.active !== false);
   const configuredTeachers = [...new Set((settings.teachersList || []).map(item => String(item || '').trim()).filter(Boolean))];
 
-  const getInactiveResourceIssues = session => {
+  const getInactiveResourceIssues = (session, keepExistingInstrument = false) => {
     const issues = [];
+    if (!keepExistingInstrument && !configuredInstruments.includes(session.instrument)) issues.push(`El instrumento ${session.instrument || 'seleccionado'} no está habilitado para Gymusik.`);
     const teacherIsActive = configuredTeachers.some(name => normalizeTextKey(name) === normalizeTextKey(session.teacherName));
     const center = centers.find(item => String(item.id) === String(session.centerId))
       || centers.find(item => normalizeTextKey(item.name) === normalizeTextKey(session.sede));
@@ -438,7 +440,8 @@ export default function ServicesAdmin({
     event.preventDefault();
     if (!sessionDraft.date || !sessionDraft.time || !sessionDraft.instrument || !sessionDraft.teacherName || !sessionDraft.centerId || !sessionDraft.roomId) return alert('Completa fecha, hora, instrumento, profesor, sede y sala.');
     if (!String(sessionDraft.content || '').trim()) return alert('Describe el contenido del entrenamiento.');
-    const inactiveResources = getInactiveResourceIssues(sessionDraft);
+    const keepExistingInstrument = Boolean(editingSessionId && sessions.some(session => session.id === editingSessionId && session.instrument === sessionDraft.instrument));
+    const inactiveResources = getInactiveResourceIssues(sessionDraft, keepExistingInstrument);
     if (inactiveResources.length > 0) return alert(`Revisa los recursos de la sesión:\n\n${inactiveResources.join('\n')}`);
     if (availabilityStatus !== 'ready') return alert(availabilityStatus === 'error'
       ? 'No se ha podido cargar la disponibilidad docente. Reintenta antes de guardar para evitar solapamientos.'
@@ -606,7 +609,7 @@ export default function ServicesAdmin({
       <form onSubmit={saveSession} className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
         <div className="flex items-center justify-between gap-4"><div><h3 className="text-xl font-black uppercase tracking-tight">{editingSessionId ? 'Editar sesión' : 'Nueva sesión'}</h3><p className="text-xs font-bold text-zinc-400 mt-1">La capacidad parte del aforo de la sala. Al guardar se comprobarán disponibilidad, profesor y espacio.</p></div>{editingSessionId && <button type="button" onClick={() => { setEditingSessionId(''); setRepeatWeekly(false); setSessionDraft(emptySession(centers, { ...config, instruments: configuredInstruments })); }} className="p-2 bg-zinc-100 rounded-full"><X className="w-4 h-4"/></button>}</div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Instrumento<select value={sessionDraft.instrument} onChange={event => setSessionDraft(previous => ({ ...previous, instrument: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold">{configuredInstruments.map(item => <option key={item}>{item}</option>)}</select></label>
+          <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Instrumento<select value={sessionDraft.instrument} onChange={event => setSessionDraft(previous => ({ ...previous, instrument: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold">{editingSessionId && !configuredInstruments.includes(sessionDraft.instrument) && <option value={sessionDraft.instrument} disabled>{sessionDraft.instrument} (sesión existente)</option>}{configuredInstruments.map(item => <option key={item}>{item}</option>)}</select></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Fecha<input type="date" value={sessionDraft.date} onChange={event => setSessionDraft(previous => ({ ...previous, date: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Hora<input type="time" value={sessionDraft.time} onChange={event => setSessionDraft(previous => ({ ...previous, time: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>
           <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Duración<input type="number" min="15" step="15" value={sessionDraft.duration} onChange={event => setSessionDraft(previous => ({ ...previous, duration: event.target.value }))} className="mt-1 w-full p-3 bg-zinc-50 border-2 border-zinc-200 rounded-xl font-bold"/></label>

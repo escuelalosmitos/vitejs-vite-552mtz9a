@@ -15,6 +15,25 @@ const html = await readFile('FORMULARIO_PUBLICO_WORDPRESS.html', 'utf8');
 const formSource = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1];
 const ast = parse(formSource, { ecmaVersion: 'latest', sourceType: 'module', range: true });
 const functions = ['parseLocalDate', 'formatLocalDate', 'getTodayString', 'getEffectiveStartDate', 'subscribeToPublicAvailability'];
+test('Bajo y Ukelele comparten solo los turnos de guitarra de cuatro plazas y su enlace original', () => {
+  const rows = [base, { ...base, selectionId: 'large', maxCap: 8 }, { ...base, selectionId: 'private', maxCap: 1 },
+    { ...base, selectionId: 'full', plazas: 0 }, { ...base, selectionId: 'other-school', escuela: 'Tarragona' },
+    { ...base, selectionId: 'native-bass', instrumento: 'Bajo', maxCap: 2 }];
+  const context = { datos: rows };
+  vm.createContext(context);
+  for (const name of ['isSharedGuitarTurn', 'isSharedInstrument', 'matchesInstrument', 'instrumentosDisponibles', 'horariosDisponibles']) {
+    const node = ast.body.find(item => item.type === 'FunctionDeclaration' && item.id.name === name);
+    vm.runInContext(formSource.slice(...node.range), context);
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(context.instrumentosDisponibles('Reus'))), ['Bajo', 'Guitarra', 'Ukelele']);
+  assert.deepEqual(context.horariosDisponibles('Reus', 'Ukelele').map(row => row.selectionId), ['guitar-a']);
+  assert.deepEqual(context.horariosDisponibles('Reus', 'Bajo').map(row => row.selectionId), ['guitar-a', 'native-bass']);
+  assert.equal(context.horariosDisponibles('Reus', 'Ukelele')[0], base);
+  assert.equal(context.horariosDisponibles('Reus', 'Ukelele')[0].url, base.url);
+  assert.equal(rows[0].instrumento, 'Guitarra');
+  context.datos = [{ ...base, plazas: 0 }];
+  assert.equal(context.instrumentosDisponibles('Reus').length, 0);
+});
 const actualForm = payload => {
   const context = { Date: Clock, datos: [], db: {}, doc: () => ({}), initUIFromData() {}, setStatus() {}, console,
     onSnapshot: (_ref, handler) => handler({ exists: () => true, data: () => payload }) };

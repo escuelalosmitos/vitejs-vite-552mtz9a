@@ -1,0 +1,551 @@
+<style>
+  :root{
+    --mitos-primary:#0ea5e9;
+    --mitos-ink:#0b1220;
+    --mitos-gray:#6b7280;
+    --mitos-bg:#f6f8fb;
+    --mitos-white:#fff;
+    --radius:16px;
+    --shadow:0 10px 30px rgba(0,0,0,.08);
+    --ok:#16a34a;      /* verde */
+    --warn:#f59e0b;   /* ámbar */
+    --danger:#dc2626; /* rojo */
+    --muted:#9ca3af;  /* gris */
+  }
+  #form-container {
+    max-width: 560px;
+    margin: 30px auto;
+    padding: 20px;
+    background: var(--mitos-white);
+    border:1px solid #e5e7eb;
+    border-radius: 20px;
+    box-shadow: var(--shadow);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    color: var(--mitos-ink);
+  }
+  #form-container h3{ margin:0 0 8px; font-size:22px; letter-spacing:-.02em; }
+  #form-container p.helper{ margin:0 0 14px; color:var(--mitos-gray); font-size:14px; line-height:1.45; }
+  #form-container label{ display:block; margin:16px 0 6px; font-weight:800; color:var(--mitos-ink); font-size:14px; }
+  #form-container select, #form-container button{ width:100%; padding:12px; border-radius:12px; font-size:14px; margin-bottom:8px; }
+  #form-container select{ border:1px solid #d1d5db; background:#fff; transition:border .2s, box-shadow .2s; }
+  #form-container select:focus{ border-color:var(--mitos-primary); outline:none; box-shadow:0 0 0 4px rgba(14,165,233,.15); }
+  #form-container button{ background:var(--mitos-primary); color:#fff; border:none; cursor:pointer; font-weight:900; transition:transform .12s, filter .12s; }
+  #form-container button:disabled{ background:#cbd5e1; cursor:not-allowed; }
+  #form-container button:hover:not(:disabled){ filter:brightness(1.03); transform:translateY(-1px); }
+
+  /* Estado */
+  .status{ display:flex; align-items:center; gap:8px; font-size:13px; color:var(--mitos-gray); min-height:20px; margin-bottom:6px; }
+  .dot{ width:8px; height:8px; border-radius:999px; background:#9ca3af; animation:pulse 1s infinite; }
+  @keyframes pulse{ 0%{opacity:.3} 50%{opacity:1} 100%{opacity:.3} }
+  .status.ready{ color:#166534; }
+  .status.ready .dot{ background:var(--ok); animation:none; }
+  .status.error{ color:#b91c1c; }
+  .status.error .dot{ background:#ef4444; animation:none; }
+
+  /* RESUMEN DESTACADO */
+  .summary-card{ margin-top:10px; margin-bottom:12px; padding:14px; border-radius:14px; border:1px solid #e5e7eb; background:#f9fafb; box-shadow: var(--shadow); }
+  .summary-head{ display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap; }
+  .summary-title{ margin:0; font-weight:900; }
+  .summary-badges{ display:flex; flex-wrap:wrap; gap:6px; margin-left:auto; }
+  .badge{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; font-size:12px; font-weight:800; border-radius:999px; color:#fff; background:var(--muted); }
+  .badge.ok{ background:var(--ok); }
+  .badge.warn{ background:var(--warn); color:#111827; }
+  .badge.danger{ background:var(--danger); }
+  .badge.gray{ background:#6b7280; }
+  .summary-body{ color:#374151; line-height:1.55; font-size:14px; }
+
+  .payment-note{
+    margin:8px 0 12px;
+    padding:12px 13px;
+    border-radius:14px;
+    background:#eff6ff;
+    border:1px solid #bfdbfe;
+    color:#1e3a8a;
+    font-size:13px;
+    line-height:1.45;
+    font-weight:700;
+  }
+  .payment-note.future{
+    background:#fffbeb;
+    border-color:#fde68a;
+    color:#78350f;
+  }
+  .opening-choice{ margin:12px 0; padding:14px; border:1px solid #bae6fd; border-radius:14px; background:#f0f9ff; }
+  .opening-choice h4{ margin:0 0 5px; font-size:15px; }
+  .opening-choice p{ margin:0 0 12px; color:#475569; font-size:13px; line-height:1.45; }
+  #form-container .mode-option{ margin:6px 0 0; background:#fff; color:#0f172a; border:2px solid #dbeafe; text-align:left; }
+  #form-container .mode-option.selected{ background:#0f172a; color:#fff; border-color:#0f172a; }
+  #form-container .mode-option small{ display:block; margin-top:3px; font-weight:650; opacity:.8; }
+</style>
+
+<div id="form-container" role="region" aria-labelledby="plazas-title">
+  <h3 id="plazas-title">Reserva tu plaza</h3>
+  <p class="helper">Selecciona <strong>escuela</strong>, <strong>instrumento</strong> y <strong>horario</strong>. Solo verás turnos con <strong>plazas disponibles reales</strong>.</p>
+
+  <div class="status" id="status"><span class="dot" aria-hidden="true"></span><span id="status-text">Conectando con la escuela…</span></div>
+
+  <label for="escuela">1. Elige escuela</label>
+  <select id="escuela"><option value="">-- Selecciona --</option></select>
+
+  <label for="instrumento">2. Elige instrumento</label>
+  <select id="instrumento" disabled><option value="">-- Selecciona --</option></select>
+  <p id="shared-instrument-note" class="helper" style="display:none;" aria-live="polite">Estos turnos pueden corresponder a grupos pequeños de guitarra y el recibo puede indicar «Guitarra». Podrás aprender bajo o ukelele con ejercicios adaptados a tu instrumento y practicar junto al grupo ritmo, armonía y coordinación.</p>
+
+  <label for="horario">3. Elige horario</label>
+  <select id="horario" disabled><option value="">-- Selecciona --</option></select>
+
+  <div id="summaryCard" class="summary-card" style="display:none;" aria-live="polite">
+    <div class="summary-head">
+      <h4 id="summaryTitle" class="summary-title">Tu selección</h4>
+      <div id="summaryBadges" class="summary-badges"></div>
+    </div>
+    <div id="summaryBody" class="summary-body"></div>
+  </div>
+
+  <div id="standard-payment-note" class="payment-note" aria-live="polite">
+    <strong>Matrícula gratuita y sin permanencia.</strong> La plaza quedará reservada al completar el formulario de inscripción. Si la incorporación se produce una vez comenzado el mes, la primera mensualidad se ajustará para que solo pagues la parte proporcional desde el día de inicio indicado.
+  </div>
+
+  <div id="future-payment-note" class="payment-note future" style="display:none;" aria-live="polite">
+    <strong>Matrícula gratuita y sin permanencia.</strong> Este turno corresponde a un grupo de nueva creación, con inicio previsto en la fecha indicada. Al completar el formulario, tu solicitud quedará registrada y tendrás una plaza reservada si el grupo sale adelante. Su apertura está condicionada a que se alcance el número mínimo de inscripciones necesario. Te confirmaremos el inicio cuando el grupo quede formado y no se realizará ningún cobro hasta entonces.
+  </div>
+
+  <div id="opening-choice" class="opening-choice" style="display:none;" aria-live="polite">
+    <h4>Este grupo está en formación. ¿Cómo quieres incorporarte?</h4>
+    <p id="opening-shared-detail">Matrícula gratuita y sin permanencia. Elige si quieres esperar a que se forme el grupo o comenzar en modalidad particular.</p>
+    <button type="button" class="mode-option selected" data-opening-mode="wait">
+      Esperar a que se forme el grupo
+      <small id="wait-mode-detail">Te apuntaremos sin realizar ningún cobro hasta confirmar la apertura.</small>
+    </button>
+    <button type="button" class="mode-option" data-opening-mode="private">
+      Empezar ya en modalidad particular
+      <small id="private-mode-detail">120 €/mes hasta que el grupo alcance el mínimo necesario.</small>
+    </button>
+  </div>
+
+  <button id="continuar" disabled>Reservar plaza</button>
+</div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAtVRPZ-nprU-JyahuAhmMjXiqaKzO-0kM",
+    authDomain: "escuela-musica-app.firebaseapp.com",
+    projectId: "escuela-musica-app",
+    storageBucket: "escuela-musica-app.firebasestorage.app",
+    messagingSenderId: "303855837130",
+    appId: "1:303855837130:web:c662eefe0cc718bde37933"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  const LS_SEL_KEY = "mitos_form_anual_publico_sel_v3";
+
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('status-text');
+
+  let datos = [];
+  let selectedOpeningMode = 'wait';
+
+  // Utilidades
+  function setStatus(text, state='loading'){
+    statusEl.classList.toggle('error', state === 'error');
+    statusEl.classList.toggle('ready', state === 'ready');
+    statusText.textContent = text || '';
+  }
+  function fmtDateShort(iso){ const [y,m,d]=(iso||'').split('-'); return (y&&m&&d)? `${d}/${m}/${y}`:null; }
+  function daysUntil(iso){ const dt=new Date(iso+'T00:00:00'); const t=new Date(); t.setHours(0,0,0,0); return Math.ceil((dt-t)/(1000*60*60*24)); }
+  function parseLocalDate(iso){
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ''))) return null;
+    const [year, month, day] = iso.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+  function formatLocalDate(date){
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  function getTodayString(){
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    return formatLocalDate(today);
+  }
+  function getEffectiveStartDate(startDate, dayNum, autoAdvanceStartDate){
+    const cleanStartDate = /^\d{4}-\d{2}-\d{2}$/.test(String(startDate || '')) ? String(startDate) : '';
+    if (!cleanStartDate || autoAdvanceStartDate !== true) return cleanStartDate || null;
+
+    const targetDay = Number(dayNum);
+    const todayStr = getTodayString();
+    if (!Number.isInteger(targetDay) || targetDay < 0 || targetDay > 6 || cleanStartDate >= todayStr) {
+      return cleanStartDate;
+    }
+
+    let cursor = parseLocalDate(cleanStartDate);
+    let effectiveDate = cleanStartDate;
+    let safetyCounter = 0;
+    while (cursor && effectiveDate < todayStr && safetyCounter < 120) {
+      const firstDayNextMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+      const offset = (targetDay - firstDayNextMonth.getDay() + 7) % 7;
+      firstDayNextMonth.setDate(1 + offset);
+      cursor = firstDayNextMonth;
+      effectiveDate = formatLocalDate(cursor);
+      safetyCounter += 1;
+    }
+    return effectiveDate || cleanStartDate;
+  }
+  function showPaymentNote(mode = 'standard'){
+    document.getElementById('standard-payment-note').style.display = mode === 'standard' ? 'block' : 'none';
+    document.getElementById('future-payment-note').style.display = mode === 'future' ? 'block' : 'none';
+  }
+
+  function subscribeToPublicAvailability() {
+    const publicRef = doc(db, 'publicData', 'classAvailability');
+
+    return onSnapshot(publicRef, (snapshot) => {
+      if (!snapshot.exists()) {
+        datos = [];
+        initUIFromData();
+        setStatus('La secretaría todavía no ha publicado las plazas. Intenta de nuevo en unos minutos.', 'error');
+        return;
+      }
+
+      const payload = snapshot.data() || {};
+      const publicClasses = Array.isArray(payload.classes) ? payload.classes : [];
+
+      // Lista blanca de los únicos campos públicos que necesita el formulario.
+      // No consultamos clases internas ni recibimos alumnos, nombres o correos.
+      datos = publicClasses.map((item, index) => {
+        const dayNum = Number(item.dayNum);
+        const autoAdvanceStartDate = item.autoAdvanceStartDate === true;
+        const inicio = getEffectiveStartDate(item.inicio, dayNum, autoAdvanceStartDate);
+        return {
+          // El fallback mantiene operativo el formulario durante la transición
+          // hasta que AdminPortal vuelva a publicar la proyección con selectionId.
+          selectionId: String(item.selectionId || '').trim() || `legacy-${index}`,
+          escuela: String(item.escuela || '').trim(),
+          instrumento: String(item.instrumento || '').trim(),
+          horario: String(item.horario || '').trim(),
+          dayNum,
+          timeStr: String(item.timeStr || '').trim(),
+          maxCap: Number(item.maxCap) || 0,
+          plazas: Number(item.plazas) || 0,
+          url: String(item.url || '').trim(),
+          precio: String(item.precio || '').trim(),
+          detalles: String(item.detalles || '').trim(),
+          inicio,
+          autoAdvanceStartDate,
+          allowPrivateOpening: item.allowPrivateOpening === true,
+          privateOpeningUrl: String(item.privateOpeningUrl || '').trim(),
+          privateOpeningPrice: String(item.privateOpeningPrice || '120 €/mes').trim(),
+          privateOpeningThreshold: Math.max(2, Number(item.privateOpeningThreshold) || 2)
+        };
+      }).filter(item => (
+        item.escuela &&
+        item.instrumento &&
+        item.horario &&
+        Number.isInteger(item.dayNum) &&
+        item.dayNum >= 0 &&
+        item.dayNum <= 6 &&
+        item.maxCap > 0 &&
+        item.plazas > 0
+      ));
+
+      initUIFromData();
+      setStatus('Plazas sincronizadas en vivo.', 'ready');
+    }, (error) => {
+      console.error(error);
+      setStatus('Error conectando con la secretaría. Intenta recargar la página.', 'error');
+    });
+  }
+
+  function getSavedSelection(){
+    try {
+      return JSON.parse(localStorage.getItem(LS_SEL_KEY) || 'null');
+    } catch (error) {
+      localStorage.removeItem(LS_SEL_KEY);
+      return null;
+    }
+  }
+
+  function isSharedGuitarTurn(turn){
+    return Number(turn.maxCap) === 4 && /^guitarra(?:\s+pequeñ[oa])?$/i.test(String(turn.instrumento || '').trim());
+  }
+
+  function isSharedInstrument(instrumento){
+    return ['Bajo', 'Ukelele'].includes(instrumento);
+  }
+
+  function matchesInstrument(turn, instrumento){
+    return turn.instrumento === instrumento || (isSharedInstrument(instrumento) && isSharedGuitarTurn(turn));
+  }
+
+  function instrumentosDisponibles(escuela){
+    const arr = datos
+      .filter(d => d.escuela === escuela && d.plazas > 0)
+      .map(d => d.instrumento);
+    if (datos.some(d => d.escuela === escuela && d.plazas > 0 && isSharedGuitarTurn(d))) arr.push('Bajo', 'Ukelele');
+    return [...new Set(arr)].sort((a,b)=>a.localeCompare(b));
+  }
+
+  function horariosDisponibles(escuela, instrumento){
+    return datos
+      .filter(d => d.escuela === escuela && matchesInstrument(d, instrumento) && d.plazas > 0)
+      .sort((a, b) => {
+      const dayA = a.dayNum === 0 ? 7 : a.dayNum;
+      const dayB = b.dayNum === 0 ? 7 : b.dayNum;
+
+      if (dayA !== dayB) {
+        return dayA - dayB;
+      }
+      return a.timeStr.localeCompare(b.timeStr);
+    });
+  }
+
+  function initUIFromData(){
+    const selectEscuela = document.getElementById("escuela");
+    showPaymentNote('standard');
+    selectEscuela.innerHTML = "<option value=''>-- Selecciona --</option>";
+    const escuelas = [...new Set(datos.map(d=>d.escuela))].sort((a,b)=>a.localeCompare(b));
+    escuelas.forEach(e=>{ const o=document.createElement('option'); o.value=e; o.textContent=e; selectEscuela.appendChild(o); });
+
+    const saved = getSavedSelection();
+    if (saved && escuelas.includes(saved.escuela)){
+      selectEscuela.value = saved.escuela;
+      selectEscuela.dispatchEvent(new Event('change'));
+      setTimeout(()=>{
+        const instSel=document.getElementById("instrumento");
+        if ([...instSel.options].some(o=>o.value===saved.instrumento)){
+          instSel.value = saved.instrumento; instSel.dispatchEvent(new Event('change'));
+          setTimeout(()=>{
+            const horSel=document.getElementById("horario");
+            const savedOption = [...horSel.options].find(option => (
+              (saved.selectionId && option.value === saved.selectionId) ||
+              (!saved.selectionId && option.dataset.horario === saved.horario)
+            ));
+            if (savedOption){
+              selectedOpeningMode = saved.openingMode === 'private' ? 'private' : 'wait';
+              horSel.value = savedOption.value; horSel.dispatchEvent(new Event('change'));
+            }
+          },0);
+        }
+      },0);
+    }
+  }
+
+  // Un único listener sobre la proyección pública mantiene las plazas al día.
+  subscribeToPublicAvailability();
+
+  function resetHorariosAndSummary(){
+    document.getElementById('shared-instrument-note').style.display = 'none';
+    const selHor = document.getElementById("horario");
+    selHor.innerHTML = "<option value=''>-- Selecciona --</option>";
+    selHor.disabled = true;
+    document.getElementById("continuar").disabled = true;
+    document.getElementById("summaryCard").style.display = "none";
+    document.getElementById("opening-choice").style.display = "none";
+    selectedOpeningMode = 'wait';
+    showPaymentNote('standard');
+  }
+
+  function rebuildInstrumentos(){
+    const escuelaSel = document.getElementById("escuela").value;
+    const selInst = document.getElementById("instrumento");
+    selInst.innerHTML = "<option value=''>-- Selecciona --</option>";
+
+    if (!escuelaSel){
+      selInst.disabled = true;
+      resetHorariosAndSummary();
+      return;
+    }
+
+    const lista = instrumentosDisponibles(escuelaSel);
+    lista.forEach(i=>{
+      const o=document.createElement('option'); o.value=i; o.textContent=i; selInst.appendChild(o);
+    });
+    selInst.disabled = lista.length === 0;
+
+    resetHorariosAndSummary();
+  }
+
+  function rebuildHorarios(){
+    const escuelaSel = document.getElementById("escuela").value;
+    const instSel = document.getElementById("instrumento").value;
+
+    const selHor = document.getElementById("horario");
+    selHor.innerHTML = "<option value=''>-- Selecciona --</option>";
+    if (!escuelaSel || !instSel){
+      selHor.disabled = true;
+      document.getElementById("continuar").disabled = true;
+      document.getElementById("summaryCard").style.display = "none";
+      showPaymentNote('standard');
+      return;
+    }
+
+    const lista = horariosDisponibles(escuelaSel, instSel);
+    document.getElementById('shared-instrument-note').style.display = isSharedInstrument(instSel) && lista.some(isSharedGuitarTurn) ? 'block' : 'none';
+    lista.forEach(d=>{
+      const o=document.createElement('option');
+      o.value=d.selectionId;
+      o.dataset.horario=d.horario;
+      o.textContent=`${d.horario} (Grupo de ${d.maxCap}p • ${d.plazas} libres)`;
+      selHor.appendChild(o);
+    });
+    selHor.disabled = lista.length === 0;
+
+    document.getElementById("continuar").disabled = true;
+    document.getElementById("summaryCard").style.display = "none";
+    showPaymentNote('standard');
+  }
+
+  document.getElementById("escuela").addEventListener("change", e => {
+    rebuildInstrumentos();
+    localStorage.setItem(LS_SEL_KEY, JSON.stringify({escuela: e.target.value, instrumento:"", horario:"", selectionId:""}));
+  });
+
+  document.getElementById("instrumento").addEventListener("change", e => {
+    rebuildHorarios();
+    localStorage.setItem(LS_SEL_KEY, JSON.stringify({escuela: document.getElementById("escuela").value, instrumento: e.target.value, horario: "", selectionId:""}));
+  });
+
+  function allowsPrivateOpening(fila){
+    // Al confirmar al primer alumno particular, Administración desactiva
+    // autoAdvanceStartDate y el turno vuelve automáticamente al flujo normal.
+    // La opción no depende del aforo: el mínimo de apertura lo configura Admin.
+    return Boolean(
+      fila &&
+      fila.autoAdvanceStartDate === true &&
+      fila.allowPrivateOpening === true &&
+      fila.privateOpeningUrl
+    );
+  }
+
+  function renderSelectedClass(fila){
+    const escuelaSel = document.getElementById("escuela").value;
+    const instSel = document.getElementById("instrumento").value;
+    document.getElementById('shared-instrument-note').style.display = fila && isSharedInstrument(instSel) && isSharedGuitarTurn(fila) ? 'block' : 'none';
+    const selectionId = document.getElementById("horario").value;
+    const card = document.getElementById("summaryCard");
+    const title = document.getElementById("summaryTitle");
+    const body = document.getElementById("summaryBody");
+    const badges = document.getElementById("summaryBadges");
+    const choice = document.getElementById("opening-choice");
+    const continueButton = document.getElementById("continuar");
+
+    if (!fila){
+      card.style.display = "none";
+      choice.style.display = "none";
+      continueButton.disabled = true;
+      showPaymentNote('standard');
+      return;
+    }
+
+    const canOpenPrivately = allowsPrivateOpening(fila);
+    if (!canOpenPrivately) selectedOpeningMode = 'wait';
+    choice.style.display = canOpenPrivately ? 'block' : 'none';
+    choice.querySelectorAll('[data-opening-mode]').forEach(button => {
+      button.classList.toggle('selected', button.dataset.openingMode === selectedOpeningMode);
+    });
+
+    const groupPrice = fila.precio || 'la tarifa normal de grupo';
+    const privatePrice = fila.privateOpeningPrice || '120 €/mes';
+    const startText = fila.inicio
+      ? `Inicio previsto: ${fmtDateShort(fila.inicio)}.`
+      : 'La fecha de inicio está pendiente de confirmación.';
+    document.getElementById('opening-shared-detail').textContent = `Matrícula gratuita y sin permanencia. ${startText} Elige cómo quieres incorporarte.`;
+    document.getElementById('wait-mode-detail').textContent = `Te apuntaremos sin realizar ningún cobro hasta confirmar la apertura. Después se aplicará la cuota de grupo: ${groupPrice}.`;
+    document.getElementById('private-mode-detail').textContent = `${privatePrice} desde el inicio. Al alcanzar el mínimo de ${fila.privateOpeningThreshold} alumnos, tu cuota pasará a ${groupPrice} desde el siguiente recibo.`;
+
+    const isPrivateOpening = canOpenPrivately && selectedOpeningMode === 'private';
+    showPaymentNote(canOpenPrivately ? 'none' : (fila.autoAdvanceStartDate === true ? 'future' : 'standard'));
+
+    badges.innerHTML = '';
+    const addBadge = (txt, cls) => { const b=document.createElement('span'); b.className='badge '+(cls||''); b.textContent=txt; badges.appendChild(b); };
+
+    if (isPrivateOpening){
+      addBadge(fila.inicio ? `Inicio ${fmtDateShort(fila.inicio)}` : 'Inicio por confirmar', 'warn');
+    } else if (fila.autoAdvanceStartDate === true){
+      addBadge(fila.inicio ? `Inicio previsto ${fmtDateShort(fila.inicio)}` : 'Inicio previsto por confirmar', 'warn');
+    } else if (fila.inicio){
+      addBadge(daysUntil(fila.inicio) <= 0 ? 'Inicio inmediato' : `Inicio ${fmtDateShort(fila.inicio)}`, daysUntil(fila.inicio) <= 0 ? 'ok' : 'warn');
+    } else {
+      addBadge('Inicio inmediato', 'ok');
+    }
+    if (isPrivateOpening) addBadge('Apertura particular provisional', 'gray');
+
+    if (typeof fila.plazas === 'number'){
+      let cls='ok', txt;
+      if (fila.plazas === 1){ cls='danger'; txt='1 plaza libre'; }
+      else if (fila.plazas === 2){ cls='warn'; txt='2 plazas libres'; }
+      else { txt = `${fila.plazas} plazas libres`; }
+      addBadge(txt, cls);
+    }
+
+    title.textContent = 'Tu selección';
+    const precioTexto = isPrivateOpening
+      ? ` (Cuota inicial: ${privatePrice})`
+      : (canOpenPrivately && fila.precio
+        ? ` (Cuota de grupo al abrir: ${fila.precio})`
+        : (fila.precio ? ` (Cuota: ${fila.precio})` : ''));
+    const inicioTexto = isPrivateOpening
+      ? (fila.inicio ? ` Inicio: ${fmtDateShort(fila.inicio)}.` : ' Inicio: por confirmar.')
+      : (fila.autoAdvanceStartDate === true
+        ? (fila.inicio ? ` Inicio previsto: ${fmtDateShort(fila.inicio)}.` : ' Inicio previsto: por confirmar.')
+        : (fila.inicio && daysUntil(fila.inicio) > 0 ? ` Inicio: ${fmtDateShort(fila.inicio)}.` : ' Inicio: inmediato.'));
+    const privateText = isPrivateOpening
+      ? ` Empezarás en modalidad particular hasta que se alcance el mínimo de ${fila.privateOpeningThreshold} alumnos; después se aplicará la cuota normal de grupo desde el siguiente recibo.`
+      : (canOpenPrivately ? ' No se realizará ningún cobro hasta que confirmemos la apertura del grupo.' : '');
+
+    if (fila.detalles){
+      body.textContent = `${fila.detalles}${precioTexto}.${inicioTexto}${privateText}`.replace(/\.\./g, '.').replace(/\s+/g, ' ').trim();
+    } else {
+      body.textContent = `Has elegido ${instSel} en Los Mitos ${escuelaSel}, turno ${fila.horario}${precioTexto}.${inicioTexto}${privateText}`.replace(/\.\./g, '.').replace(/\s+/g, ' ').trim();
+    }
+
+    continueButton.disabled = false;
+    continueButton.textContent = isPrivateOpening
+      ? 'Reservar y empezar'
+      : (canOpenPrivately ? 'Apuntarme y esperar' : 'Reservar plaza');
+    card.style.display = 'block';
+    localStorage.setItem(LS_SEL_KEY, JSON.stringify({
+      escuela: escuelaSel,
+      instrumento: instSel,
+      horario: fila.horario,
+      selectionId,
+      openingMode: selectedOpeningMode
+    }));
+  }
+
+  document.getElementById("horario").addEventListener("change", e => {
+    const fila = datos.find(d => d.selectionId === e.target.value);
+    if (!allowsPrivateOpening(fila)) selectedOpeningMode = 'wait';
+    renderSelectedClass(fila);
+  });
+
+  document.getElementById("opening-choice").addEventListener("click", event => {
+    const button = event.target.closest('[data-opening-mode]');
+    if (!button) return;
+    selectedOpeningMode = button.dataset.openingMode === 'private' ? 'private' : 'wait';
+    const selectionId = document.getElementById("horario").value;
+    renderSelectedClass(datos.find(d => d.selectionId === selectionId));
+  });
+
+  document.getElementById("continuar").addEventListener("click", () => {
+    const selectionId = document.getElementById("horario").value;
+    const fila = datos.find(d => d.selectionId === selectionId);
+    const destination = fila && selectedOpeningMode === 'private' && allowsPrivateOpening(fila)
+      ? fila.privateOpeningUrl
+      : fila?.url;
+
+    if (destination) {
+      window.location.href = destination;
+    } else {
+      alert("⚠️ Esta clase no tiene un enlace de inscripción configurado. Contacta con la secretaría.");
+    }
+  });
+</script>

@@ -1,4 +1,5 @@
 import { reserveGymusik, cancelGymusik, initializeGymusikCredits, gymusikCreditRef } from '../src/components/gymusikCreditStore.js';
+import { sendPersonalMessages } from '../src/components/personalMessagesStore.js';
 import { getSchoolDate, getSchoolParts, schoolDateTimeMillis } from '../src/components/vacationChallengeUtils.js';
 import { createMitoversoContractDraft, createMitoversoAcceptance } from '../src/components/mitoversoContractUtils.js';
 import { createMitolockerContractDraft, createMitolockerAcceptance } from '../src/components/mitolockerContractUtils.js';
@@ -57,6 +58,37 @@ test('REGRESIONES: permisos y concurrencia, sin datos reales', async t => {
     });
   }
   try {
+    await t.test('mensajes personales: bandejas por ID, lectura propia y reintentos sin duplicados', async () => {
+      const sibling = { ...profile, id: 'sibling' };
+      await seed([...base(), [`${root}/students/sibling`, sibling],
+        [`${root}/access/sibling-uid`, { ...access, studentId: 'sibling' }],
+        [`${root}/staffAccess/docente@escuelalosmitos.com`, { role: 'teacher', email: 'docente@escuelalosmitos.com' }]]);
+      const admin = env.authenticatedContext('admin-uid', { email: 'paco@escuelalosmitos.com' }).firestore();
+      const parameters = { db: admin, appId: 'default-app-id', studentIds: [person.id, 'sibling', person.id],
+        messageId: 'message-1', title: 'Aviso personal', body: 'Texto ficticio', sender: 'paco@escuelalosmitos.com' };
+      await sendPersonalMessages(parameters);
+      const ownPath = `${root}/students/${person.id}/inboxMessages/message-1`;
+      const siblingPath = `${root}/students/sibling/inboxMessages/message-1`;
+      const db = student();
+      await assertSucceeds(getDocs(collection(db, root, 'students', person.id, 'inboxMessages')));
+      await assertSucceeds(getDoc(doc(db, ownPath)));
+      await assertFails(getDoc(doc(db, siblingPath)));
+      const siblingDb = env.authenticatedContext('sibling-uid', { email: person.email }).firestore();
+      await assertSucceeds(getDoc(doc(siblingDb, siblingPath)));
+      await assertFails(getDoc(doc(siblingDb, ownPath)));
+      await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), ownPath)));
+      await assertFails(getDoc(doc(env.authenticatedContext('teacher', { email: 'docente@escuelalosmitos.com' }).firestore(), ownPath)));
+      await assertFails(updateDoc(doc(db, ownPath), { body: 'Respuesta del alumno' }));
+      await assertFails(setDoc(doc(db, `${root}/students/${person.id}/inboxMessages/forged`), {
+        studentId: person.id, title: 'Falso', body: 'Falso', createdAt: serverTimestamp(), createdBy: person.email, readAt: null
+      }));
+      await assertSucceeds(updateDoc(doc(db, ownPath), { readAt: serverTimestamp() }));
+      const readAt = (await getDoc(doc(db, ownPath))).data().readAt.toMillis();
+      await sendPersonalMessages(parameters);
+      assert.equal((await getDocs(collection(db, root, 'students', person.id, 'inboxMessages'))).size, 1);
+      assert.equal((await getDoc(doc(db, ownPath))).data().readAt.toMillis(), readAt);
+    });
+
     await t.test('A01: correo no verificado permite consultar y reclamar la ficha', async () => {
       await seed(base().filter(([path]) => !path.includes('/access/')));
       const db = student(false);
@@ -107,27 +139,28 @@ test('REGRESIONES: permisos y concurrencia, sin datos reales', async t => {
     });
 
     await t.test('A05: dos reservas reales disputan el último crédito y solo una lo obtiene', async () => {
-      const sessions = Array.from({ length: 5 }, (_, i) => ({ id: `audit-g${i}`, date: `2026-11-${String(12+i).padStart(2,'0')}`, time: '18:00', instrument: 'Piano', status: 'published', capacity: 4, reservedCount: i < 3 ? 1 : 0, waitlistCount: 0, teacherEmail: 'teacher@example.com' }));
+      const month = getSchoolDate(Date.now() + 35 * 86400000).slice(0, 7);
+      const sessions = Array.from({ length: 5 }, (_, i) => ({ id: `audit-g${i}`, date: `${month}-${String(12+i).padStart(2,'0')}`, time: '18:00', instrument: 'Piano', status: 'published', capacity: 4, reservedCount: i < 3 ? 1 : 0, waitlistCount: 0, teacherEmail: 'teacher@example.com' }));
       const previous = sessions.slice(0,3).map(s => ({ studentId: person.id, studentEmail: person.email, sessionId: s.id, sessionDate: s.date, status: 'confirmed' }));
       await seed([...base(), [`${root}/students/${person.id}`, { ...profile, hasGymusik: true }],
         [`${root}/gymusikMembers/${person.id}`, { status: 'active', creditLedgerVersion: 1 }],
         [`${root}/gymusikSettings/main`, { active: true, monthlyCredits: 4, cancellationHours: 24 }],
         ...sessions.map(s => [`${root}/gymusikSessions/${s.id}`, s]),
         ...previous.map(r => [`${root}/gymusikReservations/${buildGymusikReservationId(r.sessionId,person.id)}`, r]),
-        [`${root}/gymusikCredits/${person.id}/months/2026-11`, { studentId: person.id, studentEmail: person.email, month: '2026-11', reservationIds: previous.map(r => buildGymusikReservationId(r.sessionId,person.id)), lastReservationId: '', revision: 1 }]]);
-      assert.equal(getGymusikCreditsRemaining({ reservations: previous, studentId: person.id, month: '2026-11', monthlyCredits: 4 }), 1);
+        [`${root}/gymusikCredits/${person.id}/months/${month}`, { studentId: person.id, studentEmail: person.email, month, reservationIds: previous.map(r => buildGymusikReservationId(r.sessionId,person.id)), lastReservationId: '', revision: 1 }]]);
+      assert.equal(getGymusikCreditsRemaining({ reservations: previous, studentId: person.id, month, monthlyCredits: 4 }), 1);
       const results = await Promise.allSettled([reserveGymusik({db:student(),appId:'default-app-id',profile:person,session:sessions[3]}),reserveGymusik({db:student(),appId:'default-app-id',profile:person,session:sessions[4]})]);
       assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
       assert.equal(results.filter(r=>r.status==='rejected').length,1);
       const rows = (await getDocs(query(collection(student(), root, 'gymusikReservations'), where('studentEmail','==',person.email)))).docs.map(s => s.data());
-      assert.equal(getGymusikCreditsUsed({ reservations: rows, studentId: person.id, month: '2026-11' }), 4);
+      assert.equal(getGymusikCreditsUsed({ reservations: rows, studentId: person.id, month }), 4);
       const latest = rows.find(r => r.sessionId === sessions[3].id || r.sessionId === sessions[4].id);
       latest.id = buildGymusikReservationId(latest.sessionId, person.id);
       assert.equal(await cancelGymusik({ db: student(), appId: 'default-app-id', reservation: latest }), true);
-      const budget = await getDoc(gymusikCreditRef(student(), 'default-app-id', person.id, '2026-11'));
+      const budget = await getDoc(gymusikCreditRef(student(), 'default-app-id', person.id, month));
       assert.equal(budget.data().reservationIds.length, 3);
       assert.equal(await cancelGymusik({ db: student(), appId: 'default-app-id', reservation: latest }), false);
-      assert.equal((await getDoc(gymusikCreditRef(student(), 'default-app-id', person.id, '2026-11'))).data().reservationIds.length, 3);
+      assert.equal((await getDoc(gymusikCreditRef(student(), 'default-app-id', person.id, month))).data().reservationIds.length, 3);
       const unreserved = sessions.slice(3).find(s => s.id !== latest.sessionId);
       await assertSucceeds(reserveGymusik({ db: student(), appId: 'default-app-id', profile: person, session: unreserved }));
     });
@@ -148,6 +181,33 @@ test('REGRESIONES: permisos y concurrencia, sin datos reales', async t => {
       // Control: si portalEnabled se revoca expresamente, esta lectura sí se deniega.
       await env.withSecurityRulesDisabled(async context => updateDoc(doc(context.firestore(), root, 'access', person.uid), { portalEnabled: false }));
       await assertFails(getDoc(doc(db, root, 'roleData', 'studentClassCatalog')));
+    });
+    await t.test('Gymusik deshabilitado: bloquea reservas con configuración antigua y conserva la cancelación', async () => {
+      const date = getSchoolDate(Date.now() + 3 * 86400000);
+      const sessions = ['first', 'second'].map(id => ({ id, date, time: '18:00', instrument: 'Piano',
+        status: 'published', capacity: 2, reservedCount: 0, waitlistCount: 0, teacherEmail: 'teacher@example.com' }));
+      await seed([...base(), [`${root}/students/${person.id}`, { ...profile, hasGymusik: true }],
+        [`${root}/gymusikMembers/${person.id}`, { status: 'active', creditLedgerVersion: 1 }],
+        [`${root}/gymusikSettings/main`, { active: true, monthlyCredits: 4, cancellationHours: 24 }],
+        [`${root}/roleData/studentSettings`, { gymusikExcludedInstruments: [] }],
+        ...sessions.map(session => [`${root}/gymusikSessions/${session.id}`, session])]);
+      const db = student();
+      await assertSucceeds(reserveGymusik({ db, appId: 'default-app-id', profile: person, session: sessions[0] }));
+      await env.withSecurityRulesDisabled(async context => setDoc(doc(context.firestore(), root, 'settings', 'global'), { gymusikExcludedInstruments: ['Piano'] }));
+      await assertFails(reserveGymusik({ db, appId: 'default-app-id', profile: person, session: sessions[1] }));
+      assert.equal((await getDoc(doc(db, root, 'gymusikSessions', 'first'))).data().reservedCount, 1);
+      assert.equal(await cancelGymusik({ db, appId: 'default-app-id', reservation: { id: buildGymusikReservationId('first', person.id), sessionId: 'first' } }), true);
+      await assertFails(reserveGymusik({ db, appId: 'default-app-id', profile: person, session: sessions[0] }));
+      await env.withSecurityRulesDisabled(async context => updateDoc(doc(context.firestore(), root, 'settings', 'global'), { gymusikExcludedInstruments: [] }));
+      await assertSucceeds(reserveGymusik({ db, appId: 'default-app-id', profile: person, session: sessions[1] }));
+    });
+    await t.test('la preinscripción rechaza instrumentos excluidos de Gymusik', async () => {
+      await seed([...base(), [`${root}/settings/global`, { gymusikExcludedInstruments: ['Piano'] }]]);
+      const db = student();
+      const payload = { studentId: person.id, studentEmail: person.email, studentName: person.name,
+        instrument: 'Piano', interestInstruments: ['Piano'], status: 'preenrolled', isCurrentStudent: true };
+      await assertFails(setDoc(doc(db, root, 'gymusikMembers', person.id), payload));
+      await assertSucceeds(setDoc(doc(db, root, 'gymusikMembers', person.id), { ...payload, instrument: 'Guitarra', interestInstruments: ['Guitarra'] }));
     });
     await t.test('A08: contrato Mitoverso obligatorio, recibido con sello de servidor e inmutable para alumno', async () => {
       await seed(); const db=student();

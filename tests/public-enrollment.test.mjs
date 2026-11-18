@@ -7,6 +7,7 @@ import { transformWithOxc } from 'vite';
 import * as runtime from 'react/jsx-runtime';
 import { getPublicEnrollmentClasses, filterPublicEnrollmentClasses, getPublicFormStartDate } from '../src/components/publicEnrollmentUtils.js';
 import * as helpers from '../src/components/publicEnrollmentUtils.js';
+import * as promotionHelpers from '../src/components/enrollmentPromotions.js';
 
 const base = { selectionId: 'guitar-a', escuela: 'Reus', instrumento: 'Guitarra', horario: 'Lunes a las 18:00h', dayNum: 1, timeStr: '18:00', maxCap: 4, plazas: 2, url: 'https://example.com/inscripcion', precio: '70 €/mes' };
 const fixedTime = Date.parse('2026-10-27T12:00:00Z');
@@ -35,7 +36,7 @@ test('Bajo y Ukelele comparten solo los turnos de guitarra de cuatro plazas y su
   assert.equal(context.instrumentosDisponibles('Reus').length, 0);
 });
 const actualForm = payload => {
-  const context = { Date: Clock, datos: [], db: {}, doc: () => ({}), initUIFromData() {}, setStatus() {}, console,
+  const context = { Date: Clock, datos: [], campaigns: [], promo: promotionHelpers.enrollmentPromotions, db: {}, doc: () => ({}), initUIFromData() {}, setStatus() {}, console,
     onSnapshot: (_ref, handler) => handler({ exists: () => true, data: () => payload }) };
   vm.createContext(context);
   for (const name of functions) { const node = ast.body.find(node => node.type === 'FunctionDeclaration' && node.id.name === name); vm.runInContext(formSource.slice(...node.range), context); }
@@ -94,7 +95,7 @@ const makeView = async () => {
     useMemo(fn) { index++; return fn(); },
     useEffect(fn, deps) { const at = index++; if (!slots[at] || deps.some((value, i) => !Object.is(value, slots[at].deps[i]))) { slots[at]?.cleanup?.(); slots[at] = { deps }; effects.push(() => { slots[at].cleanup = fn(); }); } }
   };
-  const dependencies = { react: hooks, 'react/jsx-runtime': runtime, './publicEnrollmentUtils.js': helpers,
+  const dependencies = { react: hooks, 'react/jsx-runtime': runtime, './publicEnrollmentUtils.js': helpers, './enrollmentPromotions.js': promotionHelpers,
     'firebase/firestore': { doc: (_db, ...parts) => parts.join('/'), onSnapshot: (path, options, next, error) => { assert.equal(path, 'publicData/classAvailability'); assert.ok(options.includeMetadataChanges); callback = next; failure = error; subscriptions++; activeSubscriptions++; return () => { activeSubscriptions--; }; } } };
   const context = { setInterval: () => 1, clearInterval() {} }; let code = '', end = 0;
   for (const node of ast.body) if (node.type === 'ImportDeclaration') {

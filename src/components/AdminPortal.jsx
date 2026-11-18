@@ -21,6 +21,8 @@ import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
 import PersonalMessageComposer from './PersonalMessageComposer.jsx';
+import EnrollmentPromotionsAdmin from './EnrollmentPromotionsAdmin.jsx';
+import { enrollmentPromotions } from './enrollmentPromotions.js';
 import { getGymusikInstruments } from './gymusikUtils.js';
 import ResponsiveAdminDetail from './ResponsiveAdminDetail.jsx';
 import { getExpansionStartDate, getExpansionDateError, buildPublicClassSelectionId, getPublishedExpansionClass, isPublicExpansionSeat, isExpansionDate } from './classExpansionUtils.js';
@@ -41,7 +43,7 @@ const BI_WEEKS_PER_MONTH = 4.333;
 const MAINTENANCE_MONTHLY_FEE = 15;
 const STUDENT_PORTAL_URL = "alumnos.escuelalosmitos.com";
 const SUPPORT_EMAIL = "soporte@escuelalosmitos.com";
-const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 4;
+const PUBLIC_AVAILABILITY_SCHEMA_VERSION = 5;
 
 const normalizeTicketSubject = (value = '') => String(value || '').trim();
 const isFlexibleRecoveryTicket = (ticket = {}) => {
@@ -4004,11 +4006,13 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         left.timeStr.localeCompare(right.timeStr, 'es')
       ));
 
+    const campaigns = enrollmentPromotions.publicCampaigns(settings.enrollmentPromotions);
     return {
       classes,
-      signature: buildPublicAvailabilitySignature(classes)
+      campaigns,
+      signature: buildPublicAvailabilitySignature([classes, campaigns])
     };
-  }, [recurringClassesOnly, students, todayStr]);
+  }, [recurringClassesOnly, students, todayStr, settings.enrollmentPromotions]);
 
   // Proyecciones privadas para el Área del Alumno. Contienen únicamente los
   // campos que esa interfaz necesita y nunca incluyen alumnos de otras clases,
@@ -4190,7 +4194,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         updatedAt,
         generatedForDate: todayStr,
         signature: publication.signature,
-        classes: publication.classes
+        classes: publication.classes,
+        campaigns: publication.campaigns
       });
 
       syncState.remoteSignature = publication.signature;
@@ -17698,7 +17703,7 @@ ${startDateWarning}
           <div className="space-y-6 animate-in fade-in"><header className="mb-6">
               <h2 className="text-2xl font-black text-slate-800 uppercase tracking-tight">Configuración Global</h2>
               <p className="text-zinc-500 font-medium text-sm">Ajustes estratégicos de la infraestructura escolar.</p>
-            </header><div className="admin-settings-workspace"><nav className="admin-settings-nav" aria-label="Categorías de configuración">{[{"id":"economia","label":"Economía"},{"id":"instrumentos","label":"Instrumentos"},{"id":"sedes","label":"Sedes y espacios"},{"id":"calendario","label":"Calendario"},{"id":"retos-musicales","label":"Retos musicales"},{"id":"profesores","label":"Profesores"},{"id":"hora-muerta","label":"Hora muerta"},{"id":"normativa","label":"Normativa docente"},{"id":"contrato","label":"Contrato"},{"id":"importacion","label":"Importación"}].map(item => <button type="button" key={item.id} aria-pressed={settingsCategory === item.id} onClick={() => setSettingsCategory(item.id)}>{item.label}</button>)}</nav><div className="admin-settings-content"><section hidden={settingsCategory !== 'economia'} aria-label="Economía"><div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            </header><div className="admin-settings-workspace"><nav className="admin-settings-nav" aria-label="Categorías de configuración">{[{"id":"economia","label":"Economía"},{"id":"promociones","label":"Promociones"},{"id":"instrumentos","label":"Instrumentos"},{"id":"sedes","label":"Sedes y espacios"},{"id":"calendario","label":"Calendario"},{"id":"retos-musicales","label":"Retos musicales"},{"id":"profesores","label":"Profesores"},{"id":"hora-muerta","label":"Hora muerta"},{"id":"normativa","label":"Normativa docente"},{"id":"contrato","label":"Contrato"},{"id":"importacion","label":"Importación"}].map(item => <button type="button" key={item.id} aria-pressed={settingsCategory === item.id} onClick={() => setSettingsCategory(item.id)}>{item.label}</button>)}</nav><div className="admin-settings-content"><section hidden={settingsCategory !== 'economia'} aria-label="Economía"><div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Coste Empresa */}
               <div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm flex flex-col h-full">
                 <h3 className="text-sm font-black uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2"><Lock className="w-5 h-5 text-black"/> Costes de Personal</h3>
@@ -17889,6 +17894,7 @@ ${startDateWarning}
                 </div>
               )}
             </div></section>
+{settingsCategory === 'promociones' && <EnrollmentPromotionsAdmin campaigns={settings.enrollmentPromotions} classes={publicAvailabilityPublication.classes} groupSizes={recurringClassesOnly.map(item => parseInt(item.capacity, 10)).filter(value => value > 0)} centers={centers} instruments={settings.instrumentos || INSTRUMENTOS} onSave={async campaigns => { await setDoc(doc(db, 'artifacts', appId, 'settings', 'global'), { enrollmentPromotions: campaigns }, { merge: true }); setSettings(previous => ({ ...previous, enrollmentPromotions: campaigns })); }}/>}
 {settingsCategory === 'retos-musicales' && <React.Suspense fallback={<p className="p-6">Cargando retos musicales…</p>}><VacationChallengesAdmin db={db} appId={appId} settings={settings} onSaved={order => setSettings(previous => ({ ...previous, musicChallengeOrder: order }))}/></React.Suspense>}
 <section hidden={settingsCategory !== 'calendario'} aria-label="Calendario"><div className="bg-white p-6 rounded-3xl border border-zinc-200 shadow-sm mt-8">
               <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

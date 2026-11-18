@@ -76,11 +76,30 @@
   #form-container .mode-option{ margin:6px 0 0; background:#fff; color:#0f172a; border:2px solid #dbeafe; text-align:left; }
   #form-container .mode-option.selected{ background:#0f172a; color:#fff; border-color:#0f172a; }
   #form-container .mode-option small{ display:block; margin-top:3px; font-weight:650; opacity:.8; }
+  #campaign-banner{ margin:14px 0; padding:16px; border-radius:14px; background:#171717; color:#fff; }
+  #campaign-banner strong{ display:block; font-size:19px; }
+  #campaign-banner p{ font-size:13px; line-height:1.5; white-space:pre-wrap; }
+  #campaign-banner summary{ font-size:13px; font-weight:800; cursor:pointer; }
+  #campaign-price{ margin-top:12px; color:#166534; font-size:16px; font-weight:900; white-space:pre-wrap; }
+  #campaign-selection{ margin:14px 0; }
+  #campaign-summary{ box-sizing:border-box; width:100%; min-height:190px; padding:12px; border:1px solid #d1d5db; border-radius:12px; font:12px/1.5 system-ui,sans-serif; }
+  #form-container .campaign-accept{ display:flex; align-items:flex-start; gap:10px; font-weight:600; font-size:13px; line-height:1.5; }
+  #form-container .campaign-accept input{ width:20px; height:20px; flex-shrink:0; }
+  #form-container .promotion-toggle{ display:flex; align-items:center; gap:12px; color:#fff; font-size:15px; line-height:1.4; }
+  #form-container .promotion-toggle input{ width:24px; height:24px; flex-shrink:0; accent-color:#0ea5e9; cursor:pointer; }
 </style>
 
 <div id="form-container" role="region" aria-labelledby="plazas-title">
   <h3 id="plazas-title">Reserva tu plaza</h3>
   <p class="helper">Selecciona <strong>escuela</strong>, <strong>instrumento</strong> y <strong>horario</strong>. Solo verás turnos con <strong>plazas disponibles reales</strong>.</p>
+
+  <div id="campaign-banner" style="display:none;" aria-live="polite">
+    <strong id="campaign-title"></strong><p id="campaign-subtitle"></p>
+    <label class="promotion-toggle"><input type="checkbox" role="switch" id="use-promotion">Quiero acogerme a esta promoción</label>
+    <p id="promotion-choice-help" aria-live="polite">Aprovecha esta oferta en los horarios incluidos. Con la promoción activada verás los turnos acogidos a ella. Desactívala para descubrir todos los horarios con sus condiciones habituales.</p>
+    <details><summary>Consulta las condiciones de la promoción</summary><p id="campaign-conditions"></p></details>
+    <p>El descuento se aplica únicamente a los turnos y modalidades incluidos.</p>
+  </div>
 
   <div class="status" id="status"><span class="dot" aria-hidden="true"></span><span id="status-text">Conectando con la escuela…</span></div>
 
@@ -89,10 +108,11 @@
 
   <label for="instrumento">2. Elige instrumento</label>
   <select id="instrumento" disabled><option value="">-- Selecciona --</option></select>
-  <p id="shared-instrument-note" class="helper" style="display:none;" aria-live="polite">Estos turnos pueden corresponder a grupos pequeños de guitarra y el recibo puede indicar «Guitarra». Podrás aprender bajo o ukelele con ejercicios adaptados a tu instrumento y practicar junto al grupo ritmo, armonía y coordinación.</p>
+  <p id="shared-instrument-note" class="helper" style="display:none;" aria-live="polite"></p>
 
   <label for="horario">3. Elige horario</label>
   <select id="horario" disabled><option value="">-- Selecciona --</option></select>
+  <p id="promotion-empty-turns" class="helper" role="status" style="display:none;">No hay horarios incluidos en esta promoción para tu selección. Desactiva la promoción para consultar todos los turnos disponibles.</p>
 
   <div id="summaryCard" class="summary-card" style="display:none;" aria-live="polite">
     <div class="summary-head">
@@ -100,6 +120,7 @@
       <div id="summaryBadges" class="summary-badges"></div>
     </div>
     <div id="summaryBody" class="summary-body"></div>
+    <div id="campaign-price" style="display:none;"></div>
   </div>
 
   <div id="standard-payment-note" class="payment-note" aria-live="polite">
@@ -108,6 +129,17 @@
 
   <div id="future-payment-note" class="payment-note future" style="display:none;" aria-live="polite">
     <strong>Matrícula gratuita y sin permanencia.</strong> Este turno corresponde a un grupo de nueva creación, con inicio previsto en la fecha indicada. Al completar el formulario, tu solicitud quedará registrada y tendrás una plaza reservada si el grupo sale adelante. Su apertura está condicionada a que se alcance el número mínimo de inscripciones necesario. Te confirmaremos el inicio cuando el grupo quede formado y no se realizará ningún cobro hasta entonces.
+  </div>
+
+  <div id="campaign-payment-note" class="payment-note" style="display:none;" aria-live="polite"></div>
+
+  <div id="campaign-selection" style="display:none;">
+    <label for="campaign-summary">Resumen de tu selección</label>
+    <textarea id="campaign-summary" readonly></textarea>
+    <p class="helper" id="campaign-summary-count" aria-live="polite"></p>
+    <button type="button" id="copy-campaign-summary">Copiar mi selección</button>
+    <p class="helper" id="campaign-copy-status" role="status">Copia el resumen completo y pégalo en «Resumen de tu selección» al completar el formulario de reserva.</p>
+    <label class="campaign-accept" id="campaign-accept-label" style="display:none;"><input type="checkbox" id="campaign-accept">He leído las condiciones de la promoción, incluido su calendario de cobros y la permanencia que figure en ellas. La plaza queda pendiente de contacto y confirmación de la escuela.</label>
   </div>
 
   <div id="opening-choice" class="opening-choice" style="display:none;" aria-live="polite">
@@ -142,6 +174,157 @@
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
 
+  // BEGIN ENROLLMENT PROMOTIONS ENGINE
+  function createEnrollmentPromotions() {
+  const text = (value, limit = 2000) => String(value ?? '').trim().slice(0, limit);
+  const list = value => [...new Set((Array.isArray(value) ? value : []).map(item => text(item, 180)).filter(Boolean))];
+  const money = cents => new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 2 }).format(cents / 100);
+  const safeUrl = value => {
+    try { const url = new URL(text(value, 2000)); return url.protocol === 'https:' && !url.username && !url.password ? url.href : ''; }
+    catch { return ''; }
+  };
+  const localParts = timestamp => Object.fromEntries(new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date(timestamp)).map(part => [part.type, part.value]));
+  function madridInput(timestamp) {
+    if (!Number.isFinite(timestamp) || timestamp <= 0 || !Number.isFinite(new Date(timestamp).getTime())) return '';
+    const p = localParts(timestamp);
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  }
+  function madridMillis(value, endOfMinute = false) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(String(value || ''))) return 0;
+    const target = Date.parse(`${value}:00Z`);
+    if (!Number.isFinite(target)) return 0;
+    let timestamp = target;
+    for (let i = 0; i < 3; i++) {
+      const actual = madridInput(timestamp);
+      if (actual === value) return timestamp + (endOfMinute ? 59999 : 0);
+      timestamp += target - Date.parse(`${actual}:00Z`);
+    }
+    return 0;
+  }
+  function normalize(value = {}) {
+    value = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return {
+      id: text(value.id, 100), name: text(value.name, 100), subtitle: text(value.subtitle, 300), conditions: text(value.conditions, 3000),
+      status: ['enabled', 'paused'].includes(value.status) ? value.status : 'draft',
+      startsAt: Number(value.startsAt) || 0, endsAt: Number(value.endsAt) || 0,
+      commonUrl: safeUrl(value.commonUrl), priority: Math.max(0, Math.min(999, Math.floor(Number(value.priority) || 0))),
+      discountType: value.discountType === 'fixed' ? 'fixed' : 'percent', discountValue: Number(value.discountValue) || 0,
+      durationType: ['months', 'until', 'ongoing'].includes(value.durationType) ? value.durationType : 'first_receipt',
+      durationMonths: Math.max(1, Math.min(36, Math.floor(Number(value.durationMonths) || 1))), benefitUntil: text(value.benefitUntil, 10),
+      intakeMonth: text(value.intakeMonth, 7), benefitStartMonth: text(value.benefitStartMonth, 7),
+      billingText: text(value.billingText, 1000), commitmentText: text(value.commitmentText, 1000),
+      summaryTerms: text(value.summaryTerms, 500),
+      centers: list(value.centers), instruments: list(value.instruments), capacities: list(value.capacities), days: list(value.days),
+      selectionIds: list(value.selectionIds), excludedSelectionIds: list(value.excludedSelectionIds),
+      modes: list(value.modes).filter(mode => ['group', 'private'].includes(mode))
+    };
+  }
+  function error(value) {
+    const c = normalize(value);
+    if (!c.id || !c.name) return 'Escribe un nombre para la campaña.';
+    if (c.status !== 'enabled') return '';
+    if (!c.commonUrl) return 'Añade el enlace HTTPS común de Tadosi.';
+    if (!Number.isFinite(new Date(c.startsAt).getTime()) || !Number.isFinite(new Date(c.endsAt).getTime()) || c.startsAt <= 0 || c.endsAt < c.startsAt) return 'Revisa el inicio y el fin de la campaña.';
+    if (!Number.isFinite(c.discountValue) || c.discountValue <= 0 || (c.discountType === 'percent' && c.discountValue > 100)) return 'Revisa el descuento: porcentaje entre 0 y 100 o importe positivo.';
+    if (!c.conditions) return 'Escribe las condiciones que verá la persona interesada.';
+    if ([c.intakeMonth, c.benefitStartMonth].some(month => month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month))) return 'Revisa los meses de incorporación y descuento.';
+    if (c.durationType === 'until' && (!/^\d{4}-\d{2}-\d{2}$/.test(c.benefitUntil) || !Number.isFinite(Date.parse(`${c.benefitUntil}T12:00:00Z`)) || new Date(`${c.benefitUntil}T12:00:00Z`).toISOString().slice(0, 10) !== c.benefitUntil)) return 'Indica hasta qué fecha se aplica el descuento.';
+    return '';
+  }
+  function publicCampaigns(values) {
+    return (Array.isArray(values) ? values : []).map(normalize).filter(c => c.status === 'enabled' && !error(c));
+  }
+  function state(value, now = Date.now()) {
+    const c = normalize(value);
+    if (c.status === 'paused') return 'Pausada';
+    if (c.status !== 'enabled') return 'Borrador';
+    if (error(c)) return 'Incompleta';
+    if (now < c.startsAt) return 'Programada';
+    if (now > c.endsAt) return 'Finalizada';
+    return 'Activa';
+  }
+  function active(values, now = Date.now()) {
+    return publicCampaigns(values).filter(c => now >= c.startsAt && now <= c.endsAt)
+      .sort((a, b) => b.priority - a.priority || b.startsAt - a.startsAt || a.id.localeCompare(b.id))[0] || null;
+  }
+  function matches(c, turn, instrument = turn.instrumento, mode = 'group') {
+    return !!turn && (!c.centers.length || c.centers.includes(turn.escuela))
+      && (!c.instruments.length || c.instruments.includes(instrument))
+      && (!c.capacities.length || c.capacities.includes(String(turn.maxCap)))
+      && (!c.days.length || c.days.includes(String(turn.dayNum)))
+      && (!c.selectionIds.length || c.selectionIds.includes(turn.selectionId))
+      && !c.excludedSelectionIds.includes(turn.selectionId)
+      && (!c.modes.length || c.modes.includes(Number(turn.maxCap) === 1 ? 'private' : mode))
+      && !(c.intakeMonth && turn.inicio && String(turn.inicio).slice(0, 7) > c.intakeMonth);
+  }
+  function monthlyCents(value) {
+    if (typeof value !== 'string') return null;
+    const match = value.trim().match(/^(\d{1,5})(?:[.,](\d{1,2}))?\s*(?:€|euros?)\s*\/\s*mes$/i);
+    if (!match) return null;
+    const cents = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
+    return cents > 0 ? cents : null;
+  }
+  function duration(value) {
+    const c = normalize(value);
+    if (c.benefitStartMonth && c.durationType === 'months') return c.durationMonths === 1
+      ? `en ${monthLabel(c.benefitStartMonth)}` : `durante ${c.durationMonths} mensualidades desde ${monthLabel(c.benefitStartMonth)}`;
+    if (c.durationType === 'months') return `durante ${c.durationMonths === 1 ? 'la primera mensualidad' : `las ${c.durationMonths} primeras mensualidades`}`;
+    if (c.durationType === 'until') return `hasta el ${c.benefitUntil.split('-').reverse().join('/')}`;
+    if (c.durationType === 'ongoing') return 'mientras se mantenga la inscripción, según las condiciones';
+    return 'en el primer recibo';
+  }
+  function monthLabel(month) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return '';
+    return new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T12:00:00Z`));
+  }
+  function discountLabel(c) { return c.discountType === 'fixed' ? `−${money(Math.round(c.discountValue * 100))}` : `−${c.discountValue} %`; }
+  function quote(values, turn, instrument = turn?.instrumento, mode = 'group', now = Date.now(), usePromotion = true) {
+    const campaign = active(values, now);
+    const baseLabel = text(mode === 'private' && turn?.allowPrivateOpening ? turn.privateOpeningPrice || '120 €/mes' : turn?.precio);
+    const baseCents = monthlyCents(baseLabel);
+    const eligible = usePromotion === true && !!campaign && matches(campaign, turn, instrument, mode);
+    const discountedCents = eligible && baseCents !== null
+      ? Math.max(0, campaign.discountType === 'fixed' ? baseCents - Math.round(campaign.discountValue * 100) : Math.round(baseCents * (1 - campaign.discountValue / 100))) : baseCents;
+    return { campaign, eligible, baseCents, discountedCents, baseLabel,
+      displayLabel: eligible && discountedCents !== null ? `${money(discountedCents)}/mes` : baseLabel,
+      durationLabel: eligible ? duration(campaign) : '', discountLabel: eligible ? discountLabel(campaign) : '',
+      destination: (eligible ? campaign.commonUrl : '') || (mode === 'private' && turn?.allowPrivateOpening ? turn.privateOpeningUrl : turn?.url) || '' };
+  }
+  function summary(turn, instrument, mode, offer) {
+    if (!turn) return '';
+    const c = offer.campaign;
+    const lines = [
+      `${turn.escuela} | Instrumento: ${instrument}`,
+      `Turno: ${turn.horario} | ${turn.maxCap} personas`,
+      `Modalidad: ${mode === 'private' && turn.allowPrivateOpening ? 'Particular provisional' : Number(turn.maxCap) === 1 ? 'Particular' : turn.allowPrivateOpening ? 'Esperar apertura de grupo' : 'Grupo'}`,
+      `Inicio: ${offer.eligible && c.intakeMonth ? monthLabel(c.intakeMonth) : turn.inicio ? turn.inicio.split('-').reverse().join('/') : 'A confirmar'}`,
+      `Cuota habitual: ${offer.baseLabel || 'A confirmar'}`
+    ];
+    if (offer.eligible) {
+      lines.push(`Promoción: ${c.name} (${offer.discountLabel})`, `Cuota promocional: ${offer.displayLabel} ${offer.durationLabel}`,
+        `Inscribirse hasta: ${madridInput(c.endsAt).replace('T', ' ')} (España)`);
+      if (c.durationType !== 'ongoing') lines.push(`Después del descuento: ${offer.baseLabel}`);
+      if (c.summaryTerms) lines.push(`Condiciones: ${c.summaryTerms}`);
+      else {
+        if (c.billingText) lines.push(`Cobros: ${c.billingText}`);
+        if (c.commitmentText) lines.push(`Permanencia: ${c.commitmentText}`);
+      }
+    } else lines.push('Sin promoción.');
+    if (mode === 'private' && turn.allowPrivateOpening) lines.push(`Al abrir el grupo, cuota habitual: ${turn.precio || 'A confirmar'}.`);
+    lines.push(`Ref. turno: ${turn.selectionId}`, 'Plaza pendiente de confirmación. Sin cobro al inscribirse.');
+    const result = lines.map(line => String(line).replace(/\s+/g, ' ').trim()).join('\n');
+    // Incluye el coste de convertir LF a CRLF al copiar en Windows. Nunca corta
+    // importes o condiciones para encajar: se debe corregir el resumen en Admin.
+    return summaryLength(result) <= 1000 ? result : '';
+  }
+  function summaryLength(value) { return String(value).replace(/\r\n/g, '\n').replace(/\n/g, '\r\n').length; }
+  return { normalize, error, publicCampaigns, state, active, matches, monthlyCents, money, duration, monthLabel, discountLabel, quote, summary, summaryLength, madridInput, madridMillis };
+}
+  // END ENROLLMENT PROMOTIONS ENGINE
+  const promo = createEnrollmentPromotions();
+
   const LS_SEL_KEY = "mitos_form_anual_publico_sel_v3";
 
   const statusEl = document.getElementById('status');
@@ -149,6 +332,14 @@
 
   let datos = [];
   let selectedOpeningMode = 'wait';
+  let campaigns = [];
+  let lastCampaignSummary = '';
+  let lastRenderedCampaignId = '';
+  let lastCampaignSignature = '';
+  let availabilityReady = false;
+  let offeredCampaignId = '';
+  let promotionOptOut = false;
+  let lastPromotionChoicesKey = '';
 
   // Utilidades
   function setStatus(text, state='loading'){
@@ -200,8 +391,97 @@
     return effectiveDate || cleanStartDate;
   }
   function showPaymentNote(mode = 'standard'){
-    document.getElementById('standard-payment-note').style.display = mode === 'standard' ? 'block' : 'none';
-    document.getElementById('future-payment-note').style.display = mode === 'future' ? 'block' : 'none';
+    const fila = datos.find(d => d.selectionId === document.getElementById('horario').value);
+    const applying = fila && promotionQuote(fila, selectedOpeningMode === 'private' ? 'private' : 'group').eligible;
+    const prospective = !fila && promo.active(campaigns) && document.getElementById('use-promotion').checked;
+    document.getElementById('standard-payment-note').style.display = !applying && !prospective && mode === 'standard' ? 'block' : 'none';
+    document.getElementById('future-payment-note').style.display = !applying && !prospective && mode === 'future' ? 'block' : 'none';
+    const note = document.getElementById('campaign-payment-note');
+    note.style.display = applying || prospective ? 'block' : 'none';
+    note.textContent = applying ? 'No se realiza ningún cobro al completar el formulario. La escuela contactará contigo para confirmar la plaza y sus condiciones antes de preparar los recibos.'
+      : prospective ? 'Selecciona un turno para comprobar si está incluido y consultar su precio, fechas y condiciones de promoción.' : '';
+  }
+
+  function promotionQuote(fila, mode = 'group'){
+    return promo.quote(campaigns, fila, document.getElementById('instrumento').value, mode, Date.now(), document.getElementById('use-promotion').checked);
+  }
+
+  function promotionChoicesKey(){
+    return `${promo.active(campaigns)?.id || ''}|${document.getElementById('use-promotion').checked}`;
+  }
+
+  function turnIncludedInPromotion(fila, instrument){
+    const campaign = promo.active(campaigns);
+    if (!campaign || !document.getElementById('use-promotion').checked) return true;
+    return promo.matches(campaign, fila, instrument, 'group')
+      || (allowsPrivateOpening(fila) && promo.matches(campaign, fila, instrument, 'private'));
+  }
+
+  function refreshPromotionChoices(){
+    const selected = document.getElementById('horario').value;
+    const openingMode = selectedOpeningMode;
+    rebuildHorarios();
+    const select = document.getElementById('horario');
+    if ([...select.options].some(option => option.value === selected)){
+      select.value = selected;
+      selectedOpeningMode = openingMode;
+      const fila = datos.find(d => d.selectionId === selected);
+      if (fila) renderSelectedClass(fila);
+    }
+  }
+
+  function renderCampaignBanner(){
+    const campaign = promo.active(campaigns);
+    if ((campaign?.id || '') !== offeredCampaignId){
+      offeredCampaignId = campaign?.id || '';
+      document.getElementById('use-promotion').checked = Boolean(campaign) && !promotionOptOut;
+      document.getElementById('campaign-accept').checked = false;
+    }
+    document.getElementById('campaign-banner').style.display = campaign ? 'block' : 'none';
+    document.getElementById('campaign-title').textContent = campaign ? `${campaign.name} · ${promo.discountLabel(campaign)}` : '';
+    document.getElementById('campaign-subtitle').textContent = campaign?.subtitle || '';
+    document.getElementById('campaign-conditions').textContent = campaign?.conditions || '';
+  }
+
+  function resetCampaignSelection(){
+    document.getElementById('campaign-selection').style.display = 'none';
+    document.getElementById('campaign-price').style.display = 'none';
+    document.getElementById('campaign-accept').checked = false;
+    document.getElementById('campaign-summary').value = '';
+    document.getElementById('campaign-summary-count').textContent = '';
+    lastCampaignSummary = '';
+    lastCampaignSignature = '';
+    lastRenderedCampaignId = '';
+  }
+
+  function renderCampaignSelection(fila, instrument, offer){
+    renderCampaignBanner();
+    document.getElementById('promotion-choice-help').textContent = document.getElementById('use-promotion').checked
+      ? 'Aprovecha esta oferta en los horarios incluidos. Con la promoción activada verás los turnos acogidos a ella. Desactívala para descubrir todos los horarios con sus condiciones habituales.'
+      : 'Estás viendo todos los horarios disponibles con sus precios y condiciones habituales. Activa la promoción para consultar los turnos incluidos en la oferta.';
+    if (!offer.eligible) { resetCampaignSelection(); return; }
+    const campaign = offer.campaign;
+    lastRenderedCampaignId = campaign.id;
+    const signature = JSON.stringify([fila, instrument, selectedOpeningMode, campaign, offer.displayLabel]);
+    if (signature !== lastCampaignSignature){
+      lastCampaignSignature = signature;
+      lastCampaignSummary = promo.summary(fila, instrument, selectedOpeningMode === 'private' ? 'private' : 'group', offer);
+      document.getElementById('campaign-summary').value = lastCampaignSummary;
+      document.getElementById('campaign-accept').checked = false;
+      document.getElementById('campaign-copy-status').textContent = 'Copia el resumen completo y pégalo en «Resumen de tu selección» al completar el formulario de reserva.';
+    }
+    document.getElementById('campaign-summary-count').textContent = `${promo.summaryLength(lastCampaignSummary)}/1000 caracteres`;
+    document.getElementById('copy-campaign-summary').disabled = !lastCampaignSummary;
+    if (!lastCampaignSummary) document.getElementById('campaign-copy-status').textContent = 'El resumen de esta oferta supera el límite del formulario de reserva. Contacta con la escuela para que te ayude a continuar.';
+    document.getElementById('campaign-selection').style.display = 'block';
+    document.getElementById('campaign-accept-label').style.display = offer.eligible ? 'flex' : 'none';
+    const price = document.getElementById('campaign-price');
+    price.style.display = 'block';
+    price.textContent = offer.eligible
+      ? `Cuota habitual: ${offer.baseLabel}\n${campaign.name}: ${offer.displayLabel} ${offer.durationLabel}${campaign.durationType !== 'ongoing' ? `\nDespués: ${offer.baseLabel}` : ''}`
+      : 'Este turno o modalidad no está incluido en el descuento. Se aplica su cuota habitual.';
+    const payment = document.getElementById('campaign-payment-note');
+    if (offer.eligible) payment.textContent = [payment.textContent, campaign.billingText, campaign.commitmentText].filter(Boolean).join(' ');
   }
 
   function subscribeToPublicAvailability() {
@@ -209,13 +489,17 @@
 
     return onSnapshot(publicRef, (snapshot) => {
       if (!snapshot.exists()) {
+        availabilityReady = false;
         datos = [];
+        campaigns = [];
         initUIFromData();
         setStatus('La secretaría todavía no ha publicado las plazas. Intenta de nuevo en unos minutos.', 'error');
         return;
       }
 
       const payload = snapshot.data() || {};
+      availabilityReady = true;
+      campaigns = promo.publicCampaigns(payload.campaigns);
       const publicClasses = Array.isArray(payload.classes) ? payload.classes : [];
 
       // Lista blanca de los únicos campos públicos que necesita el formulario.
@@ -259,6 +543,8 @@
       initUIFromData();
       setStatus('Plazas sincronizadas en vivo.', 'ready');
     }, (error) => {
+      availabilityReady = false;
+      document.getElementById('continuar').disabled = true;
       console.error(error);
       setStatus('Error conectando con la secretaría. Intenta recargar la página.', 'error');
     });
@@ -279,6 +565,14 @@
 
   function isSharedInstrument(instrumento){
     return ['Bajo', 'Ukelele'].includes(instrumento);
+  }
+
+  function updateSharedInstrumentNote(instrumento, visible = false){
+    const note = document.getElementById('shared-instrument-note');
+    note.textContent = isSharedInstrument(instrumento)
+      ? `Estos turnos pueden corresponder a grupos pequeños de guitarra y el recibo puede indicar «Guitarra». Podrás aprender ${instrumento.toLocaleLowerCase('es')} con ejercicios adaptados a tu instrumento y practicar junto al grupo ritmo, armonía y coordinación.`
+      : '';
+    note.style.display = visible ? 'block' : 'none';
   }
 
   function matchesInstrument(turn, instrumento){
@@ -308,11 +602,13 @@
   }
 
   function initUIFromData(){
+    renderCampaignBanner();
     const selectEscuela = document.getElementById("escuela");
     showPaymentNote('standard');
     selectEscuela.innerHTML = "<option value=''>-- Selecciona --</option>";
     const escuelas = [...new Set(datos.map(d=>d.escuela))].sort((a,b)=>a.localeCompare(b));
     escuelas.forEach(e=>{ const o=document.createElement('option'); o.value=e; o.textContent=e; selectEscuela.appendChild(o); });
+    rebuildInstrumentos();
 
     const saved = getSavedSelection();
     if (saved && escuelas.includes(saved.escuela)){
@@ -342,7 +638,7 @@
   subscribeToPublicAvailability();
 
   function resetHorariosAndSummary(){
-    document.getElementById('shared-instrument-note').style.display = 'none';
+    updateSharedInstrumentNote('');
     const selHor = document.getElementById("horario");
     selHor.innerHTML = "<option value=''>-- Selecciona --</option>";
     selHor.disabled = true;
@@ -350,6 +646,9 @@
     document.getElementById("summaryCard").style.display = "none";
     document.getElementById("opening-choice").style.display = "none";
     selectedOpeningMode = 'wait';
+    lastPromotionChoicesKey = promotionChoicesKey();
+    document.getElementById('promotion-empty-turns').style.display = 'none';
+    resetCampaignSelection();
     showPaymentNote('standard');
   }
 
@@ -376,6 +675,10 @@
   function rebuildHorarios(){
     const escuelaSel = document.getElementById("escuela").value;
     const instSel = document.getElementById("instrumento").value;
+    updateSharedInstrumentNote(instSel);
+    resetCampaignSelection();
+    lastPromotionChoicesKey = promotionChoicesKey();
+    document.getElementById('promotion-empty-turns').style.display = 'none';
 
     const selHor = document.getElementById("horario");
     selHor.innerHTML = "<option value=''>-- Selecciona --</option>";
@@ -387,8 +690,9 @@
       return;
     }
 
-    const lista = horariosDisponibles(escuelaSel, instSel);
-    document.getElementById('shared-instrument-note').style.display = isSharedInstrument(instSel) && lista.some(isSharedGuitarTurn) ? 'block' : 'none';
+    const lista = horariosDisponibles(escuelaSel, instSel).filter(fila => turnIncludedInPromotion(fila, instSel));
+    document.getElementById('promotion-empty-turns').style.display = !lista.length && promo.active(campaigns) && document.getElementById('use-promotion').checked ? 'block' : 'none';
+    updateSharedInstrumentNote(instSel, isSharedInstrument(instSel) && lista.some(isSharedGuitarTurn));
     lista.forEach(d=>{
       const o=document.createElement('option');
       o.value=d.selectionId;
@@ -426,9 +730,11 @@
   }
 
   function renderSelectedClass(fila){
+    renderCampaignBanner();
+    if (lastPromotionChoicesKey !== promotionChoicesKey()) { refreshPromotionChoices(); return; }
     const escuelaSel = document.getElementById("escuela").value;
     const instSel = document.getElementById("instrumento").value;
-    document.getElementById('shared-instrument-note').style.display = fila && isSharedInstrument(instSel) && isSharedGuitarTurn(fila) ? 'block' : 'none';
+    updateSharedInstrumentNote(instSel, fila && isSharedInstrument(instSel) && isSharedGuitarTurn(fila));
     const selectionId = document.getElementById("horario").value;
     const card = document.getElementById("summaryCard");
     const title = document.getElementById("summaryTitle");
@@ -438,6 +744,7 @@
     const continueButton = document.getElementById("continuar");
 
     if (!fila){
+      resetCampaignSelection();
       card.style.display = "none";
       choice.style.display = "none";
       continueButton.disabled = true;
@@ -447,19 +754,30 @@
 
     const canOpenPrivately = allowsPrivateOpening(fila);
     if (!canOpenPrivately) selectedOpeningMode = 'wait';
+    const restrictPromotion = Boolean(promo.active(campaigns) && document.getElementById('use-promotion').checked);
+    if (canOpenPrivately && restrictPromotion){
+      if (!promotionQuote(fila, 'group').eligible) selectedOpeningMode = 'private';
+      else if (!promotionQuote(fila, 'private').eligible) selectedOpeningMode = 'wait';
+    }
     choice.style.display = canOpenPrivately ? 'block' : 'none';
     choice.querySelectorAll('[data-opening-mode]').forEach(button => {
+      button.hidden = restrictPromotion && !promotionQuote(fila, button.dataset.openingMode === 'private' ? 'private' : 'group').eligible;
       button.classList.toggle('selected', button.dataset.openingMode === selectedOpeningMode);
     });
 
-    const groupPrice = fila.precio || 'la tarifa normal de grupo';
-    const privatePrice = fila.privateOpeningPrice || '120 €/mes';
+    const offer = promotionQuote(fila, selectedOpeningMode === 'private' ? 'private' : 'group');
+    const groupOffer = promotionQuote(fila, 'group');
+    const privateOffer = promotionQuote(fila, 'private');
+    const groupPrice = groupOffer.eligible ? `${groupOffer.displayLabel} ${groupOffer.durationLabel}` : fila.precio || 'la tarifa normal de grupo';
+    const privatePrice = privateOffer.eligible ? `${privateOffer.displayLabel} ${privateOffer.durationLabel}` : fila.privateOpeningPrice || '120 €/mes';
     const startText = fila.inicio
       ? `Inicio previsto: ${fmtDateShort(fila.inicio)}.`
       : 'La fecha de inicio está pendiente de confirmación.';
-    document.getElementById('opening-shared-detail').textContent = `Matrícula gratuita y sin permanencia. ${startText} Elige cómo quieres incorporarte.`;
-    document.getElementById('wait-mode-detail').textContent = `Te apuntaremos sin realizar ningún cobro hasta confirmar la apertura. Después se aplicará la cuota de grupo: ${groupPrice}.`;
-    document.getElementById('private-mode-detail').textContent = `${privatePrice} desde el inicio. Al alcanzar el mínimo de ${fila.privateOpeningThreshold} alumnos, tu cuota pasará a ${groupPrice} desde el siguiente recibo.`;
+    document.getElementById('opening-shared-detail').textContent = `${offer.eligible ? 'Solicitud pendiente de confirmación de plaza y condiciones.' : 'Matrícula gratuita y sin permanencia.'} ${offer.eligible && offer.campaign.intakeMonth ? `Incorporación prevista: ${promo.monthLabel(offer.campaign.intakeMonth)}.` : startText} Elige cómo quieres incorporarte.`;
+    document.getElementById('wait-mode-detail').textContent = offer.eligible
+      ? `Solicitud pendiente de confirmación. Consulta el calendario de cobros de la campaña. Cuota de grupo: ${groupPrice}.`
+      : `Te apuntaremos sin realizar ningún cobro hasta confirmar la apertura. Después se aplicará la cuota de grupo: ${groupPrice}.`;
+    document.getElementById('private-mode-detail').textContent = `${privatePrice} desde el inicio. Al alcanzar el mínimo de ${fila.privateOpeningThreshold} alumnos, tu cuota pasará a ${fila.precio || 'la tarifa habitual de grupo'} desde el siguiente recibo.`;
 
     const isPrivateOpening = canOpenPrivately && selectedOpeningMode === 'private';
     showPaymentNote(canOpenPrivately ? 'none' : (fila.autoAdvanceStartDate === true ? 'future' : 'standard'));
@@ -469,6 +787,8 @@
 
     if (isPrivateOpening){
       addBadge(fila.inicio ? `Inicio ${fmtDateShort(fila.inicio)}` : 'Inicio por confirmar', 'warn');
+    } else if (offer.eligible && offer.campaign.intakeMonth){
+      addBadge(`Incorporación: ${promo.monthLabel(offer.campaign.intakeMonth)}`, 'warn');
     } else if (fila.autoAdvanceStartDate === true){
       addBadge(fila.inicio ? `Inicio previsto ${fmtDateShort(fila.inicio)}` : 'Inicio previsto por confirmar', 'warn');
     } else if (fila.inicio){
@@ -490,16 +810,18 @@
     const precioTexto = isPrivateOpening
       ? ` (Cuota inicial: ${privatePrice})`
       : (canOpenPrivately && fila.precio
-        ? ` (Cuota de grupo al abrir: ${fila.precio})`
-        : (fila.precio ? ` (Cuota: ${fila.precio})` : ''));
-    const inicioTexto = isPrivateOpening
+        ? ` (Cuota de grupo al abrir: ${groupPrice})`
+        : (fila.precio ? ` (Cuota: ${groupPrice})` : ''));
+    const inicioTexto = offer.eligible && offer.campaign.intakeMonth
+      ? ` Incorporación prevista: ${promo.monthLabel(offer.campaign.intakeMonth)}. La fecha exacta se confirmará con la escuela.`
+      : isPrivateOpening
       ? (fila.inicio ? ` Inicio: ${fmtDateShort(fila.inicio)}.` : ' Inicio: por confirmar.')
       : (fila.autoAdvanceStartDate === true
         ? (fila.inicio ? ` Inicio previsto: ${fmtDateShort(fila.inicio)}.` : ' Inicio previsto: por confirmar.')
         : (fila.inicio && daysUntil(fila.inicio) > 0 ? ` Inicio: ${fmtDateShort(fila.inicio)}.` : ' Inicio: inmediato.'));
     const privateText = isPrivateOpening
       ? ` Empezarás en modalidad particular hasta que se alcance el mínimo de ${fila.privateOpeningThreshold} alumnos; después se aplicará la cuota normal de grupo desde el siguiente recibo.`
-      : (canOpenPrivately ? ' No se realizará ningún cobro hasta que confirmemos la apertura del grupo.' : '');
+      : (canOpenPrivately ? (offer.eligible ? ' No se realiza ningún cobro al completar este formulario. Consulta las condiciones de confirmación y cobro de la campaña.' : ' No se realizará ningún cobro hasta que confirmemos la apertura del grupo.') : '');
 
     if (fila.detalles){
       body.textContent = `${fila.detalles}${precioTexto}.${inicioTexto}${privateText}`.replace(/\.\./g, '.').replace(/\s+/g, ' ').trim();
@@ -507,8 +829,9 @@
       body.textContent = `Has elegido ${instSel} en Los Mitos ${escuelaSel}, turno ${fila.horario}${precioTexto}.${inicioTexto}${privateText}`.replace(/\.\./g, '.').replace(/\s+/g, ' ').trim();
     }
 
-    continueButton.disabled = false;
-    continueButton.textContent = isPrivateOpening
+    renderCampaignSelection(fila, instSel, offer);
+    continueButton.disabled = !availabilityReady || offer.eligible && (!document.getElementById('campaign-accept').checked || offer.baseCents === null || !lastCampaignSummary);
+    continueButton.textContent = offer.eligible ? 'Continuar con mi reserva' : isPrivateOpening
       ? 'Reservar y empezar'
       : (canOpenPrivately ? 'Apuntarme y esperar' : 'Reservar plaza');
     card.style.display = 'block';
@@ -538,14 +861,57 @@
   document.getElementById("continuar").addEventListener("click", () => {
     const selectionId = document.getElementById("horario").value;
     const fila = datos.find(d => d.selectionId === selectionId);
-    const destination = fila && selectedOpeningMode === 'private' && allowsPrivateOpening(fila)
-      ? fila.privateOpeningUrl
-      : fila?.url;
+    if (!fila || !availabilityReady) return;
+    const previousCampaignId = lastRenderedCampaignId;
+    renderSelectedClass(fila);
+    if (document.getElementById('horario').value !== fila.selectionId) return;
+    const offer = promotionQuote(fila, selectedOpeningMode === 'private' ? 'private' : 'group');
+    if (previousCampaignId !== (offer.eligible ? offer.campaign.id : '')){
+      alert('La promoción ha cambiado o ha finalizado. Revisa los precios y las condiciones actualizados antes de continuar.');
+      return;
+    }
+    if (offer.eligible && (!document.getElementById('campaign-accept').checked || offer.baseCents === null || !lastCampaignSummary)) return;
+    const destination = offer.destination;
 
     if (destination) {
       window.location.href = destination;
     } else {
       alert("⚠️ Esta clase no tiene un enlace de inscripción configurado. Contacta con la secretaría.");
     }
+  });
+
+  document.getElementById('use-promotion').addEventListener('change', () => {
+    promotionOptOut = !document.getElementById('use-promotion').checked;
+    refreshPromotionChoices();
+    document.getElementById('promotion-choice-help').textContent = document.getElementById('use-promotion').checked
+      ? 'Aprovecha esta oferta en los horarios incluidos. Con la promoción activada verás los turnos acogidos a ella. Desactívala para descubrir todos los horarios con sus condiciones habituales.'
+      : 'Estás viendo todos los horarios disponibles con sus precios y condiciones habituales. Activa la promoción para consultar los turnos incluidos en la oferta.';
+  });
+  document.getElementById('campaign-accept').addEventListener('change', () => {
+    const fila = datos.find(d => d.selectionId === document.getElementById('horario').value);
+    if (fila) renderSelectedClass(fila);
+  });
+  document.getElementById('copy-campaign-summary').addEventListener('click', async () => {
+    const fila = datos.find(d => d.selectionId === document.getElementById('horario').value);
+    if (!fila) return;
+    renderSelectedClass(fila);
+    const status = document.getElementById('campaign-copy-status');
+    if (!lastCampaignSummary) { status.textContent = 'La campaña ha finalizado. Revisa la selección actualizada.'; return; }
+    try { await navigator.clipboard.writeText(lastCampaignSummary); status.textContent = 'Resumen copiado. Pégalo en el campo «Resumen de tu selección» del formulario de reserva.'; }
+    catch { const textarea = document.getElementById('campaign-summary'); textarea.focus(); textarea.select(); status.textContent = 'Selecciona y copia el resumen manualmente; tu navegador no ha permitido copiarlo automáticamente.'; }
+  });
+  setInterval(() => {
+    renderCampaignBanner();
+    if (lastPromotionChoicesKey !== promotionChoicesKey()) { refreshPromotionChoices(); return; }
+    const fila = datos.find(d => d.selectionId === document.getElementById('horario').value);
+    if (fila) renderSelectedClass(fila);
+    else showPaymentNote('standard');
+  }, 15000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    renderCampaignBanner();
+    if (lastPromotionChoicesKey !== promotionChoicesKey()) { refreshPromotionChoices(); return; }
+    const fila = datos.find(d => d.selectionId === document.getElementById('horario').value);
+    if (fila) renderSelectedClass(fila);
   });
 </script>

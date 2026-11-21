@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { parse } from 'espree';
 import { retainGestionForAttendance, getMatchingAbsenceGestiones, getRelatedAbsenceTickets, getAbsenceAttendanceUpdate, findRecordedPresentAbsence } from '../src/components/absenceAttendanceUtils.js';
 import { reconcileAttendedAbsence } from '../src/components/absenceAttendanceReconciliation.js';
+import { readRecoveryAttendance } from '../src/components/recoveryAttendance.js';
 
 const user = { uid: 'elia-uid', email: 'elia@escuelalosmitos.com' };
 const appId = 'default-app-id';
@@ -11,6 +13,87 @@ const root = `artifacts/${appId}`;
 const notice = { id: 'aviso-noa', type: 'aviso_ausencia', studentId: 'noa-id', studentName: 'JUDITH', studentEmail: 'madre@example.com', requestedClass: 'guitarra-18', absenceDate: '2026-10-09', status: 'pendiente', wantsRecovery: true, ticketOutcome: 'awaiting_attendance', teacherEmails: [user.email] };
 const record = { id: 'record-9', date: '2026-10-09', classId: 'guitarra-18', subject: 'Guitarra', teacher: 'Elia', time: '18:00', students: [{ id: 'noa-id', name: 'NOA', status: 'present' }] };
 const ticket = { id: 'ticket-noa', studentId: 'noa-id', studentEmail: notice.studentEmail, subject: 'Guitarra', originalDate: record.date, originalClassId: record.classId, absenceGestionId: notice.id, isUsed: false };
+
+test('al cerrar asistencia conserva las recuperaciones futuras y nunca gasta su ticket en otra sesión', async () => {
+  const source = await readFile('src/components/TeacherPortal.jsx', 'utf8');
+  const ast = parse(source, { ecmaVersion: 'latest', sourceType: 'module', ecmaFeatures: { jsx: true }, range: true });
+  const expressions = new Map();
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init) {
+      expressions.set(node.id.name, source.slice(...node.init.range));
+    }
+    Object.values(node).forEach(value => Array.isArray(value) ? value.forEach(visit) : visit(value));
+  }
+  visit(ast);
+  const date = '2026-11-18', futureDate = '2026-11-20';
+  const classPath = `${root}/users/${user.uid}/recurringClasses/guitarra-18`;
+  const ticketPath = `${root}/users/origin/tickets/absence`, giftPath = `${root}/users/origin/tickets/gift`;
+  const recovery = { id: 'recovery-student', name: 'Alumna de prueba', status: 'present', isRecovery: true, recoveryDate: date };
+  const future = { ...recovery, recoveryDate: futureDate, recoveryTicketId: 'gift', recoveryTicketRefPath: giftPath, recoveryGestionId: 'future' };
+  const fixed = { id: 'fixed', name: 'Alumno fijo', email: 'fixed@example.invalid', status: 'notified', originalException: 'notified' };
+  const request = { id: 'today', type: 'recuperacion', status: 'completado', studentId: recovery.id, recoveryDate: date,
+    requestedClassRefPath: classPath, ticketId: 'absence', ticketRefPath: ticketPath };
+  const fixtureTicket = { studentId: recovery.id, studentEmail: 'recovery@example.invalid', subject: 'Guitarra', isUsed: false, validUntil: '2026-11-30', teacherEmails: [user.email] };
+
+  async function save({ incoming = recovery, gestiones = [request], claim, used = false, expectedReason }) {
+    const target = incoming.recoveryTicketRefPath || ticketPath;
+    const recordPath = `${root}/users/${user.uid}/records/record`;
+    const docs = new Map([
+      [classPath, { students: [incoming, future, fixed] }], [ticketPath, { ...fixtureTicket, isUsed: used, usedOn: used ? '2026-11-16' : '' }],
+      [giftPath, fixtureTicket], ...gestiones.map(g => [`${root}/gestiones/${g.id}`, g])
+    ]);
+    docs.set(`${root}/recoveryTicketClaims/origin/claims/gift`, { status: 'approved', gestionId: 'future', studentId: recovery.id, recoveryDate: futureDate, ticketRefPath: giftPath });
+    if (claim) docs.set(`${root}/recoveryTicketClaims/origin/claims/${target.split('/').at(-1)}`, claim);
+    const writes = [];
+    let closed = false;
+    const context = vm.createContext({
+      user, appId, date, db: {}, gestiones, tickets: [], globalStudents: [], uniqueRecords: [],
+      currentSession: { classId: 'guitarra-18', refPath: classPath, subject: 'Guitarra', teacher: 'Elia', time: '18:00',
+        students: [incoming, fixed], formalTemplateStudents: [incoming, fixed], exceptions: {} },
+      attendanceSaveLockRef: { current: false }, setIsSavingAttendance() {}, setCurrentSession(value) { closed = value === null; },
+      setDeadHourModal() {}, showNotification() {}, window: { alert(message) { assert.fail(message); } }, console,
+      buildAttendanceRecordId: () => 'record', doc: (_, ...parts) => parts.join('/'),
+      getOfficialTeacherName: () => 'Elia', normalizeTeacherKey: x => x.toLowerCase(), normalizeConfigId: x => x,
+      getLocationIdentity: () => ({}), getClassCenterName: () => 'Reus', getClassRoomName: () => 'Sala 1',
+      getClassStudentIds: students => students.map(s => s.id), formatDateSpanish: x => x,
+      getMatchingAbsenceGestiones, getRelatedAbsenceTickets, getAbsenceAttendanceUpdate,
+      isAttendanceBlockedStudent: () => false, isSummerRecoveryDate: () => false, isAdmin: false,
+      generateTicketDates: () => ({ validFrom: '2026-12-01', validUntil: '2026-12-31', recoveryPolicy: 'standard' }),
+      ticketMatchesSubject: (t, subject) => t.subject === subject,
+      readRecoveryAttendance, createRepeatedAbsenceAlerts: async () => {},
+      runTransaction: async (_, callback) => callback({
+        get: async path => { assert.equal(writes.length, 0, 'todas las lecturas preceden a las escrituras'); return { exists: () => docs.has(path), data: () => docs.get(path) }; },
+        set: (path, data) => writes.push({ path, data }), update: (path, data) => writes.push({ path, data })
+      })
+    });
+    const execute = vm.runInContext(['sanitizeTemplateStudentForSave', 'getTemplateStudentsForSave', 'executeSaveRecord']
+      .map(name => `const ${name} = ${expressions.get(name)};`).join('\n') + '\nexecuteSaveRecord;', context);
+    assert.equal(await execute(), true);
+    assert.equal(closed, true);
+    assert(writes.some(w => w.path === recordPath));
+    assert(writes.some(w => w.data.studentId === fixed.id && w.data.validFrom === '2026-12-01'));
+    assert.deepEqual(writes.find(w => w.path === classPath).data.students.find(s => s.isRecovery), future);
+    assert(!writes.some(w => w.path === giftPath));
+    const incident = writes.find(w => w.data.type === 'incidencia_ticket_asistencia');
+    if (expectedReason) {
+      assert.match(incident?.data.details || '', expectedReason);
+      assert.equal(incident.data.status, 'pendiente');
+      assert(!writes.some(w => w.path === ticketPath));
+    } else {
+      assert.equal(incident, undefined);
+      assert(writes.some(w => w.path === ticketPath && w.data.isUsed && w.data.usedOn === date));
+    }
+  }
+
+  await save({});
+  await save({ used: true, expectedReason: /ya figura utilizado/ });
+  await save({ incoming: { ...recovery, recoveryTicketRefPath: giftPath }, gestiones: [], expectedReason: /reservado/ });
+  await save({ gestiones: [request, { ...request, id: 'duplicate' }], expectedReason: /varias solicitudes/ });
+  await save({ gestiones: [{ ...request, recoveryCapacityVersion: 1 }], expectedReason: /no tiene una reserva/ });
+  const modern = { ...request, recoveryCapacityVersion: 1 };
+  await save({ gestiones: [modern], claim: { status: 'approved', gestionId: modern.id, studentId: recovery.id, recoveryDate: date, ticketRefPath: ticketPath } });
+});
 
 for (const status of ['pendiente', 'completado', 'archivado']) {
   test(`un aviso ${status} sigue vinculado al guardar Asistió y conserva su cierre informativo`, () => {

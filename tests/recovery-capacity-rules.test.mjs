@@ -13,9 +13,11 @@ import {
   updateDoc,
   collection,
   getDocs,
+  runTransaction,
   writeBatch,
 } from "firebase/firestore";
 import { createRecoveryCapacityStore } from "../src/components/recoveryCapacityStore.js";
+import { readRecoveryAttendance } from "../src/components/recoveryAttendance.js";
 import {
   addRecoveryDays,
   recoveryAvailabilityId,
@@ -243,6 +245,42 @@ test("recuperaciones: aforo y ticket atómicos con reglas reales", async (t) => 
         );
       },
     );
+    await t.test("el profesor cierra la lista con incidencia si el ticket pertenece a otra sesión", async () => {
+      await reset();
+      const ticket = ticketFor(one);
+      const gestionId = "recover-attendance";
+      await store(oneDb).reserve({ gestionId, payload: request(one), ticket });
+      await store(teacherDb).approve({ gestionId, clase, today, newStudentPayload: {
+        id: one.id, recoveryTicketRefPath: ticket.refPath
+      } });
+      const classRef = doc(teacherDb, classPath);
+      const decisionFor = (transaction, sessionDate, student, liveEntry) => readRecoveryAttendance({
+        transaction, docAt: path => doc(teacherDb, path), appId, student, liveEntry,
+        session: { classId: clase.id, refPath: classPath, teacher: clase.teacher, subject: clase.subject, date: sessionDate },
+        gestiones: [], teacherEmail: teacher.email, isAdmin: false,
+        ticketMatchesSubject: (t, subject) => t.subject === subject
+      });
+      await assertSucceeds(runTransaction(teacherDb, async transaction => {
+        const live = (await transaction.get(classRef)).data();
+        const attempt = { id: one.id, isRecovery: true, recoveryDate: later, recoveryTicketRefPath: ticket.refPath };
+        const decision = await decisionFor(transaction, later, attempt, attempt);
+        assert.match(decision.reason, /reservado/);
+        transaction.set(doc(teacherDb, `${root}/users/${teacher.uid}/records/conflict`), { date: later, classId: clase.id, students: [attempt] });
+        transaction.set(gRef(teacherDb, "ticket-incident"), { type: "incidencia_ticket_asistencia", status: "pendiente", studentId: one.id,
+          studentEmail: one.email, teacherEmails: [teacher.email], studentVisible: false });
+        transaction.set(classRef, { students: live.students, studentIds: live.studentIds }, { merge: true });
+      }));
+      assert.equal((await getDoc(doc(adminDb, ticket.refPath))).data().isUsed, false);
+      assert.equal((await getDoc(gRef(adminDb, "ticket-incident"))).data().status, "pendiente");
+      await assertSucceeds(runTransaction(teacherDb, async transaction => {
+        const live = (await transaction.get(classRef)).data();
+        const entry = live.students.find(student => student.id === one.id);
+        const decision = await decisionFor(transaction, date, entry, entry);
+        assert.equal(decision.ticketPath, ticket.refPath);
+        transaction.update(doc(teacherDb, decision.ticketPath), { isUsed: true, usedOn: date, usedInClassId: clase.id });
+      }));
+      assert.equal((await getDoc(doc(adminDb, ticket.refPath))).data().usedOn, date);
+    });
     await t.test(
       "rechazo libera hueco y ticket; una nueva solicitud puede usarlo",
       async () => {

@@ -7,9 +7,10 @@ import {
   RefreshCcw, PlusCircle, CheckCircle, ShieldAlert, LayoutGrid, FileText, Ghost,
   Megaphone, Send, Link as LinkIcon, ChevronLeft, ChevronRight
 } from 'lucide-react';
-import { collection, query, where, documentId, getDoc, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction, writeBatch } from 'firebase/firestore';
+import { collection, query, where, documentId, getDocs, onSnapshot, doc, setDoc, deleteDoc, updateDoc, collectionGroup, runTransaction } from 'firebase/firestore';
 import { calculateVacationPayroll, getLocalDayOfWeekFromDate } from './payrollVacationUtils';
 import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
+import { readRecoveryAttendance } from './recoveryAttendance.js';
 import GymusikTeacher from './GymusikTeacher';
 import { retainGestionForAttendance, getMatchingAbsenceGestiones, getRelatedAbsenceTickets, getAbsenceAttendanceUpdate, findRecordedPresentAbsence } from './absenceAttendanceUtils.js';
 import { reconcileAttendedAbsence } from './absenceAttendanceReconciliation.js';
@@ -2573,36 +2574,30 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
     if (student.classEndDate) cleanStudent.classEndDate = student.classEndDate;
     if (student.scheduledEndDate) cleanStudent.scheduledEndDate = student.scheduledEndDate;
     if (student.endDate) cleanStudent.endDate = student.endDate;
-    if (student.isRecovery) {
-      cleanStudent.isRecovery = true;
-      cleanStudent.recoveryDate = student.recoveryDate || null;
-    }
-
     return cleanStudent;
   };
 
-  const getTemplateStudentsForSave = (session = currentSession) => {
+  const getTemplateStudentsForSave = (session, liveStudents, closedRecoveryIds = new Set()) => {
     const byKey = new Map();
     const addStudentToTemplate = (student = {}) => {
       if (!student?.id || student.isTemporaryRelocation) return;
       const studentInfo = globalStudents.find(g => g.id === student.id) || {};
       if (studentInfo?.globalStatus === 'baja') return;
-      const key = student.isRecovery ? `${student.id}-recovery-${student.recoveryDate || ''}` : `${student.id}-fixed`;
-      byKey.set(key, sanitizeTemplateStudentForSave(student));
+      byKey.set(`${student.id}-fixed`, sanitizeTemplateStudentForSave(student));
     };
 
     (session?.formalTemplateStudents || []).forEach(student => {
-      if (student?.isRecovery && student.recoveryDate === date) return;
+      if (student?.isRecovery) return;
       addStudentToTemplate(student);
     });
 
     (session?.hiddenStudents || []).forEach(student => {
-      if (student?.isRecovery && student.recoveryDate === date) return;
+      if (student?.isRecovery) return;
       addStudentToTemplate(student);
     });
 
     (session?.nonComputableStudents || []).forEach(student => {
-      if (student?.isRecovery && student.recoveryDate === date) return;
+      if (student?.isRecovery) return;
       addStudentToTemplate(student);
     });
 
@@ -2610,6 +2605,12 @@ export default function TeacherPortal({ user, logout, db, auth, appId, ADMIN_EMA
       .filter(student => !student.isRecovery && !student.isTemporaryRelocation)
       .forEach(addStudentToTemplate);
 
+    // Conservar la versión vigente de las recuperaciones de otras sesiones.
+    (liveStudents || []).filter(student => student.isRecovery).forEach(student => {
+      if (student.recoveryDate === date && closedRecoveryIds.has(String(student.id))) return;
+      const key = `${student.id}-recovery-${student.recoveryDate || ''}`;
+      byKey.set(key, student);
+    });
     return Array.from(byKey.values());
   };
 
@@ -3434,8 +3435,6 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
     );
 
     try {
-      const templateStudents = getTemplateStudentsForSave(currentSession);
-
       const isFutureDate = date > todayISO;
       let finalExceptions = currentSession.exceptions || {};
 
@@ -3458,25 +3457,30 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
 
       const targetPath = doc(db, currentSession.refPath); 
         
-      await setDoc(targetPath, {
-        dayOfWeek: persistedSchedule.dayOfWeek,
-        date: currentSession.date || null, 
-        time: persistedSchedule.time,
-        sede: getClassCenterName(persistedSchedule),
-        sala: getClassRoomName(persistedSchedule),
-        centerId: persistedSchedule.centerId || persistedLocation.centerId,
-        roomId: persistedSchedule.roomId || persistedLocation.roomId,
-        teacher: persistedSchedule.teacher,
-        subject: currentSession.subject,
-        capacity: currentSession.capacity,
-        duration: persistedSchedule.duration || 60,
-        notes: currentSession.notes,
-        ...notesUpdatePayload,
-        cancelledDates: currentSession.cancelledDates || [],
-        students: templateStudents,
-        studentIds: getClassStudentIds(templateStudents),
-        exceptions: finalExceptions
-      }, { merge: true });
+      await runTransaction(db, async transaction => {
+        const live = await transaction.get(targetPath);
+        if (!live.exists()) throw new Error('La clase ya no está disponible.');
+        const templateStudents = getTemplateStudentsForSave(currentSession, live.data().students);
+        transaction.set(targetPath, {
+          dayOfWeek: persistedSchedule.dayOfWeek,
+          date: currentSession.date || null,
+          time: persistedSchedule.time,
+          sede: getClassCenterName(persistedSchedule),
+          sala: getClassRoomName(persistedSchedule),
+          centerId: persistedSchedule.centerId || persistedLocation.centerId,
+          roomId: persistedSchedule.roomId || persistedLocation.roomId,
+          teacher: persistedSchedule.teacher,
+          subject: currentSession.subject,
+          capacity: currentSession.capacity,
+          duration: persistedSchedule.duration || 60,
+          notes: currentSession.notes,
+          ...notesUpdatePayload,
+          cancelledDates: currentSession.cancelledDates || [],
+          students: templateStudents,
+          studentIds: getClassStudentIds(templateStudents),
+          exceptions: finalExceptions
+        }, { merge: true });
+      });
 
       showNotification({ type: 'success', text: isFutureDate ? 'Previsión guardada para esta fecha.' : 'Plantilla actualizada con éxito.' });
       setCurrentSession(null);
@@ -3641,7 +3645,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         && String(record.classId || '') === String(currentSession.classId || '')
       ));
 
-      if (alreadySavedLocally || (await getDoc(recordRef)).exists()) {
+      if (alreadySavedLocally) {
         showNotification({ type: 'success', text: 'Esta asistencia ya estaba guardada. No se ha creado un registro duplicado.' });
         setCurrentSession(null);
         setDeadHourModal(null);
@@ -3669,9 +3673,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
 
       const targetUid = user.uid;
       const attendanceSavedAt = new Date().toISOString();
-      const attendanceBatch = writeBatch(db);
-
-      currentSession.students.forEach((s) => {
+      const stageAbsenceWrites = attendanceBatch => currentSession.students.forEach((s) => {
         const absenceGestiones = getMatchingAbsenceGestiones(gestiones, s.id, currentSession, date);
         const absenceGestion = absenceGestiones[0] || null;
         const settleAbsenceGestion = payload => {
@@ -3799,45 +3801,6 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         } else if (!s.isRecovery && absenceGestion && s.originalException === 'notified_no_ticket') {
           settleAbsenceGestion({ ticketOutcome: 'not_requested' });
         }
-        
-        if (s.isRecovery && ['present', 'absent', 'notified'].includes(s.status) && nonComputableReason !== 'auto_cancelled_all_notified') {
-          const linkedTicket = tickets.find(t => (
-            t.studentId === s.id
-            && (
-              (s.recoveryTicketRefPath && t.refPath === s.recoveryTicketRefPath)
-              || (s.recoveryTicketId && String(t.id || '') === String(s.recoveryTicketId))
-            )
-          )) || null;
-          if (linkedTicket?.isUsed && linkedTicket.usedOn === date) return;
-
-          const pending = tickets.filter(t =>
-            t.studentId === s.id &&
-            !t.isUsed &&
-            !t.voided &&
-            (!t.validFrom || t.validFrom <= date) &&
-            (!t.validUntil || t.validUntil >= date) &&
-            ticketMatchesSubject(t, currentSession.subject)
-          ).sort((a, b) => String(a.validUntil || '9999-12-31').localeCompare(String(b.validUntil || '9999-12-31')));
-          const ticketToUse = linkedTicket || pending[0] || null;
-          if (!ticketToUse
-            || ticketToUse.isUsed
-            || ticketToUse.voided
-            || (ticketToUse.validFrom && ticketToUse.validFrom > date)
-            || (ticketToUse.validUntil && ticketToUse.validUntil < date)
-            || !ticketMatchesSubject(ticketToUse, currentSession.subject)) {
-            throw new Error(`No se puede consumir la recuperación de ${s.name}: falta un ticket válido de ${currentSession.subject}.`);
-          }
-          const ticketRef = ticketToUse.refPath
-            ? doc(db, ticketToUse.refPath)
-            : doc(db, 'artifacts', appId, 'users', targetUid, 'tickets', ticketToUse.id);
-          attendanceBatch.set(ticketRef, {
-            isUsed: true,
-            usedAt: attendanceSavedAt,
-            usedOn: date,
-            usedInSubject: currentSession.subject,
-            usedInClassId: currentSession.classId || ''
-          }, { merge: true });
-        }
       });
 
       const currentLocation = getLocationIdentity(
@@ -3879,8 +3842,6 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         students: currentSession.students.map(s => ({ ...s }))
       };
 
-      const templateStudents = getTemplateStudentsForSave(currentSession);
-
       const targetPath = doc(db, currentSession.refPath);
       const persistedSchedule = currentSession.officialSchedule || currentSession;
       const persistedLocation = getLocationIdentity(
@@ -3888,8 +3849,7 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         persistedSchedule.roomId || persistedSchedule.sala || 'Sala 1'
       );
         
-      attendanceBatch.set(recordRef, savedRecord);
-      attendanceBatch.set(targetPath, {
+      const templateUpdates = {
         dayOfWeek: persistedSchedule.dayOfWeek,
         date: currentSession.date || null,
         time: persistedSchedule.time,
@@ -3904,12 +3864,73 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         notes: currentSession.notes,
         ...notesUpdatePayload,
         cancelledDates: currentSession.cancelledDates || [],
-        students: templateStudents,
-        studentIds: getClassStudentIds(templateStudents),
         exceptions: currentSession.exceptions || {}
-      }, { merge: true });
+      };
+      const recoveryStudents = currentSession.students.filter(s => s.isRecovery && ['present', 'absent', 'notified'].includes(s.status));
+      const result = await runTransaction(db, async transaction => {
+        const [existingRecord, liveClass] = await Promise.all([transaction.get(recordRef), transaction.get(targetPath)]);
+        if (existingRecord.exists()) return { alreadySaved: true };
+        if (!liveClass.exists()) throw new Error('La clase ya no está disponible.');
+        const liveClassData = liveClass.data();
+        const liveStudents = liveClassData.students || [];
+        let recoverySession = { ...currentSession, date };
+        if (recoveryStudents.length && liveClassData.sourceSubstitutionId) {
+          const substitution = await transaction.get(doc(db, 'artifacts', appId, 'substitutions', liveClassData.sourceSubstitutionId));
+          const assignment = substitution.data();
+          if (assignment?.status === 'assigned' && assignment.assumedByUid === user.uid && assignment.date === date
+            && assignment.assumedClassRefPath === currentSession.refPath && assignment.originalClassRefPath) {
+            recoverySession = { ...recoverySession, refPath: assignment.originalClassRefPath,
+              classId: assignment.originalClassId, teacher: assignment.originalTeacherName };
+          }
+        }
+        const decisions = await Promise.all((nonComputableReason === 'auto_cancelled_all_notified' ? [] : recoveryStudents).map(async student => {
+          const liveEntries = liveStudents.filter(s => s.isRecovery && s.recoveryDate === date && String(s.id) === String(student.id));
+          const decision = liveEntries.length > 1
+            ? { reason: 'Hay varias recuperaciones de este alumno en la lista de la misma sesión.' }
+            : await readRecoveryAttendance({
+              transaction, docAt: path => doc(db, path), appId, student, liveEntry: liveEntries[0],
+              session: recoverySession, gestiones, teacherEmail: user.email, isAdmin, ticketMatchesSubject
+            });
+          return { student, ...decision };
+        }));
 
-      await attendanceBatch.commit();
+        stageAbsenceWrites(transaction);
+        const incidents = decisions.filter(decision => decision.reason);
+        incidents.forEach(({ student, reason, gestionId, ticketPath }) => {
+          const incidentRef = doc(db, 'artifacts', appId, 'gestiones',
+            `recovery-attendance-${encodeURIComponent(currentSession.refPath)}-${date}-${encodeURIComponent(student.id)}`);
+          transaction.set(incidentRef, {
+            type: 'incidencia_ticket_asistencia', status: 'pendiente', requiresAction: true, studentVisible: false,
+            title: `Revisar ticket de recuperación de ${student.name}`,
+            details: `${currentSession.subject} · ${formatDateSpanish(date)} · ${currentSession.time}h. ${reason} La lista está guardada.`,
+            studentId: student.id, studentName: student.name,
+            studentEmail: String(globalStudents.find(item => String(item.id) === String(student.id))?.email || student.email || '').trim().toLowerCase(),
+            requestedClass: currentSession.classId || '', requestedClassRefPath: currentSession.refPath,
+            requestedTeacher: getOfficialTeacherName(), teacherKeys: [normalizeTeacherKey(getOfficialTeacherName())],
+            teacherEmails: [String(user.email || '').trim().toLowerCase()], recoveryDate: date,
+            recoveryGestionId: gestionId || '', ticketRefPath: ticketPath || '', attendanceRecordId: recordId,
+            source: 'recovery_attendance', date: attendanceSavedAt
+          });
+        });
+        decisions.filter(decision => decision.ticketPath && !decision.reason).forEach(({ ticketPath }) => {
+          transaction.update(doc(db, ticketPath), {
+            isUsed: true, usedAt: attendanceSavedAt, usedOn: date,
+            usedInSubject: currentSession.subject, usedInClassId: currentSession.classId || ''
+          });
+        });
+        const closedRecoveryIds = new Set(recoveryStudents.map(student => String(student.id)));
+        const templateStudents = getTemplateStudentsForSave(currentSession, liveStudents, closedRecoveryIds);
+        transaction.set(recordRef, savedRecord);
+        transaction.set(targetPath, { ...templateUpdates, students: templateStudents, studentIds: getClassStudentIds(templateStudents) }, { merge: true });
+        return { incidentCount: incidents.length };
+      });
+
+      if (result.alreadySaved) {
+        showNotification({ type: 'success', text: 'Esta asistencia ya estaba guardada. No se ha creado un registro duplicado.' });
+        setCurrentSession(null);
+        setDeadHourModal(null);
+        return false;
+      }
 
       try {
         await createRepeatedAbsenceAlerts(savedRecord);
@@ -3917,7 +3938,9 @@ Alumnos activos reales: ${stats.active}${stats.total !== stats.active ? ` / ${st
         console.error('La asistencia se guardó, pero no se pudo crear el aviso de faltas reiteradas:', alertError);
       }
 
-      showNotification({ type: 'success', text: isRenounced ? 'Renuncia registrada con éxito.' : 'Lista guardada correctamente.' });
+      showNotification({ type: 'success', text: result.incidentCount
+        ? 'Lista guardada. Hay tickets pendientes de revisión en Administración.'
+        : isRenounced ? 'Renuncia registrada con éxito.' : 'Lista guardada correctamente.' });
       setCurrentSession(null);
       setDeadHourModal(null);
       return true;

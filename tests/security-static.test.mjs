@@ -54,10 +54,11 @@ test('administración mantiene sincronizadas las clases privadas de cada alumno'
 });
 
 test('las recuperaciones quedan vinculadas al ticket y a su instrumento', async () => {
-  const [student, admin, teacher] = await Promise.all([
+  const [student, admin, teacher, recoveryAttendance] = await Promise.all([
     read('src/components/StudentPortal.jsx'),
     read('src/components/AdminPortal.jsx'),
-    read('src/components/TeacherPortal.jsx')
+    read('src/components/TeacherPortal.jsx'),
+    read('src/components/recoveryAttendance.js')
   ]);
 
   assert.doesNotMatch(student, /profile\.instruments\s*&&\s*profile\.instruments\[0\]/);
@@ -72,7 +73,8 @@ test('las recuperaciones quedan vinculadas al ticket y a su instrumento', async 
   assert.match(admin, /subjectScope: 'specific'/);
 
   assert.match(teacher, /recoveryTicketRefPath/);
-  assert.match(teacher, /ticketMatchesSubject\(ticketToUse, currentSession\.subject\)/);
+  assert.match(teacher, /await readRecoveryAttendance\(/);
+  assert.match(recoveryAttendance, /ticketMatchesSubject\(ticket, session\.subject\)/);
   assert.match(teacher, /usedInSubject: currentSession\.subject/);
 });
 

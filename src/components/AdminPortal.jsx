@@ -6154,6 +6154,7 @@ ${portalAction} accediendo a tu portal.`;
     alta_mitolocker: 'Alta Mitolocker',
     baja_servicios: 'Baja de servicios',
     aviso_ausencia: 'Aviso de ausencia',
+    incidencia_ticket_asistencia: 'Incidencia de ticket de asistencia',
     falta_reiterada: '12 clases sin asistir ni avisar',
     ajuste_cuota_apertura_grupo: 'Ajustar cuota al formarse el grupo',
     reserva_mitobox: 'Reserva Mitobox',
@@ -6675,6 +6676,7 @@ Esto dejará su contador a cero sin borrar el historial.`)) return;
 
   const getGestionWorkflowLabel = (gestion = {}) => {
     if (gestion.status !== 'pendiente') return gestion.status || 'cerrado';
+    if (gestion.type === 'incidencia_ticket_asistencia') return 'Revisión manual';
     if (!gestionRequiresTadosi(gestion)) return 'No requiere Tadosi';
     if (isGestionTadosiDone(gestion)) return 'Tadosi hecho';
     return 'Pendiente Tadosi';
@@ -6731,7 +6733,8 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
 
   const updateGestionStatus = async (gestionId, status, gestionData = null, options = {}) => {
     const { skipConfirm = false, silent = false } = options;
-    const accion = status === 'completado' ? 'EJECUTAR AHORA' : 'RECHAZAR';
+    const manualTicketReview = gestionData?.type === 'incidencia_ticket_asistencia';
+    const accion = status === 'completado' ? (manualTicketReview ? 'MARCAR COMO REVISADA' : 'EJECUTAR AHORA') : 'RECHAZAR';
     const notify = (message, extra = {}) => {
       if (!silent) alert(message);
       return { ok: true, message, ...extra };
@@ -6753,6 +6756,11 @@ Esto NO ejecuta cambios en clases. Solo deja el trámite listo para poder ejecut
       if (status !== 'completado' || !gestionData) {
         await finalizeGestionStatus(gestionId, status, gestionData);
         return notify(`Trámite marcado como ${status.toUpperCase()}.`);
+      }
+
+      if (manualTicketReview) {
+        await finalizeGestionStatus(gestionId, status, gestionData, 'Incidencia revisada en Administración');
+        return notify('Incidencia marcada como revisada.');
       }
 
       const { studentId, studentName, type, requestedClass, recoveryDate } = gestionData;
@@ -7577,7 +7585,7 @@ ${sourceClassLine || gestionData.sourceClassId || 'No indicada'}`);
   };
 
   const executeAllReadyGestiones = async () => {
-    const readyGestionesBase = pendingGestiones.filter(isGestionReadyForExecution);
+    const readyGestionesBase = pendingGestiones.filter(g => g.type !== 'incidencia_ticket_asistencia' && isGestionReadyForExecution(g));
     const blockedGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
     const legacyMaintenanceGestiones = readyGestionesBase.filter(g =>
       g.type === 'mantenimiento' && getMaintenancePeriodFromGestion(g).isLegacyMissingDuration
@@ -11075,7 +11083,7 @@ Coordinación Los Mitos.`
   const resolvedTeacherRequests = teacherTasks.filter(task =>
     (task.type === 'admin_request' || isTeacherAdminAssignment(task)) && !isOpenTeacherTaskStatus(task.status || 'pendiente')
   );
-  const readyPendingGestiones = pendingGestiones.filter(isGestionReadyForExecution);
+  const readyPendingGestiones = pendingGestiones.filter(g => g.type !== 'incidencia_ticket_asistencia' && isGestionReadyForExecution(g));
   const blockedByTadosiGestiones = pendingGestiones.filter(g => !isGestionReadyForExecution(g));
   const totalPendingInbox = pendingGestiones.length + pendingTeacherPanelTasks.length + scheduledGestionesProgramadas.length;
   const unreadWorkshopRegistrations = workshopRegistrations.filter(registration => !registration.adminSeenAt);
@@ -14943,7 +14951,7 @@ ${startDateWarning}
                                 className="p-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                 title={isGestionReadyForExecution(g) ? (getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora') : 'Primero marca Tadosi hecho'}
                               >
-                                <Check className="w-4 h-4"/> {getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora'}
+                                  <Check className="w-4 h-4"/> {g.type === 'incidencia_ticket_asistencia' ? 'Marcar como revisada' : getExtraServiceConfigForGestion(g)?.readyActionLabel || 'Ejecutar ahora'}
                               </button>
                               <button onClick={() => updateGestionStatus(g.id, 'rechazado', g)} className="p-2 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors" title="Rechazar"><X className="w-4 h-4"/> Rechazar</button>
                             </div>

@@ -7,6 +7,8 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { reconcileAttendedAbsence } from '../src/components/absenceAttendanceReconciliation.js';
+import { buildPublicClassSelectionId } from '../src/components/classExpansionUtils.js';
+import { publishWebAvailability, saveClassWebSettings } from '../src/components/publicAvailabilityStore.js';
 import {
   assertFails,
   assertSucceeds,
@@ -566,6 +568,49 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       await assertFails(getDocs(collection(db, 'publicData')));
       await assertFails(setDoc(doc(db, 'publicData/classAvailability'), { tampered: true }));
       await assertFails(getDoc(doc(db, `${ROOT}/roleData/studentSettings`)));
+    });
+
+    await t.test('ocultar un turno retira su plaza y una publicación antigua no vuelve a ofrecerla', async () => {
+      const admin = authenticated(testEnv, ADMIN);
+      const visitor = testEnv.unauthenticatedContext().firestore();
+      const publicRef = doc(admin, 'publicData/classAvailability');
+      const original = (await getDoc(publicRef)).data();
+      const classPath = `${ROOT}/users/${TEACHER.uid}/recurringClasses/web-visibility-fixture`;
+      const otherPath = `${ROOT}/users/${OTHER_TEACHER.uid}/recurringClasses/web-visibility-fixture`;
+      const otherClassId = buildPublicClassSelectionId(otherPath);
+      const selectionId = buildPublicClassSelectionId(classPath);
+      const turn = { selectionId, escuela: 'Tarragona', instrumento: 'Guitarra', dayNum: 6, horario: 'Sábado a las 11:00h', timeStr: '11:00', maxCap: 4, plazas: 3 };
+      const parallelTurn = { ...turn, selectionId: otherClassId };
+      const campaigns = [{ id: 'promo-fixture' }];
+      const signatureFor = JSON.stringify;
+      const publication = { classes: [turn, parallelTurn], campaigns, sourcePaths: new Map([[selectionId, classPath], [otherClassId, otherPath]]) };
+      const publicDoc = { schemaVersion: 5, classes: publication.classes, campaigns, signature: signatureFor([publication.classes, campaigns]) };
+      const visible = async () => (await getDoc(doc(visitor, 'publicData/classAvailability'))).data();
+      const save = db => saveClassWebSettings({ db, classPath, changes: { isWebVisible: false }, signatureFor });
+      const publish = () => publishWebAvailability({ db: admin, publication, schemaVersion: 5, generatedForDate: '2026-11-24', signatureFor, force: true });
+      try {
+        await setDoc(doc(admin, classPath), { isWebVisible: true, isRecurring: true });
+        await setDoc(doc(admin, otherPath), { isWebVisible: true, isRecurring: true });
+        await setDoc(publicRef, publicDoc);
+        await assertFails(save(visitor));
+        assert.equal((await visible()).classes.length, 2);
+        await assertSucceeds(save(admin));
+        assert.equal((await getDoc(doc(admin, classPath))).data().isWebVisible, false);
+        assert.deepEqual((await visible()).classes, [parallelTurn]);
+        assert.deepEqual((await visible()).campaigns, campaigns);
+        await publish();
+        assert.deepEqual((await visible()).classes, [parallelTurn]);
+
+        await setDoc(publicRef, publicDoc);
+        await assertSucceeds(save(admin)); // Configuración ya apagada y una copia pública anterior.
+        assert.deepEqual((await visible()).classes, [parallelTurn]);
+        await saveClassWebSettings({ db: admin, classPath, changes: { isWebVisible: true }, signatureFor });
+        await publish();
+        assert.deepEqual((await visible()).classes, [turn, parallelTurn]);
+        assert.equal((await visible()).sourcePaths, undefined);
+      } finally {
+        await Promise.all([setDoc(publicRef, original), deleteDoc(doc(admin, classPath)), deleteDoc(doc(admin, otherPath))]);
+      }
     });
 
     await t.test('usuario autenticado sin rol: no obtiene acceso sensible', async () => {

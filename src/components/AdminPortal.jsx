@@ -20,6 +20,7 @@ import { recoveryPublicationSignature } from './recoveryCapacityUtils.js';
 import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
+import { publishWebAvailability, saveClassWebSettings } from './publicAvailabilityStore.js';
 import PersonalMessageComposer from './PersonalMessageComposer.jsx';
 import EnrollmentPromotionsAdmin from './EnrollmentPromotionsAdmin.jsx';
 import { enrollmentPromotions } from './enrollmentPromotions.js';
@@ -2235,9 +2236,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const publicAvailabilitySyncRef = useRef({
     inFlight: false,
     queued: false,
-    remoteChecked: false,
-    remoteSignature: null,
-    remoteUpdatedAt: ''
+    queuedForce: false
   });
   const latestPublicAvailabilityRef = useRef({ classes: [], signature: '' });
   const gestionSourcesRef = useRef({ pending: [], scheduled: [], recoveries: [], resolvedInitial: [], resolvedExtra: [] });
@@ -3944,6 +3943,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   // correos, profesores, notas internas, rutas de Firestore ni IDs de gestiones.
   const publicAvailabilityPublication = useMemo(() => {
     const studentById = new Map(students.map(student => [String(student.id || ''), student]));
+    const sourcePaths = new Map();
     const isPublicCommittedSeat = (entry = {}, availabilityDate = '') => isPublicExpansionSeat(
       entry, studentById.get(String(entry.id || entry.studentId || '')) || {}, availabilityDate
     );
@@ -3971,6 +3971,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         if (!selectionId || !maxCap || !instrument || !timeStr || !Number.isInteger(dayNum) || dayNum < 0 || dayNum > 6 || availableSeats <= 0) {
           return null;
         }
+        if (clase.refPath) sourcePaths.set(selectionId, clase.refPath);
 
         return {
           selectionId,
@@ -4010,6 +4011,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     return {
       classes,
       campaigns,
+      sourcePaths,
       signature: buildPublicAvailabilitySignature([classes, campaigns])
     };
   }, [recurringClassesOnly, students, todayStr, settings.enrollmentPromotions]);
@@ -4145,7 +4147,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   latestPublicAvailabilityRef.current = publicAvailabilityPublication;
 
   const publishPublicAvailability = async ({ force = false } = {}) => {
-    if (!studentsLoaded || !classesLoaded) {
+    if (!studentsLoaded || !classesLoaded || !settingsLoaded || startupLoadErrors.students || startupLoadErrors.classes || startupLoadErrors.settings) {
       setPublicAvailabilityStatus(previous => ({
         ...previous,
         phase: 'waiting',
@@ -4157,6 +4159,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const syncState = publicAvailabilitySyncRef.current;
     if (syncState.inFlight) {
       syncState.queued = true;
+      syncState.queuedForce ||= force;
       return;
     }
 
@@ -4168,43 +4171,19 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     }));
 
     try {
-      const publicRef = doc(db, 'publicData', 'classAvailability');
-      if (!syncState.remoteChecked) {
-        const publicSnapshot = await getDoc(publicRef);
-        const remoteData = publicSnapshot.exists() ? publicSnapshot.data() : {};
-        syncState.remoteSignature = String(remoteData.signature || '');
-        syncState.remoteUpdatedAt = String(remoteData.updatedAt || '');
-        syncState.remoteChecked = true;
-      }
-
-      const publication = latestPublicAvailabilityRef.current;
-      if (!force && syncState.remoteSignature === publication.signature) {
-        setPublicAvailabilityStatus({
-          phase: 'synced',
-          message: 'Plazas públicas comprobadas; no había cambios.',
-          updatedAt: syncState.remoteUpdatedAt,
-          classesCount: publication.classes.length
-        });
-        return;
-      }
-
-      const updatedAt = new Date().toISOString();
-      await setDoc(publicRef, {
+      const result = await publishWebAvailability({
+        db,
+        publication: latestPublicAvailabilityRef.current,
         schemaVersion: PUBLIC_AVAILABILITY_SCHEMA_VERSION,
-        updatedAt,
         generatedForDate: todayStr,
-        signature: publication.signature,
-        classes: publication.classes,
-        campaigns: publication.campaigns
+        signatureFor: buildPublicAvailabilitySignature,
+        force
       });
-
-      syncState.remoteSignature = publication.signature;
-      syncState.remoteUpdatedAt = updatedAt;
       setPublicAvailabilityStatus({
         phase: 'synced',
-        message: 'Plazas públicas actualizadas correctamente.',
-        updatedAt,
-        classesCount: publication.classes.length
+        message: result.changed ? 'Plazas públicas actualizadas correctamente.' : 'Plazas públicas comprobadas; no había cambios.',
+        updatedAt: result.updatedAt,
+        classesCount: result.classesCount
       });
     } catch (error) {
       console.error('No se pudieron publicar las plazas de la web:', error);
@@ -4216,8 +4195,10 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     } finally {
       syncState.inFlight = false;
       if (syncState.queued) {
+        const queuedForce = syncState.queuedForce;
         syncState.queued = false;
-        window.setTimeout(() => publishPublicAvailability(), 0);
+        syncState.queuedForce = false;
+        window.setTimeout(() => publishPublicAvailability({ force: queuedForce }), 0);
       }
     }
   };
@@ -4225,10 +4206,10 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   // Se ejecuta sin entrar en ninguna pestaña. Reutiliza los datos que Admin ya
   // mantiene en memoria y escribe solo cuando cambia el resultado sanitizado.
   useEffect(() => {
-    if (!studentsLoaded || !classesLoaded) return undefined;
+    if (!studentsLoaded || !classesLoaded || !settingsLoaded || startupLoadErrors.students || startupLoadErrors.classes || startupLoadErrors.settings) return undefined;
     const timer = window.setTimeout(() => publishPublicAvailability(), 1200);
     return () => window.clearTimeout(timer);
-  }, [studentsLoaded, classesLoaded, publicAvailabilityPublication.signature, db]);
+  }, [studentsLoaded, classesLoaded, settingsLoaded, startupLoadErrors.students, startupLoadErrors.classes, startupLoadErrors.settings, publicAvailabilityPublication.signature, db]);
 
   useEffect(() => {
     if (!studentsLoaded || !classesLoaded) return undefined;
@@ -13373,19 +13354,26 @@ ${valueOrDash(comments.privateNote)}`,
         const effectiveStartDate = formData.autoAdvanceStartDate
           ? getAutoAdvancedClassStartDate(formData.startDate, editWebModal.dayOfWeek, todayStr)
           : formData.startDate;
-        await updateDoc(doc(db, editWebModal.refPath), {
-          ...formData,
-          startDate: effectiveStartDate,
-          whatsappGroupUrl: cleanWhatsappUrl || '',
-          formationMinimum,
-          allowPrivateOpening,
-          privateOpeningUrl: allowPrivateOpening ? cleanPrivateOpeningUrl : '',
-          privateOpeningPrice: allowPrivateOpening ? (String(formData.privateOpeningPrice || '').trim() || '120 €/mes') : '',
-          // Se conserva el campo antiguo sincronizado durante la transición.
-          privateOpeningThreshold: formationMinimum,
-          cuotaBase: Number(formData.cuotaBase) || 0
+        const { needsRepublish } = await saveClassWebSettings({
+          db, classPath: editWebModal.refPath, signatureFor: buildPublicAvailabilitySignature,
+          changes: {
+            ...formData,
+            startDate: effectiveStartDate,
+            whatsappGroupUrl: cleanWhatsappUrl || '',
+            formationMinimum,
+            allowPrivateOpening,
+            privateOpeningUrl: allowPrivateOpening ? cleanPrivateOpeningUrl : '',
+            privateOpeningPrice: allowPrivateOpening ? (String(formData.privateOpeningPrice || '').trim() || '120 €/mes') : '',
+            // Se conserva el campo antiguo sincronizado durante la transición.
+            privateOpeningThreshold: formationMinimum,
+            cuotaBase: Number(formData.cuotaBase) || 0
+          }
         });
-        alert("Configuración web, informes y grupo de WhatsApp guardada correctamente.");
+        if (needsRepublish) await publishPublicAvailability({ force: true });
+        alert(formData.isWebVisible
+          ? 'Configuración guardada. La oferta web se actualizará con las plazas disponibles.'
+          : needsRepublish ? 'Configuración guardada. Comprueba el estado de la oferta web en Clases globales.'
+            : 'Configuración guardada. La clase ya no está en la oferta web.');
         setEditWebModal(null);
       } catch(e) { alert("Error al guardar: " + e.message); } finally { setSaving(false); }
     };
@@ -16166,7 +16154,7 @@ ${startDateWarning}
                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-800">Plazas de la web · datos públicos sin alumnos</p>
                   <p className="text-xs font-bold text-zinc-600 mt-1">{publicAvailabilityStatus.message}</p>
                   <p className="text-[10px] font-bold text-zinc-400 mt-1">
-                    {publicAvailabilityPublication.classes.length} turno(s) con plaza
+                    {publicAvailabilityStatus.phase === 'synced' ? publicAvailabilityStatus.classesCount : publicAvailabilityPublication.classes.length} turno(s) con plaza
                     {publicAvailabilityStatus.updatedAt ? ` · Última publicación: ${new Date(publicAvailabilityStatus.updatedAt).toLocaleString('es-ES')}` : ''}
                   </p>
                 </div>
@@ -16174,7 +16162,7 @@ ${startDateWarning}
               <button
                 type="button"
                 onClick={() => publishPublicAvailability({ force: true })}
-                disabled={!studentsLoaded || !classesLoaded || publicAvailabilityStatus.phase === 'syncing'}
+                disabled={!studentsLoaded || !classesLoaded || !settingsLoaded || publicAvailabilityStatus.phase === 'syncing'}
                 className="w-full lg:w-auto px-5 py-3 bg-slate-900 hover:bg-black disabled:bg-zinc-300 disabled:cursor-not-allowed text-white rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2"
               >
                 <Save className="w-4 h-4" />

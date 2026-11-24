@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { reconcileAttendedAbsence } from '../src/components/absenceAttendanceReconciliation.js';
 import { buildPublicClassSelectionId } from '../src/components/classExpansionUtils.js';
-import { publishWebAvailability, saveClassWebSettings } from '../src/components/publicAvailabilityStore.js';
+import { publishWebAvailability, saveCenterAvailability, saveClassWebSettings } from '../src/components/publicAvailabilityStore.js';
 import {
   assertFails,
   assertSucceeds,
@@ -583,11 +583,11 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
       const parallelTurn = { ...turn, selectionId: otherClassId };
       const campaigns = [{ id: 'promo-fixture' }];
       const signatureFor = JSON.stringify;
-      const publication = { classes: [turn, parallelTurn], campaigns, sourcePaths: new Map([[selectionId, classPath], [otherClassId, otherPath]]) };
+      const publication = { classes: [turn, parallelTurn], campaigns, sourcePaths: new Map([[selectionId, classPath], [otherClassId, otherPath]]), sourceCenters: new Map() };
       const publicDoc = { schemaVersion: 5, classes: publication.classes, campaigns, signature: signatureFor([publication.classes, campaigns]) };
       const visible = async () => (await getDoc(doc(visitor, 'publicData/classAvailability'))).data();
       const save = db => saveClassWebSettings({ db, classPath, changes: { isWebVisible: false }, signatureFor });
-      const publish = () => publishWebAvailability({ db: admin, publication, schemaVersion: 5, generatedForDate: '2026-11-24', signatureFor, force: true });
+      const publish = () => publishWebAvailability({ db: admin, appId: APP_ID, publication, schemaVersion: 5, generatedForDate: '2026-11-24', signatureFor, isCenterOpen: () => true, force: true });
       try {
         await setDoc(doc(admin, classPath), { isWebVisible: true, isRecurring: true });
         await setDoc(doc(admin, otherPath), { isWebVisible: true, isRecurring: true });
@@ -612,6 +612,44 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         assert.equal((await visible()).sourcePaths, undefined);
       } finally {
         await Promise.all([setDoc(publicRef, original), deleteDoc(doc(admin, classPath)), deleteDoc(doc(admin, otherPath))]);
+      }
+    });
+
+    await t.test('cerrar la sede retira los turnos, conserva la campaña e impide a una publicación antigua volver a ofrecerlos', async () => {
+      const admin = authenticated(testEnv, ADMIN);
+      const visitor = testEnv.unauthenticatedContext().firestore();
+      const settingsRef = doc(admin, `${ROOT}/settings/global`);
+      const studentSettingsRef = doc(admin, `${ROOT}/roleData/studentSettings`);
+      const publicRef = doc(admin, 'publicData/classAvailability');
+      const classPath = `${ROOT}/users/${TEACHER.uid}/recurringClasses/center-close-fixture`;
+      const center = { id: 'costa', name: 'Costa', status: 'active' };
+      const selectionId = buildPublicClassSelectionId(classPath);
+      const row = { selectionId, escuela: center.name, plazas: 3 };
+      const campaigns = [{ id: 'preserved' }];
+      const signatureFor = JSON.stringify;
+      const isCenterOpen = (centers, value) => centers?.find(item => item.id === value || item.name === value)?.status !== 'inactive';
+      const original = await Promise.all([settingsRef, studentSettingsRef, publicRef].map(getDoc));
+      try {
+        await setDoc(settingsRef, { centers: [center] }, { merge: true });
+        await setDoc(doc(admin, classPath), { centerId: center.id, isWebVisible: true, isRecurring: true });
+        await setDoc(publicRef, { classes: [row], campaigns });
+        const save = db => saveCenterAvailability({
+          db, appId: APP_ID, patch: { centers: [{ ...center, status: 'inactive' }], mitoboxRoomCapacities: {} },
+          expectedCenters: [center], normalizeCenters: centers => centers, legacySettingsFor: () => ({}), isCenterOpen, signatureFor
+        });
+        await assertFails(save(visitor));
+        await assertSucceeds(save(admin));
+        await assert.rejects(save(admin), /configuración de sedes cambió/);
+        assert.deepEqual((await getDoc(publicRef)).data().classes, []);
+        const publication = { classes: [row], campaigns, sourcePaths: new Map([[selectionId, classPath]]), sourceCenters: new Map([[selectionId, center.id]]) };
+        await publishWebAvailability({ db: admin, appId: APP_ID, publication, schemaVersion: 5, signatureFor, isCenterOpen, generatedForDate: '2026-11-24', force: true });
+        assert.deepEqual((await getDoc(publicRef)).data().classes, []);
+        assert.deepEqual((await getDoc(publicRef)).data().campaigns, campaigns);
+        assert.deepEqual((await getDoc(studentSettingsRef)).data().mitoboxRoomCapacities, {});
+        assert.equal((await getDoc(doc(admin, classPath))).data().isWebVisible, true);
+      } finally {
+        const refs = [settingsRef, studentSettingsRef, publicRef];
+        await Promise.all([...original.map((snapshot, index) => snapshot.exists() ? setDoc(refs[index], snapshot.data()) : deleteDoc(refs[index])), deleteDoc(doc(admin, classPath))]);
       }
     });
 
@@ -873,6 +911,13 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         updatedAt: '2026-09-20T10:05:00.000Z'
       }));
 
+      const admin = authenticated(testEnv, ADMIN);
+      const configRef = doc(admin, `${ROOT}/settings/global`);
+      const configBeforeClosure = await getDoc(configRef);
+      const activeReservation = (await getDoc(reservationRef)).data();
+      const activeSlot = (await getDoc(slotRef)).data();
+      await setDoc(configRef, { mitoboxRoomCapacities: {} }, { mergeFields: ['mitoboxRoomCapacities'] });
+      try {
       await assertSucceeds(runTransaction(db, async transaction => {
         await transaction.get(reservationRef);
         await transaction.get(slotRef);
@@ -888,6 +933,28 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
           lastMutationId: reservationId
         });
       }));
+        await assertFails(runTransaction(db, async transaction => {
+          await transaction.get(reservationRef);
+          await transaction.get(slotRef);
+          transaction.set(reservationRef, activeReservation);
+          transaction.set(slotRef, activeSlot);
+        }));
+        const newReservationId = '2026-09-21_1900_mitobox-student';
+        const newSlotId = '2026-09-21_tarragona_sala-1_1900';
+        await assertFails(runTransaction(db, async transaction => {
+          transaction.set(doc(db, `${ROOT}/mitoboxReservations/${newReservationId}`), {
+            ...activeReservation, reservationTime: '19:00', slotId: newSlotId,
+            startsAt: Timestamp.fromMillis(schoolDateTimeMillis(bookingDate, '19:00'))
+          });
+          transaction.set(doc(db, `${ROOT}/mitoboxSlots/${newSlotId}`), {
+            ...activeSlot, reservationTime: '19:00', lastMutationId: newReservationId
+          });
+        }));
+        assert.equal((await getDoc(slotRef)).data().reservedCount, 0);
+      } finally {
+        if (configBeforeClosure.exists()) await setDoc(configRef, configBeforeClosure.data());
+        else await deleteDoc(configRef);
+      }
     });
 
     await t.test('usuario sin clase ni servicio: su vínculo antiguo no abre el portal', async () => {

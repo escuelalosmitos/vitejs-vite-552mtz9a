@@ -296,11 +296,14 @@ test('el publicador real incluye la campaña en su firma y conserva plazas, enla
   walk(parsed); assert.ok(callback);
   const baseClass = { id: 'same-id', refPath: 'artifacts/demo/users/teacher/recurringClasses/same-id', isWebVisible: true, subject: 'Guitarra', sede: 'Reus', capacity: 4, dayOfWeek: 1, time: '19:00', price: '60 €/mes', tadosiUrl: turn.url, students: [{ id: 's' }], notes: 'nota privada', teacherEmail: 'private@example.com' };
   const context = { students: [{ id: 's', name: 'Nombre privado', email: 'private@example.com', globalStatus: 'activo' }], recurringClassesOnly: [baseClass], settings: { enrollmentPromotions: [campaign()], secretSetting: 'no publicar' }, todayStr: '2026-11-24', enrollmentPromotions: promo,
-    isPunctualClass: () => false, buildPublicClassSelectionId, isPublicExpansionSeat, getFormationMinimumStudentCount: () => 2, normalizeGestionDateString: value => value, getDayName: () => 'Lunes', buildPublicAvailabilitySignature: JSON.stringify };
+    isPunctualClass: () => false, buildPublicClassSelectionId, isPublicExpansionSeat, getFormationMinimumStudentCount: () => 2, normalizeGestionDateString: value => value, getDayName: () => 'Lunes', buildPublicAvailabilitySignature: JSON.stringify,
+    centers: [], isCenterOpenForEnrollment: () => true, getClassCenterName: clase => clase.sede };
   const run = () => JSON.parse(JSON.stringify(vm.runInNewContext(`(${admin.slice(...callback.range)})()`, context)));
   const first = run(); assert.equal(first.classes[0].plazas, 3); assert.equal(first.classes[0].url, turn.url); assert.equal(first.classes[0].precio, '60 €/mes');
   assert.equal(first.campaigns[0].commonUrl, campaign().commonUrl); assert.equal(JSON.stringify(first).includes('private@example.com'), false); assert.equal(JSON.stringify(first).includes('Nombre privado'), false); assert.equal(JSON.stringify(first).includes('nota privada'), false);
   baseClass.students.push({ id: 'recovery', isRecovery: true }); assert.equal(run().classes[0].plazas, 3);
   context.settings.enrollmentPromotions = [{ ...campaign(), conditions: 'Condiciones revisadas' }]; const changed = run(); assert.notEqual(first.signature, changed.signature); assert.deepEqual(first.classes, changed.classes);
   context.settings.enrollmentPromotions = [{ ...campaign(), status: 'paused' }]; assert.deepEqual(run().campaigns, []);
+  context.isCenterOpenForEnrollment = () => false;
+  assert.deepEqual(run().classes, []);
 });

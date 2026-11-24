@@ -335,6 +335,18 @@ service cloud.firestore {
         && after.reservedCount == (exists(path) ? get(path).data.reservedCount : 0) + delta;
     }
 
+    // El aforo vigente se guarda con la sede. Las configuraciones anteriores
+    // conservan el aforo de la proyección hasta su siguiente sincronización.
+    function mitoboxConfiguredRoomCapacity(appId, slot) {
+      let path = /databases/$(database)/documents/artifacts/$(appId)/settings/global;
+      let current = exists(path) ? get(path).data : {};
+      let projected = /databases/$(database)/documents/artifacts/$(appId)/roleData/studentSettings;
+      let room = slot.centerId + '__' + slot.roomId;
+      return 'mitoboxRoomCapacities' in current && current.mitoboxRoomCapacities is map
+        ? current.mitoboxRoomCapacities.get(room, 0)
+        : get(projected).data.get('mitoboxRoomCapacities', {}).get(room, 0);
+    }
+
     function gymusikSessionChanges(appId, reservationId, sessionId, previous, next) {
       let path = gymusikSessionPath(appId, sessionId);
       let before = get(path).data;
@@ -993,7 +1005,7 @@ service cloud.firestore {
         ])
         && request.resource.data.reservedCount == 1
         && request.resource.data.capacity >= 1
-        && request.resource.data.capacity == get(/databases/$(database)/documents/artifacts/$(appId)/roleData/studentSettings).data.mitoboxRoomCapacities[request.resource.data.centerId + '__' + request.resource.data.roomId]
+        && request.resource.data.capacity == mitoboxConfiguredRoomCapacity(appId, request.resource.data)
         && request.resource.data.reservedCount <= request.resource.data.capacity
         && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'confirmed')
       );
@@ -1008,6 +1020,7 @@ service cloud.firestore {
         && request.resource.data.reservedCount <= request.resource.data.capacity
         && (
           request.resource.data.reservedCount == resource.data.reservedCount + 1
+          && request.resource.data.reservedCount <= mitoboxConfiguredRoomCapacity(appId, request.resource.data)
           && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'confirmed')
           || request.resource.data.reservedCount == resource.data.reservedCount - 1
           && reservationMatchesSlot(appId, request.resource.data.lastMutationId, slotId, 'cancelled')

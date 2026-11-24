@@ -20,7 +20,7 @@ import { recoveryPublicationSignature } from './recoveryCapacityUtils.js';
 import { createRecoveryCapacityStore } from './recoveryCapacityStore.js';
 import ServicesAdmin from './ServicesAdmin';
 import PublicEnrollmentView from './PublicEnrollmentView.jsx';
-import { publishWebAvailability, saveClassWebSettings } from './publicAvailabilityStore.js';
+import { publishWebAvailability, saveCenterAvailability, saveClassWebSettings } from './publicAvailabilityStore.js';
 import PersonalMessageComposer from './PersonalMessageComposer.jsx';
 import EnrollmentPromotionsAdmin from './EnrollmentPromotionsAdmin.jsx';
 import { enrollmentPromotions } from './enrollmentPromotions.js';
@@ -494,6 +494,21 @@ const buildLegacyCenterSettings = (centers = [], currentSettings = {}) => {
 };
 
 const defaultInstrumentos = ["Guitarra", "Canto", "Teclado", "Batería", "Bajo", "Ukelele", "Armónica", "Sensibilización", "Violín"];
+const cleanInstrumentName = value => String(value || '').trim().replace(/\s+/g, ' ');
+const instrumentNameKey = value => cleanInstrumentName(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es');
+const isCenterOpenForEnrollment = (centers, value) => {
+  const center = findCenterByValue(Array.isArray(centers) ? centers : [], value);
+  return !center || !['draft', 'inactive'].includes(center.status);
+};
+const getMitoboxRoomCapacities = centers => Object.fromEntries(centers
+  .filter(center => center.status === 'active')
+  .flatMap(center => center.rooms
+    .filter(room => room.active !== false && room.mitoboxEnabled !== false && room.capacity >= 1)
+    .map(room => [`${center.id}__${room.id}`, room.capacity])));
+const getTeacherSettingsSignature = settings => JSON.stringify([
+  settings.teachersList || [],
+  Object.entries(settings.teacherEmails || {}).sort(([left], [right]) => left.localeCompare(right))
+]);
 
 const PROJECTABLE_GESTION_TYPES = new Set(["baja_servicios", "baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases"]);
 const TADOSI_REQUIRED_GESTION_TYPES = new Set(["baja", "mantenimiento", "reactivar_plaza", "cambio_horario", "ampliar_clases", "alta_mitoverso", "alta_mitobox", "alta_mitolocker", "baja_servicios", "ajuste_cuota_apertura_grupo"]);
@@ -2177,7 +2192,7 @@ const WorkshopAdminSection = ({ db, appId, user, settings, centers = [], student
           return <article key={workshop.id} className={`bg-white border rounded-2xl shadow-sm overflow-hidden ${workshop.featured ? 'border-amber-300 ring-1 ring-amber-100' : 'border-zinc-200'}`}>
             <div className="p-5">
               <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2 mb-2"><span className={`px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_STATUS_STYLE[workshop.status || 'draft']}`}>{getWorkshopStatusLabel(workshop.status)}</span>{workshop.featured && <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline"/> Destacado</span>}</div><h3 className="font-black text-lg text-slate-900 leading-tight">{workshop.title}</h3><p className="text-sm text-zinc-500 mt-1">{workshop.shortDescription}</p><div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 text-[10px] font-black uppercase tracking-wider text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5 text-violet-600"/>{firstSession ? `${formatDateSpanish(firstSession.date)} · ${firstSession.startTime}` : 'Sin sesión'}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-violet-600"/>{workshop.locationType === 'both' ? 'Ambas sedes' : workshop.locationType === 'online' ? 'Online' : workshop.locationType === 'other' ? workshop.externalLocation : `${workshop.locationType}${workshop.room ? ` · ${workshop.room}` : ''}`}</span><span className="flex items-center gap-1"><Target className="w-3.5 h-3.5 text-violet-600"/>{getAudienceLabel(workshop)}</span><span className="flex items-center gap-1"><DollarSign className="w-3.5 h-3.5 text-violet-600"/>{workshop.priceType === 'free' ? 'Gratuito' : `${Number(workshop.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`}</span></div></div>
+                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2 mb-2"><span className={`px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-widest ${WORKSHOP_STATUS_STYLE[workshop.status || 'draft']}`}>{getWorkshopStatusLabel(workshop.status)}</span>{workshop.featured && <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-800 text-[9px] font-black uppercase tracking-widest"><Star className="w-3 h-3 inline"/> Destacado</span>}</div><h3 className="font-black text-lg text-slate-900 leading-tight">{workshop.title}</h3><p className="text-sm text-zinc-500 mt-1">{workshop.shortDescription}</p><div className="flex flex-wrap gap-x-4 gap-y-2 mt-4 text-[10px] font-black uppercase tracking-wider text-zinc-500"><span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5 text-violet-600"/>{firstSession ? `${formatDateSpanish(firstSession.date)} · ${firstSession.startTime}` : 'Sin sesión'}</span><span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5 text-violet-600"/>{workshop.locationType === 'both' ? 'Todas las sedes' : workshop.locationType === 'online' ? 'Online' : workshop.locationType === 'other' ? workshop.externalLocation : `${workshop.locationType}${workshop.room ? ` · ${workshop.room}` : ''}`}</span><span className="flex items-center gap-1"><Target className="w-3.5 h-3.5 text-violet-600"/>{getAudienceLabel(workshop)}</span><span className="flex items-center gap-1"><DollarSign className="w-3.5 h-3.5 text-violet-600"/>{workshop.priceType === 'free' ? 'Gratuito' : `${Number(workshop.price || 0).toLocaleString('es-ES', { minimumFractionDigits: 2 })} €`}</span></div></div>
                 <div className="flex flex-wrap lg:justify-end gap-2 shrink-0"><select value={workshop.status || 'draft'} onChange={e => changeWorkshopStatus(workshop, e.target.value)} className="px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-[9px] font-black uppercase tracking-widest">{WORKSHOP_STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><button data-admin-detail-dismiss onClick={() => editWorkshop(workshop)} className="p-2 bg-violet-50 text-violet-700 hover:bg-violet-600 hover:text-white rounded-lg" title="Editar"><Pencil className="w-4 h-4"/></button><button onClick={() => deleteWorkshop(workshop)} className="p-2 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white rounded-lg" title="Eliminar"><Trash2 className="w-4 h-4"/></button></div>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-5"><div className="bg-emerald-50 p-3 rounded-xl"><span className="block text-xl font-black text-emerald-700">{summary.confirmed}</span><span className="text-[9px] font-black uppercase tracking-widest text-emerald-600">Confirmadas</span></div><div className="bg-amber-50 p-3 rounded-xl"><span className="block text-xl font-black text-amber-700">{summary.pending}</span><span className="text-[9px] font-black uppercase tracking-widest text-amber-600">Pendientes</span></div><div className="bg-blue-50 p-3 rounded-xl"><span className="block text-xl font-black text-blue-700">{summary.waitlist}</span><span className="text-[9px] font-black uppercase tracking-widest text-blue-600">En espera</span></div><div className="bg-zinc-50 p-3 rounded-xl"><span className="block text-xl font-black text-slate-800">{workshop.unlimitedCapacity ? '∞' : Math.max(0, Number(workshop.capacity || 0) - summary.confirmed)}</span><span className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Plazas libres</span></div></div>
@@ -2290,8 +2305,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     settings.festivosReus
   ]);
   const activeCenters = useMemo(() => {
-    const active = centers.filter(center => center.status === 'active');
-    return active.length > 0 ? active : centers.slice(0, 1);
+    return centers.filter(center => center.status === 'active');
   }, [centers]);
   const activeCenterNames = useMemo(() => activeCenters.map(center => center.name), [activeCenters]);
 
@@ -2465,6 +2479,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const [isImporting, setIsImporting] = useState(false);
   const [centerEditor, setCenterEditor] = useState(null);
   const [savingCenter, setSavingCenter] = useState(false);
+  const [savingTeacher, setSavingTeacher] = useState(false);
+  const [savingInstrument, setSavingInstrument] = useState(false);
   const [showPastSchoolDates, setShowPastSchoolDates] = useState(false);
 
   useEffect(() => {
@@ -3944,12 +3960,14 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   const publicAvailabilityPublication = useMemo(() => {
     const studentById = new Map(students.map(student => [String(student.id || ''), student]));
     const sourcePaths = new Map();
+    const sourceCenters = new Map();
     const isPublicCommittedSeat = (entry = {}, availabilityDate = '') => isPublicExpansionSeat(
       entry, studentById.get(String(entry.id || entry.studentId || '')) || {}, availabilityDate
     );
 
     const classes = recurringClassesOnly
-      .filter(clase => clase?.isWebVisible === true && !isPunctualClass(clase))
+      .filter(clase => clase?.isWebVisible === true && !isPunctualClass(clase)
+        && isCenterOpenForEnrollment(centers, clase.centerId || clase.sede))
       .map(clase => {
         const selectionId = buildPublicClassSelectionId(clase.refPath || clase.id);
         const maxCap = parseInt(clase.capacity, 10) || 0;
@@ -3972,10 +3990,11 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
           return null;
         }
         if (clase.refPath) sourcePaths.set(selectionId, clase.refPath);
+        sourceCenters.set(selectionId, clase.centerId || clase.sede);
 
         return {
           selectionId,
-          escuela: String(clase.sede || 'Tarragona').trim() || 'Tarragona',
+          escuela: getClassCenterName(clase),
           instrumento: instrument,
           horario: `${getDayName(dayNum)} a las ${timeStr}h`,
           dayNum,
@@ -4012,9 +4031,10 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       classes,
       campaigns,
       sourcePaths,
+      sourceCenters,
       signature: buildPublicAvailabilitySignature([classes, campaigns])
     };
-  }, [recurringClassesOnly, students, todayStr, settings.enrollmentPromotions]);
+  }, [recurringClassesOnly, students, todayStr, settings.enrollmentPromotions, centers]);
 
   // Proyecciones privadas para el Área del Alumno. Contienen únicamente los
   // campos que esa interfaz necesita y nunca incluyen alumnos de otras clases,
@@ -4123,6 +4143,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
   }, [loading, studentsLoaded, classesLoaded, startupLoadErrors.gestiones, startupLoadErrors.temporaryRelocations, startupLoadErrors.maintenancePeriods, settingsLoaded, allClasses, students, maintenancePeriods, temporaryRelocations, gestiones, todayStr, centers, settings.festivos, settings.vacaciones, settings.festivosTarragona, settings.festivosReus, db, appId]);
 
   const studentSettingsPublication = useMemo(() => {
+    const configuredCenters = normalizeCenters(settings.centers, settings);
     const data = {
       contract: String(settings.contract || ''),
       teacherEmails: Object.fromEntries(Object.entries(settings.teacherEmails || {})
@@ -4137,8 +4158,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       festivosReus: Array.isArray(settings.festivosReus) ? settings.festivosReus : [],
       instrumentos: Array.isArray(settings.instrumentos) ? settings.instrumentos : defaultInstrumentos,
       gymusikExcludedInstruments: Array.isArray(settings.gymusikExcludedInstruments) ? settings.gymusikExcludedInstruments : [],
-      centers: normalizeCenters(settings.centers, settings),
-      mitoboxRoomCapacities: Object.fromEntries(normalizeCenters(settings.centers, settings).flatMap(center => (center.rooms || []).filter(room => center.status !== 'inactive' && room.active !== false && room.mitoboxEnabled !== false).map(room => [`${center.id}__${room.id}`, Math.max(1, Number(room.capacity) || 1)]))),
+      centers: configuredCenters,
+      mitoboxRoomCapacities: getMitoboxRoomCapacities(configuredCenters),
       studentClassIndexVersion: Number(settings.studentClassIndexVersion || 0)
     };
     return { data, signature: buildPublicAvailabilitySignature([data]) };
@@ -4173,10 +4194,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     try {
       const result = await publishWebAvailability({
         db,
+        appId,
         publication: latestPublicAvailabilityRef.current,
         schemaVersion: PUBLIC_AVAILABILITY_SCHEMA_VERSION,
         generatedForDate: todayStr,
         signatureFor: buildPublicAvailabilitySignature,
+        isCenterOpen: isCenterOpenForEnrollment,
         force
       });
       setPublicAvailabilityStatus({
@@ -4566,7 +4589,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     const clasesRentabilidad = [];
     const porSede = Object.fromEntries(centerNamesForReporting.map(sede => [sede, createSedeStats()]));
     const porProfe = {};
-    const porInstrumento = {};
+    const porInstrumento = new Map();
+    const instrumentNames = new Map();
+    (settings.instrumentos || defaultInstrumentos).forEach(name => {
+      const key = instrumentNameKey(name);
+      if (key && !instrumentNames.has(key)) instrumentNames.set(key, cleanInstrumentName(name));
+    });
     const studentById = new Map(studentsSnapshot.map(student => [student.id, student]));
     const frozenStudents = new Map();
     const activeUniqueStudents = new Set();
@@ -4869,16 +4897,19 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         if (share.isSubstitute) teacherStats.sesionesSustitucion += share.sessionsSubstituted;
       });
 
-      const instKey = c.subject || 'Otros';
-      if (!porInstrumento[instKey]) porInstrumento[instKey] = createInstrumentStats();
-      porInstrumento[instKey].ingresos += ingresos;
-      porInstrumento[instKey].costes += coste;
-      porInstrumento[instKey].numGrupos += isClassOperative ? 1 : 0;
-      porInstrumento[instKey].numGruposHibernados += isHibernated ? 1 : 0;
-      porInstrumento[instKey].alumnosActivos += numAlumnos;
-      porInstrumento[instKey].alumnosInicioFuturo += numInicioFuturo;
-      porInstrumento[instKey].plazasComprometidas += numPlazasComprometidas;
-      porInstrumento[instKey].impagos += numImpagos;
+      const instKey = instrumentNameKey(c.subject || 'Otros');
+      if (!porInstrumento.has(instKey)) {
+        porInstrumento.set(instKey, { name: instrumentNames.get(instKey) || cleanInstrumentName(c.subject) || 'Otros', ...createInstrumentStats() });
+      }
+      const instrumentStats = porInstrumento.get(instKey);
+      instrumentStats.ingresos += ingresos;
+      instrumentStats.costes += coste;
+      instrumentStats.numGrupos += isClassOperative ? 1 : 0;
+      instrumentStats.numGruposHibernados += isHibernated ? 1 : 0;
+      instrumentStats.alumnosActivos += numAlumnos;
+      instrumentStats.alumnosInicioFuturo += numInicioFuturo;
+      instrumentStats.plazasComprometidas += numPlazasComprometidas;
+      instrumentStats.impagos += numImpagos;
     });
 
     activeUniqueBySede.forEach((studentKeys, sede) => {
@@ -4920,11 +4951,12 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       const maintenanceTeacherStats = getTeacherBucket('Mantenimiento (sin atribuir)');
       maintenanceTeacherStats.ingresos += ingresosMantenimiento;
       maintenanceTeacherStats.plazasComprometidas += alumnosMantenimiento;
-      porInstrumento.Mantenimiento = {
+      porInstrumento.set(Symbol('Mantenimiento'), {
+        name: 'Mantenimiento',
         ...createInstrumentStats(),
         ingresos: ingresosMantenimiento,
         plazasComprometidas: alumnosMantenimiento
-      };
+      });
     }
 
     clasesRentabilidad.sort((a, b) => b.beneficio - a.beneficio);
@@ -4971,8 +5003,8 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       porProfe: Object.values(porProfe)
         .map(data => ({ ...data, beneficio: data.ingresos - data.costes }))
         .sort((a, b) => b.beneficio - a.beneficio),
-      porInstrumento: Object.entries(porInstrumento)
-        .map(([name, data]) => ({ name, ...data, beneficio: data.ingresos - data.costes }))
+      porInstrumento: [...porInstrumento.values()]
+        .map(data => ({ ...data, beneficio: data.ingresos - data.costes }))
         .sort((a, b) => b.beneficio - a.beneficio)
     };
   };
@@ -5225,6 +5257,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
     () => buildPublicAvailabilitySignature(teacherAccessPublication),
     [teacherAccessPublication]
   );
+  const teacherSettingsSignature = getTeacherSettingsSignature(settings);
 
   // Mantiene una lista privada y revocable de cuentas de profesor. El dominio
   // del correo por sí solo no concede permisos.
@@ -5238,18 +5271,21 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
         if (cancelled) return;
 
         const desiredEmails = new Set(teacherAccessPublication.map(item => item.email));
-        const batch = writeBatch(db);
-        currentSnapshot.docs.forEach(staffDocument => {
-          if (!desiredEmails.has(staffDocument.id)) batch.delete(staffDocument.ref);
-        });
-        teacherAccessPublication.forEach(item => {
-          batch.set(doc(staffCollection, item.email), {
-            ...item,
-            schemaVersion: 2,
-            updatedAt: new Date().toISOString()
+        await runTransaction(db, async transaction => {
+          const stored = (await transaction.get(doc(db, 'artifacts', appId, 'settings', 'global'))).data() || {};
+          if (cancelled || getTeacherSettingsSignature(stored) !== teacherSettingsSignature) return;
+
+          currentSnapshot.docs.forEach(staffDocument => {
+            if (!desiredEmails.has(staffDocument.id)) transaction.delete(staffDocument.ref);
+          });
+          teacherAccessPublication.forEach(item => {
+            transaction.set(doc(staffCollection, item.email), {
+              ...item,
+              schemaVersion: 2,
+              updatedAt: new Date().toISOString()
+            });
           });
         });
-        await batch.commit();
       } catch (error) {
         console.error('No se pudo sincronizar la lista privada de profesores:', error);
       }
@@ -5259,7 +5295,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [settingsLoaded, classesLoaded, teacherAccessSignature, db, appId]);
+  }, [settingsLoaded, classesLoaded, teacherAccessSignature, teacherSettingsSignature, db, appId]);
 
   // Publica relaciones operativas explícitas. Un profesor conserva sus datos
   // propios, pero también recibe acceso cuando participa en una recuperación,
@@ -10301,6 +10337,7 @@ Coordinación Los Mitos.`
   };
 
   const addConfiguredTeacher = async () => {
+    if (savingTeacher) return;
     const nameInput = document.getElementById('adminTeacherInput');
     const emailInput = document.getElementById('adminTeacherEmailInput');
     const teacherName = cleanTeacherDisplayName(nameInput?.value);
@@ -10310,25 +10347,77 @@ Coordinación Los Mitos.`
     if (!/^[^\s@]+@escuelalosmitos\.com$/i.test(teacherEmail)) {
       return alert('Escribe el correo corporativo exacto del profesor, terminado en @escuelalosmitos.com.');
     }
-    if ((settings.teachersList || []).some(name => isSameTeacher(name, teacherName))) {
-      return alert(`${getOfficialTeacherName(teacherName, teacherName)} ya figura en la plantilla.`);
+    setSavingTeacher(true);
+    try {
+      const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
+      const staffRef = doc(db, 'artifacts', appId, 'staffAccess', teacherEmail);
+      const conflict = await runTransaction(db, async transaction => {
+        const [settingsSnapshot, staffSnapshot] = await Promise.all([transaction.get(settingsRef), transaction.get(staffRef)]);
+        const current = settingsSnapshot.data() || {};
+        const names = current.teachersList || [];
+        const emails = current.teacherEmails || {};
+        const staff = staffSnapshot.data();
+        if (names.some(name => isSameTeacher(name, teacherName))) return 'Ese nombre ya figura en la plantilla.';
+        if (Object.values(emails).some(email => String(email).trim().toLowerCase() === teacherEmail)
+          || (staff?.teacherName && !isSameTeacher(staff.teacherName, teacherName))) {
+          return 'Ese correo ya está asignado a otro profesor de la plantilla.';
+        }
+        const classOwnerIds = uniqueStrings([
+          ...(staff?.classOwnerIds || []),
+          ...recurringClassesOnly.filter(clase => isSameTeacher(clase.teacher, teacherName)).map(getOwnerUidFromClassPath)
+        ]);
+        transaction.set(settingsRef, {
+          teachersList: [...names, teacherName],
+          teacherEmails: { ...emails, [teacherName]: teacherEmail }
+        }, { mergeFields: ['teachersList', 'teacherEmails'] });
+        transaction.set(staffRef, {
+          role: 'teacher',
+          email: teacherEmail,
+          teacherName,
+          teacherNameLower: teacherName.toLocaleLowerCase('es-ES'),
+          teacherKey: normalizeTeacherKey(teacherName),
+          classOwnerIds,
+          schemaVersion: 2,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        return '';
+      });
+      if (conflict) return alert(conflict);
+      if (nameInput) nameInput.value = '';
+      if (emailInput) emailInput.value = '';
+      alert('Profesor guardado y permiso interno activo. Comprueba que tiene una cuenta en Firebase Authentication con ese correo.');
+    } catch (error) {
+      console.error('No se pudo guardar el profesor:', error);
+      alert('No se ha podido dar de alta al profesor. Reintenta cuando haya conexión.');
+    } finally {
+      setSavingTeacher(false);
     }
-    if (Object.values(settings.teacherEmails || {}).some(email => String(email).trim().toLowerCase() === teacherEmail)) {
-      return alert('Ese correo ya está asignado a otro profesor de la plantilla.');
-    }
+  };
 
-    const nextSettings = {
-      ...settings,
-      teachersList: [...(settings.teachersList || []), teacherName],
-      teacherEmails: {
-        ...(settings.teacherEmails || {}),
-        [teacherName]: teacherEmail
-      }
-    };
-    setSettings(nextSettings);
-    await saveGlobalSettings(nextSettings, 'Profesor añadido y permisos internos preparados.');
-    if (nameInput) nameInput.value = '';
-    if (emailInput) emailInput.value = '';
+  const addConfiguredInstrument = async () => {
+    if (savingInstrument) return;
+    const input = document.getElementById('adminInstInput');
+    const name = cleanInstrumentName(input?.value);
+    if (!name) return alert('Escribe el nombre de la asignatura.');
+    setSavingInstrument(true);
+    try {
+      const settingsRef = doc(db, 'artifacts', appId, 'settings', 'global');
+      const saved = await runTransaction(db, async transaction => {
+        const current = (await transaction.get(settingsRef)).data();
+        const instruments = Array.isArray(current?.instrumentos) ? current.instrumentos : defaultInstrumentos;
+        if (instruments.some(instrument => instrumentNameKey(instrument) === instrumentNameKey(name))) return false;
+        transaction.set(settingsRef, { instrumentos: [...instruments, name] }, { merge: true });
+        return true;
+      });
+      if (!saved) return alert('Esa asignatura ya está en el catálogo.');
+      if (input) input.value = '';
+      alert('Asignatura guardada.');
+    } catch (error) {
+      console.error('No se pudo guardar la asignatura:', error);
+      alert('No se ha podido guardar la asignatura. Reintenta cuando haya conexión.');
+    } finally {
+      setSavingInstrument(false);
+    }
   };
 
   const createEmptyCenterEditor = () => ({
@@ -10476,11 +10565,21 @@ Coordinación Los Mitos.`
       : [...centers, normalizedCenter];
     setSavingCenter(true);
     try {
-      await saveGlobalSettings({ ...settings, centers: nextCenters }, `Sede ${name} guardada correctamente.`);
+      const patch = {
+        centers: nextCenters,
+        centersSchemaVersion: 1,
+        mitoboxRoomCapacities: getMitoboxRoomCapacities(nextCenters)
+      };
+      await saveCenterAvailability({
+        db, appId, patch, expectedCenters: centers, normalizeCenters,
+        legacySettingsFor: buildLegacyCenterSettings,
+        isCenterOpen: isCenterOpenForEnrollment, signatureFor: buildPublicAvailabilitySignature
+      });
       setCenterEditor(null);
+      alert(`Sede ${name} guardada correctamente.`);
     } catch (error) {
       console.error(error);
-      alert('No se ha podido guardar la sede. Revisa la conexión y los permisos de Firestore.');
+      alert(error.code ? 'No se ha podido guardar la sede. Revisa la conexión y los permisos.' : error.message);
     } finally {
       setSavingCenter(false);
     }
@@ -10838,6 +10937,11 @@ Coordinación Los Mitos.`
     }
     if (!newClassData.isRecurring && !newClassData.specificDate) {
       return alert("Para una clase puntual, debes elegir una fecha.");
+    }
+    const selectedCenter = getCenterForValue(newClassData.centerId || newClassData.sede);
+    const selectedRoom = findRoomByValue(selectedCenter, newClassData.roomId || newClassData.sala);
+    if (!selectedCenter || selectedCenter.status !== 'active' || !selectedRoom || selectedRoom.active === false) {
+      return alert('Selecciona una sede y una sala activas.');
     }
 
     const officialTeacherName = getOfficialTeacherName(newClassData.teacher, cleanTeacherDisplayName(newClassData.teacher));
@@ -17792,14 +17896,7 @@ ${startDateWarning}
               <h3 className="text-sm font-black uppercase tracking-widest text-zinc-800 mb-4 flex items-center gap-2"><Music className="w-5 h-5 text-black"/> Oferta de Instrumentos</h3>
               <div className="flex gap-2 mb-4">
                 <input id="adminInstInput" type="text" placeholder="Ej: Saxofón..." className="flex-1 p-3 text-sm bg-zinc-50 border border-zinc-200 outline-none rounded-xl font-bold" />
-                <button onClick={() => { 
-                  const val = document.getElementById('adminInstInput').value.trim(); 
-                  if(val) { 
-                    const s = {...settings, instrumentos: [...(settings.instrumentos||defaultInstrumentos), val]}; 
-                    setSettings(s); saveGlobalSettings(s); 
-                    document.getElementById('adminInstInput').value = ''; 
-                  } 
-                }} className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800"><Plus className="w-4 h-4"/></button>
+                <button onClick={addConfiguredInstrument} disabled={savingInstrument} aria-label="Añadir asignatura" className="bg-black text-white px-6 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 disabled:opacity-50"><Plus className="w-4 h-4"/></button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {(settings.instrumentos || defaultInstrumentos).map((inst, i) => (
@@ -17963,9 +18060,9 @@ ${startDateWarning}
               <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.35fr_auto] gap-2 mb-2">
                 <input id="adminTeacherInput" type="text" placeholder="Nombre: Èlia" className="p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
                 <input id="adminTeacherEmailInput" type="email" placeholder="Correo exacto: elia@escuelalosmitos.com" className="p-3 text-sm bg-zinc-50 border border-zinc-200 rounded-xl font-bold" />
-                <button onClick={addConfiguredTeacher} className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 flex items-center justify-center"><Plus className="w-4 h-4"/></button>
+                <button onClick={addConfiguredTeacher} disabled={savingTeacher} aria-label="Añadir profesor" className="bg-black text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] hover:bg-zinc-800 flex items-center justify-center disabled:opacity-50"><Plus className="w-4 h-4"/></button>
               </div>
-              <p className="text-[10px] text-zinc-500 font-bold leading-relaxed mb-4">El nombre se utilizará en clases, bolsa de horas, nóminas y listados. El correo exacto genera sus permisos privados de profesor. La cuenta con ese mismo correo debe existir también en Firebase Authentication para que pueda iniciar sesión.</p>
+              <p className="text-xs text-zinc-600 mb-4">El alta guarda al profesor y habilita su permiso interno. Para iniciar sesión, el profesor necesita una cuenta en Firebase Authentication con el mismo correo.</p>
               <div className="space-y-2 max-h-64 overflow-y-auto pr-2">
                 {configuredTeacherNames.map((t) => {
                   const matchingColorKey = Object.keys(settings.teacherColors || {}).find(name => isSameTeacher(name, t));

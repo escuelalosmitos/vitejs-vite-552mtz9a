@@ -157,7 +157,7 @@ function MitolockerRoster({ students = [], db, appId, canUseMitolocker }) {
   return <div className="space-y-5">
     <div className="bg-white p-6 border rounded-3xl space-y-4">
       <h3 className="text-xl font-black uppercase">Mitolocker · Tu instrumento siempre en la escuela</h3>
-      <p className="text-sm text-zinc-500">Vinculado a una plaza de clases en Tarragona o Reus. Se cancela al dejar la última plaza. Compartido: gratis, con permiso de uso por otros alumnos. Exclusivo: 5 €/mes, reservado solo a su propietario.</p>
+      <p className="text-sm text-zinc-500">Vinculado a una plaza de clases en la escuela. Se cancela al dejar la última plaza. Compartido: gratis, con permiso de uso por otros alumnos. Exclusivo: 5 €/mes, reservado solo a su propietario.</p>
       <p className="font-bold text-amber-800">{active.filter(student => student.mitolockerMode === 'compartido').length} compartidos · {active.filter(student => student.mitolockerMode === 'exclusivo').length} exclusivos · {active.filter(student => student.mitolockerMode === 'exclusivo').length * 5} €/mes</p>
       {message && <p role="status" className="text-sm font-bold">{message}</p>}
       <div className="flex flex-col sm:flex-row gap-3">

@@ -151,6 +151,7 @@ test('admin publica solo el mapa corporativo necesario, sin el resto de ajustes 
     useMemo: callback => callback(), cleanTeacherDisplayName: name => String(name).trim().replace(/\s+/g, ' '),
     normalizeMusicOrder: () => [], isCalendarDate: () => false, vacationDeadlineMillis: () => 0,
     Timestamp: { fromMillis: value => value }, defaultInstrumentos: [], normalizeCenters: () => [],
+    getMitoboxRoomCapacities: evaluate(admin, declaration(adminAst, 'getMitoboxRoomCapacities'), {}),
     buildPublicAvailabilitySignature: data => JSON.stringify(data)
   });
   assert.deepEqual(plain(publication.data.teacherEmails), { 'Martí Viñas': 'martivg@escuelalosmitos.com', Elia: 'elia@escuelalosmitos.com' });

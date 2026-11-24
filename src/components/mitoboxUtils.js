@@ -510,6 +510,8 @@ export const calculateMitoboxAvailability = ({
   if (
     !date
     || !center
+    || center.status === 'inactive'
+    || center.status === 'draft'
     || isMitoboxSchoolClosed({ date, center, settings })
   ) {
     return [];

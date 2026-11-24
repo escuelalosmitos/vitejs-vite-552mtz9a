@@ -276,7 +276,9 @@ test('Mitolocker solo no permite acceder; la plaza o un servicio independiente s
 });
 
 function biContext(gestiones=[]) {
-  return {...utils,console,todayStr:'2026-11-04',currentMonthStartStr:'2026-11-01',currentMonthEndStr:'2026-11-30',
+  const cleanInstrumentName = load(0, 'cleanInstrumentName', {});
+  const instrumentNameKey = load(0, 'instrumentNameKey', { cleanInstrumentName });
+  return {...utils, cleanInstrumentName, instrumentNameKey, defaultInstrumentos: [], console,todayStr:'2026-11-04',currentMonthStartStr:'2026-11-01',currentMonthEndStr:'2026-11-30',
     temporaryRelocations:[],temporaryClassChanges:[],isPunctualClass:()=>false,isFixedClassStudent:()=>true,isStudentClassCommittedOnDate:()=>true,hasStudentClassEndedBeforeDate:()=>false,getStudentClassStartDate:()=>'',getStudentClassEndDate:()=>'',isPendingClassStartEntry:()=>false,getClassCenterName:()=> 'Reus',centerNamesForReporting:['Reus'],settings:{gastosFijos:{}},centers:[],gestiones,
     normalizeGestionDateString:value=>value,normalizeTeacherKey:value=>String(value).toLowerCase(),getOfficialTeacherName:value=>value,
     MAINTENANCE_MONTHLY_FEE:15,BI_WEEKS_PER_MONTH:4.33,
@@ -288,6 +290,17 @@ test('BI real incorpora exclusivos a ingresos y mantiene compartidos gratuitos e
   const result=calculate({classesSnapshot:biClasses,studentsSnapshot:[profile,{...profile,id:'s2',hasMitobox:false,hasMitoverso:false,mitolockerMode:'compartido'}]});
   assert.equal(result.ingresosMitolocker,5);assert.equal(result.alumnosMitolockerCompartido,1);assert.equal(result.alumnosMitolockerExclusivo,1);
   assert.equal(result.ingresosExtras,55);assert.equal(result.totalIngresos,55);assert.equal(result.beneficioNeto,55);
+});
+
+test('el BI agrupa variantes heredadas de una asignatura bajo el nombre del catálogo', () => {
+  const context = biContext();
+  context.settings.instrumentos = ['Saxofón'];
+  const result = load(0, 'buildBusinessIntelligence', context)({
+    classesSnapshot: [{ id: 'uno', subject: 'Saxofón' }, { id: 'dos', subject: '  SAXOFON ' }]
+  });
+  assert.equal(result.porInstrumento.length, 1);
+  assert.equal(result.porInstrumento[0].name, 'Saxofón');
+  assert.equal(result.porInstrumento[0].numGruposHibernados, 2);
 });
 test('BI respeta la fecha de baja, conserva otros ingresos y no reaplica bajas históricas consolidadas',()=>{
   for (const effectiveDate of ['2026-11-01','2026-12-01']) {

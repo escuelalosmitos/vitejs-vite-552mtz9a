@@ -989,8 +989,7 @@ export default function StudentPortal({ user, logout, db, storage, appId }) {
     return () => { cancelled = true; unsubscribe(); };
   }, [needsPublicExpansion, publicExpansionRetry, db]);
   const activeCenters = useMemo(() => {
-    const active = centers.filter(center => center.status === 'active');
-    return active.length > 0 ? active : centers.slice(0, 1);
+    return centers.filter(center => center.status === 'active');
   }, [centers]);
   const mitoboxCenters = useMemo(() => activeCenters.filter(center => (
     (center.rooms || []).some(room => room.active !== false && room.mitoboxEnabled !== false)
@@ -4543,6 +4542,10 @@ ${payload.details || payload.title || 'Sin detalles añadidos.'}`;
       const selectedCenter = getCenterForValue(mboxSede);
       const firstSelectedSlot = selectedSlots[0];
       const selectedRoom = findRoomByValue(selectedCenter, firstSelectedSlot.roomId || firstSelectedSlot.sala);
+      if (selectedCenter?.status !== 'active' || !selectedRoom || selectedRoom.active === false || selectedRoom.mitoboxEnabled === false) {
+        showToast('Esta sala ya no está disponible para nuevas reservas.', 'error');
+        return;
+      }
       const selectedCenterName = selectedCenter?.name || mboxSede;
       const selectedRoomName = selectedRoom?.name || firstSelectedSlot.sala;
       const nowIso = new Date().toISOString();

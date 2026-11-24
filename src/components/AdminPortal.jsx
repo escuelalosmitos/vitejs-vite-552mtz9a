@@ -2595,7 +2595,7 @@ export default function AdminPortal({ user, logout, db, storage, appId, switchTo
       setSettingsLoaded(true);
     });
     const unsubClasses = subscribeStartupSource('classes', collectionGroup(db, 'recurringClasses'), snap => {
-      setAllClasses(snap.docs.map(d => ({ id: d.id, refPath: d.ref.path, ...d.data() })));
+      setAllClasses(snap.docs.map(d => ({ ...d.data(), id: d.id, refPath: d.ref.path })));
       if (snap.metadata?.fromCache !== true) setClassesLoaded(true);
     });
     const unsubTickets = subscribeStartupSource('tickets', collectionGroup(db, 'tickets'), snap => {
@@ -11637,16 +11637,16 @@ Coordinación Los Mitos.`
   const architectClasses = useMemo(() => {
     const baseClasses = archProjectionMode === 'proyeccion' ? projectedPlanningClasses : recurringClassesOnly;
     const effectiveDate = archDate || todayStr;
-    const byId = new Map((baseClasses || []).map(clase => {
+    const byPath = new Map((baseClasses || []).map(clase => {
       const effectiveClass = isPunctualClass(clase) ? clase : getEffectiveClassForDate(clase, effectiveDate);
-      return [effectiveClass.id, effectiveClass];
+      return [effectiveClass.refPath || effectiveClass.id, effectiveClass];
     }));
 
     punctualClassesForArchitectDate.forEach(clase => {
-      byId.set(clase.id, clase);
+      byPath.set(clase.refPath || clase.id, clase);
     });
 
-    return [...byId.values()];
+    return [...byPath.values()];
   }, [archProjectionMode, projectedPlanningClasses, recurringClassesOnly, punctualClassesForArchitectDate, temporaryClassChanges, archDate, todayStr, officialTeacherNameMap]);
 
   const architectScheduleHours = useMemo(() => {
@@ -13318,6 +13318,15 @@ ${valueOrDash(comments.privateNote)}`,
     );
   };
 
+  const openClassWebSettings = classData => {
+    const currentClass = classData.refPath && allClasses.find(clase => clase.refPath === classData.refPath);
+    if (!currentClass) {
+      alert('Esta ficha de clase ya no está disponible. Vuelve a abrir el listado.');
+      return;
+    }
+    setEditWebModal(currentClass);
+  };
+
   const EditWebModalOverlay = () => {
     if (!editWebModal) return null;
     const [formData, setFormData] = useState({
@@ -13354,7 +13363,7 @@ ${valueOrDash(comments.privateNote)}`,
         const effectiveStartDate = formData.autoAdvanceStartDate
           ? getAutoAdvancedClassStartDate(formData.startDate, editWebModal.dayOfWeek, todayStr)
           : formData.startDate;
-        const { needsRepublish } = await saveClassWebSettings({
+        const { needsRepublish, removedFromWeb } = await saveClassWebSettings({
           db, classPath: editWebModal.refPath, signatureFor: buildPublicAvailabilitySignature,
           changes: {
             ...formData,
@@ -13370,10 +13379,15 @@ ${valueOrDash(comments.privateNote)}`,
           }
         });
         if (needsRepublish) await publishPublicAvailability({ force: true });
-        alert(formData.isWebVisible
-          ? 'Configuración guardada. La oferta web se actualizará con las plazas disponibles.'
-          : needsRepublish ? 'Configuración guardada. Comprueba el estado de la oferta web en Clases globales.'
-            : 'Configuración guardada. La clase ya no está en la oferta web.');
+        let message = 'Configuración guardada. No había un turno publicado asociado a esta ficha.';
+        if (formData.isWebVisible) {
+          message = 'Configuración guardada. La oferta web se actualizará con las plazas disponibles.';
+        } else if (needsRepublish) {
+          message = 'Configuración guardada. Comprueba el estado de la oferta web en Clases globales.';
+        } else if (removedFromWeb) {
+          message = 'Configuración guardada. Se ha retirado del formulario el turno de esta ficha.';
+        }
+        alert(message);
         setEditWebModal(null);
       } catch(e) { alert("Error al guardar: " + e.message); } finally { setSaving(false); }
     };
@@ -13386,6 +13400,8 @@ ${valueOrDash(comments.privateNote)}`,
             <div>
               <h2 className="text-xl font-black uppercase tracking-tight">Configurar Clase</h2>
               <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{editWebModal.subject} • {getDayName(editWebModal.dayOfWeek)} {editWebModal.time}h</p>
+              <p className="mt-1 text-xs text-slate-700">{getClassCenterName(editWebModal)} · {getClassRoomName(editWebModal)} · {editWebModal.teacher || 'Sin profesor'}</p>
+              <p className="mt-1 break-all text-xs text-slate-600">Ficha {buildPublicClassSelectionId(editWebModal.refPath)}</p>
             </div>
           </div>
           
@@ -14989,7 +15005,7 @@ ${startDateWarning}
           <button disabled={locatorSending || !locatorEmail.selected.length || dangerViewMode !== 'actual'} onClick={sendLocatorEmail} className="bg-black text-white px-4 py-2 rounded-lg font-bold disabled:opacity-40">{locatorSending ? 'Solicitando envío…' : 'Enviar a este alumno'}</button>
         </div>
       </div>}
-      {editWebModal && <StableModalRenderer key={`edit-web-${editWebModal.id || editWebModal.refPath || 'open'}`} render={EditWebModalOverlay} />}
+      {editWebModal && <StableModalRenderer key={`edit-web-${editWebModal.refPath}`} render={EditWebModalOverlay} />}
       {editClassModal && <StableModalRenderer key={`edit-class-${editClassModal.id || 'open'}`} render={EditClassModalOverlay} />}
       {createClassModal && <StableModalRenderer key="create-class" render={CreateClassModalOverlay} />}
       <ManualTaskModalOverlay
@@ -16263,7 +16279,7 @@ ${startDateWarning}
                                           <td key={sala} className="p-2 border-r border-zinc-100 align-top h-28 relative hover:bg-zinc-50 transition-colors group" onClick={(e) => { if(isArchitectProjection || e.target.closest('button') || classesInSlot.length > 0) return; openCreateFromSlot(); }}>
                                              {classesInSlot.length > 0 ? (
                                                 classesInSlot.map(c => {
-                                                   const realClass = recurringClassesOnly.find(real => String(real.id) === String(c.id) || (real.refPath && real.refPath === c.refPath)) || c;
+                                                   const realClass = recurringClassesOnly.find(real => real.refPath && real.refPath === c.refPath) || c;
                                                    const planningStudents = getClassStudentPlanningData(c, isArchitectProjection, archDate || todayStr);
                                                    const activeStudents = planningStudents.filter(student => student.isActive);
                                                    const fixedActiveStudents = activeStudents
@@ -16301,7 +16317,7 @@ ${startDateWarning}
                                                    const dividerStyle = isHibernatedCard ? { borderColor: 'rgba(100,116,139,.25)' } : { borderColor: 'rgba(255,255,255,.22)' };
 
                                                    return (
-                                                      <div key={c.id} className={`${cardTextClass} p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5 cursor-pointer ${isHibernatedCard ? 'opacity-95' : ''}`} style={cardStyle} onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }}>
+                                                      <div key={c.refPath || c.id} className={`${cardTextClass} p-3 rounded-xl text-xs mb-2 last:mb-0 shadow-sm transition-transform hover:-translate-y-0.5 cursor-pointer ${isHibernatedCard ? 'opacity-95' : ''}`} style={cardStyle} onClick={(e) => { e.stopPropagation(); setViewClassModal(realClass); }}>
                                                          <div className="flex items-start justify-between gap-2">
                                                            <div className="min-w-0">
                                                              <div className="font-black truncate uppercase tracking-widest">{c.time} - {c.subject}{isArchitectProjection ? ' · PROY.' : ''}</div>
@@ -16359,7 +16375,7 @@ ${startDateWarning}
                                                                <button onClick={(e) => { e.stopPropagation(); openEditClassModal(realClass); }} className="bg-amber-100 hover:bg-amber-200 text-amber-800 p-1.5 rounded-lg transition-colors" title="Editar clase">
                                                                  <Pencil className="w-3.5 h-3.5"/>
                                                                </button>
-                                                               <button onClick={(e) => { e.stopPropagation(); setEditWebModal(realClass); }} className={`p-1.5 rounded-lg transition-colors ${realClass.isWebVisible ? 'bg-blue-100 hover:bg-blue-200 text-blue-700' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600'}`} title="Configurar web / WhatsApp">
+                                                               <button onClick={(e) => { e.stopPropagation(); openClassWebSettings(realClass); }} className={`p-1.5 rounded-lg transition-colors ${realClass.isWebVisible ? 'bg-blue-100 hover:bg-blue-200 text-blue-700' : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600'}`} title="Configurar web / WhatsApp">
                                                                  <Globe className="w-3.5 h-3.5"/>
                                                                </button>
                                                                <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(realClass); }} className={`${isHibernatedCard ? 'bg-red-50 hover:bg-red-100 text-red-600' : 'bg-red-500/20 hover:bg-red-500 text-red-100 hover:text-white'} p-1.5 rounded-lg transition-colors`} title="Borrar clase">
@@ -16442,7 +16458,7 @@ ${startDateWarning}
                               const hiddenStudentCount = Math.max(activeStudents.length - visibleStudentNames.length, 0);
                               const teacherTheme = getTeacherColorTheme(c.teacher, settings);
                               return (
-                                <div key={c.id} className={`p-4 rounded-xl border-l-8 border relative group ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
+                                <div key={c.refPath || c.id} className={`p-4 rounded-xl border-l-8 border relative group ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
                                   <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-2 right-2 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
                                     <Trash2 className="w-4 h-4"/>
                                   </button>
@@ -16485,7 +16501,7 @@ ${startDateWarning}
                                   <div className="flex gap-2 mt-3">
                                     <button onClick={() => setViewClassModal(c)} className="flex-1 p-1 bg-zinc-100 text-[10px] font-black uppercase rounded"><Users className="w-3 h-3 inline"/> Alumnos</button>
                                     <button onClick={() => openEditClassModal(c)} className="flex-1 p-1 bg-amber-100 text-amber-700 text-[10px] font-black uppercase rounded"><Pencil className="w-3 h-3 inline"/> Editar</button>
-                                    <button onClick={() => setEditWebModal(c)} className={`flex-1 p-1 text-[10px] font-black uppercase rounded ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`}><Globe className="w-3 h-3 inline"/> Config</button>
+                                    <button onClick={() => openClassWebSettings(c)} className={`flex-1 p-1 text-[10px] font-black uppercase rounded ${c.isWebVisible ? 'bg-blue-100 text-blue-700' : 'bg-zinc-100 text-zinc-400'}`}><Globe className="w-3 h-3 inline"/> Config</button>
                                   </div>
                                 </div>
                               );
@@ -16525,7 +16541,7 @@ ${startDateWarning}
                       const futureStartC = planningStudents.filter(student => student.isFutureStart).length;
                       const relocatedC = planningStudents.filter(student => student.isRelocated).length;
                       return (
-                        <div key={c.id} className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-5 shadow-sm relative group">
+                        <div key={c.refPath || c.id} className="bg-white border-2 border-dashed border-zinc-300 rounded-2xl p-5 shadow-sm relative group">
                           <button onClick={(e) => { e.stopPropagation(); handleDeleteClassGlobal(c); }} className="absolute top-3 right-3 p-1.5 bg-red-50 text-red-500 hover:bg-red-500 hover:text-white rounded-lg opacity-0 group-hover:opacity-100 transition-all z-10" title="Borrar Clase">
                             <Trash2 className="w-4 h-4"/>
                           </button>
@@ -16549,7 +16565,7 @@ ${startDateWarning}
                             <button onClick={() => openEditClassModal(c)} className="flex-1 bg-amber-100 text-amber-700 font-black py-2 rounded-lg text-[10px] uppercase tracking-widest hover:bg-amber-200 transition-colors flex items-center justify-center gap-1">
                               <Pencil className="w-3 h-3"/> Editar
                             </button>
-                            <button onClick={() => setEditWebModal(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
+                          <button onClick={() => openClassWebSettings(c)} className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors flex items-center justify-center gap-1 ${c.isWebVisible ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-zinc-100 text-zinc-400 hover:bg-zinc-200'}`}>
                               <Globe className="w-3 h-3"/> Config
                             </button>
                           </div>
@@ -16643,7 +16659,7 @@ ${startDateWarning}
               </div>
             )}
 
-            <div className={viewClassModal ? 'admin-class-workspace has-selection' : 'admin-class-workspace'}><div className="admin-class-results">{dangerSubView === 'public' ? <PublicEnrollmentView db={db} internalClassesBySelection={new Map(recurringClassesOnly.map(clase => [buildPublicClassSelectionId(clase.refPath || clase.id), clase]))} onStudents={setViewClassModal} onConfigure={setEditWebModal}/> : dangerSubView === 'contactar' ? (
+            <div className={viewClassModal ? 'admin-class-workspace has-selection' : 'admin-class-workspace'}><div className="admin-class-results">{dangerSubView === 'public' ? <PublicEnrollmentView db={db} internalClassesBySelection={new Map(recurringClassesOnly.map(clase => [buildPublicClassSelectionId(clase.refPath || clase.id), clase]))} onStudents={setViewClassModal} onConfigure={openClassWebSettings}/> : dangerSubView === 'contactar' ? (
               dangerContactRows.length === 0 ? (
                 <div className="bg-white rounded-3xl p-12 text-center border-2 border-dashed border-zinc-200">
                   <PartyPopper className="w-12 h-12 text-emerald-400 mx-auto mb-4" />
@@ -16703,7 +16719,7 @@ ${startDateWarning}
                         const teacherTheme = getTeacherColorTheme(c.teacher, settings);
                         const isHibernated = row.activeCount === 0;
                         return (
-                          <div key={`${dangerViewMode}-${row.id}`} className={`p-4 rounded-xl border-l-8 border relative flex flex-col gap-2 ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
+                              <div key={`${dangerViewMode}-${c.refPath || c.id}`} className={`p-4 rounded-xl border-l-8 border relative flex flex-col gap-2 ${isHibernated ? 'border-dashed' : ''}`} style={{ background: isHibernated ? '#f8fafc' : teacherTheme.soft, borderColor: teacherTheme.border }}>
                             <div className="font-black text-sm uppercase flex justify-between gap-2"><span>{getDayName(c.dayOfWeek)} · {c.time}</span><span>{row.activeCount}/{row.cap || '—'}</span></div>
                             <h4 className="font-black uppercase text-sm">{c.subject}</h4>
                             <p className="text-xs font-bold text-slate-600">{getClassCenterName(c)} · {getClassRoomName(c)} · {c.teacher}</p>
@@ -16720,7 +16736,7 @@ ${startDateWarning}
                             <div className="mt-auto pt-2 flex flex-wrap gap-2">
                               {dangerViewMode === 'actual' ? <>
                                 <button onClick={() => setViewClassModal(c)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Alumnos</button>
-                                <button onClick={() => setEditWebModal(c)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Configurar / Web</button>
+                                <button onClick={() => openClassWebSettings(c)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Configurar / Web</button>
                                 {isHibernated && <button onClick={() => setResurrectClassModal(c)} className="px-2 py-1.5 bg-zinc-800 text-white rounded-lg text-xs font-bold">Reactivar</button>}
                                 <button onClick={() => handleDeleteClassGlobal(c)} className="px-2 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold">Borrar</button>
                               </> : <button onClick={() => setPhotosModalOpen(true)} className="px-2 py-1.5 bg-white rounded-lg text-xs font-bold">Ver fotos</button>}

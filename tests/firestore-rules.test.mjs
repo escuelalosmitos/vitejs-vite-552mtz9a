@@ -594,10 +594,12 @@ test('las reglas aíslan visitante, alumno, profesor y administrador', async t =
         await setDoc(publicRef, publicDoc);
         await assertFails(save(visitor));
         assert.equal((await visible()).classes.length, 2);
-        await assertSucceeds(save(admin));
+        assert.deepEqual(await assertSucceeds(save(admin)), { needsRepublish: false, removedFromWeb: true });
         assert.equal((await getDoc(doc(admin, classPath))).data().isWebVisible, false);
         assert.deepEqual((await visible()).classes, [parallelTurn]);
         assert.deepEqual((await visible()).campaigns, campaigns);
+        assert.deepEqual(await assertSucceeds(save(admin)), { needsRepublish: false, removedFromWeb: false });
+        assert.deepEqual((await visible()).classes, [parallelTurn]);
         await publish();
         assert.deepEqual((await visible()).classes, [parallelTurn]);
 

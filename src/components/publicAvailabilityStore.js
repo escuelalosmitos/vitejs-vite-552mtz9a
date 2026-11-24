@@ -8,6 +8,7 @@ export async function saveClassWebSettings({ db, classPath, changes, signatureFo
   const publicRef = sdk.doc(db, 'publicData', 'classAvailability');
   return sdk.runTransaction(db, async transaction => {
     let needsRepublish = false;
+    let removedFromWeb = false;
     if (changes.isWebVisible === false) {
       const published = (await transaction.get(publicRef)).data();
       const previous = published?.classes;
@@ -15,7 +16,8 @@ export async function saveClassWebSettings({ db, classPath, changes, signatureFo
         needsRepublish = previous.some(row => !row.selectionId);
         const selectionId = buildPublicClassSelectionId(classPath);
         const classes = previous.filter(row => row.selectionId !== selectionId);
-        if (classes.length !== previous.length) {
+        removedFromWeb = classes.length !== previous.length;
+        if (removedFromWeb) {
           transaction.update(publicRef, {
             classes,
             signature: signatureFor([classes, published.campaigns || []]),
@@ -25,7 +27,7 @@ export async function saveClassWebSettings({ db, classPath, changes, signatureFo
       }
     }
     transaction.update(classRef, changes);
-    return { needsRepublish };
+    return { needsRepublish, removedFromWeb };
   });
 }
 
